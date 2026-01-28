@@ -59,7 +59,7 @@
 
 1. User uploads PGN via Flutter app
 2. Backend stores game in PostgreSQL
-3. Stockfish analyzes game, identifies mistakes
+3. Stockfish analyzes game and identifies mistakes
 4. For each mistake:
    - Extract FEN + move context
    - Send to LLM for explanation
@@ -74,4 +74,4 @@
 
 ---
 
-**Note**: This is a simplified MVP architecture. Future iterations will add web frontend, caching layers, and analytics.
+**Note**: This is a simplified MVP architecture. Future iterations will add web frontend, caching layers and analytics.
