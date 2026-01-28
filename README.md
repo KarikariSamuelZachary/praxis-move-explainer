@@ -1,4 +1,4 @@
-# Praxis — AI-Powered Chess Learning App
+# Praxis AI-Powered Chess Learning App
 
 Praxis is a chess improvement app focused on **understanding, not just playing**.
 
