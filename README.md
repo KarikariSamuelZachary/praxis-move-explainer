@@ -11,7 +11,7 @@ Instead of showing engine numbers and "best moves" with no context, Praxis expla
 Most chess platforms:
 - Rely heavily on engine evaluations
 - Assume players already understand chess concepts
-- Tell you **what** the best move is, but not **why**
+- Tell you **what** the best move is but not **why**
 
 **As a result:**
 - Players repeat the same mistakes
