@@ -1,0 +1,11 @@
+[Event "Test Game with Blunders"]
+[Site "Praxis Test Environment"]
+[Date "2026.03.15"]
+[Round "1"]
+[White "Player One"]
+[Black "Player Two"]
+[Result "1-0"]
+[WhiteElo "1200"]
+[BlackElo "1200"]
+
+1. e4 e5 2. Nf3 Nc6 3. Bc4 Nd4 4. Nxe5 Qg5 5. Nxf7 Qxg2 6. Rf1 Qxe4+ 7. Be2 Nf3# 1-0
