@@ -6,6 +6,76 @@ Instead of showing engine numbers and "best moves" with no context, Praxis expla
 
 ---
 
+## Quick Start (Current Repo)
+
+This repository currently runs as a **Python CLI analyzer**.
+
+### 1. Prerequisites
+
+- Python 3.10+
+- Stockfish installed and available in your PATH
+
+On Ubuntu/Debian:
+
+```bash
+sudo apt update
+sudo apt install -y stockfish
+```
+
+### 2. Install dependencies
+
+From the project root:
+
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+```
+
+### 3. Run with mock LLM (no API key required)
+
+```bash
+venv/bin/python src/analyze_game.py --pgn test_game.pgn --color both --llm mock
+```
+
+### 4. Run with Gemini
+
+Create a `.env` file in the project root:
+
+```bash
+echo "GEMINI_API_KEY=your_key_here" > .env
+```
+
+Then run:
+
+```bash
+venv/bin/python src/analyze_game.py --pgn test_game.pgn --color both --llm gemini --model gemini-2.0-flash
+```
+
+### 5. Run with Groq
+
+Create/update `.env`:
+
+```bash
+echo "GROQ_API_KEY=your_key_here" > .env
+```
+
+Then run:
+
+```bash
+venv/bin/python src/analyze_game.py --pgn test_game.pgn --color both --llm groq --model openai/gpt-oss-120b
+```
+
+### Useful options
+
+- Analyze only one side: `--color white` or `--color black`
+- Increase engine depth: `--depth 20`
+- Change blunder threshold in centipawns: `--threshold 120`
+- Show fewer/more mistakes: `--max-mistakes 3`
+- If Stockfish is not in PATH: `--stockfish /full/path/to/stockfish`
+
+---
+
 ## Problem
 
 Most chess platforms:
