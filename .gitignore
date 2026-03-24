@@ -143,6 +143,7 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+frontend/.env.local
 
 # Spyder project settings
 .spyderproject
@@ -209,3 +210,5 @@ __marimo__/
 # PGN files
 src/blunder_game.pgn
 src/test_game.pgn
+
+
