@@ -5,7 +5,6 @@ Detects blunders and evaluates positions.
 import chess
 import chess.engine
 from typing import Optional
-from pathlib import Path
 from schemas.models import Evaluation
 
 class StockfishEngine:
@@ -61,18 +60,12 @@ class StockfishEngine:
         )
     
     def _score_to_centipawns(self, score: chess.engine.Score, turn: chess.Color) -> float:
-        # Get score relative to white
-        if score.is_mate():
-            # Mate score: use large number
-            mate_in = score.relative.mate()
-            cp = 10000 if mate_in > 0 else -10000
+        normalized_score = score.pov(turn)
+        if normalized_score.is_mate():
+            mate_in = normalized_score.mate()
+            cp = 10000 if mate_in and mate_in > 0 else -10000
         else:
-            cp = score.relative.score()
-        
-        # Flip if black to move
-        if turn == chess.BLACK:
-            cp = -cp if cp is not None else 0
-        
+            cp = normalized_score.score()
         return cp or 0
     
     def is_blunder(self, eval_before: Evaluation, eval_after: Evaluation, threshold: float = 100) -> bool:
