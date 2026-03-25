@@ -166,7 +166,7 @@ The MVP is successful if users say things like:
 
 ## Tech Direction (High-Level)
 
-- **Chess Engine** Used only to detect critical moments
+- **Chess Engine** used only to detect critical moments
 - **LLM** which generates human-style explanations
 - Minimal **frontend** focused on reading and training
 - **Backend** system that stores games, mistakes and repetition schedule
