@@ -5,53 +5,76 @@ const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
 });
 
-// Map ELO to explanation complexity
+function uciToHuman(uci: string): string {
+  if (!uci || uci.length < 4) return uci;
+  const from = uci.slice(0, 2);
+  const to = uci.slice(2, 4);
+  const promotion = uci.length > 4 ? `=${uci[4].toUpperCase()}` : '';
+  return `${from} to ${to}${promotion}`;
+}
+
 function getExplanationStyle(elo: number): string {
-  if (elo < 800) {
-    return 'You are explaining to a complete beginner. Use very simple language, avoid chess jargon, and focus on basic concepts like piece safety and simple threats. Keep it under 3 sentences.';
-  }
-  if (elo < 1200) {
-    return 'You are explaining to a casual player. Use simple chess terms and explain tactics clearly. Mention the basic pattern being used. Keep it concise, 3-4 sentences.';
-  }
-  if (elo < 1600) {
-    return 'You are explaining to an intermediate player. Use standard chess terminology. Explain the tactical or positional idea, why it works, and what would happen on alternative moves. 4-5 sentences.';
-  }
-  if (elo < 2000) {
-    return 'You are explaining to an advanced player. Use precise chess terminology. Discuss the key variations, positional implications, and deeper strategic ideas. 5-6 sentences.';
-  }
-  return 'You are explaining to an expert player. Be concise but deep. Focus on subtle nuances, precise variations, and high-level strategic concepts. 4-5 sentences.';
+  if (elo < 800) return 'Explain using very simple language. Avoid chess jargon. Maximum 2 sentences.';
+  if (elo < 1200) return 'Use simple chess terms. Explain the basic tactical idea clearly. Maximum 3 sentences.';
+  if (elo < 1600) return 'Use standard chess terminology. Explain the tactical or positional idea and why it works. 3-4 sentences.';
+  if (elo < 2000) return 'Use precise chess terminology. Discuss key variations and positional implications. 4-5 sentences.';
+  return 'Be concise but deep. Focus on subtle nuances and precise variations. 3-4 sentences.';
 }
 
 export async function getChessMoveExplanation(
   request: ExplanationRequest
 ): Promise<ExplanationResponse> {
   const { fen, move, isCorrect, playerElo, puzzleThemes } = request;
-
   const explanationStyle = getExplanationStyle(playerElo);
+  const humanMove = uciToHuman(move);
   const themesText = puzzleThemes.length > 0
-    ? `The key themes in this puzzle are: ${puzzleThemes.join(', ')}.`
+    ? `Key themes in this puzzle: ${puzzleThemes.join(', ')}.`
     : '';
 
-  const prompt = `You are Praxis, an expert chess coach helping a player improve through tactical training.
+  const prompt = isCorrect
+    ? `You are Praxis, an expert chess coach. A player just solved a puzzle correctly.
 
 ${explanationStyle}
-
-Current position (FEN): ${fen}
-The best move played: ${move}
-Player's ELO: ${playerElo}
 ${themesText}
-The player ${isCorrect ? 'found the correct move' : 'struggled with this move'}.
 
-Provide:
-1. A clear explanation of WHY this move is the best (explain the idea, threat, or tactic)
-2. The key chess concept being demonstrated (e.g., "fork", "pin", "back rank weakness")
-3. A brief tip for recognizing similar patterns in the future
+Position (FEN): ${fen}
+The correct move was: ${humanMove}
+
+Explain WHY this is the best move. Focus on the specific threat or tactic it creates.
+
+IMPORTANT:
+- Do NOT start your explanation with the move notation like "${humanMove}"
+- Start with the IDEA or CONCEPT (e.g. "The knight fork wins material because..." or "Pushing to d4 challenges the center because...")
+- Write naturally as a chess coach
 
 Respond in this exact JSON format:
 {
-  "explanation": "Your main explanation here",
-  "concept": "The key concept in 2-4 words",
-  "tip": "A practical tip for future games"
+  "explanation": "Your explanation starting with the idea, not the move notation",
+  "concept": "Key concept in 2-4 words",
+  "tip": "A practical tip for recognizing this pattern in future games"
+}`
+    : `You are Praxis, an expert chess coach. A player just played an incorrect move.
+
+${explanationStyle}
+${themesText}
+
+Position (FEN): ${fen}
+The move the player tried: ${humanMove}
+This was NOT the best move.
+
+Explain briefly why this move falls short. Be encouraging but honest.
+
+IMPORTANT:
+- Do NOT start with the move notation like "${humanMove}"
+- Do NOT say this move is good or correct
+- Do not reveal the exact solution
+- Be constructive and brief
+
+Respond in this exact JSON format:
+{
+  "explanation": "Brief explanation of why this move is suboptimal",
+  "concept": "What to look for instead in 2-4 words",
+  "tip": "A hint toward the right idea without giving the solution"
 }`;
 
   try {
@@ -67,28 +90,30 @@ Respond in this exact JSON format:
     const parsed = JSON.parse(content);
 
     return {
-      explanation: parsed.explanation || 'This move creates a decisive advantage.',
+      explanation: parsed.explanation || (isCorrect
+        ? 'This move creates a decisive advantage.'
+        : 'This move misses a stronger continuation.'),
       concept: parsed.concept || 'Tactics',
       tip: parsed.tip,
     };
   } catch (error) {
     console.error('Groq API error:', error);
     return {
-      explanation: 'This is the strongest move in the position, creating an immediate threat your opponent cannot handle.',
-      concept: 'Tactics',
-      tip: 'Always look for moves that create multiple threats simultaneously.',
+      explanation: isCorrect
+        ? 'This is the strongest move, creating an immediate threat.'
+        : 'This move misses a stronger continuation. Look for more forcing moves.',
+      concept: isCorrect ? 'Tactics' : 'Look again',
+      tip: 'Always look for checks, captures, and threats first.',
     };
   }
 }
 
-// Cache layer - store explanations to avoid redundant API calls
 const explanationCache = new Map<string, ExplanationResponse>();
 
 export async function getCachedExplanation(
   request: ExplanationRequest
 ): Promise<ExplanationResponse> {
-  // Create a cache key from position + move + elo range
-  const eloRange = Math.floor(request.playerElo / 400) * 400; // Group by 400 elo brackets
+  const eloRange = Math.floor(request.playerElo / 400) * 400;
   const normalizedThemes = [...request.puzzleThemes].sort().join(',');
   const cacheKey = [
     request.fen,
@@ -104,6 +129,5 @@ export async function getCachedExplanation(
 
   const explanation = await getChessMoveExplanation(request);
   explanationCache.set(cacheKey, explanation);
-
   return explanation;
 }
