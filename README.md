@@ -98,7 +98,7 @@ Praxis acts like a **human chess coach**:
 3. Explains each mistake in natural language using an LLM
 4. Reinforces learning through repetition using the **Woodpecker Method**
 
-This makes Praxis a **training system**, not just a game analyzer.
+This makes Praxis a **training system** and not just a game analyzer.
 
 ---
 
@@ -149,7 +149,7 @@ Each critical mistake is stored as a reusable training item containing:
 - Leaderboards
 - Accuracy percentages
 
-**Praxis is not trying to replace Chess.com or Lichess — it complements them.**
+**Praxis is not trying to replace Chess.com or Lichess, it complements them.**
 
 ---
 
@@ -157,7 +157,7 @@ Each critical mistake is stored as a reusable training item containing:
 
 The MVP is successful if users say things like:
 - *"I finally understand why that move was bad."*
-- *"I keep making this mistake — and now I see it."*
+- *"I keep making this mistake BUT now I see it."*
 - *"I stopped repeating this error after a few sessions."*
 
 **Learning > metrics.**
@@ -166,18 +166,16 @@ The MVP is successful if users say things like:
 
 ## Tech Direction (High-Level)
 
-- **Chess Engine**: Used only to detect critical moments
-- **LLM**: Generates human-style explanations
-- **Frontend**: Minimal, focused on reading and training
-- **Backend**: Stores games, mistakes,and repetition schedule
+- **Chess Engine** Used only to detect critical moments
+- **LLM** which generates human-style explanations
+- Minimal **frontend** focused on reading and training
+- **Backend** system that stores games, mistakes and repetition schedule
 
 ---
 
 ## Monetization (Future)
 
-Praxis is designed to be monetized through:
+Praxis is designed to be monetized through
 - Subscriptions
 - Premium training features
 - Advanced explanation depth
-
-Monetization is intentional not an afterthought.
