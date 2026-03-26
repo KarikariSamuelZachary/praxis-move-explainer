@@ -1,5 +1,5 @@
 import { Puzzle } from '@/types';
-import { Chess } from 'chess.js';
+import { Chess, Move } from 'chess.js';
 
 // Lichess puzzle themes you can filter by
 export const PUZZLE_THEMES = [
@@ -26,6 +26,105 @@ interface LichessPuzzleResponse {
   };
   game: {
     pgn: string;
+  };
+}
+
+type NormalizedPuzzlePosition = {
+  fen: string;
+  previousMove?: string;
+};
+
+const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+
+function toUci(move: Pick<Move, 'from' | 'to'> & { promotion?: string }): string {
+  return `${move.from}${move.to}${move.promotion ?? ''}`;
+}
+
+function tryApplyUciMove(game: Chess, uciMove: string): boolean {
+  const from = uciMove.slice(0, 2);
+  const to = uciMove.slice(2, 4);
+  const promotion = uciMove.length > 4 ? uciMove[4] : undefined;
+
+  try {
+    game.move({ from, to, promotion });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function buildBoardAtPly(
+  history: Move[],
+  startingFen: string | undefined,
+  plyCount: number
+): { game: Chess; previousMove?: string } {
+  const replay = startingFen ? new Chess(startingFen) : new Chess();
+
+  for (const move of history.slice(0, plyCount)) {
+    replay.move(move);
+  }
+
+  const previousMove = plyCount > 0 ? toUci(history[plyCount - 1]) : undefined;
+
+  return {
+    game: replay,
+    previousMove,
+  };
+}
+
+function buildCandidatePlies(initialPly: number | undefined, maxPly: number): number[] {
+  if (typeof initialPly !== 'number') {
+    return Array.from({ length: maxPly + 1 }, (_, index) => index);
+  }
+
+  const candidates = new Set<number>();
+  for (const delta of [0, -1, 1, -2, 2]) {
+    const ply = initialPly + delta;
+    if (ply >= 0 && ply <= maxPly) {
+      candidates.add(ply);
+    }
+  }
+
+  return [...candidates];
+}
+
+function normalizePuzzlePosition(
+  pgn: string,
+  initialPly: number | undefined,
+  solution: string[]
+): NormalizedPuzzlePosition {
+  const fenMatch = pgn.match(/\[FEN "([^"]+)"\]/);
+  const startingFen = fenMatch?.[1];
+  const pgnGame = startingFen ? new Chess(startingFen) : new Chess();
+
+  try {
+    pgnGame.loadPgn(pgn);
+    const history = pgnGame.history({ verbose: true });
+    const firstSolutionMove = solution[0];
+
+    for (const plyCount of buildCandidatePlies(initialPly, history.length)) {
+      const { game, previousMove } = buildBoardAtPly(history, startingFen, plyCount);
+
+      // We normalize to the position the user should solve right now, so
+      // the first solution move must be legal from the returned board.
+      if (!firstSolutionMove) {
+        return { fen: game.fen(), previousMove };
+      }
+
+      const probe = new Chess(game.fen());
+      if (tryApplyUciMove(probe, firstSolutionMove)) {
+        return {
+          fen: game.fen(),
+          previousMove,
+        };
+      }
+    }
+  } catch (error) {
+    console.error('Failed to normalize Lichess puzzle position:', error);
+  }
+
+  return {
+    fen: startingFen ?? START_FEN,
   };
 }
 
@@ -58,16 +157,20 @@ export async function fetchLichessPuzzle(
 
     const data: LichessPuzzleResponse = await response.json();
 
-    // Extract FEN from PGN - the puzzle starts from a specific position
-    const fen = extractFenFromPgn(data.game.pgn, data.puzzle.initialPly);
+    const normalizedPosition = normalizePuzzlePosition(
+      data.game.pgn,
+      data.puzzle.initialPly,
+      data.puzzle.solution
+    );
 
     return {
       id: data.puzzle.id,
-      fen,
+      fen: normalizedPosition.fen,
       moves: data.puzzle.solution,
       rating: data.puzzle.rating,
       themes: data.puzzle.themes,
       gameUrl: `https://lichess.org/training/${data.puzzle.id}`,
+      previousMove: normalizedPosition.previousMove,
     };
   } catch (error) {
     console.error('Failed to fetch Lichess puzzle:', error);
@@ -92,33 +195,6 @@ export async function fetchPuzzleBatch(
   return puzzles
     .filter((p): p is PromiseFulfilledResult<Puzzle> => p.status === 'fulfilled')
     .map((p) => p.value);
-}
-
-// Extract the starting FEN for the puzzle from the game PGN
-function extractFenFromPgn(pgn: string, initialPly?: number): string {
-  const fenMatch = pgn.match(/\[FEN "([^"]+)"\]/);
-  const startingFen = fenMatch?.[1];
-
-  if (typeof initialPly !== 'number' || initialPly < 0) {
-    return startingFen ?? 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
-  }
-
-  const game = startingFen ? new Chess(startingFen) : new Chess();
-
-  try {
-    game.loadPgn(pgn);
-    const history = game.history({ verbose: true });
-
-    const replay = startingFen ? new Chess(startingFen) : new Chess();
-    for (const move of history.slice(0, initialPly)) {
-      replay.move(move);
-    }
-
-    return replay.fen();
-  } catch (error) {
-    console.error('Failed to extract FEN from PGN:', error);
-    return startingFen ?? 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
-  }
 }
 
 // Fallback puzzles when API is unavailable - classic tactical positions
