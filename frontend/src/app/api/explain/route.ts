@@ -41,15 +41,22 @@ function isValidFen(fen: string): boolean {
   return parts.length === 6;
 }
 
-function isValidUciMove(move: string): boolean {
-  return /^[a-h][1-8][a-h][1-8][nbrq]?$/i.test(move.trim());
+function isValidSanMove(move: string): boolean {
+  const trimmed = move.trim();
+  if (!trimmed || trimmed.length > 20) {
+    return false;
+  }
+
+  // Accept SAN-style notation including captures, checks, mates,
+  // promotions, castling, annotations, and disambiguation.
+  return /^[KQRBNOa-h0-9x+=#?!:-]+$/.test(trimmed);
 }
 
 function sanitizeRequest(body: Partial<ExplanationRequest>): ExplanationRequest | null {
   const fen = body.fen?.trim();
-  const move = body.move?.trim().toLowerCase();
+  const move = body.move?.trim();
 
-  if (!fen || !move || !isValidFen(fen) || !isValidUciMove(move)) {
+  if (!fen || !move || !isValidFen(fen) || !isValidSanMove(move)) {
     return null;
   }
 
