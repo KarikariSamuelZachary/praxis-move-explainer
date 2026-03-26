@@ -5,6 +5,7 @@ export interface Puzzle {
   rating: number;
   themes: string[];
   gameUrl?: string;
+  previousMove?: string;
 }
 
 export interface PuzzleAttempt {
