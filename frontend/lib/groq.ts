@@ -5,14 +5,6 @@ const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
 });
 
-function uciToHuman(uci: string): string {
-  if (!uci || uci.length < 4) return uci;
-  const from = uci.slice(0, 2);
-  const to = uci.slice(2, 4);
-  const promotion = uci.length > 4 ? `=${uci[4].toUpperCase()}` : '';
-  return `${from} to ${to}${promotion}`;
-}
-
 function getExplanationStyle(elo: number): string {
   if (elo < 800) return 'Explain using very simple language. Avoid chess jargon. Maximum 2 sentences.';
   if (elo < 1200) return 'Use simple chess terms. Explain the basic tactical idea clearly. Maximum 3 sentences.';
@@ -26,7 +18,7 @@ export async function getChessMoveExplanation(
 ): Promise<ExplanationResponse> {
   const { fen, move, isCorrect, playerElo, puzzleThemes } = request;
   const explanationStyle = getExplanationStyle(playerElo);
-  const humanMove = uciToHuman(move);
+  const sanMove = move.trim();
   const themesText = puzzleThemes.length > 0
     ? `Key themes in this puzzle: ${puzzleThemes.join(', ')}.`
     : '';
@@ -38,12 +30,12 @@ ${explanationStyle}
 ${themesText}
 
 Position (FEN): ${fen}
-The correct move was: ${humanMove}
+The correct move was: ${sanMove}
 
 Explain WHY this is the best move. Focus on the specific threat or tactic it creates.
 
 IMPORTANT:
-- Do NOT start your explanation with the move notation like "${humanMove}"
+- Do NOT start your explanation with the move notation like "${sanMove}"
 - Start with the IDEA or CONCEPT (e.g. "The knight fork wins material because..." or "Pushing to d4 challenges the center because...")
 - Write naturally as a chess coach
 
@@ -59,13 +51,13 @@ ${explanationStyle}
 ${themesText}
 
 Position (FEN): ${fen}
-The move the player tried: ${humanMove}
+The move the player tried: ${sanMove}
 This was NOT the best move.
 
 Explain briefly why this move falls short. Be encouraging but honest.
 
 IMPORTANT:
-- Do NOT start with the move notation like "${humanMove}"
+- Do NOT start with the move notation like "${sanMove}"
 - Do NOT say this move is good or correct
 - Do not reveal the exact solution
 - Be constructive and brief
