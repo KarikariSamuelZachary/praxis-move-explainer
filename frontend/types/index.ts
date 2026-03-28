@@ -38,6 +38,19 @@ export interface ExplanationResponse {
   tip?: string;
 }
 
+export interface GameReviewMove {
+  fen: string;
+  san: string;
+  color: 'white' | 'black';
+  classification: 'book' | 'best' | 'excellent' | 'good' | 'inaccuracy' | 'mistake' | 'blunder';
+  cp_loss: number;
+  explanation?: {
+    explanation: string;
+    concept?: string;
+    tip?: string;
+  };
+}
+
 export interface UserSettings {
   elo: number;
   puzzleRatingMin: number;
