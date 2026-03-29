@@ -108,6 +108,7 @@ export default function GameReview({
   gameData = DEFAULT_GAME_DATA,
 }: GameReviewProps) {
   const [activePly, setActivePly] = useState(0);
+  const [orientation, setOrientation] = useState<'white' | 'black'>('white');
   const [loadingExplanation, setLoadingExplanation] = useState(false);
   const [fetchedExplanation, setFetchedExplanation] = useState<ReviewExplanation | null>(null);
 
@@ -126,6 +127,14 @@ export default function GameReview({
     setFetchedExplanation(null);
     setLoadingExplanation(false);
   }, [activePly]);
+
+  useEffect(() => {
+    const initialMove = safeGameData[0];
+    setActivePly(0);
+    setOrientation(initialMove?.color === 'black' ? 'black' : 'white');
+    setFetchedExplanation(null);
+    setLoadingExplanation(false);
+  }, [gameData, safeGameData]);
 
   async function handleAskCoach() {
     setLoadingExplanation(true);
@@ -184,6 +193,13 @@ export default function GameReview({
             </button>
             <button
               type="button"
+              onClick={() => setOrientation((current) => current === 'white' ? 'black' : 'white')}
+              className="rounded-2xl border border-zinc-700 bg-zinc-900 px-4 py-3 text-sm font-medium text-zinc-200 transition hover:border-zinc-500 hover:bg-zinc-800"
+            >
+              Flip Board
+            </button>
+            <button
+              type="button"
               onClick={() => setActivePly((ply) => Math.min(safeGameData.length - 1, ply + 1))}
               disabled={clampedActivePly === safeGameData.length - 1}
               className="flex-1 rounded-2xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm font-medium text-emerald-200 transition hover:border-emerald-400 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900/40 disabled:text-zinc-600"
@@ -195,7 +211,7 @@ export default function GameReview({
           <div className="mx-auto aspect-square w-full max-w-[440px] overflow-hidden rounded-[18px]">
             <Chessboard
               position={currentMove.fen}
-              boardOrientation={currentMove.color === 'white' ? 'black' : 'white'}
+              boardOrientation={orientation}
               allowDragging={false}
               boardStyle={{
                 width: '100%',
