@@ -5,47 +5,56 @@ import { useMemo, useState } from 'react';
 import GameReview from '@/components/review/GameReview';
 import { GameReviewMove } from '@/types';
 
-const REVIEW_DATA: GameReviewMove[] = [
-  { fen: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1', san: 'e4', color: 'white', classification: 'book', cp_loss: 0 },
-  { fen: 'rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2', san: 'c5', color: 'black', classification: 'book', cp_loss: 0 },
-  { fen: 'rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2', san: 'Nf3', color: 'white', classification: 'best', cp_loss: 5 },
-  { fen: 'rnbqkbnr/pp2pppp/3p4/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 3', san: 'd6', color: 'black', classification: 'good', cp_loss: 40 },
-  { fen: 'rnbqkbnr/pp2pppp/3p4/2p5/2B1P3/5N2/PPPP1PPP/RNBQK2R b KQkq - 1 3', san: 'Bc4', color: 'white', classification: 'inaccuracy', cp_loss: 85 },
-  {
-    fen: 'rnbqkbnr/1p2pppp/p2p4/2p5/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4',
-    san: 'a6',
-    color: 'black',
-    classification: 'blunder',
-    cp_loss: 350,
-    explanation: {
-      explanation: 'This ignores the threat on f7.',
-      concept: 'King Safety',
-    },
-  },
-];
-
 type ReviewMode = 'input' | 'loading' | 'review';
 
 export default function ReviewPage() {
   const [mode, setMode] = useState<ReviewMode>('input');
   const [pgnInput, setPgnInput] = useState('');
+  const [gameData, setGameData] = useState<GameReviewMove[] | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const canAnalyze = useMemo(() => pgnInput.trim().length > 0, [pgnInput]);
 
-  function handleAnalyzeGame() {
+  async function handleAnalyzeGame() {
     if (!canAnalyze) {
       return;
     }
 
+    setErrorMessage(null);
     setMode('loading');
-    window.setTimeout(() => {
+
+    try {
+      const response = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          pgn: pgnInput.trim(),
+        }),
+      });
+
+      if (!response.ok) {
+        throw new Error(`Analyze API returned ${response.status}`);
+      }
+
+      const data = await response.json() as GameReviewMove[];
+      if (!Array.isArray(data) || data.length === 0) {
+        throw new Error('Analyze API returned no review data');
+      }
+
+      setGameData(data);
       setMode('review');
-    }, 2000);
+    } catch (error) {
+      console.error('Failed to analyze PGN:', error);
+      setErrorMessage('Failed to analyze PGN. Please check the format and try again.');
+      setMode('input');
+    }
   }
 
   function handleStartOver() {
     setMode('input');
     setPgnInput('');
+    setGameData(null);
+    setErrorMessage(null);
   }
 
   return (
@@ -86,6 +95,12 @@ export default function ReviewPage() {
                 Analyze Game
               </button>
             </div>
+
+            {errorMessage && (
+              <p className="mt-4 text-sm text-rose-300">
+                {errorMessage}
+              </p>
+            )}
           </section>
         )}
 
@@ -115,7 +130,7 @@ export default function ReviewPage() {
                 ← Start Over
               </button>
             </div>
-            <GameReview gameData={REVIEW_DATA} />
+            {gameData && <GameReview gameData={gameData} />}
           </>
         )}
       </div>
