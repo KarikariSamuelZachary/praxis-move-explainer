@@ -1,3 +1,12 @@
+export type MoveClassification =
+  | 'book'
+  | 'best'
+  | 'excellent'
+  | 'good'
+  | 'inaccuracy'
+  | 'mistake'
+  | 'blunder';
+
 export interface Puzzle {
   id: string;
   fen: string;
@@ -27,9 +36,11 @@ export interface WoodpeckerSession {
 export interface ExplanationRequest {
   fen: string;
   move: string;
-  isCorrect: boolean;
-  playerElo: number;
-  puzzleThemes: string[];
+  moveHistory?: string[];
+  classification?: MoveClassification;
+  isCorrect?: boolean;
+  playerElo?: number;
+  puzzleThemes?: string[];
 }
 
 export interface ExplanationResponse {
@@ -42,7 +53,7 @@ export interface GameReviewMove {
   fen: string;
   san: string;
   color: 'white' | 'black';
-  classification: 'book' | 'best' | 'excellent' | 'good' | 'inaccuracy' | 'mistake' | 'blunder';
+  classification: MoveClassification;
   cp_loss: number;
   explanation?: {
     explanation: string;
