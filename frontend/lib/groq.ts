@@ -1,5 +1,5 @@
 import Groq from 'groq-sdk';
-import { ExplanationRequest, ExplanationResponse } from '@/types';
+import { ExplanationRequest, ExplanationResponse, MoveClassification } from '@/types';
 
 const groq = new Groq({
   apiKey: process.env.GROQ_API_KEY,
@@ -13,17 +13,102 @@ function getExplanationStyle(elo: number): string {
   return 'Be concise but deep. Focus on subtle nuances and precise variations. 3-4 sentences.';
 }
 
-export async function getChessMoveExplanation(
-  request: ExplanationRequest
-): Promise<ExplanationResponse> {
-  const { fen, move, isCorrect, playerElo, puzzleThemes } = request;
+function getPromptForClassification(
+  classification: MoveClassification,
+  moveHistory: string[],
+  fen: string,
+  sanMove: string
+): string {
+  switch (classification) {
+    case 'book':
+      return `You are Praxis, an expert chess coach.
+
+Move history so far: ${moveHistory.join(' ')}
+Current position (FEN): ${fen}
+Move played: ${sanMove}
+
+Explain the PURPOSE of this move in 2-3 sentences.
+Use the move history to understand the position context.
+Focus ONLY on:
+- What square or piece does this move develop or control?
+- What does it contribute to the position given what has been played?
+
+STRICT RULES:
+- Do NOT mention the opening name under any circumstances
+- Do NOT say "this is the X opening" or "named after..."
+- Do NOT start with the move notation
+- Start directly with what the move DOES
+
+Respond in this exact JSON format:
+{
+  "explanation": "...",
+  "concept": "...",
+  "tip": "A practical idea to keep in mind as the position develops."
+}`;
+    case 'best':
+    case 'excellent':
+    case 'good':
+      return `You are Praxis, an expert chess coach. The player played a strong move.
+
+Move history so far: ${moveHistory.join(' ')}
+Position (FEN): ${fen}
+Move: ${sanMove}
+
+Explain WHY this move is strong (focus on threats, positional advantages, or tactics). Do NOT criticize it.
+
+Respond in this exact JSON format:
+{
+  "explanation": "...",
+  "concept": "...",
+  "tip": "A pattern or concept to remember for future games."
+}`;
+    case 'inaccuracy':
+      return `You are Praxis, an expert chess coach. The player played an inaccuracy.
+
+Move history so far: ${moveHistory.join(' ')}
+Position (FEN): ${fen}
+Move: ${sanMove}
+
+This move is slightly sub-optimal. Gently explain what a better plan or square would have been without giving away the exact best move.
+
+Respond in this exact JSON format:
+{
+  "explanation": "...",
+  "concept": "...",
+  "tip": "What to look for instead."
+}`;
+    case 'mistake':
+    case 'blunder':
+      return `You are Praxis, an expert chess coach. The player played a severe mistake or blunder.
+
+Move history so far: ${moveHistory.join(' ')}
+Position (FEN): ${fen}
+Move: ${sanMove}
+
+Directly explain the immediate threat missed or the tactical flaw this move creates. Be urgent and clear.
+
+Respond in this exact JSON format:
+{
+  "explanation": "...",
+  "concept": "...",
+  "tip": "The immediate threat you missed or the tactical vulnerability created."
+}`;
+  }
+}
+
+function getLegacyPuzzlePrompt(
+  fen: string,
+  sanMove: string,
+  isCorrect: boolean,
+  playerElo: number,
+  puzzleThemes: string[]
+): string {
   const explanationStyle = getExplanationStyle(playerElo);
-  const sanMove = move.trim();
   const themesText = puzzleThemes.length > 0
     ? `Key themes in this puzzle: ${puzzleThemes.join(', ')}.`
     : '';
 
-  const prompt = isCorrect
+  return isCorrect
     ? `You are Praxis, an expert chess coach. A player just solved a puzzle correctly.
 
 ${explanationStyle}
@@ -68,6 +153,74 @@ Respond in this exact JSON format:
   "concept": "What to look for instead in 2-4 words",
   "tip": "A hint toward the right idea without giving the solution"
 }`;
+}
+
+function buildPrompt(request: ExplanationRequest): string {
+  const sanMove = request.move.trim();
+
+  if (request.classification) {
+    return getPromptForClassification(
+      request.classification,
+      request.moveHistory ?? [],
+      request.fen,
+      sanMove
+    );
+  }
+
+  return getLegacyPuzzlePrompt(
+    request.fen,
+    sanMove,
+    request.isCorrect ?? true,
+    request.playerElo ?? 1200,
+    request.puzzleThemes ?? []
+  );
+}
+
+function getFallbackExplanation(request: ExplanationRequest): ExplanationResponse {
+  switch (request.classification) {
+    case 'book':
+      return {
+        explanation: 'This is a standard opening move that develops the position according to known opening principles.',
+        concept: 'Opening Theory',
+        tip: 'A practical idea to keep in mind as the position develops.',
+      };
+    case 'best':
+    case 'excellent':
+    case 'good':
+      return {
+        explanation: 'This is a strong move that improves your position and supports your overall plan.',
+        concept: 'Strong Move',
+        tip: 'A pattern or concept to remember for future games.',
+      };
+    case 'inaccuracy':
+      return {
+        explanation: 'This move is playable, but a better plan would improve your position more efficiently.',
+        concept: 'Move Order',
+        tip: 'What to look for instead.',
+      };
+    case 'mistake':
+    case 'blunder':
+      return {
+        explanation: 'This move misses an immediate danger and creates a tactical problem in the position.',
+        concept: 'Tactical Oversight',
+        tip: 'The immediate threat you missed or the tactical vulnerability created.',
+      };
+    default:
+      return {
+        explanation: request.isCorrect
+          ? 'This is the strongest continuation in the position.'
+          : 'This move misses the most forcing continuation in the puzzle.',
+        concept: 'Tactics',
+        tip: 'Look for checks, captures, and threats before quieter moves.',
+      };
+  }
+}
+
+export async function getChessMoveExplanation(
+  request: ExplanationRequest
+): Promise<ExplanationResponse> {
+  const prompt = buildPrompt(request);
+  const fallback = getFallbackExplanation(request);
 
   try {
     const completion = await groq.chat.completions.create({
@@ -82,21 +235,13 @@ Respond in this exact JSON format:
     const parsed = JSON.parse(content);
 
     return {
-      explanation: parsed.explanation || (isCorrect
-        ? 'This move creates a decisive advantage.'
-        : 'This move misses a stronger continuation.'),
-      concept: parsed.concept || 'Tactics',
-      tip: parsed.tip,
+      explanation: parsed.explanation || fallback.explanation,
+      concept: parsed.concept || fallback.concept,
+      tip: parsed.tip || fallback.tip,
     };
   } catch (error) {
     console.error('Groq API error:', error);
-    return {
-      explanation: isCorrect
-        ? 'This is the strongest move, creating an immediate threat.'
-        : 'This move misses a stronger continuation. Look for more forcing moves.',
-      concept: isCorrect ? 'Tactics' : 'Look again',
-      tip: 'Always look for checks, captures, and threats first.',
-    };
+    return fallback;
   }
 }
 
@@ -105,12 +250,14 @@ const explanationCache = new Map<string, ExplanationResponse>();
 export async function getCachedExplanation(
   request: ExplanationRequest
 ): Promise<ExplanationResponse> {
-  const eloRange = Math.floor(request.playerElo / 400) * 400;
-  const normalizedThemes = [...request.puzzleThemes].sort().join(',');
+  const playerElo = request.playerElo ?? 1200;
+  const puzzleThemes = request.puzzleThemes ?? [];
+  const eloRange = Math.floor(playerElo / 400) * 400;
+  const normalizedThemes = [...puzzleThemes].sort().join(',');
   const cacheKey = [
     request.fen,
     request.move,
-    request.isCorrect ? 'correct' : 'incorrect',
+    request.classification ?? (request.isCorrect ? 'correct' : 'incorrect'),
     eloRange,
     normalizedThemes,
   ].join('-');
