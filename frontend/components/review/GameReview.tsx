@@ -150,9 +150,12 @@ export default function GameReview({
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          fen: safeGameData[clampedActivePly].fen,
-          move: safeGameData[clampedActivePly].san,
-          isCorrect: false,
+          fen: currentMove.fen,
+          move: currentMove.san,
+          classification: currentMove.classification,
+          moveHistory: safeGameData
+            .slice(0, clampedActivePly + 1)
+            .map((m) => m.san),
         }),
       });
 
