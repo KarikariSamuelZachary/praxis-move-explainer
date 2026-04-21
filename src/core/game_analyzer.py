@@ -144,7 +144,15 @@ class GameAnalyzer:
         """
         game = self._parse_game(pgn_string)
         board = game.board()
-        results: List[Dict[str, Any]] = []
+        results: List[Dict[str, Any]] = [
+            {
+                "fen": chess.STARTING_FEN,
+                "san": "Start",
+                "color": "white",
+                "classification": "book",
+                "cp_loss": 0,
+            }
+        ]
 
         for ply_index, node in enumerate(game.mainline()):
             move = node.move
@@ -172,7 +180,7 @@ class GameAnalyzer:
             )
 
             turn_entry: Dict[str, Any] = {
-                "fen": fen_before,
+                "fen": fen_after,
                 "san": move_san,
                 "color": move_color,
                 "classification": classification,
