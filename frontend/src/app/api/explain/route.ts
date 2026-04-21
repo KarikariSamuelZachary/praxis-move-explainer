@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { getCachedExplanation } from '@/lib/groq';
-import { ExplanationRequest } from '@/types';
+import { ExplanationRequest, MoveClassification } from '@/types';
 
 const MAX_BODY_BYTES = 4 * 1024;
 const MAX_REQUESTS_PER_WINDOW = 30;
@@ -52,9 +52,22 @@ function isValidSanMove(move: string): boolean {
   return /^[KQRBNOa-h0-9x+=#?!:-]+$/.test(trimmed);
 }
 
+function isValidClassification(value: unknown): value is MoveClassification {
+  return value === 'book'
+    || value === 'best'
+    || value === 'excellent'
+    || value === 'good'
+    || value === 'inaccuracy'
+    || value === 'mistake'
+    || value === 'blunder';
+}
+
 function sanitizeRequest(body: Partial<ExplanationRequest>): ExplanationRequest | null {
   const fen = body.fen?.trim();
   const move = body.move?.trim();
+  const classification = isValidClassification(body.classification)
+    ? body.classification
+    : undefined;
 
   if (!fen || !move || !isValidFen(fen) || !isValidSanMove(move)) {
     return null;
@@ -63,7 +76,15 @@ function sanitizeRequest(body: Partial<ExplanationRequest>): ExplanationRequest 
   return {
     fen,
     move,
-    isCorrect: body.isCorrect ?? true,
+    moveHistory: Array.isArray(body.moveHistory)
+      ? body.moveHistory
+          .filter((entry): entry is string => typeof entry === 'string')
+          .map((entry) => entry.trim())
+          .filter(Boolean)
+          .slice(0, 200)
+      : [],
+    classification,
+    isCorrect: typeof body.isCorrect === 'boolean' ? body.isCorrect : undefined,
     playerElo: Math.min(Math.max(body.playerElo ?? 1200, 100), 3200),
     puzzleThemes: Array.isArray(body.puzzleThemes)
       ? body.puzzleThemes
