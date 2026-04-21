@@ -20,6 +20,7 @@ def _load_environment() -> None:
     """Load local env files for direct CLI execution."""
     repo_root = Path(__file__).resolve().parent.parent
     load_dotenv(repo_root / ".env")
+    load_dotenv(repo_root / "src" / ".env")
     load_dotenv(repo_root / "frontend" / ".env.local")
 
 
