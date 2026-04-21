@@ -22,6 +22,7 @@ type StyledChessboardProps = {
 };
 
 const DEFAULT_GAME_DATA: GameReviewMove[] = [
+  { fen: 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR', san: 'Start', color: 'white', classification: 'book', cp_loss: 0 },
   { fen: 'rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1', san: 'e4', color: 'white', classification: 'book', cp_loss: 0 },
   { fen: 'rnbqkbnr/pp1ppppp/8/2p5/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2', san: 'c5', color: 'black', classification: 'book', cp_loss: 0 },
   { fen: 'rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2', san: 'Nf3', color: 'white', classification: 'best', cp_loss: 5 },
@@ -83,8 +84,13 @@ const CLASSIFICATION_STYLES: Record<GameReviewMove['classification'], {
 };
 
 function formatMoveNumber(activePly: number): string {
-  const fullMove = Math.floor(activePly / 2) + 1;
-  const suffix = activePly % 2 === 0 ? 'White' : 'Black';
+  if (activePly === 0) {
+    return 'Start Position';
+  }
+
+  const moveIndex = activePly - 1;
+  const fullMove = Math.floor(moveIndex / 2) + 1;
+  const suffix = moveIndex % 2 === 0 ? 'White' : 'Black';
   return `Move ${fullMove} · ${suffix}`;
 }
 
@@ -185,6 +191,14 @@ export default function GameReview({
           <div className="mb-4 flex flex-col gap-3 sm:flex-row">
             <button
               type="button"
+              onClick={() => setActivePly(0)}
+              disabled={clampedActivePly === 0}
+              className="rounded-2xl border border-zinc-700 bg-zinc-900 px-4 py-3 text-sm font-medium text-zinc-200 transition hover:border-zinc-500 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900/40 disabled:text-zinc-600"
+            >
+              |&lt; Start
+            </button>
+            <button
+              type="button"
               onClick={() => setActivePly((ply) => Math.max(0, ply - 1))}
               disabled={clampedActivePly === 0}
               className="flex-1 rounded-2xl border border-zinc-700 bg-zinc-900 px-4 py-3 text-sm font-medium text-zinc-200 transition hover:border-zinc-500 hover:bg-zinc-800 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900/40 disabled:text-zinc-600"
@@ -205,6 +219,14 @@ export default function GameReview({
               className="flex-1 rounded-2xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm font-medium text-emerald-200 transition hover:border-emerald-400 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900/40 disabled:text-zinc-600"
             >
               Next Move →
+            </button>
+            <button
+              type="button"
+              onClick={() => setActivePly(safeGameData.length - 1)}
+              disabled={clampedActivePly === safeGameData.length - 1}
+              className="rounded-2xl border border-emerald-500/40 bg-emerald-500/10 px-4 py-3 text-sm font-medium text-emerald-200 transition hover:border-emerald-400 hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:border-zinc-800 disabled:bg-zinc-900/40 disabled:text-zinc-600"
+            >
+              End &gt;|
             </button>
           </div>
 
@@ -256,7 +278,9 @@ export default function GameReview({
               <div className="rounded-2xl border border-zinc-800 bg-zinc-900/80 p-4">
                 <p className="text-xs uppercase tracking-[0.2em] text-zinc-500">Position</p>
                 <p className="mt-2 text-sm text-zinc-300">
-                  Board set to the position after <span className="font-medium text-zinc-100">{currentMove.san}</span>.
+                  {currentMove.san === 'Start'
+                    ? 'Board set to the starting position before any moves are played.'
+                    : <>Board set to the position after <span className="font-medium text-zinc-100">{currentMove.san}</span>.</>}
                 </p>
               </div>
             </div>
