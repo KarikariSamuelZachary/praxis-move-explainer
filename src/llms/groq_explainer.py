@@ -1,6 +1,7 @@
 from groq import Groq
 
 from llms.base import LLMExplainer
+from llms.mock_explainer import MockExplainer
 from schemas.models import Mistake, Explanation
 
 
@@ -9,12 +10,17 @@ class GroqExplainer(LLMExplainer):
         self.api_key = api_key
         self.model = model
         self.client = Groq(api_key=api_key)
+        self.fallback_explainer = MockExplainer()
 
     def explain_mistake(self, mistake: Mistake) -> Explanation:
         prompt = self._build_prompt(mistake)
-        response = self._call_groq(prompt)
-        explanation = self._parse_response(response)
-        return explanation
+        try:
+            response = self._call_groq(prompt)
+            explanation = self._parse_response(response)
+            return explanation
+        except Exception:
+            # Keep the review usable when the provider rejects a request.
+            return self.fallback_explainer.explain_mistake(mistake)
 
     def _build_prompt(self, mistake: Mistake) -> str:
         move_num = mistake.position_before_move.move_number
@@ -60,21 +66,13 @@ Be direct and educational. Avoid engine terminology."""
                     "content": prompt,
                 }
             ],
-            temperature=1,
-            max_completion_tokens=8192,
+            temperature=0.3,
+            max_completion_tokens=220,
             top_p=1,
-            reasoning_effort="medium",
-            stream=True,
-            stop=None,
+            reasoning_effort="low",
+            stream=False,
         )
-
-        chunks = []
-        for chunk in completion:
-            delta = chunk.choices[0].delta.content or ""
-            if delta:
-                chunks.append(delta)
-
-        return "".join(chunks)
+        return completion.choices[0].message.content or ""
 
     def _parse_response(self, response: str) -> Explanation:
         sections = {
