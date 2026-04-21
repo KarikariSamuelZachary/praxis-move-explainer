@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 
 import { NextRequest, NextResponse } from 'next/server';
@@ -23,7 +24,9 @@ export async function POST(request: NextRequest) {
 
     const repoRoot = path.resolve(process.cwd(), '..');
     const scriptPath = path.join(repoRoot, 'src', 'run_review.py');
-    const pythonBin = process.env.PYTHON_BIN || 'python3';
+    const defaultVenvPython = path.join(repoRoot, 'venv', 'bin', 'python');
+    const pythonBin = process.env.PYTHON_BIN
+      || (fs.existsSync(defaultVenvPython) ? defaultVenvPython : 'python3');
 
     const result = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve) => {
       const child = spawn(pythonBin, [scriptPath], {
