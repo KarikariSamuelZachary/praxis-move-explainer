@@ -101,7 +101,8 @@ function getLegacyPuzzlePrompt(
   sanMove: string,
   isCorrect: boolean,
   playerElo: number,
-  puzzleThemes: string[]
+  puzzleThemes: string[],
+  moveHistory: string[] = []
 ): string {
   const explanationStyle = getExplanationStyle(playerElo);
   const themesText = puzzleThemes.length > 0
@@ -114,6 +115,7 @@ function getLegacyPuzzlePrompt(
 ${explanationStyle}
 ${themesText}
 
+Move history so far: ${moveHistory.join(' ')}
 Position (FEN): ${fen}
 The correct move was: ${sanMove}
 
@@ -135,6 +137,7 @@ Respond in this exact JSON format:
 ${explanationStyle}
 ${themesText}
 
+Move history so far: ${moveHistory.join(' ')}
 Position (FEN): ${fen}
 The move the player tried: ${sanMove}
 This was NOT the best move.
@@ -172,7 +175,8 @@ function buildPrompt(request: ExplanationRequest): string {
     sanMove,
     request.isCorrect ?? true,
     request.playerElo ?? 1200,
-    request.puzzleThemes ?? []
+    request.puzzleThemes ?? [],
+    request.moveHistory ?? []
   );
 }
 
