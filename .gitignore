@@ -209,4 +209,7 @@ __marimo__/
 src/blunder_game.pgn
 src/test_game.pgn
 
+#agents
+.codex
+
 
