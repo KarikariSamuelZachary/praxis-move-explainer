@@ -142,7 +142,8 @@ export default function ChessBoardComponent({
   const fetchExplanation = useCallback(async (
     fen: string,
     move: string,
-    isCorrect: boolean
+    isCorrect: boolean,
+    moveHistory: string[] = []
   ) => {
     setIsLoadingExplanation(true);
     setExplanation(null);
@@ -157,6 +158,7 @@ export default function ChessBoardComponent({
           isCorrect,
           playerElo,
           puzzleThemes: puzzle.themes,
+          moveHistory,
         }),
       });
 
@@ -297,7 +299,12 @@ export default function ChessBoardComponent({
       setPuzzleState('solved');
       const timeSeconds = Math.floor((Date.now() - startTimeRef.current) / 1000);
       onPuzzleSolved(timeSeconds);
-      fetchExplanation(currentFen, playedMove.san, true);
+      fetchExplanation(
+        nextGame.fen(),
+        playedMove.san,
+        true,
+        gameRef.current.history()
+      );
       return true;
     }
 
@@ -337,6 +344,16 @@ export default function ChessBoardComponent({
       return;
     }
 
+    const currentFen = gameRef.current.fen();
+    const nextGame = new Chess(currentFen);
+    const sanMove = trySanFromUci(currentFen, moveToShow);
+
+    try {
+      applyUciMove(nextGame, moveToShow);
+    } catch {
+      return;
+    }
+
     setPuzzleState('showing_solution');
     setHighlightSquares(
       buildHighlight(
@@ -345,7 +362,7 @@ export default function ChessBoardComponent({
         'rgba(100, 150, 255, 0.6)'
       )
     );
-    fetchExplanation(gameRef.current.fen(), trySanFromUci(gameRef.current.fen(), moveToShow), true);
+    fetchExplanation(nextGame.fen(), sanMove, true, nextGame.history());
   }, [fetchExplanation, puzzle.moves]);
 
   const handleExplainWrongMove = useCallback(() => {
