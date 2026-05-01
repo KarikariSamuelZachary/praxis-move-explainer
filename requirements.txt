@@ -5,3 +5,4 @@ anthropic>=0.18.0
 python-dotenv>=1.0.0
 google-genai>=1.0.0
 groq>=0.18.0 
+psycopg2-binary
