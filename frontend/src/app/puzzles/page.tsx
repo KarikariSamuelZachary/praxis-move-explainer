@@ -1,9 +1,10 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import { Puzzle } from '@/types';
-import { fetchPuzzleBatch, getPuzzleDifficultyLabel, PUZZLE_THEMES } from '@/lib/lichess';
+import { fetchPuzzleBatch, getPuzzleDifficultyLabel } from '@/lib/lichess';
+import { PUZZLE_THEME_GROUPS } from '@/lib/themes';
 
 // Dynamically import chessboard to avoid SSR issues
 const ChessBoard = dynamic(() => import('@/components/board/ChessBoard'), {
@@ -30,8 +31,10 @@ export default function PuzzlesPage() {
   const [selectedTheme, setSelectedTheme] = useState<string>('');
   const [cycle, setCycle] = useState(1);
   const [showStats, setShowStats] = useState(false);
+  const loadIdRef = useRef(0);
 
   const loadPuzzles = useCallback(async (theme?: string) => {
+    const loadId = ++loadIdRef.current;
     setIsLoading(true);
     try {
       const newPuzzles = await fetchPuzzleBatch(
@@ -40,6 +43,7 @@ export default function PuzzlesPage() {
         PLAYER_ELO - 200,
         PLAYER_ELO + 300
       );
+      if (loadId !== loadIdRef.current) return;
       setPuzzles(newPuzzles);
       setCurrentIndex(0);
       setSessionStats({ solved: 0, failed: 0, totalTime: 0 });
@@ -130,32 +134,70 @@ export default function PuzzlesPage() {
 
       <div className="max-w-6xl mx-auto px-4 py-8">
         {/* Theme selector */}
-        <div className="mb-6 flex items-center gap-3 flex-wrap">
-          <span className="text-zinc-400 text-sm font-medium">Focus:</span>
-          <button
-            onClick={() => { setSelectedTheme(''); loadPuzzles(''); }}
-            className={`px-3 py-1 rounded-full text-sm transition-colors ${
-              selectedTheme === ''
-                ? 'bg-emerald-600 text-white'
-                : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'
-            }`}
-          >
-            All Tactics
-          </button>
-          {PUZZLE_THEMES.slice(0, 8).map((theme: string) => (
+        <section className="mb-8 rounded-lg border border-zinc-800 bg-zinc-950/70 shadow-2xl shadow-black/20">
+          <div className="flex flex-col gap-4 border-b border-zinc-800 p-4 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-xs font-semibold uppercase text-emerald-400">
+                Training focus
+              </p>
+              <h2 className="mt-1 text-lg font-semibold text-zinc-100">
+                Choose a tactical theme
+              </h2>
+            </div>
             <button
-              key={theme}
-              onClick={() => { setSelectedTheme(theme); loadPuzzles(theme); }}
-              className={`px-3 py-1 rounded-full text-sm capitalize transition-colors ${
-                selectedTheme === theme
-                  ? 'bg-emerald-600 text-white'
-                  : 'bg-zinc-800 text-zinc-400 hover:bg-zinc-700'
+              onClick={() => { setSelectedTheme(''); loadPuzzles(); }}
+              className={`group rounded-md border px-4 py-3 text-left transition-all sm:min-w-44 ${
+                selectedTheme === ''
+                  ? 'border-emerald-400 bg-emerald-500 text-zinc-950 shadow-lg shadow-emerald-500/20'
+                  : 'border-zinc-700 bg-zinc-900 text-zinc-300 hover:border-emerald-500/70 hover:bg-zinc-800'
               }`}
             >
-              {theme.replace(/([A-Z])/g, ' $1').trim()}
+              <span className="block text-sm font-semibold">All Tactics</span>
+              <span className={`mt-1 block text-xs ${
+                selectedTheme === '' ? 'text-emerald-950/80' : 'text-zinc-500 group-hover:text-zinc-400'
+              }`}>
+                No theme filter
+              </span>
             </button>
-          ))}
-        </div>
+          </div>
+
+          <div className="grid max-h-[28rem] gap-4 overflow-y-auto p-4 md:grid-cols-2 xl:grid-cols-3">
+            {PUZZLE_THEME_GROUPS.map((group) => (
+              <div
+                key={group.name}
+                className="rounded-lg border border-zinc-800 bg-zinc-900/80 p-3"
+              >
+                <div className="mb-3 flex items-center gap-2">
+                  <span className={`h-2.5 w-2.5 rounded-full bg-gradient-to-br ${group.accent}`} />
+                  <h3 className="text-sm font-semibold text-zinc-100">{group.name}</h3>
+                  <span className="ml-auto rounded bg-zinc-800 px-1.5 py-0.5 text-[10px] font-medium text-zinc-500">
+                    {group.themes.length}
+                  </span>
+                </div>
+
+                <div className="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+                  {group.themes.map((theme) => {
+                    const isSelected = selectedTheme === theme.key;
+
+                    return (
+                      <button
+                        key={theme.key}
+                        onClick={() => { setSelectedTheme(theme.key); loadPuzzles(theme.key); }}
+                        className={`rounded-md border px-2.5 py-2 text-left text-xs font-medium transition-all ${
+                          isSelected
+                            ? 'border-emerald-400 bg-emerald-500 text-zinc-950 shadow-md shadow-emerald-500/20'
+                            : 'border-zinc-800 bg-zinc-950/70 text-zinc-300 hover:border-zinc-600 hover:bg-zinc-800 hover:text-white'
+                        }`}
+                      >
+                        {theme.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            ))}
+          </div>
+        </section>
 
         {/* Main content */}
         {isLoading ? (
