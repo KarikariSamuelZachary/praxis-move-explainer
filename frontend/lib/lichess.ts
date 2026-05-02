@@ -29,6 +29,15 @@ interface LichessPuzzleResponse {
   };
 }
 
+interface PuzzleResponse {
+  id: string;
+  fen: string;
+  moves: string[];
+  rating: number;
+  themes: string[];
+  gameUrl?: string;
+}
+
 type NormalizedPuzzlePosition = {
   fen: string;
   previousMove?: string;
@@ -131,19 +140,18 @@ function normalizePuzzlePosition(
 // Fetch a single puzzle from Lichess API by theme and rating
 export async function fetchLichessPuzzle(
   theme?: string,
-  _minRating?: number,
-  _maxRating?: number
+  minRating?: number,
+  maxRating?: number
 ): Promise<Puzzle> {
   try {
-    void _minRating;
-    void _maxRating;
-
-    // Build query params
     const params = new URLSearchParams();
-    if (theme) params.append('themes', theme);
+    if (theme) params.append('theme', theme);
+    if (minRating) params.append('min_rating', minRating.toString());
+    if (maxRating) params.append('max_rating', maxRating.toString());
+    params.append('limit', '1');
 
     const response = await fetch(
-      `https://lichess.org/api/puzzle/next?${params.toString()}`,
+      `http://localhost:8000/api/puzzles?${params.toString()}`,
       {
         headers: {
           Accept: 'application/json',
@@ -152,29 +160,25 @@ export async function fetchLichessPuzzle(
     );
 
     if (!response.ok) {
-      throw new Error(`Lichess API error: ${response.status}`);
+      throw new Error(`Praxis API error: ${response.status}`);
     }
 
-    const data: LichessPuzzleResponse = await response.json();
-
-    const normalizedPosition = normalizePuzzlePosition(
-      data.game.pgn,
-      data.puzzle.initialPly,
-      data.puzzle.solution
-    );
+    const data = await response.json();
+    if (!Array.isArray(data) || data.length === 0) {
+      throw new Error('No puzzles returned from Praxis API');
+    }
+    const puzzle = data[0];
 
     return {
-      id: data.puzzle.id,
-      fen: normalizedPosition.fen,
-      moves: data.puzzle.solution,
-      rating: data.puzzle.rating,
-      themes: data.puzzle.themes,
-      gameUrl: `https://lichess.org/training/${data.puzzle.id}`,
-      previousMove: normalizedPosition.previousMove,
+      id: puzzle.id,
+      fen: puzzle.fen,
+      moves: puzzle.moves,
+      rating: puzzle.rating,
+      themes: puzzle.themes,
+      gameUrl: puzzle.gameUrl,
     };
   } catch (error) {
-    console.error('Failed to fetch Lichess puzzle:', error);
-    // Return a fallback puzzle if API fails
+    console.error('Failed to fetch puzzle from Praxis API:', error);
     return getFallbackPuzzle();
   }
 }
@@ -186,15 +190,64 @@ export async function fetchPuzzleBatch(
   minRating: number = 1000,
   maxRating: number = 2000
 ): Promise<Puzzle[]> {
-  const puzzlePromises = Array.from({ length: count }, () =>
-    fetchLichessPuzzle(theme, minRating, maxRating)
-  );
+  try {
+    const params = new URLSearchParams();
+    if (theme) params.append('theme', theme);
+    if (minRating) params.append('min_rating', minRating.toString());
+    if (maxRating) params.append('max_rating', maxRating.toString());
+    params.append('limit', count.toString());
 
-  const puzzles = await Promise.allSettled(puzzlePromises);
+    const response = await fetch(
+      `http://localhost:8000/api/puzzles?${params.toString()}`,
+      { headers: { Accept: 'application/json' } }
+    );
 
-  return puzzles
-    .filter((p): p is PromiseFulfilledResult<Puzzle> => p.status === 'fulfilled')
-    .map((p) => p.value);
+    if (!response.ok) {
+      throw new Error(`Praxis API error: ${response.status}`);
+    }
+
+    const data = await response.json();
+    if (!Array.isArray(data) || data.length === 0) {
+      throw new Error('No puzzles returned from Praxis API');
+    }
+
+    return data.map((puzzle: PuzzleResponse) => {
+      let normalizedFen = puzzle.fen;
+      let solutionMoves = puzzle.moves;
+      let previousMove: string | undefined;
+      const setupMove = puzzle.moves[0];
+
+      if (setupMove) {
+        try {
+          const chess = new Chess(puzzle.fen);
+          chess.move({
+            from: setupMove.slice(0, 2),
+            to: setupMove.slice(2, 4),
+            promotion: setupMove[4] || undefined,
+          });
+          normalizedFen = chess.fen();
+          solutionMoves = puzzle.moves.slice(1);
+          previousMove = setupMove;
+        } catch {
+          normalizedFen = puzzle.fen;
+          solutionMoves = puzzle.moves;
+        }
+      }
+
+      return {
+        id: puzzle.id,
+        fen: normalizedFen,
+        moves: solutionMoves,
+        rating: puzzle.rating,
+        themes: puzzle.themes,
+        gameUrl: puzzle.gameUrl,
+        previousMove,
+      };
+    });
+  } catch (error) {
+    console.error('Failed to fetch puzzle batch from Praxis API:', error);
+    return Array.from({ length: count }, () => getFallbackPuzzle());
+  }
 }
 
 // Fallback puzzles when API is unavailable - classic tactical positions
