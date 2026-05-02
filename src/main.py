@@ -2,6 +2,7 @@ import time
 import logging
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from core.database import init_db
 from routers import puzzles
 
 # --- Logging ---
@@ -31,6 +32,11 @@ async def log_requests(request: Request, call_next):
     duration = (time.time() - start) * 1000
     log.info("%s %s %.2fms", request.method, request.url.path, duration)
     return response
+
+
+@app.on_event("startup")
+def startup():
+    init_db()
 
 # --- Routers ---
 app.include_router(puzzles.router, prefix="/api")
