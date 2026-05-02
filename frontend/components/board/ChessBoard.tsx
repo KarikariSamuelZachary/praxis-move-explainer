@@ -117,6 +117,24 @@ export default function ChessBoardComponent({
     }
   }, []);
 
+  const resetPuzzle = useCallback(() => {
+    if (!puzzle) return;
+
+    const freshGame = buildInitialGame(puzzle);
+    gameRef.current = freshGame;
+    setGame(freshGame);
+    currentMoveIndexRef.current = 0;
+    setPuzzleState('playing');
+    setLastWrongMove(null);
+    setLastWrongFen(null);
+    setExplanation(null);
+    setIsLoadingExplanation(false);
+    setMoveToPromote(null);
+    clearOpponentMoveTimeout();
+    clearWrongFlashTimeout();
+    setHighlightSquares(buildInitialHighlight(puzzle));
+  }, [clearOpponentMoveTimeout, clearWrongFlashTimeout, puzzle]);
+
   useEffect(() => {
     const nextGame = buildInitialGame(puzzle);
 
@@ -446,6 +464,14 @@ export default function ChessBoardComponent({
               Show Solution
             </button>
           )}
+          {puzzleState === 'solved' && (
+            <button
+              onClick={resetPuzzle}
+              className="flex-1 py-2 px-4 rounded-lg bg-zinc-700 hover:bg-zinc-600 text-white text-sm font-medium transition-colors"
+            >
+              ↺ Play Again
+            </button>
+          )}
           {(puzzleState === 'solved' || puzzleState === 'showing_solution') && (
             <button
               onClick={onNextPuzzle}
@@ -495,13 +521,21 @@ export default function ChessBoardComponent({
           </p>
 
           {puzzleState === 'wrong_move' && lastWrongMove && (
-            <button
-              onClick={handleExplainWrongMove}
-              disabled={isLoadingExplanation}
-              className="mt-3 w-full py-2 px-4 rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 text-white text-sm font-medium transition-colors"
-            >
-              {isLoadingExplanation ? 'Thinking...' : 'Why was that wrong?'}
-            </button>
+            <div className="mt-3 flex gap-2">
+              <button
+                onClick={resetPuzzle}
+                className="flex-1 py-2 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium transition-colors"
+              >
+                Try Again
+              </button>
+              <button
+                onClick={handleExplainWrongMove}
+                disabled={isLoadingExplanation}
+                className="flex-1 py-2 px-4 rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 text-white text-sm font-medium transition-colors"
+              >
+                {isLoadingExplanation ? 'Thinking...' : 'Why was that wrong?'}
+              </button>
+            </div>
           )}
         </div>
 
