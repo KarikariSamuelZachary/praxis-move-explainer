@@ -2,7 +2,7 @@ import os
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Load from repo root .env
+# Load from src/.env
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 DB_NAME     = os.getenv("DB_NAME", "praxis")
