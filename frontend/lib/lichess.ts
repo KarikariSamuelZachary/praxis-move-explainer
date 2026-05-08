@@ -151,7 +151,7 @@ export async function fetchLichessPuzzle(
     params.append('limit', '1');
 
     const response = await fetch(
-      `http://localhost:8000/api/puzzles?${params.toString()}`,
+      `/api/puzzles?${params.toString()}`,
       {
         headers: {
           Accept: 'application/json',
@@ -198,7 +198,7 @@ export async function fetchPuzzleBatch(
     params.append('limit', count.toString());
 
     const response = await fetch(
-      `http://localhost:8000/api/puzzles?${params.toString()}`,
+      `/api/puzzles?${params.toString()}`,
       { headers: { Accept: 'application/json' } }
     );
 
