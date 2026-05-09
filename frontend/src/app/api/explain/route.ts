@@ -1,11 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { redis } from '@/lib/redis';
 import { getCachedExplanation } from '@/lib/groq';
 import { ExplanationRequest, MoveClassification } from '@/types';
 
 const MAX_BODY_BYTES = 4 * 1024;
-const MAX_REQUESTS_PER_WINDOW = 30;
-const RATE_LIMIT_WINDOW_MS = 60_000;
-const rateLimitStore = new Map<string, { count: number; resetAt: number }>();
+const MAX_REQUESTS_PER_WINDOW = 10;
+const RATE_LIMIT_WINDOW_SECONDS = 60;
 
 function getClientIp(request: NextRequest): string {
   const forwardedFor = request.headers.get('x-forwarded-for');
@@ -13,27 +13,18 @@ function getClientIp(request: NextRequest): string {
     return forwardedFor.split(',')[0].trim();
   }
 
-  return request.headers.get('x-real-ip') ?? 'unknown';
+  return 'unknown';
 }
 
-function isRateLimited(ip: string): boolean {
-  const now = Date.now();
-  const entry = rateLimitStore.get(ip);
+async function isRateLimited(ip: string): Promise<boolean> {
+  const key = `rate_limit:explanation:${ip}`;
+  const count = await redis.incr(key);
 
-  if (!entry || entry.resetAt <= now) {
-    rateLimitStore.set(ip, {
-      count: 1,
-      resetAt: now + RATE_LIMIT_WINDOW_MS,
-    });
-    return false;
+  if (count === 1) {
+    await redis.expire(key, RATE_LIMIT_WINDOW_SECONDS);
   }
 
-  if (entry.count >= MAX_REQUESTS_PER_WINDOW) {
-    return true;
-  }
-
-  entry.count += 1;
-  return false;
+  return count > MAX_REQUESTS_PER_WINDOW;
 }
 
 function isValidFen(fen: string): boolean {
@@ -105,8 +96,11 @@ export async function POST(request: NextRequest) {
     }
 
     const ip = getClientIp(request);
-    if (isRateLimited(ip)) {
-      return NextResponse.json({ error: 'Too many requests' }, { status: 429 });
+    if (await isRateLimited(ip)) {
+      return NextResponse.json(
+        { detail: 'Too many requests. Please wait before requesting another explanation.' },
+        { status: 429 }
+      );
     }
 
     const body = (await request.json()) as Partial<ExplanationRequest>;
