@@ -213,5 +213,5 @@ src/test_game.pgn
 .codex
 
 #large data files
-data/raw/lichess_db_puzzle.csv.zst
+ data/raw/lichess_db_puzzle.csv.zst
 
