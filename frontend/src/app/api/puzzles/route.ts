@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 
 export async function GET(request: NextRequest) {
   const backendApiUrl = process.env.BACKEND_API_URL ?? 'http://localhost:8000';
+  const internalSecret = process.env.INTERNAL_SECRET ?? '';
   const backendUrl = new URL('/api/puzzles', backendApiUrl);
   backendUrl.search = request.nextUrl.search;
 
@@ -9,6 +10,7 @@ export async function GET(request: NextRequest) {
     const response = await fetch(backendUrl, {
       headers: {
         Accept: request.headers.get('accept') ?? 'application/json',
+        'X-Internal-Secret': internalSecret,
       },
     });
 
