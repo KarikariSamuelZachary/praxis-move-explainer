@@ -23,7 +23,7 @@ Most chess platforms:
 Praxis acts like a **human chess coach**:
 1. Reviews your games
 2. Identifies critical mistakes
-3. Explains each mistake in natural language using an LLM
+3. Explains each mistake in natural language using a finetuned LLM
 4. Reinforces learning through repetition using the **Woodpecker Method**
 
 This makes Praxis a **training system** and not just a game analyzer.
@@ -33,7 +33,7 @@ This makes Praxis a **training system** and not just a game analyzer.
 ## Core Learning Loop (MVP)
 
 1. User uploads a completed chess game (PGN)
-2. The system identifies **up to 3 critical mistakes**
+2. The system identifies **critical mistakes and inaccuracies**
 3. Each mistake is explained in plain English:
    - What the player was trying to do
    - Why it failed
