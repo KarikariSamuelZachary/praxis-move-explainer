@@ -1,3 +1,4 @@
+import random
 from fastapi import APIRouter, Depends, HTTPException, Query
 from psycopg2.extras import RealDictCursor
 from typing import List, Optional
@@ -29,23 +30,35 @@ def get_puzzles(
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             """
+            SELECT COUNT(*) AS total
+            FROM puzzles
+            WHERE (%s::text IS NULL OR themes @> ARRAY[%s]::text[])
+            AND rating BETWEEN %s AND %s
+            """,
+            (theme or None, theme, min_rating, max_rating),
+        )
+        total = cur.fetchone()["total"]
+
+        if total == 0:
+            theme_detail = f" for theme '{theme}'" if theme else ""
+            raise HTTPException(
+                status_code=404,
+                detail=f"No puzzles found{theme_detail} in rating range {min_rating}-{max_rating}"
+            )
+
+        offset = random.randint(0, max(total - limit, 0))
+        cur.execute(
+            """
             SELECT id, fen, moves, rating, themes, game_url
             FROM puzzles
-            WHERE (%s::text IS NULL OR %s = ANY(themes))
+            WHERE (%s::text IS NULL OR themes @> ARRAY[%s]::text[])
             AND rating BETWEEN %s AND %s
-            ORDER BY RANDOM()
+            OFFSET %s
             LIMIT %s
             """,
-            (theme or None, theme, min_rating, max_rating, limit),
+            (theme or None, theme, min_rating, max_rating, offset, limit),
         )
         rows = cur.fetchall()
-
-    if not rows:
-        theme_detail = f" for theme '{theme}'" if theme else ""
-        raise HTTPException(
-            status_code=404,
-            detail=f"No puzzles found{theme_detail} in rating range {min_rating}-{max_rating}"
-        )
 
     return [
         PuzzleResponse(

@@ -58,6 +58,11 @@ function buildInitialGame(puzzle: Puzzle): Chess {
   return new Chess(puzzle.fen || START_FEN);
 }
 
+function getPuzzleOrientation(puzzle: Puzzle): 'white' | 'black' {
+  const turn = (puzzle.fen || START_FEN).split(/\s+/)[1];
+  return turn === 'b' ? 'black' : 'white';
+}
+
 function buildInitialHighlight(puzzle: Puzzle): HighlightSquares {
   if (!puzzle.previousMove || puzzle.previousMove.length < 4) {
     return {};
@@ -95,7 +100,7 @@ export default function ChessBoardComponent({
   const opponentMoveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wrongFlashTimeoutRef = useRef<number | null>(null);
 
-  const boardOrientation = game.turn() === 'w' ? 'white' : 'black';
+  const boardOrientation = getPuzzleOrientation(puzzle);
 
   const setBoardState = useCallback((nextGame: Chess, nextMoveIndex: number) => {
     gameRef.current = nextGame;

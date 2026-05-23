@@ -2,11 +2,17 @@ import hmac
 import logging
 import os
 import time
+from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from dotenv import load_dotenv
 from core.database import init_db
 from routers import puzzles
+
+ROOT_DIR = Path(__file__).resolve().parents[1]
+load_dotenv(ROOT_DIR / ".env")
+load_dotenv(ROOT_DIR / "src" / ".env")
 
 # --- Logging ---
 logging.basicConfig(
