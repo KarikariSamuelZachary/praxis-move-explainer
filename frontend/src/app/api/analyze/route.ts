@@ -1,13 +1,8 @@
-import { spawn } from 'node:child_process';
-import fs from 'node:fs';
-import path from 'node:path';
-
 import { NextRequest, NextResponse } from 'next/server';
-
-export const runtime = 'nodejs';
 
 type AnalyzeRequest = {
   pgn?: string;
+  target_color?: 'white' | 'black' | 'both';
 };
 
 export async function POST(request: NextRequest) {
@@ -22,50 +17,42 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const repoRoot = path.resolve(process.cwd(), '..');
-    const scriptPath = path.join(repoRoot, 'src', 'run_review.py');
-    const defaultVenvPython = path.join(repoRoot, 'venv', 'bin', 'python');
-    const pythonBin = process.env.PYTHON_BIN
-      || (fs.existsSync(defaultVenvPython) ? defaultVenvPython : 'python3');
+    const backendApiUrl = process.env.BACKEND_API_URL ?? 'http://localhost:8000';
+    const internalSecret = process.env.INTERNAL_SECRET ?? '';
+    const backendUrl = new URL('/api/review', backendApiUrl);
 
-    const result = await new Promise<{ stdout: string; stderr: string; code: number | null }>((resolve) => {
-      const child = spawn(pythonBin, [scriptPath], {
-        cwd: repoRoot,
-        env: process.env,
-      });
-
-      let stdout = '';
-      let stderr = '';
-
-      child.stdout.on('data', (chunk: Buffer | string) => {
-        stdout += chunk.toString();
-      });
-
-      child.stderr.on('data', (chunk: Buffer | string) => {
-        stderr += chunk.toString();
-      });
-
-      child.on('close', (code) => {
-        resolve({ stdout, stderr, code });
-      });
-
-      child.stdin.write(pgn);
-      child.stdin.end();
+    const response = await fetch(backendUrl, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/json',
+        'X-Internal-Secret': internalSecret,
+      },
+      body: JSON.stringify({
+        pgn,
+        target_color: body.target_color ?? 'both',
+      }),
     });
 
-    if (result.code !== 0 || result.stderr.trim()) {
-      console.error('Python review runner failed:', {
-        code: result.code,
-        stderr: result.stderr,
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.error('FastAPI review endpoint failed:', {
+        status: response.status,
+        body: errorText,
       });
       return NextResponse.json(
         { error: 'Failed to analyze PGN' },
-        { status: 500 }
+        { status: response.status }
       );
     }
 
-    const parsed = JSON.parse(result.stdout);
-    return NextResponse.json(parsed, { status: 200 });
+    return new NextResponse(response.body, {
+      status: response.status,
+      statusText: response.statusText,
+      headers: {
+        'content-type': response.headers.get('content-type') ?? 'application/json',
+      },
+    });
   } catch (error) {
     console.error('Analyze API route error:', error);
     return NextResponse.json(
