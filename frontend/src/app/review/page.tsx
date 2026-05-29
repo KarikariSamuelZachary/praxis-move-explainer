@@ -6,6 +6,10 @@ import GameReview from '@/components/review/GameReview';
 import { GameReviewMove } from '@/types';
 
 type ReviewMode = 'input' | 'loading' | 'review';
+type AnalyzeErrorResponse = {
+  detail?: string;
+  error?: string;
+};
 
 export default function ReviewPage() {
   const [mode, setMode] = useState<ReviewMode>('input');
@@ -33,7 +37,15 @@ export default function ReviewPage() {
       });
 
       if (!response.ok) {
-        throw new Error(`Analyze API returned ${response.status}`);
+        let detail = `Analyze API returned ${response.status}`;
+        try {
+          const errorBody = await response.json() as AnalyzeErrorResponse;
+          detail = errorBody.detail ?? errorBody.error ?? detail;
+        } catch {
+          // Keep the status-based message when the response is not JSON.
+        }
+
+        throw new Error(detail);
       }
 
       const data = await response.json() as GameReviewMove[];
@@ -45,7 +57,8 @@ export default function ReviewPage() {
       setMode('review');
     } catch (error) {
       console.error('Failed to analyze PGN:', error);
-      setErrorMessage('Failed to analyze PGN. Please check the format and try again.');
+      const detail = error instanceof Error ? error.message : 'Please check the format and try again.';
+      setErrorMessage(`Failed to analyze PGN. ${detail}`);
       setMode('input');
     }
   }
