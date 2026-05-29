@@ -5,6 +5,11 @@ type AnalyzeRequest = {
   target_color?: 'white' | 'black' | 'both';
 };
 
+type AnalyzeErrorResponse = {
+  detail?: string;
+  error?: string;
+};
+
 export async function POST(request: NextRequest) {
   try {
     const body = (await request.json()) as AnalyzeRequest;
@@ -36,12 +41,20 @@ export async function POST(request: NextRequest) {
 
     if (!response.ok) {
       const errorText = await response.text();
+      let errorDetail = errorText;
+      try {
+        const parsedError = JSON.parse(errorText) as AnalyzeErrorResponse;
+        errorDetail = parsedError.detail ?? parsedError.error ?? errorText;
+      } catch {
+        // Keep the raw body for non-JSON backend errors.
+      }
+
       console.error('FastAPI review endpoint failed:', {
         status: response.status,
         body: errorText,
       });
       return NextResponse.json(
-        { error: 'Failed to analyze PGN' },
+        { error: 'Failed to analyze PGN', detail: errorDetail },
         { status: response.status }
       );
     }
@@ -56,7 +69,10 @@ export async function POST(request: NextRequest) {
   } catch (error) {
     console.error('Analyze API route error:', error);
     return NextResponse.json(
-      { error: 'Failed to analyze PGN' },
+      {
+        error: 'Failed to analyze PGN',
+        detail: error instanceof Error ? error.message : 'Unexpected analyze API error',
+      },
       { status: 500 }
     );
   }
