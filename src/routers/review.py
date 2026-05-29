@@ -1,3 +1,4 @@
+import logging
 import os
 from typing import Any, Dict, List
 
@@ -12,6 +13,7 @@ from llms.openai_explainer import OpenAIExplainer
 from schemas.review_schemas import ReviewMoveResponse, ReviewRequest
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 
 def _build_explainer():
@@ -83,6 +85,7 @@ def review_game(request: ReviewRequest):
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
+        log.exception("Failed to analyze PGN")
         raise HTTPException(status_code=500, detail="Failed to analyze PGN") from exc
     finally:
         engine.close()
