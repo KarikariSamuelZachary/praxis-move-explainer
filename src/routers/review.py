@@ -1,6 +1,5 @@
 import logging
 import os
-import shutil
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, HTTPException
@@ -15,29 +14,6 @@ from schemas.review_schemas import ReviewMoveResponse, ReviewRequest
 
 router = APIRouter()
 log = logging.getLogger(__name__)
-
-
-def _stockfish_path() -> str:
-    configured_path = os.getenv("STOCKFISH_PATH")
-    if configured_path:
-        return configured_path
-
-    discovered_path = shutil.which("stockfish")
-    if discovered_path:
-        return discovered_path
-
-    for candidate in (
-        "/workspace/.apt/usr/games/stockfish",
-        "/workspace/.apt/usr/bin/stockfish",
-        "/app/.apt/usr/games/stockfish",
-        "/app/.apt/usr/bin/stockfish",
-        "/usr/games/stockfish",
-        "/usr/bin/stockfish",
-    ):
-        if os.path.exists(candidate):
-            return candidate
-
-    return "stockfish"
 
 
 def _build_explainer():
@@ -97,7 +73,6 @@ def review_game(request: ReviewRequest):
         raise HTTPException(status_code=400, detail="Missing PGN")
 
     engine = StockfishEngine(
-        stockfish_path=_stockfish_path(),
         depth=int(os.getenv("REVIEW_DEPTH", "18")),
     )
 
