@@ -4,15 +4,45 @@ Detects blunders and evaluates positions.
 """
 import chess
 import chess.engine
+import logging
+import os
+import shutil
 from typing import Optional
 from schemas.models import Evaluation
+
+log = logging.getLogger(__name__)
+
+STOCKFISH_CANDIDATE_PATHS = (
+    "/workspace/.apt/usr/games/stockfish",
+    "/usr/games/stockfish",
+    "/usr/bin/stockfish",
+)
+
+
+def resolve_stockfish_path(stockfish_path: Optional[str] = None) -> str:
+    configured_path = stockfish_path or os.getenv("STOCKFISH_PATH")
+    if configured_path and os.path.exists(configured_path):
+        return configured_path
+
+    if configured_path:
+        log.warning("Configured Stockfish path does not exist: %s", configured_path)
+
+    for candidate in STOCKFISH_CANDIDATE_PATHS:
+        if os.path.exists(candidate):
+            return candidate
+
+    discovered_path = shutil.which("stockfish")
+    if discovered_path:
+        return discovered_path
+
+    return "stockfish"
 
 
 class StockfishEngine:
     FAST_ANALYSIS_TIME = 0.1
 
     def __init__(self, stockfish_path: Optional[str] = None, depth: int = 12):
-        self.stockfish_path = stockfish_path or "stockfish"
+        self.stockfish_path = resolve_stockfish_path(stockfish_path)
         self.depth = depth
         self.engine: Optional[chess.engine.SimpleEngine] = None
 
