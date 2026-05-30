@@ -27,6 +27,8 @@ def _stockfish_path() -> str:
         return discovered_path
 
     for candidate in (
+        "/workspace/.apt/usr/games/stockfish",
+        "/workspace/.apt/usr/bin/stockfish",
         "/app/.apt/usr/games/stockfish",
         "/app/.apt/usr/bin/stockfish",
         "/usr/games/stockfish",
