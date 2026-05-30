@@ -1,6 +1,7 @@
 import hmac
 import logging
 import os
+import shutil
 import time
 from pathlib import Path
 from fastapi import FastAPI, Request
@@ -8,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from core.database import init_db
+from engines.stockfish_engine import STOCKFISH_CANDIDATE_PATHS
 from routers import puzzles, review
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -20,6 +22,17 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 log = logging.getLogger(__name__)
+
+
+def get_stockfish_debug_info():
+    return {
+        "shutil_which": shutil.which("stockfish"),
+        "common_paths": {
+            path: os.path.exists(path)
+            for path in STOCKFISH_CANDIDATE_PATHS
+        },
+        "stockfish_path_env": os.environ.get("STOCKFISH_PATH"),
+    }
 
 # --- App ---
 app = FastAPI(title="Praxis API")
@@ -61,6 +74,11 @@ async def log_requests(request: Request, call_next):
 
 @app.on_event("startup")
 def startup():
+    stockfish_debug_info = get_stockfish_debug_info()
+    log.info("Stockfish executable from PATH: %s", stockfish_debug_info["shutil_which"])
+    for path, exists in stockfish_debug_info["common_paths"].items():
+        log.info("Stockfish candidate exists: %s=%s", path, exists)
+
     init_db()
 
 # --- Routers ---
@@ -71,3 +89,8 @@ app.include_router(review.router, prefix="/api")
 @app.get("/praxis")
 def praxis():
     return {"status": "ok"}
+
+
+@app.get("/debug/stockfish")
+def debug_stockfish():
+    return get_stockfish_debug_info()
