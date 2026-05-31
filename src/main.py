@@ -2,6 +2,7 @@ import glob
 import hmac
 import logging
 import os
+import platform
 import shutil
 import time
 from pathlib import Path
@@ -77,6 +78,7 @@ async def log_requests(request: Request, call_next):
 
 @app.on_event("startup")
 def startup():
+    log.info("Platform: %s", platform.machine())
     stockfish_debug_info = get_stockfish_debug_info()
     log.info("Stockfish executable from PATH: %s", stockfish_debug_info["shutil_which"])
     log.info("Stockfish found at: %s", stockfish_debug_info["workspace_matches"])
