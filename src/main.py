@@ -1,3 +1,4 @@
+import glob
 import hmac
 import logging
 import os
@@ -25,12 +26,14 @@ log = logging.getLogger(__name__)
 
 
 def get_stockfish_debug_info():
+    workspace_matches = glob.glob("/workspace/**/stockfish", recursive=True)
     return {
         "shutil_which": shutil.which("stockfish"),
         "common_paths": {
             path: os.path.exists(path)
             for path in STOCKFISH_CANDIDATE_PATHS
         },
+        "workspace_matches": workspace_matches,
         "stockfish_path_env": os.environ.get("STOCKFISH_PATH"),
     }
 
@@ -76,6 +79,7 @@ async def log_requests(request: Request, call_next):
 def startup():
     stockfish_debug_info = get_stockfish_debug_info()
     log.info("Stockfish executable from PATH: %s", stockfish_debug_info["shutil_which"])
+    log.info("Stockfish found at: %s", stockfish_debug_info["workspace_matches"])
     for path, exists in stockfish_debug_info["common_paths"].items():
         log.info("Stockfish candidate exists: %s=%s", path, exists)
 
