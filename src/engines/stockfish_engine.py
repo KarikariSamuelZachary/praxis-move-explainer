@@ -4,6 +4,7 @@ Detects blunders and evaluates positions.
 """
 import chess
 import chess.engine
+import glob
 import logging
 import os
 import shutil
@@ -34,6 +35,10 @@ def resolve_stockfish_path(stockfish_path: Optional[str] = None) -> str:
     discovered_path = shutil.which("stockfish")
     if discovered_path:
         return discovered_path
+
+    workspace_matches = glob.glob("/workspace/**/stockfish", recursive=True)
+    if workspace_matches:
+        return workspace_matches[0]
 
     return "stockfish"
 
