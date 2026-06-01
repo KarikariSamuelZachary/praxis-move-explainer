@@ -11,8 +11,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from core.database import init_db
+from core.migrations import run_migrations
 from engines.stockfish_engine import STOCKFISH_CANDIDATE_PATHS
-from routers import puzzles, review
+from routers import puzzles, review, webhooks
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT_DIR / ".env")
@@ -53,6 +54,9 @@ app.add_middleware(
 # --- Internal API Protection ---
 @app.middleware("http")
 async def require_internal_secret(request: Request, call_next):
+    if request.url.path == "/webhooks/clerk":
+        return await call_next(request)
+
     expected_secret = os.environ.get("INTERNAL_SECRET")
     provided_secret = request.headers.get("X-Internal-Secret")
 
@@ -86,10 +90,12 @@ def startup():
         log.info("Stockfish candidate exists: %s=%s", path, exists)
 
     init_db()
+    run_migrations()
 
 # --- Routers ---
 app.include_router(puzzles.router, prefix="/api")
 app.include_router(review.router, prefix="/api")
+app.include_router(webhooks.router, prefix="/webhooks")
 
 # --- App Running? ---
 @app.get("/praxis")
