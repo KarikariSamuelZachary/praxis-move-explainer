@@ -10,4 +10,4 @@ zstandard>=0.25.0
 fastapi>=0.136.1
 uvicorn>=0.46.0
 pydantic>=0.4.2
-
+svix>=1.75.0
