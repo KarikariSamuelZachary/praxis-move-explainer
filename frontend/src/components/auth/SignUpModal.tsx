@@ -94,6 +94,7 @@ export default function SignUpModal({ onClose, onSwitchToSignIn }: SignUpModalPr
   }
 
   async function finishSignup(sessionId: string) {
+    if (!setActive) return;
     await setActive({ session: sessionId });
     router.push('/puzzles');
     router.refresh();
