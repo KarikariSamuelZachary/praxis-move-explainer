@@ -78,7 +78,9 @@ def review_game(request: ReviewRequest):
 
     try:
         engine.start()
-        analyzer = GameAnalyzer(engine=engine, explainer=_build_explainer())
+        explainer = _build_explainer()
+        log.info("Selected review explainer: %s", explainer.__class__.__name__)
+        analyzer = GameAnalyzer(engine=engine, explainer=explainer)
         review_rows = analyzer.analyze_full_game(pgn, target_color=request.target_color)
         return _normalize_review_rows(review_rows)
     except ValueError as exc:
