@@ -1,8 +1,12 @@
+import logging
+
 from groq import Groq
 
 from llms.base import LLMExplainer
 from llms.mock_explainer import MockExplainer
 from schemas.models import Mistake, Explanation
+
+log = logging.getLogger(__name__)
 
 
 class GroqExplainer(LLMExplainer):
@@ -14,32 +18,40 @@ class GroqExplainer(LLMExplainer):
 
     def explain_mistake(self, mistake: Mistake) -> Explanation:
         prompt = self._build_prompt(mistake)
+        log.info("Groq prompt: %s", prompt)
         try:
             response = self._call_groq(prompt)
             explanation = self._parse_response(response)
             return explanation
-        except Exception:
+        except Exception as e:
             # Keep the review usable when the provider rejects a request.
+            log.error("GroqExplainer failed, falling back to mock: %s", e)
             return self.fallback_explainer.explain_mistake(mistake)
 
     def _build_prompt(self, mistake: Mistake) -> str:
         move_num = mistake.position_before_move.move_number
         color = mistake.position_before_move.player_color
+        fen_before = mistake.position_before_move.fen
         move_played = mistake.move_played
         best_move = mistake.evaluation_before.best_move_san
         eval_before = mistake.evaluation_before.score_cp / 100
         eval_after = mistake.evaluation_after.score_cp / 100
         eval_drop = mistake.eval_drop_cp / 100
+        classification = "blunder" if mistake.eval_drop_cp > 300 else "mistake"
 
         prompt = f"""You are a chess coach explaining a mistake to a student.
 
 Move {move_num} ({color} to move)
-Move played: {move_played}
-Best move: {best_move}
+Position before the move (FEN): {fen_before}
+Classification: {classification}
+Played move (SAN): {move_played}
+Best move (SAN): {best_move}
 Evaluation: {eval_before:.1f} -> {eval_after:.1f} pawns
-Drop: {eval_drop:.1f} pawns
+Eval drop: {eval_drop:.1f} pawns
 
-Explain this mistake concisely using this exact structure:
+Give a specific 2-3 sentence explanation of why the played move is bad in this exact board position and what the best move achieves. Use concrete chess details from the FEN, played move, and best move.
+
+Respond using this exact structure:
 
 WHY IT LOOKED GOOD:
 [One sentence about what the player was trying to accomplish]
