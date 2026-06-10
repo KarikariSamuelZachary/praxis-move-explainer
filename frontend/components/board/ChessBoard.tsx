@@ -1,7 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
-import { Chess, Move } from 'chess.js';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Chess, Move, Square } from 'chess.js';
 import { Chessboard } from 'react-chessboard';
 
 import { ExplanationResponse, Puzzle } from '@/types';
@@ -92,6 +92,7 @@ export default function ChessBoardComponent({
   const [lastWrongMove, setLastWrongMove] = useState<string | null>(null);
   const [lastWrongFen, setLastWrongFen] = useState<string | null>(null);
   const [moveToPromote, setMoveToPromote] = useState<PendingPromotionMove | null>(null);
+  const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
 
   const startTimeRef = useRef<number>(Date.now());
   const gameRef = useRef<Chess>(initialGame);
@@ -135,6 +136,7 @@ export default function ChessBoardComponent({
     setExplanation(null);
     setIsLoadingExplanation(false);
     setMoveToPromote(null);
+    setSelectedSquare(null);
     clearOpponentMoveTimeout();
     clearWrongFlashTimeout();
     setHighlightSquares(buildInitialHighlight(puzzle));
@@ -155,6 +157,7 @@ export default function ChessBoardComponent({
     setLastWrongMove(null);
     setLastWrongFen(null);
     setMoveToPromote(null);
+    setSelectedSquare(null);
 
     return () => {
       clearOpponentMoveTimeout();
@@ -337,7 +340,16 @@ export default function ChessBoardComponent({
   }, [clearWrongFlashTimeout, fetchExplanation, onPuzzleFailed, onPuzzleSolved, puzzle, scheduleOpponentMove, setBoardState]);
 
   const onDrop = useCallback((sourceSquare: string, targetSquare: string, pieceType: string) => {
+    setSelectedSquare(null);
+
     if (puzzleState === 'waiting_for_opponent' || puzzleState === 'solved' || puzzleState === 'showing_solution') {
+      return false;
+    }
+
+    const legalMove = gameRef.current
+      .moves({ square: sourceSquare as Square, verbose: true })
+      .some((move) => move.to === targetSquare);
+    if (!legalMove) {
       return false;
     }
 
@@ -351,6 +363,52 @@ export default function ChessBoardComponent({
 
     return validateAndMakeMove(sourceSquare, targetSquare);
   }, [puzzleState, validateAndMakeMove]);
+
+  const onSquareClick = useCallback(({ square }: { piece: { pieceType: string } | null; square: string }) => {
+    if (puzzleState === 'waiting_for_opponent' || puzzleState === 'solved' || puzzleState === 'showing_solution') {
+      setSelectedSquare(null);
+      return;
+    }
+
+    const clickedPiece = gameRef.current.get(square as Square);
+    const isOwnPiece = clickedPiece?.color === gameRef.current.turn();
+
+    if (!selectedSquare) {
+      setSelectedSquare(isOwnPiece ? square : null);
+      return;
+    }
+
+    if (selectedSquare === square) {
+      setSelectedSquare(null);
+      return;
+    }
+
+    const sourcePiece = gameRef.current.get(selectedSquare as Square);
+    const legalMove = gameRef.current
+      .moves({ square: selectedSquare as Square, verbose: true })
+      .some((move) => move.to === square);
+
+    if (legalMove && sourcePiece) {
+      onDrop(selectedSquare, square, sourcePiece.type);
+      return;
+    }
+
+    setSelectedSquare(isOwnPiece ? square : null);
+  }, [onDrop, puzzleState, selectedSquare]);
+
+  const displayedSquareStyles = useMemo(() => {
+    if (!selectedSquare) {
+      return highlightSquares;
+    }
+
+    return {
+      ...highlightSquares,
+      [selectedSquare]: {
+        ...highlightSquares[selectedSquare],
+        backgroundColor: 'rgba(255, 170, 0, 0.35)',
+      },
+    };
+  }, [highlightSquares, selectedSquare]);
 
   const onPromotionPieceSelect = useCallback((piece?: string) => {
     if (piece && moveToPromote) {
@@ -404,7 +462,7 @@ export default function ChessBoardComponent({
             options={{
               position: game.fen(),
               boardOrientation,
-              squareStyles: highlightSquares,
+              squareStyles: displayedSquareStyles,
               boardStyle: {
                 width: 'min(480px, 100vw - 2rem)',
                 borderRadius: '8px',
@@ -413,6 +471,20 @@ export default function ChessBoardComponent({
               darkSquareStyle: { backgroundColor: '#4a7c59' },
               lightSquareStyle: { backgroundColor: '#f0d9b5' },
               animationDurationInMs: 200,
+              allowDragging: true,
+              canDragPiece: ({ piece, square }) => {
+                if (
+                  !square ||
+                  puzzleState === 'waiting_for_opponent' ||
+                  puzzleState === 'solved' ||
+                  puzzleState === 'showing_solution'
+                ) {
+                  return false;
+                }
+
+                return piece.pieceType[0] === gameRef.current.turn();
+              },
+              onSquareClick,
               onPieceDrop: ({ piece, sourceSquare, targetSquare }) => {
                 if (!targetSquare) {
                   return false;
