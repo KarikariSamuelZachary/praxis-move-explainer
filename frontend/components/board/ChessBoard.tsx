@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Chess, Move, Square } from 'chess.js';
-import { Chessboard } from 'react-chessboard';
+import { Chessboard, type SquareRenderer } from 'react-chessboard';
 
 import { ExplanationResponse, Puzzle } from '@/types';
 
@@ -410,6 +410,43 @@ export default function ChessBoardComponent({
     };
   }, [highlightSquares, selectedSquare]);
 
+  const hintSquares = useMemo<Record<string, 'dot' | 'ring'>>(() => {
+    if (!selectedSquare) {
+      return {};
+    }
+
+    try {
+      const legalMoves = game.moves({ square: selectedSquare as Square, verbose: true });
+      const hints: Record<string, 'dot' | 'ring'> = {};
+      for (const move of legalMoves) {
+        const targetPiece = game.get(move.to as Square);
+        hints[move.to] = targetPiece ? 'ring' : 'dot';
+      }
+      return hints;
+    } catch {
+      return {};
+    }
+  }, [game, selectedSquare]);
+
+  const squareRenderer = useCallback<SquareRenderer>(({ square, children }) => {
+    const hint = hintSquares[square];
+    return (
+      <div className="relative w-full h-full">
+        {hint === 'dot' && (
+          <div
+            className="pointer-events-none absolute left-1/2 top-1/2 h-[30%] w-[30%] -translate-x-1/2 -translate-y-1/2 rounded-full bg-black/25"
+          />
+        )}
+        {hint === 'ring' && (
+          <div
+            className="pointer-events-none absolute left-1/2 top-1/2 h-[88%] w-[88%] -translate-x-1/2 -translate-y-1/2 rounded-full border-[6px] border-black/25"
+          />
+        )}
+        {children}
+      </div>
+    );
+  }, [hintSquares]);
+
   const onPromotionPieceSelect = useCallback((piece?: string) => {
     if (piece && moveToPromote) {
       validateAndMakeMove(moveToPromote.source, moveToPromote.target, piece);
@@ -485,6 +522,7 @@ export default function ChessBoardComponent({
                 return piece.pieceType[0] === gameRef.current.turn();
               },
               onSquareClick,
+              squareRenderer,
               onPieceDrop: ({ piece, sourceSquare, targetSquare }) => {
                 if (!targetSquare) {
                   return false;
