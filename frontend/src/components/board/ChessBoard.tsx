@@ -17,7 +17,6 @@ interface ChessBoardProps {
 type PuzzleState =
   | 'playing'
   | 'waiting_for_opponent'
-  | 'wrong_move'
   | 'solved'
   | 'showing_solution';
 
@@ -89,8 +88,8 @@ export default function ChessBoardComponent({
   const [puzzleState, setPuzzleState] = useState<PuzzleState>('playing');
   const [explanation, setExplanation] = useState<ExplanationResponse | null>(null);
   const [isLoadingExplanation, setIsLoadingExplanation] = useState(false);
-  const [lastWrongMove, setLastWrongMove] = useState<string | null>(null);
-  const [lastWrongFen, setLastWrongFen] = useState<string | null>(null);
+  const [wrongMoveMessage, setWrongMoveMessage] = useState<string | null>(null);
+  const [hintSquare, setHintSquare] = useState<string | null>(null);
   const [moveToPromote, setMoveToPromote] = useState<PendingPromotionMove | null>(null);
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
 
@@ -100,6 +99,8 @@ export default function ChessBoardComponent({
   const puzzleKeyRef = useRef<string>('');
   const opponentMoveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const wrongFlashTimeoutRef = useRef<number | null>(null);
+  const hintTimeoutRef = useRef<number | null>(null);
+  const snapbackTimeoutRef = useRef<number | null>(null);
 
   const boardOrientation = getPuzzleOrientation(puzzle);
 
@@ -123,6 +124,20 @@ export default function ChessBoardComponent({
     }
   }, []);
 
+  const clearHintTimeout = useCallback(() => {
+    if (hintTimeoutRef.current) {
+      clearTimeout(hintTimeoutRef.current);
+      hintTimeoutRef.current = null;
+    }
+  }, []);
+
+  const clearSnapbackTimeout = useCallback(() => {
+    if (snapbackTimeoutRef.current) {
+      clearTimeout(snapbackTimeoutRef.current);
+      snapbackTimeoutRef.current = null;
+    }
+  }, []);
+
   const resetPuzzle = useCallback(() => {
     if (!puzzle) return;
 
@@ -131,22 +146,26 @@ export default function ChessBoardComponent({
     setGame(freshGame);
     currentMoveIndexRef.current = 0;
     setPuzzleState('playing');
-    setLastWrongMove(null);
-    setLastWrongFen(null);
+    setWrongMoveMessage(null);
+    setHintSquare(null);
     setExplanation(null);
     setIsLoadingExplanation(false);
     setMoveToPromote(null);
     setSelectedSquare(null);
     clearOpponentMoveTimeout();
     clearWrongFlashTimeout();
+    clearHintTimeout();
+    clearSnapbackTimeout();
     setHighlightSquares(buildInitialHighlight(puzzle));
-  }, [clearOpponentMoveTimeout, clearWrongFlashTimeout, puzzle]);
+  }, [clearHintTimeout, clearOpponentMoveTimeout, clearSnapbackTimeout, clearWrongFlashTimeout, puzzle]);
 
   useEffect(() => {
     const nextGame = buildInitialGame(puzzle);
 
     clearOpponentMoveTimeout();
     clearWrongFlashTimeout();
+    clearHintTimeout();
+    clearSnapbackTimeout();
     puzzleKeyRef.current = `${puzzle.id}:${puzzle.fen}:${puzzle.moves.join(' ')}`;
     startTimeRef.current = Date.now();
     setBoardState(nextGame, 0);
@@ -154,16 +173,18 @@ export default function ChessBoardComponent({
     setPuzzleState('playing');
     setExplanation(null);
     setIsLoadingExplanation(false);
-    setLastWrongMove(null);
-    setLastWrongFen(null);
+    setWrongMoveMessage(null);
+    setHintSquare(null);
     setMoveToPromote(null);
     setSelectedSquare(null);
 
     return () => {
       clearOpponentMoveTimeout();
       clearWrongFlashTimeout();
+      clearHintTimeout();
+      clearSnapbackTimeout();
     };
-  }, [clearOpponentMoveTimeout, clearWrongFlashTimeout, puzzle, setBoardState]);
+  }, [clearHintTimeout, clearOpponentMoveTimeout, clearSnapbackTimeout, clearWrongFlashTimeout, puzzle, setBoardState]);
 
   const fetchExplanation = useCallback(async (
     fen: string,
@@ -265,6 +286,12 @@ export default function ChessBoardComponent({
     targetSquare: string,
     promotionChoice?: string
   ) => {
+    clearSnapbackTimeout();
+    setGame(gameRef.current);
+    setWrongMoveMessage(null);
+    setHintSquare(null);
+    clearHintTimeout();
+
     const expectedMove = puzzle.moves[currentMoveIndexRef.current];
     if (!expectedMove) {
       return false;
@@ -280,23 +307,46 @@ export default function ChessBoardComponent({
       (promotionChoice ? promotionChoice === expectedPromotion : !expectedPromotion);
 
     if (!isCorrectMove) {
-      const wrongMove = `${sourceSquare}${targetSquare}${promotionChoice ?? ''}`;
-      setLastWrongMove(wrongMove);
-      setLastWrongFen(gameRef.current.fen());
-      setPuzzleState('wrong_move');
       onPuzzleFailed();
       clearWrongFlashTimeout();
-      setHighlightSquares(
-        buildHighlight(sourceSquare, targetSquare, 'rgba(255, 50, 50, 0.4)')
-      );
 
+      // Temporarily apply wrong move so piece lands visually
+      const originalFen = gameRef.current.fen();
+      const wrongGame = new Chess(originalFen);
+      try {
+        wrongGame.move({
+          from: sourceSquare,
+          to: targetSquare,
+          promotion: promotionChoice ?? undefined,
+        });
+      } catch {
+        return false;
+      }
+      setGame(wrongGame);
+
+      // Red highlight on destination square only
+      setHighlightSquares({
+        [targetSquare]: { backgroundColor: 'rgba(239, 68, 68, 0.5)' },
+      });
+      setWrongMoveMessage('Not the best move — try again');
+
+      const scheduledPuzzleKey = puzzleKeyRef.current;
+
+      // Snap back after 400ms
+      snapbackTimeoutRef.current = window.setTimeout(() => {
+        if (scheduledPuzzleKey === puzzleKeyRef.current) {
+          setGame(gameRef.current);
+        }
+      }, 400);
+
+      // Clear red highlight after 800ms
       wrongFlashTimeoutRef.current = window.setTimeout(() => {
-        if (puzzleKeyRef.current) {
+        if (scheduledPuzzleKey === puzzleKeyRef.current) {
           setHighlightSquares(buildInitialHighlight(puzzle));
         }
-      }, 900);
+      }, 800);
 
-      return false;
+      return true;
     }
 
     const currentFen = gameRef.current.fen();
@@ -314,8 +364,6 @@ export default function ChessBoardComponent({
 
     const opponentReplyIndex = currentMoveIndexRef.current + 1;
     setBoardState(nextGame, opponentReplyIndex);
-    setLastWrongMove(null);
-    setLastWrongFen(null);
     clearWrongFlashTimeout();
     setHighlightSquares(
       buildHighlight(sourceSquare, targetSquare, 'rgba(0, 200, 100, 0.4)')
@@ -337,7 +385,7 @@ export default function ChessBoardComponent({
     setPuzzleState('playing');
     scheduleOpponentMove(nextGame, opponentReplyIndex);
     return true;
-  }, [clearWrongFlashTimeout, fetchExplanation, onPuzzleFailed, onPuzzleSolved, puzzle, scheduleOpponentMove, setBoardState]);
+  }, [clearHintTimeout, clearSnapbackTimeout, clearWrongFlashTimeout, fetchExplanation, onPuzzleFailed, onPuzzleSolved, puzzle, scheduleOpponentMove, setBoardState]);
 
   const onDrop = useCallback((sourceSquare: string, targetSquare: string, pieceType: string) => {
     setSelectedSquare(null);
@@ -397,18 +445,30 @@ export default function ChessBoardComponent({
   }, [onDrop, puzzleState, selectedSquare]);
 
   const displayedSquareStyles = useMemo(() => {
-    if (!selectedSquare) {
-      return highlightSquares;
+    let styles = highlightSquares;
+
+    if (selectedSquare) {
+      styles = {
+        ...styles,
+        [selectedSquare]: {
+          ...styles[selectedSquare],
+          backgroundColor: 'rgba(255, 170, 0, 0.35)',
+        },
+      };
     }
 
-    return {
-      ...highlightSquares,
-      [selectedSquare]: {
-        ...highlightSquares[selectedSquare],
-        backgroundColor: 'rgba(255, 170, 0, 0.35)',
-      },
-    };
-  }, [highlightSquares, selectedSquare]);
+    if (hintSquare) {
+      styles = {
+        ...styles,
+        [hintSquare]: {
+          ...styles[hintSquare],
+          backgroundColor: 'rgba(16, 185, 129, 0.4)',
+        },
+      };
+    }
+
+    return styles;
+  }, [highlightSquares, hintSquare, selectedSquare]);
 
   const hintSquares = useMemo<Record<string, 'dot' | 'ring'>>(() => {
     if (!selectedSquare) {
@@ -430,8 +490,9 @@ export default function ChessBoardComponent({
 
   const squareRenderer = useCallback<SquareRenderer>(({ square, children }) => {
     const hint = hintSquares[square];
+    const squareStyle = displayedSquareStyles[square];
     return (
-      <div className="relative w-full h-full">
+      <div className="relative w-full h-full" style={squareStyle}>
         {hint === 'dot' && (
           <div
             className="pointer-events-none absolute left-1/2 top-1/2 h-[30%] w-[30%] -translate-x-1/2 -translate-y-1/2 rounded-full bg-black/25"
@@ -445,7 +506,7 @@ export default function ChessBoardComponent({
         {children}
       </div>
     );
-  }, [hintSquares]);
+  }, [hintSquares, displayedSquareStyles]);
 
   const onPromotionPieceSelect = useCallback((piece?: string) => {
     if (piece && moveToPromote) {
@@ -464,7 +525,6 @@ export default function ChessBoardComponent({
 
     const currentFen = gameRef.current.fen();
     const nextGame = new Chess(currentFen);
-    const sanMove = trySanFromUci(currentFen, moveToShow);
 
     try {
       applyUciMove(nextGame, moveToShow);
@@ -472,7 +532,12 @@ export default function ChessBoardComponent({
       return;
     }
 
-    setPuzzleState('showing_solution');
+    const nextIndex = currentMoveIndexRef.current + 1;
+    setBoardState(nextGame, nextIndex);
+    clearWrongFlashTimeout();
+    setWrongMoveMessage(null);
+    setHintSquare(null);
+    clearHintTimeout();
     setHighlightSquares(
       buildHighlight(
         moveToShow.slice(0, 2),
@@ -480,16 +545,33 @@ export default function ChessBoardComponent({
         'rgba(100, 150, 255, 0.6)'
       )
     );
-    fetchExplanation(nextGame.fen(), sanMove, true, nextGame.history());
-  }, [fetchExplanation, puzzle.moves]);
 
-  const handleExplainWrongMove = useCallback(() => {
-    if (!lastWrongMove || !lastWrongFen) {
+    if (nextIndex >= puzzle.moves.length) {
+      setPuzzleState('solved');
       return;
     }
 
-    fetchExplanation(lastWrongFen, trySanFromUci(lastWrongFen, lastWrongMove), false);
-  }, [fetchExplanation, lastWrongFen, lastWrongMove]);
+    setPuzzleState('showing_solution');
+    scheduleOpponentMove(nextGame, nextIndex);
+  }, [clearHintTimeout, clearWrongFlashTimeout, puzzle.moves, scheduleOpponentMove, setBoardState]);
+
+  const handleGetHint = useCallback(() => {
+    const expectedMove = puzzle.moves[currentMoveIndexRef.current];
+    if (!expectedMove) {
+      return;
+    }
+
+    const fromSquare = expectedMove.slice(0, 2);
+    clearHintTimeout();
+    setHintSquare(fromSquare);
+
+    hintTimeoutRef.current = window.setTimeout(() => {
+      if (puzzleKeyRef.current) {
+        setHintSquare(null);
+        hintTimeoutRef.current = null;
+      }
+    }, 2000);
+  }, [clearHintTimeout, puzzle.moves]);
 
   return (
     <div className="flex flex-col lg:flex-row gap-6 w-full max-w-5xl mx-auto">
@@ -571,7 +653,7 @@ export default function ChessBoardComponent({
         </div>
 
         <div className="flex gap-3 mt-4">
-          {puzzleState === 'playing' && (
+          {puzzleState === 'playing' && !wrongMoveMessage && (
             <button
               onClick={handleShowSolution}
               className="flex-1 py-2 px-4 rounded-lg bg-zinc-700 hover:bg-zinc-600 text-white text-sm font-medium transition-colors"
@@ -619,7 +701,7 @@ export default function ChessBoardComponent({
         <div className={`rounded-xl p-4 border transition-all ${
           puzzleState === 'solved'
             ? 'bg-emerald-900/40 border-emerald-600'
-            : puzzleState === 'wrong_move'
+            : wrongMoveMessage
             ? 'bg-red-900/40 border-red-600'
             : puzzleState === 'showing_solution'
             ? 'bg-indigo-900/40 border-indigo-600'
@@ -628,27 +710,26 @@ export default function ChessBoardComponent({
             : 'bg-zinc-800 border-zinc-700'
         }`}>
           <p className="text-sm font-medium text-zinc-200">
-            {puzzleState === 'playing' && `Find the best move for ${boardOrientation}`}
+            {puzzleState === 'playing' && !wrongMoveMessage && `Find the best move for ${boardOrientation}`}
             {puzzleState === 'waiting_for_opponent' && 'Opponent is responding...'}
-            {puzzleState === 'wrong_move' && '✗ Not the best move — try again'}
+            {wrongMoveMessage && `✗ ${wrongMoveMessage}`}
             {puzzleState === 'solved' && '🎉 Puzzle complete!'}
             {puzzleState === 'showing_solution' && '💡 Here is the solution:'}
           </p>
 
-          {puzzleState === 'wrong_move' && lastWrongMove && (
+          {wrongMoveMessage && (
             <div className="mt-3 flex gap-2">
               <button
-                onClick={resetPuzzle}
+                onClick={handleGetHint}
                 className="flex-1 py-2 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium transition-colors"
               >
-                Try Again
+                Get a Hint
               </button>
               <button
-                onClick={handleExplainWrongMove}
-                disabled={isLoadingExplanation}
-                className="flex-1 py-2 px-4 rounded-lg bg-zinc-700 hover:bg-zinc-600 disabled:opacity-50 text-white text-sm font-medium transition-colors"
+                onClick={handleShowSolution}
+                className="flex-1 py-2 px-4 rounded-lg bg-zinc-700 hover:bg-zinc-600 text-white text-sm font-medium transition-colors"
               >
-                {isLoadingExplanation ? 'Thinking...' : 'Why was that wrong?'}
+                View Solution
               </button>
             </div>
           )}
