@@ -10,6 +10,7 @@ export type MoveClassification =
 export interface Puzzle {
   id: string;
   fen: string;
+  initialFen?: string;
   moves: string[];
   rating: number;
   themes: string[];
