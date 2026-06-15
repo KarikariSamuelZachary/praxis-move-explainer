@@ -237,6 +237,7 @@ export async function fetchPuzzleBatch(
       return {
         id: puzzle.id,
         fen: normalizedFen,
+        initialFen: puzzle.fen,
         moves: solutionMoves,
         rating: puzzle.rating,
         themes: puzzle.themes,
