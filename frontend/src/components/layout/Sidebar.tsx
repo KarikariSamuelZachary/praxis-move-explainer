@@ -27,12 +27,9 @@ function SidebarContent({ onNavigate }: { onNavigate?: () => void }) {
         <Link
           href="/puzzles"
           onClick={onNavigate}
-          className="flex items-center gap-3 rounded-lg text-zinc-100 transition hover:text-emerald-400"
+          className="flex items-center gap-3 rounded-lg transition hover:opacity-80"
         >
-          <span className="flex h-9 w-9 items-center justify-center rounded-lg border border-emerald-500/30 bg-emerald-500/10 text-lg text-emerald-400">
-            ♟
-          </span>
-          <span className="text-lg font-semibold">Praxis</span>
+          <img src="/logo.svg" alt="Praxis" className="h-20 w-auto" />
         </Link>
       </div>
 
