@@ -36,16 +36,7 @@ const features = [
 
 function PraxisMark() {
   return (
-    <div className="flex items-center gap-3">
-      <div className="relative h-8 w-8 rounded-lg border border-emerald-400/40 bg-emerald-500/10">
-        <div className="absolute left-2 top-1.5 h-5 w-2 rounded-full bg-emerald-400" />
-        <div className="absolute left-3 top-1.5 h-2.5 w-4 rounded-r-full bg-emerald-300" />
-        <div className="absolute left-3 top-4 h-1.5 w-4 rounded-r-full bg-emerald-500" />
-      </div>
-      <span className="text-xl font-semibold uppercase tracking-[0.28em] text-emerald-300">
-        Praxis
-      </span>
-    </div>
+    <img src="/logo.svg" alt="Praxis" className="h-20 w-auto" />
   );
 }
 
