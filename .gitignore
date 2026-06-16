@@ -211,6 +211,7 @@ src/test_game.pgn
 
 #agents
 .codex
+.claude
 
 #large data files
  data/raw/lichess_db_puzzle.csv.zst
