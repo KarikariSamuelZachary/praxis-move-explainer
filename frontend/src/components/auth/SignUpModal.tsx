@@ -3,6 +3,7 @@
 import { FormEvent, useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { useAuth } from '@clerk/nextjs';
+import { useSignIn } from '@clerk/react/legacy';
 import { useSignUp } from '@clerk/react/legacy';
 
 import Modal from './Modal';
@@ -56,6 +57,14 @@ function GoogleMark() {
   );
 }
 
+function isAccountExistsError(error: unknown): boolean {
+  if (typeof error === 'object' && error && 'errors' in error) {
+    const errors = (error as { errors?: { code?: string }[] }).errors;
+    return errors?.some((e) => e.code === 'form_identifier_exists') ?? false;
+  }
+  return false;
+}
+
 function fieldError(error: unknown): string {
   if (typeof error === 'object' && error && 'errors' in error) {
     const errors = (error as { errors?: { longMessage?: string; message?: string }[] }).errors;
@@ -69,12 +78,14 @@ export default function SignUpModal({ onClose, onSwitchToSignIn }: SignUpModalPr
   const router = useRouter();
   const { isSignedIn } = useAuth();
   const { isLoaded, signUp, setActive } = useSignUp();
+  const { signIn } = useSignIn();
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
   const [needsVerification, setNeedsVerification] = useState(false);
   const [error, setError] = useState('');
+  const [accountExists, setAccountExists] = useState(false);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
   useEffect(() => {
@@ -100,6 +111,7 @@ export default function SignUpModal({ onClose, onSwitchToSignIn }: SignUpModalPr
     if (!isLoaded) return;
 
     setError('');
+    setAccountExists(false);
     setIsSubmitting(true);
 
     try {
@@ -117,7 +129,11 @@ export default function SignUpModal({ onClose, onSwitchToSignIn }: SignUpModalPr
       await signUp.prepareEmailAddressVerification({ strategy: 'email_code' });
       setNeedsVerification(true);
     } catch (caughtError) {
-      setError(fieldError(caughtError));
+      if (isAccountExistsError(caughtError)) {
+        setAccountExists(true);
+      } else {
+        setError(fieldError(caughtError));
+      }
     } finally {
       setIsSubmitting(false);
     }
@@ -150,11 +166,23 @@ export default function SignUpModal({ onClose, onSwitchToSignIn }: SignUpModalPr
   async function handleGoogle() {
     if (!isLoaded) return;
 
-    await signUp.authenticateWithRedirect({
-      strategy: 'oauth_google',
-      redirectUrl: '/',
-      redirectUrlComplete: '/puzzles',
-    });
+    try {
+      await signUp.authenticateWithRedirect({
+        strategy: 'oauth_google',
+        redirectUrl: '/',
+        redirectUrlComplete: '/puzzles',
+      });
+    } catch (caughtError) {
+      if (isAccountExistsError(caughtError) && signIn) {
+        await signIn.authenticateWithRedirect({
+          strategy: 'oauth_google',
+          redirectUrl: '/',
+          redirectUrlComplete: '/puzzles',
+        });
+      } else {
+        setError(fieldError(caughtError));
+      }
+    }
   }
 
   return (
@@ -254,6 +282,19 @@ export default function SignUpModal({ onClose, onSwitchToSignIn }: SignUpModalPr
               {error && (
                 <p className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-100">
                   {error}
+                </p>
+              )}
+
+              {accountExists && (
+                <p className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-100">
+                  An account with this email already exists.{' '}
+                  <button
+                    type="button"
+                    onClick={onSwitchToSignIn}
+                    className="font-medium underline text-emerald-200 hover:text-emerald-100"
+                  >
+                    Please log in instead.
+                  </button>
                 </p>
               )}
 
