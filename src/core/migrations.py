@@ -23,6 +23,14 @@ def run_migrations():
                 )
                 """
             )
+            cur.execute(
+                """
+                ALTER TABLE users
+                    ADD COLUMN IF NOT EXISTS skill_level    VARCHAR(20) DEFAULT NULL,
+                    ADD COLUMN IF NOT EXISTS calibrated     BOOLEAN NOT NULL DEFAULT FALSE,
+                    ADD COLUMN IF NOT EXISTS tactical_rating INTEGER DEFAULT NULL
+                """
+            )
         conn.commit()
         log.info("Database migrations completed successfully")
     except Exception:
