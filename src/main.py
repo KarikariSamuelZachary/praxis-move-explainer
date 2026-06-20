@@ -13,7 +13,7 @@ from dotenv import load_dotenv
 from core.database import init_db
 from core.migrations import run_migrations
 from engines.stockfish_engine import STOCKFISH_CANDIDATE_PATHS
-from routers import puzzles, review, webhooks
+from routers import onboarding, puzzles, review, webhooks
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT_DIR / ".env")
@@ -93,6 +93,7 @@ def startup():
     run_migrations()
 
 # --- Routers ---
+app.include_router(onboarding.router, prefix="/onboarding")
 app.include_router(puzzles.router, prefix="/api")
 app.include_router(review.router, prefix="/api")
 app.include_router(webhooks.router, prefix="/webhooks")

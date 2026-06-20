@@ -1,0 +1,55 @@
+from fastapi import APIRouter, Depends, HTTPException, Request
+from psycopg2.extras import RealDictCursor
+from pydantic import BaseModel
+
+from core.database import get_db
+
+router = APIRouter()
+
+VALID_SKILL_LEVELS = {"new", "beginner", "intermediate", "advanced"}
+
+
+class SkillLevelBody(BaseModel):
+    skill_level: str
+
+
+@router.get("/skill-level")
+def get_skill_level(request: Request, conn=Depends(get_db)):
+    clerk_id = request.headers.get("X-Clerk-User-Id")
+    if not clerk_id:
+        raise HTTPException(status_code=400, detail="Missing X-Clerk-User-Id header")
+
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT skill_level FROM users WHERE clerk_id = %s", (clerk_id,))
+        row = cur.fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    return {"skill_level": row["skill_level"]}
+
+
+@router.post("/skill-level")
+def set_skill_level(request: Request, body: SkillLevelBody, conn=Depends(get_db)):
+    clerk_id = request.headers.get("X-Clerk-User-Id")
+    if not clerk_id:
+        raise HTTPException(status_code=400, detail="Missing X-Clerk-User-Id header")
+
+    if body.skill_level not in VALID_SKILL_LEVELS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid skill_level. Must be one of: {', '.join(sorted(VALID_SKILL_LEVELS))}",
+        )
+
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute("SELECT 1 FROM users WHERE clerk_id = %s", (clerk_id,))
+        if cur.fetchone() is None:
+            raise HTTPException(status_code=404, detail="User not found")
+
+        cur.execute(
+            "UPDATE users SET skill_level = %s WHERE clerk_id = %s",
+            (body.skill_level, clerk_id),
+        )
+    conn.commit()
+
+    return {"success": True}
