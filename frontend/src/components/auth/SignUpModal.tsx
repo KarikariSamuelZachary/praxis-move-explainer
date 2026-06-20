@@ -126,9 +126,11 @@ export default function SignUpModal({ onClose, onSwitchToSignIn }: SignUpModalPr
         return;
       }
 
+      console.error('Clerk signUp.create returned non-complete status', result);
       await signUp.prepareEmailAddressVerification({ strategy: 'email_code' });
       setNeedsVerification(true);
     } catch (caughtError) {
+      console.error('Clerk signUp.create threw an error', caughtError);
       if (isAccountExistsError(caughtError)) {
         setAccountExists(true);
       } else {
@@ -155,8 +157,10 @@ export default function SignUpModal({ onClose, onSwitchToSignIn }: SignUpModalPr
         return;
       }
 
+      console.error('Clerk attemptEmailAddressVerification returned non-complete status', result);
       setError('Verification is not complete yet.');
     } catch (caughtError) {
+      console.error('Clerk attemptEmailAddressVerification threw an error', caughtError);
       setError(fieldError(caughtError));
     } finally {
       setIsSubmitting(false);
@@ -164,25 +168,13 @@ export default function SignUpModal({ onClose, onSwitchToSignIn }: SignUpModalPr
   }
 
   async function handleGoogle() {
-    if (!isLoaded) return;
+    if (!isLoaded || !signIn) return;
 
-    try {
-      await signUp.authenticateWithRedirect({
-        strategy: 'oauth_google',
-        redirectUrl: '/',
-        redirectUrlComplete: '/puzzles',
-      });
-    } catch (caughtError) {
-      if (isAccountExistsError(caughtError) && signIn) {
-        await signIn.authenticateWithRedirect({
-          strategy: 'oauth_google',
-          redirectUrl: '/',
-          redirectUrlComplete: '/puzzles',
-        });
-      } else {
-        setError(fieldError(caughtError));
-      }
-    }
+    await signIn.authenticateWithRedirect({
+      strategy: 'oauth_google',
+      redirectUrl: '/sso-callback',
+      redirectUrlComplete: '/puzzles',
+    });
   }
 
   return (
