@@ -13,6 +13,10 @@ class SkillLevelBody(BaseModel):
     skill_level: str
 
 
+def fallback_username(clerk_id: str) -> str:
+    return f"praxis_{clerk_id[-12:]}"
+
+
 @router.get("/skill-level")
 def get_skill_level(request: Request, conn=Depends(get_db)):
     clerk_id = request.headers.get("X-Clerk-User-Id")
@@ -43,13 +47,28 @@ def set_skill_level(request: Request, body: SkillLevelBody, conn=Depends(get_db)
 
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("SELECT 1 FROM users WHERE clerk_id = %s", (clerk_id,))
-        if cur.fetchone() is None:
-            raise HTTPException(status_code=404, detail="User not found")
+        user_exists = cur.fetchone() is not None
 
-        cur.execute(
-            "UPDATE users SET skill_level = %s WHERE clerk_id = %s",
-            (body.skill_level, clerk_id),
-        )
+        if user_exists:
+            cur.execute(
+                "UPDATE users SET skill_level = %s WHERE clerk_id = %s",
+                (body.skill_level, clerk_id),
+            )
+        else:
+            email = request.headers.get("X-Clerk-User-Email")
+            if not email:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            cur.execute(
+                """
+                INSERT INTO users (clerk_id, username, email, skill_level)
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (email) DO UPDATE
+                SET clerk_id = EXCLUDED.clerk_id,
+                    skill_level = EXCLUDED.skill_level
+                """,
+                (clerk_id, fallback_username(clerk_id), email, body.skill_level),
+            )
     conn.commit()
 
     return {"success": True}

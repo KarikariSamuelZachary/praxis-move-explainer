@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { auth } from '@clerk/nextjs/server';
+import { auth, currentUser } from '@clerk/nextjs/server';
 
 export async function GET(request: NextRequest) {
   try {
@@ -44,6 +44,8 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
+    const user = await currentUser();
+    const email = user?.primaryEmailAddress?.emailAddress ?? '';
     const backendApiUrl = process.env.BACKEND_API_URL ?? 'http://localhost:8000';
     const internalSecret = process.env.INTERNAL_SECRET ?? '';
     const backendUrl = new URL('/onboarding/skill-level', backendApiUrl);
@@ -55,6 +57,7 @@ export async function POST(request: NextRequest) {
         'Content-Type': 'application/json',
         'X-Internal-Secret': internalSecret,
         'X-Clerk-User-Id': userId,
+        'X-Clerk-User-Email': email,
       },
       body: JSON.stringify(body),
     });
