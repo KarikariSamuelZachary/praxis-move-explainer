@@ -33,6 +33,10 @@ export default clerkMiddleware(async (auth, req) => {
   const { userId } = await auth();
   if (!userId) return NextResponse.next();
 
+  if (!isAppRoute(req) && !isOnboardingRoute(req)) {
+    return NextResponse.next();
+  }
+
   const skillLevel = await getSkillLevel(userId);
 
   if (isAppRoute(req) && !skillLevel) {
