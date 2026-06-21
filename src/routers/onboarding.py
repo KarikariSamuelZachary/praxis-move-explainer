@@ -28,7 +28,7 @@ def get_skill_level(request: Request, conn=Depends(get_db)):
         row = cur.fetchone()
 
     if row is None:
-        raise HTTPException(status_code=404, detail="User not found")
+        return {"skill_level": None}
 
     return {"skill_level": row["skill_level"]}
 
