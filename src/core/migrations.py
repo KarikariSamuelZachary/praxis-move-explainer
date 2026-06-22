@@ -17,7 +17,6 @@ def run_migrations():
                 CREATE TABLE IF NOT EXISTS users (
                     id          SERIAL PRIMARY KEY,
                     clerk_id    TEXT UNIQUE NOT NULL,
-                    username    TEXT UNIQUE NOT NULL,
                     email       TEXT UNIQUE NOT NULL,
                     created_at  TIMESTAMPTZ DEFAULT NOW()
                 )
@@ -31,6 +30,22 @@ def run_migrations():
                     ADD COLUMN IF NOT EXISTS tactical_rating INTEGER DEFAULT NULL
                 """
             )
+            cur.execute(
+                """
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1
+                        FROM information_schema.columns
+                        WHERE table_name = 'users'
+                          AND column_name = 'username'
+                    ) THEN
+                        ALTER TABLE users ALTER COLUMN username DROP NOT NULL;
+                    END IF;
+                END $$;
+                """
+            )
+            cur.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_username_key")
         conn.commit()
         log.info("Database migrations completed successfully")
     except Exception:
