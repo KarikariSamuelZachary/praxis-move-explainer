@@ -19,15 +19,6 @@ function PraxisLogo() {
   );
 }
 
-function UserIcon() {
-  return (
-    <svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.6" viewBox="0 0 24 24">
-      <path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8z" />
-      <path d="M4 21a8 8 0 0 1 16 0" />
-    </svg>
-  );
-}
-
 function MailIcon() {
   return (
     <svg aria-hidden="true" className="h-5 w-5" fill="none" stroke="currentColor" strokeWidth="1.6" viewBox="0 0 24 24">
@@ -79,7 +70,6 @@ export default function SignUpModal({ onClose, onSwitchToSignIn }: SignUpModalPr
   const { isSignedIn } = useAuth();
   const { isLoaded, signUp, setActive } = useSignUp();
   const { signIn } = useSignIn();
-  const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [code, setCode] = useState('');
@@ -116,7 +106,6 @@ export default function SignUpModal({ onClose, onSwitchToSignIn }: SignUpModalPr
 
     try {
       const result = await signUp.create({
-        username,
         emailAddress: email,
         password,
       });
@@ -226,21 +215,6 @@ export default function SignUpModal({ onClose, onSwitchToSignIn }: SignUpModalPr
         ) : (
           <>
             <form className="mt-8 space-y-5" onSubmit={handleSubmit}>
-              <label className="block">
-                <span className="text-sm font-medium text-zinc-50">Username</span>
-                <span className="mt-2 flex h-12 items-center gap-3 rounded-md border border-zinc-600 bg-zinc-900/40 px-4 text-zinc-400 transition focus-within:border-emerald-400">
-                  <UserIcon />
-                  <input
-                    type="text"
-                    value={username}
-                    onChange={(event) => setUsername(event.target.value)}
-                    placeholder="Choose a username"
-                    required
-                    className="h-full min-w-0 flex-1 bg-transparent text-sm text-zinc-100 outline-none placeholder:text-zinc-500"
-                  />
-                </span>
-              </label>
-
               <label className="block">
                 <span className="text-sm font-medium text-zinc-50">Email</span>
                 <span className="mt-2 flex h-12 items-center gap-3 rounded-md border border-zinc-600 bg-zinc-900/40 px-4 text-zinc-400 transition focus-within:border-emerald-400">
