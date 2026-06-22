@@ -3,7 +3,6 @@ import os
 from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from psycopg2.errors import UniqueViolation
 from svix.webhooks import Webhook, WebhookVerificationError
 
 from core.database import get_db
@@ -26,14 +25,6 @@ def _primary_email(data: Dict[str, Any]) -> Optional[str]:
         return email_addresses[0].get("email_address")
 
     return data.get("email_address")
-
-
-def _username(data: Dict[str, Any], email: str) -> str:
-    username = data.get("username")
-    if username:
-        return username
-
-    return email.split("@", 1)[0]
 
 
 @router.post("/clerk")
@@ -64,24 +55,18 @@ async def clerk_webhook(request: Request, conn=Depends(get_db)):
     if not clerk_id or not email:
         raise HTTPException(status_code=400, detail="Missing Clerk user id or email")
 
-    username = _username(data, email)
-
     try:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO users (clerk_id, username, email)
-                VALUES (%s, %s, %s)
-                ON CONFLICT (clerk_id) DO UPDATE
-                SET username = EXCLUDED.username,
-                    email = EXCLUDED.email
+                INSERT INTO users (clerk_id, email)
+                VALUES (%s, %s)
+                ON CONFLICT (email) DO UPDATE
+                SET clerk_id = EXCLUDED.clerk_id
                 """,
-                (clerk_id, username, email),
+                (clerk_id, email),
             )
         conn.commit()
-    except UniqueViolation as exc:
-        conn.rollback()
-        raise HTTPException(status_code=409, detail="User email or username already exists") from exc
     except Exception:
         conn.rollback()
         log.exception("Failed to persist Clerk user")
