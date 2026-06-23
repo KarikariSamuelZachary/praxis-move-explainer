@@ -105,65 +105,111 @@ UPSTASH_REDIS_REST_TOKEN
 - Model finetuning for chess explanations
 
 ## Known Issues
-- Game review explanations occasionally hallucinate board 
+- Game review explanations occasionally hallucinate board
   details. Deferred until model finetuning.
 - Node 18 locally, needs upgrade to 20 for npm run build.
   Vercel and DigitalOcean already run Node 20.
 - Clerk session token not yet forwarded to FastAPI.
   Needed for per-user data tracking.
 
-  ## Recent Session Work                                                                                                      
-      133 +                                                                                                                            
-      134 +### 2026-06-14 — Frontend src/ consolidation                                                                                
-      135 +                                                                                                                            
-      136 +**Goal:** Move all frontend source code under `src/` to follow                                                              
-      137 +the standard Next.js App Router layout.                                                                                     
-      138 +                                                                                                                            
-      139 +**What was done:**                                                                                                          
-      140 +- `git mv` (preserves history) for 8 files:                                                                                 
-      141 +  - `components/board/ChessBoard.tsx` → `src/components/board/`                                                             
-      142 +  - `components/layout/Sidebar.tsx` → `src/components/layout/`                                                              
-      143 +  - `components/review/GameReview.tsx` → `src/components/review/`                                                           
-      144 +  - `lib/{groq,lichess,redis,themes}.ts` → `src/lib/`                                                                       
-      145 +  - `types/index.ts` → `src/types/`                                                                                         
-      146 +- `tsconfig.json` `paths` changed from `{"@/*": ["./*"]}` to                                                                
-      147 +  `{"@/*": ["./src/*"]}`. Required: the old alias mapped                                                                    
-      148 +  `@/components/...` to the root-level dir, not `src/`.                                                                     
-      149 +- Deleted now-empty root-level dirs: `frontend/components/`,                                                                
-      150 +  `frontend/lib/`, `frontend/types/`.                                                                                       
-      151 +- Deleted stale build cache: `.next/`, `tsconfig.tsbuildinfo`.                                                              
-      152 +  The `.next/types/validator.ts` file referenced the old layout                                                             
-      153 +  and produced the only remaining tsc error. Both regenerate on                                                             
-      154 +  next build/dev.                                                                                                           
-      155 +                                                                                                                            
-      156 +**Decisions:**                                                                                                              
-      157 +- **Scope expansion to lib/ and types/**: The user's task                                                                   
-      158 +  explicitly named `components/`, but the old tsconfig had                                                                  
-      159 +  `@/*` mapping to the root, so `lib/` and `types/` had to                                                                  
-      160 +  move too for the new alias to work. Confirmed with user                                                                   
-      161 +  before expanding.                                                                                                         
-      162 +- **No code edits to source files**: All existing                                                                           
-      163 +  `@/components/...`, `@/lib/...`, `@/types` imports keep                                                                   
-      164 +  working as-is — just resolving to new paths.                                                                              
-      165 +- **Used `git mv` over `mv + git add`**: Preserves file                                                                     
-      166 +  history through renames in git.                                                                                           
-      167 +                                                                                                                            
-      168 +**Verification:**                                                                                                           
-      169 +- `npx tsc --noEmit` passes with zero errors.                                                                               
-      170 +- `git status` shows clean `R` (rename) entries for all 8 files                                                             
-      171 +  and a single `M` for `tsconfig.json`.                                                                                     
-      172 +                                                                                                                            
-      173 +**What was NOT done (out of scope):**                                                                                       
-      174 +- Did not touch the `AGENTS.md` / Next.js 16 doc note.                                                                      
-      175 +- Did not update the backend FastAPI layout.                                                                                
-      176 +- Did not move or rename `proxy.ts` (already at `src/proxy.ts`).                                                            
-      177 +                                                                                                                            
-      178 +**Next:**                                                                                                                   
-      179 +- Run `npm run dev` or `npm run build` locally to regenerate                                                                
-      180 +  `.next/` and confirm the app boots.                                                                                       
-      181 +- Confirm the Vercel build still succeeds (it builds from a                                                                 
-      182 +  clean state, so should be fine).                                                                                          
-      183 +- Consider whether `Woodpecker Method training mode` should be                                                              
-      184 +  removed from "Planned Features" — UI for it is already                                                                    
-      185 +  present in `src/app/(app)/puzzles/page.tsx` (cycle                                                                        
-      186 +  indicator, session stats, start-new-session flow).
+### 2026-06-23 — Onboarding "Saving…" hang + missing user rows (Clerk webhook misrouted)
+
+**Symptom:** After sign-up, user lands on `/onboarding`, selects a
+skill level, clicks **Start Training**. Button switches to "Saving…"
+and never progresses. Browser console shows no errors. `psql` query
+`SELECT * FROM users;` returns no rows for the new user.
+
+**Root cause:** Clerk Dashboard webhook Endpoint URL points at the
+backend root (`https://<backend>/`) instead of
+`https://<backend>/webhooks/clerk`. The internal-secret middleware
+in `src/main.py:55-70` only exempts `/webhooks/clerk`, so the
+webhook hits 401, `user.created` never fires, and the user is never
+synced to PostgreSQL. The onboarding POST handler hits the
+`else` branch in `src/routers/onboarding.py:53-67` (INSERT path)
+which can fail silently if the row state is unexpected, leaving the
+frontend stuck on "Saving…".
+
+**Fix (no code changes — Clerk dashboard only):**
+1. Clerk Dashboard → Webhooks → set Endpoint URL to
+   `https://<your-backend-domain>/webhooks/clerk`
+2. Confirm `user.created` is in the subscribed events list.
+3. Copy the Signing Secret (`whsec_…`) and confirm it matches
+   `CLERK_WEBHOOK_SECRET` in DigitalOcean backend env vars.
+4. Save. New sign-ups will now create the row.
+
+**Why the frontend button gets stuck:** `handleSubmit` in
+`frontend/src/app/(app)/onboarding/page.tsx:59-74` never calls
+`setSubmitting(false)` on the success path — only on `catch`. If
+the navigation fails or the middleware redirects back, the page
+unmount doesn't clear `submitting=true` and the button stays on
+"Saving…". (Independent of the webhook bug; worth fixing later.)
+
+**Verification query:** `SELECT COUNT(*) FROM users WHERE
+skill_level IS NULL;` — should grow by 1 per new sign-up after the
+webhook is fixed.
+
+**Diagnostic path used (for future reference):**
+- Read backend logs (`Jun 22 01:36:56 POST / 0.44ms → 401`) →
+  identified webhook POST hitting `/` instead of `/webhooks/clerk`.
+- Cross-checked by querying the `users` table directly via
+  `psql "$DATABASE_URL"`.
+
+### 2026-06-23 — DB connection mismatch (local `.env` ≠ DigitalOcean)
+
+**Symptom:** After fixing the webhook URL, backend logs showed
+`POST /webhooks/clerk 200 OK` and `POST /onboarding/skill-level
+200 OK`, but `SELECT * FROM users;` (via local `psql`) returned
+0 rows. Frontend still stuck on /onboarding.
+
+**Root cause:** `frontend/CLAUDE.md` says Samuel handles env vars
+himself — and the **deployed** FastAPI backend on DigitalOcean has
+its own `DATABASE_URL` set in the DO dashboard's environment
+variables. The local `/home/iaminspiredbro/my_projects/praxis-move-explainer/.env`
+file has a **different** `DATABASE_URL` (likely local dev or
+staging). The two never get reconciled automatically because
+`src/main.py` calls `load_dotenv()` only on the *deployed*
+machine's env vars when running there.
+
+Result: `TRUNCATE` and `SELECT` queries run against the local DB
+have no effect on the prod DB that the deployed backend writes to.
+Everything looks empty locally even though writes are succeeding
+on prod.
+
+**How to verify:**
+```bash
+# Show host portion of local DATABASE_URL
+grep DATABASE_URL /home/iaminspiredbro/my_projects/praxis-move-explainer/.env
+
+# Check DigitalOcean's DATABASE_URL host (DO Dashboard → App →
+# Settings → Environment Variables → DATABASE_URL)
+# If the hosts differ, you're querying a different DB.
+```
+
+**Diagnostic query to confirm which DB you're on:**
+```sql
+SELECT current_database(), inet_server_addr(), current_user;
+```
+
+**Fix:** Either
+1. Query the production DB directly using the DO DATABASE_URL:
+   `psql "<the-prod-DATABASE_URL-from-DO-dashboard>"`
+2. Or align the local `.env` `DATABASE_URL` with prod for
+   debugging (but never commit this — keep prod secrets in DO
+   only).
+
+**Open question still pending (as of 2026-06-23 end of session):**
+Even after aligning the DB, the page is still stuck on /onboarding
+and `GET /api/puzzles` is not firing after `POST
+/onboarding/skill-level`. Three possibilities to check tomorrow:
+1. Webhook event type might not be `user.created` — handler
+   returns `{"status": "ignored"}` (200) for non-creation events.
+   Check Clerk Dashboard → Webhooks → Messages → event type.
+2. The `frontend/src/app/(app)/onboarding/page.tsx:59-74`
+   `handleSubmit` doesn't call `setSubmitting(false)` on success,
+   so if the post-POST middleware redirect doesn't fully unmount
+   the page, the button stays disabled with "Saving…".
+3. Clerk might be re-issuing the same `clerk_id` for re-signups
+   with the same email, and `INSERT ... ON CONFLICT (email)` keeps
+   the existing `skill_level` (only updates `clerk_id`).
+
+  
