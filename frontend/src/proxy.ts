@@ -11,6 +11,7 @@ async function getSkillLevel(userId: string): Promise<string | null> {
 
   try {
     const res = await fetch(`${backendApiUrl}/onboarding/skill-level`, {
+      cache: "no-store",
       headers: {
         Accept: "application/json",
         "X-Internal-Secret": internalSecret,
