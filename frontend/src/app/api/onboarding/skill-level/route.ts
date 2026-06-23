@@ -13,6 +13,7 @@ export async function GET(request: NextRequest) {
     const backendUrl = new URL('/onboarding/skill-level', backendApiUrl);
 
     const response = await fetch(backendUrl, {
+      cache: 'no-store',
       headers: {
         Accept: 'application/json',
         'X-Internal-Secret': internalSecret,
@@ -52,6 +53,7 @@ export async function POST(request: NextRequest) {
 
     const response = await fetch(backendUrl, {
       method: 'POST',
+      cache: 'no-store',
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',
