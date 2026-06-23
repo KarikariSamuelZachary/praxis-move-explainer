@@ -67,6 +67,9 @@ export default function OnboardingPage() {
       });
       if (res.ok) {
         router.push('/puzzles');
+        router.refresh();
+      } else {
+        setSubmitting(false);
       }
     } catch {
       setSubmitting(false);
