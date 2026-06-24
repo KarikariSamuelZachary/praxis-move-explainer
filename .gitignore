@@ -216,3 +216,6 @@ src/test_game.pgn
 #large data files
  data/raw/lichess_db_puzzle.csv.zst
 
+#Database url
+url
+
