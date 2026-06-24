@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { auth } from '@clerk/nextjs/server';
 import { redis } from '@/lib/redis';
 
 const MAX_REQUESTS_PER_WINDOW = 60;
@@ -31,6 +32,11 @@ export async function GET(request: NextRequest) {
   backendUrl.search = request.nextUrl.search;
 
   try {
+    const { userId } = await auth();
+    if (!userId) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
     const ip = getClientIp(request);
     if (await isRateLimited(ip)) {
       return NextResponse.json(
@@ -43,6 +49,7 @@ export async function GET(request: NextRequest) {
       headers: {
         Accept: request.headers.get('accept') ?? 'application/json',
         'X-Internal-Secret': internalSecret,
+        'X-Clerk-User-Id': userId,
       },
     });
 
