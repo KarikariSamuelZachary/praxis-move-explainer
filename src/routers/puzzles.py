@@ -1,9 +1,11 @@
 import random
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from psycopg2.extras import RealDictCursor
+from pydantic import BaseModel
 from typing import List, Optional
 
 from core.database import get_db
+from core.rating import calculate_rating_change
 from schemas.puzzle_schemas import PuzzleResponse
 
 router = APIRouter()
@@ -14,6 +16,12 @@ SKILL_RATING_BANDS = {
     "intermediate": (1300, 1600),
     "advanced": (1600, 2400),
 }
+
+
+class RatingUpdateBody(BaseModel):
+    puzzle_id: str
+    puzzle_rating: int
+    solved: bool
 
 
 @router.get("/puzzles", response_model=List[PuzzleResponse])
@@ -28,10 +36,18 @@ def get_puzzles(
     clerk_id = request.headers.get("X-Clerk-User-Id")
     if clerk_id:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
-            cur.execute("SELECT skill_level FROM users WHERE clerk_id = %s", (clerk_id,))
+            cur.execute(
+                "SELECT skill_level, tactical_rating FROM users WHERE clerk_id = %s",
+                (clerk_id,),
+            )
             user_row = cur.fetchone()
-            if user_row and user_row["skill_level"] in SKILL_RATING_BANDS:
-                min_rating, max_rating = SKILL_RATING_BANDS[user_row["skill_level"]]
+            if user_row:
+                if user_row["tactical_rating"] is not None:
+                    rating = user_row["tactical_rating"]
+                    min_rating = max(400, rating - 100)
+                    max_rating = min(3000, rating + 100)
+                elif user_row["skill_level"] in SKILL_RATING_BANDS:
+                    min_rating, max_rating = SKILL_RATING_BANDS[user_row["skill_level"]]
 
     if theme is not None:
         theme = theme.strip()
@@ -87,3 +103,84 @@ def get_puzzles(
         )
         for row in rows
     ]
+
+
+@router.post("/puzzles/rating")
+def update_puzzle_rating(
+    request: Request,
+    body: RatingUpdateBody,
+    conn=Depends(get_db),
+):
+    user_id = request.headers.get("X-Clerk-User-Id")
+    if not user_id:
+        raise HTTPException(status_code=400, detail="Missing X-Clerk-User-Id header")
+
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT tactical_rating
+                FROM users
+                WHERE clerk_id = %s
+                FOR UPDATE
+                """,
+                (user_id,),
+            )
+            user = cur.fetchone()
+            if user is None:
+                raise HTTPException(status_code=404, detail="User not found")
+
+            old_rating = user["tactical_rating"]
+            if old_rating is None:
+                old_rating = 1100
+
+            change = calculate_rating_change(
+                old_rating,
+                body.puzzle_rating,
+                body.solved,
+            )
+            new_rating = max(400, min(3000, old_rating + change))
+
+            cur.execute(
+                """
+                UPDATE users
+                SET tactical_rating = %s
+                WHERE clerk_id = %s
+                """,
+                (new_rating, user_id),
+            )
+            cur.execute(
+                """
+                INSERT INTO tactical_rating_history (
+                    user_id,
+                    old_rating,
+                    new_rating,
+                    change,
+                    puzzle_id,
+                    solved
+                )
+                VALUES (%s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    user_id,
+                    old_rating,
+                    new_rating,
+                    change,
+                    body.puzzle_id,
+                    body.solved,
+                ),
+            )
+
+        conn.commit()
+    except HTTPException:
+        conn.rollback()
+        raise
+    except Exception:
+        conn.rollback()
+        raise
+
+    return {
+        "old_rating": old_rating,
+        "new_rating": new_rating,
+        "change": change,
+    }
