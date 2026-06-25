@@ -163,6 +163,47 @@ def add_entry(request: Request, body: AddEntryBody, conn=Depends(get_db)):
 
         cur.execute(
             """
+            SELECT 1 FROM woodpecker_entries
+            WHERE set_id = %s
+            AND user_id = %s
+            AND puzzle_id = %s
+            AND is_mastered = FALSE
+            """,
+            (str(body.set_id), user_id, puzzle_id),
+        )
+        if cur.fetchone():
+            return {"skipped": True, "reason": "duplicate_puzzle"}
+
+        # Daily entry cap for free users
+        cur.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM woodpecker_entries
+            WHERE user_id = %s
+            AND DATE(added_at) = CURRENT_DATE
+            """,
+            (user_id,),
+        )
+        daily_count = cur.fetchone()["total"]
+        if daily_count >= 10:
+            return {"skipped": True, "reason": "daily_cap_reached"}
+
+        # Active queue cap for free users
+        cur.execute(
+            """
+            SELECT COUNT(*) AS total
+            FROM woodpecker_entries
+            WHERE user_id = %s
+            AND is_mastered = FALSE
+            """,
+            (user_id,),
+        )
+        active_count = cur.fetchone()["total"]
+        if active_count >= 20:
+            return {"skipped": True, "reason": "active_cap_reached"}
+
+        cur.execute(
+            """
             SELECT COUNT(*) AS total
             FROM woodpecker_entries
             WHERE set_id = %s
@@ -257,20 +298,16 @@ def record_attempt(request: Request, body: RecordAttemptBody, conn=Depends(get_d
 
         cur.execute(
             """
-            SELECT solved_correctly, time_taken_ms
+            SELECT cycle_number, solved_correctly, time_taken_ms
             FROM (
-                SELECT *
-                FROM (
-                    SELECT DISTINCT ON (cycle_number)
-                        cycle_number,
-                        solved_correctly,
-                        time_taken_ms,
-                        attempted_at
-                    FROM woodpecker_attempts
-                    WHERE entry_id = %s
-                    ORDER BY cycle_number, attempted_at DESC
-                ) latest_by_cycle
-                ORDER BY cycle_number DESC
+                SELECT DISTINCT ON (cycle_number)
+                    cycle_number,
+                    solved_correctly,
+                    time_taken_ms,
+                    attempted_at
+                FROM woodpecker_attempts
+                WHERE entry_id = %s
+                ORDER BY cycle_number DESC, attempted_at DESC
                 LIMIT 3
             ) recent_cycles
             ORDER BY cycle_number DESC
@@ -278,9 +315,18 @@ def record_attempt(request: Request, body: RecordAttemptBody, conn=Depends(get_d
             (str(body.entry_id),),
         )
         recent_attempts = cur.fetchall()
-        mastered = len(recent_attempts) == 3 and all(
-            row["solved_correctly"] and row["time_taken_ms"] <= 20000
-            for row in recent_attempts
+        cycles = [row["cycle_number"] for row in recent_attempts]
+        is_consecutive = (
+            len(cycles) == 3
+            and cycles[0] - cycles[1] == 1
+            and cycles[1] - cycles[2] == 1
+        )
+        mastered = (
+            is_consecutive
+            and all(
+                row["solved_correctly"] and row["time_taken_ms"] <= 20000
+                for row in recent_attempts
+            )
         )
 
         if mastered:
