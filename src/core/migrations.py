@@ -96,6 +96,20 @@ def run_migrations():
             )
             cur.execute(
                 """
+                CREATE TABLE IF NOT EXISTS tactical_rating_history (
+                    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    user_id     TEXT NOT NULL REFERENCES users(clerk_id),
+                    old_rating  INT NOT NULL,
+                    new_rating  INT NOT NULL,
+                    change      INT NOT NULL,
+                    puzzle_id   TEXT NOT NULL,
+                    solved      BOOLEAN NOT NULL,
+                    created_at  TIMESTAMP DEFAULT NOW()
+                )
+                """
+            )
+            cur.execute(
+                """
                 CREATE INDEX IF NOT EXISTS idx_woodpecker_entries_user_id
                     ON woodpecker_entries(user_id)
                 """
@@ -110,6 +124,12 @@ def run_migrations():
                 """
                 CREATE INDEX IF NOT EXISTS idx_woodpecker_attempts_entry_cycle
                     ON woodpecker_attempts(entry_id, cycle_number)
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_tactical_rating_history_user_id
+                    ON tactical_rating_history(user_id)
                 """
             )
         conn.commit()
