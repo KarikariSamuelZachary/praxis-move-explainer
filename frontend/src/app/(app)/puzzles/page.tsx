@@ -2,23 +2,98 @@
 
 import { useState, useEffect, useCallback, useRef } from 'react';
 import dynamic from 'next/dynamic';
+import Image from 'next/image';
+import Link from 'next/link';
 import { Puzzle } from '@/types';
 import { fetchPuzzleBatch, getPuzzleDifficultyLabel } from '@/lib/lichess';
+import type { BoardApi } from '@/components/board/ChessBoard';
 
 // Dynamically import chessboard to avoid SSR issues
 const ChessBoard = dynamic(() => import('@/components/board/ChessBoard'), {
   ssr: false,
   loading: () => (
-    <div className="w-[480px] h-[480px] bg-zinc-800 rounded-lg animate-pulse flex items-center justify-center">
-      <span className="text-zinc-500">Loading board...</span>
+    <div className="flex aspect-square w-full max-w-[700px] animate-pulse items-center justify-center rounded-lg border border-white/10 bg-black/40 backdrop-blur-sm">
+      <span className="text-white/60">Loading board...</span>
     </div>
   ),
 });
 
 const PLAYER_ELO = 1500; // TODO: get from user settings/auth
 const BATCH_SIZE = 10;
+const CARD_CLASS =
+  'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
+const WEEK_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+const RATING_DATA = [1814, 1828, 1851, 1840, 1860, 1854, 1876];
+
+function formatTheme(theme: string) {
+  return theme.replace(/([A-Z])/g, ' $1').trim();
+}
+
+function getSideToMove(puzzle: Puzzle) {
+  return (puzzle.fen || '').split(/\s+/)[1] === 'b' ? 'black' : 'white';
+}
+
+function RatingSparkline() {
+  const width = 330;
+  const height = 96;
+  const padding = 8;
+  const min = Math.min(...RATING_DATA);
+  const max = Math.max(...RATING_DATA);
+  const range = Math.max(max - min, 1);
+  const points = RATING_DATA.map((value, index) => {
+    const x = padding + (index * (width - padding * 2)) / (RATING_DATA.length - 1);
+    const y = height - padding - ((value - min) / range) * (height - padding * 2);
+    return { x, y };
+  });
+  const path = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ');
+  const areaPath = `${path} L ${points[points.length - 1].x} ${height - padding} L ${points[0].x} ${height - padding} Z`;
+
+  return (
+    <svg className="mt-4 h-16 w-full overflow-visible" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Seven day tactical rating trend">
+      <defs>
+        <linearGradient id="rating-fill" x1="0" x2="0" y1="0" y2="1">
+          <stop offset="0%" stopColor="#10b981" stopOpacity="0.38" />
+          <stop offset="100%" stopColor="#10b981" stopOpacity="0" />
+        </linearGradient>
+      </defs>
+      <path d={areaPath} fill="url(#rating-fill)" />
+      <path d={path} fill="none" stroke="#10b981" strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" />
+      {points.map((point) => (
+        <circle key={`${point.x}-${point.y}`} cx={point.x} cy={point.y} fill="#10b981" r="3" stroke="rgba(255,255,255,0.45)" strokeWidth="1" />
+      ))}
+    </svg>
+  );
+}
+
+function CheckIcon() {
+  return (
+    <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" viewBox="0 0 24 24">
+      <path d="m5 12 4 4L19 6" />
+    </svg>
+  );
+}
+
+function HintIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24">
+      <path d="M9 18h6" />
+      <path d="M10 22h4" />
+      <path d="M8.5 14.5A6 6 0 1 1 15.5 14c-.8.5-1.5 1.3-1.5 2.2V17h-4v-.8c0-.7-.5-1.3-1.5-1.7Z" />
+    </svg>
+  );
+}
+
+function EyeIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24">
+      <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
 
 export default function PuzzlesPage() {
+  const boardApi = useRef<BoardApi | null>(null);
   const [puzzles, setPuzzles] = useState<Puzzle[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
@@ -78,6 +153,8 @@ export default function PuzzlesPage() {
     }
   }
 
+  function handleShowSolution() {}
+
   function startNewSession() {
     setShowStats(false);
     loadPuzzles();
@@ -85,87 +162,113 @@ export default function PuzzlesPage() {
   }
 
   const currentPuzzle = puzzles[currentIndex];
-  const progressPercent = puzzles.length > 0
-    ? Math.round(((currentIndex) / puzzles.length) * 100)
-    : 0;
+  const displayedThemes = currentPuzzle?.themes?.slice(0, 4) ?? [];
+  const themeCount = currentPuzzle ? Math.max(new Set(currentPuzzle.themes).size, 1) : 0;
+  const reviewsDue = Math.max(puzzles.length - sessionStats.solved, 0);
+  const isCurrentPuzzleSolved = sessionStats.solved > currentIndex;
 
   return (
-    <div className="min-h-screen bg-zinc-950 text-white">
-      <div className="max-w-6xl mx-auto px-4 py-8">
+    <div className="min-h-[calc(100vh-3.5rem)] -mt-2 text-white [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+      <div className="mx-auto max-w-[1280px] pb-1 px-6 lg:px-10">
         {/* Main content */}
         {isLoading ? (
-          <div className="flex items-center justify-center h-96">
-            <div className="text-center">
-              <div className="w-8 h-8 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin mx-auto mb-3" />
-              <p className="text-zinc-400">Loading puzzles...</p>
+          <div className="flex h-[70vh] items-center justify-center">
+            <div className={`${CARD_CLASS} px-10 py-8 text-center shadow-2xl shadow-black/30`}>
+              <div className="mx-auto mb-4 h-9 w-9 animate-spin rounded-full border-2 border-[#10b981] border-t-transparent" />
+              <p className="text-white/60">Loading puzzles...</p>
             </div>
           </div>
         ) : showStats ? (
           /* Session complete screen */
-          <div className="flex items-center justify-center h-96">
-            <div className="text-center bg-zinc-800 rounded-2xl p-8 border border-zinc-700 max-w-md w-full">
-              <div className="text-5xl mb-4">🎯</div>
-              <h2 className="text-2xl font-bold mb-2">Cycle {cycle - 1} Complete!</h2>
-              <p className="text-zinc-400 mb-6">
+          <div className="flex h-[70vh] items-center justify-center">
+            <div className={`${CARD_CLASS} w-full max-w-md p-8 text-center shadow-2xl shadow-black/30`}>
+              <Image src="/woodpecker-bird.png" alt="" width={54} height={54} className="mx-auto mb-4 h-[54px] w-[54px] object-contain" />
+              <h2 className="mb-2 text-2xl font-bold">Cycle {cycle - 1} Complete!</h2>
+              <p className="mb-6 text-white/60">
                 The Woodpecker Method works by repetition. Start the next cycle to reinforce these patterns.
               </p>
               <div className="grid grid-cols-3 gap-4 mb-6">
-                <div className="bg-zinc-700 rounded-lg p-3">
-                  <div className="text-2xl font-bold text-emerald-400">{sessionStats.solved}</div>
-                  <div className="text-xs text-zinc-400">Solved</div>
+                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                  <div className="text-2xl font-bold text-[#10b981]">{sessionStats.solved}</div>
+                  <div className="text-xs text-white/60">Solved</div>
                 </div>
-                <div className="bg-zinc-700 rounded-lg p-3">
+                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
                   <div className="text-2xl font-bold text-red-400">{sessionStats.failed}</div>
-                  <div className="text-xs text-zinc-400">Failed</div>
+                  <div className="text-xs text-white/60">Failed</div>
                 </div>
-                <div className="bg-zinc-700 rounded-lg p-3">
-                  <div className="text-2xl font-bold text-blue-400">
+                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
+                  <div className="text-2xl font-bold text-white">
                     {sessionStats.solved > 0
                       ? Math.round(sessionStats.totalTime / sessionStats.solved)
                       : 0}s
                   </div>
-                  <div className="text-xs text-zinc-400">Avg Time</div>
+                  <div className="text-xs text-white/60">Avg Time</div>
                 </div>
               </div>
               <button
                 onClick={startNewSession}
-                className="w-full py-3 bg-emerald-600 hover:bg-emerald-500 rounded-xl font-semibold transition-colors"
+                className="w-full rounded-xl bg-[#10b981] py-3 font-semibold text-white shadow-lg shadow-emerald-950/40 transition-colors hover:bg-emerald-400"
               >
-                Start Cycle {cycle} →
+                Start Cycle {cycle}
               </button>
             </div>
           </div>
         ) : currentPuzzle ? (
-          <div>
-            {/* Puzzle counter */}
-            <div className="flex items-center justify-between mb-4">
-              <p className="text-zinc-400 text-sm">
-                Puzzle {currentIndex + 1} of {puzzles.length} •{' '}
-                <span className="text-zinc-300">
-                  {getPuzzleDifficultyLabel(currentPuzzle.rating)}
-                </span>
-              </p>
-              <a
-                href={currentPuzzle.gameUrl}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-zinc-500 hover:text-zinc-300 text-xs transition-colors"
-              >
-                View on Lichess ↗
-              </a>
-            </div>
+          <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_420px] 2xl:gap-8">
+            <section className="overflow-visible">
+              <div className="mx-auto mt-[24px] w-full max-w-[calc(100vh-108px)]">
+                <div className="w-full">
+                  <ChessBoard
+                    puzzle={currentPuzzle}
+                    playerElo={PLAYER_ELO}
+                    onPuzzleSolved={handlePuzzleSolved}
+                    onPuzzleFailed={handlePuzzleFailed}
+                    onNextPuzzle={handleNextPuzzle}
+                    onShowSolution={handleShowSolution}
+                    apiRef={boardApi}
+                  />
+                </div>
+              </div>
+            </section>
 
-            <ChessBoard
-              puzzle={currentPuzzle}
-              playerElo={PLAYER_ELO}
-              onPuzzleSolved={handlePuzzleSolved}
-              onPuzzleFailed={handlePuzzleFailed}
-              onNextPuzzle={handleNextPuzzle}
-            />
+            <section className="flex w-full max-w-[420px] flex-col space-y-6 mt-[24px]">
+              <div className={`${CARD_CLASS} w-full p-4 shadow-2xl shadow-black/25`}>
+                <div className="flex items-start gap-5">
+                  <Image src="/woodpecker-bird.png" alt="" width={54} height={54} className="mt-1 h-[54px] w-[54px] object-contain" />
+                  <div className="flex-1">
+                    <h2 className="mb-5 text-3xl font-bold tracking-wide text-[#f7e5c6]">WOODPECKER</h2>
+                    <Link href="/woodpecker" className="mt-6 inline-flex w-full max-w-[300px] items-center justify-center rounded-lg bg-[#0f7b43] px-6 py-4 text-xl font-bold text-white shadow-lg shadow-black/25 transition hover:bg-[#10b981]">
+                      Go to Woodpecker
+                    </Link>
+                  </div>
+                </div>
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <button
+                  type="button"
+                  onClick={() => boardApi.current?.showHint()}
+                  className={`${CARD_CLASS} flex h-14 items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5`}
+                >
+                  <HintIcon />
+                  Hint
+                </button>
+                <button
+                  type="button"
+                  onClick={() => boardApi.current?.showSolution()}
+                  className={`${CARD_CLASS} flex h-14 items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5`}
+                >
+                  <EyeIcon />
+                  Show Solution
+                </button>
+              </div>
+            </section>
           </div>
         ) : (
-          <div className="flex items-center justify-center h-96">
-            <p className="text-zinc-400">No puzzles available. Try refreshing.</p>
+          <div className="flex h-[70vh] items-center justify-center">
+            <div className={`${CARD_CLASS} px-8 py-6 text-white/60`}>
+              No puzzles available. Try refreshing.
+            </div>
           </div>
         )}
       </div>
