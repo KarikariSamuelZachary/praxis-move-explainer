@@ -4,7 +4,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Chess, Move, Square } from 'chess.js';
 import { Chessboard, type SquareRenderer } from 'react-chessboard';
 
-import { ExplanationResponse, Puzzle } from '@/types';
+import { Puzzle } from '@/types';
+
+export type BoardApi = {
+  showSolution: () => void;
+  showHint: () => void;
+};
 
 interface ChessBoardProps {
   puzzle: Puzzle;
@@ -12,6 +17,8 @@ interface ChessBoardProps {
   onPuzzleSolved: (timeSeconds: number) => void;
   onPuzzleFailed: () => void;
   onNextPuzzle: () => void;
+  onShowSolution?: () => void;
+  apiRef?: React.MutableRefObject<BoardApi | null>;
 }
 
 type PuzzleState =
@@ -77,24 +84,22 @@ function buildInitialHighlight(puzzle: Puzzle): HighlightSquares {
 
 export default function ChessBoardComponent({
   puzzle,
-  playerElo,
   onPuzzleSolved,
   onPuzzleFailed,
   onNextPuzzle,
+  apiRef,
 }: ChessBoardProps) {
   const initialGame = buildInitialGame(puzzle);
 
   const [game, setGame] = useState<Chess>(initialGame);
   const [highlightSquares, setHighlightSquares] = useState<HighlightSquares>(() => buildInitialHighlight(puzzle));
   const [puzzleState, setPuzzleState] = useState<PuzzleState>('playing');
-  const [explanation, setExplanation] = useState<ExplanationResponse | null>(null);
-  const [isLoadingExplanation, setIsLoadingExplanation] = useState(false);
   const [wrongMoveMessage, setWrongMoveMessage] = useState<string | null>(null);
   const [hintSquare, setHintSquare] = useState<string | null>(null);
   const [moveToPromote, setMoveToPromote] = useState<PendingPromotionMove | null>(null);
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
 
-  const startTimeRef = useRef<number>(Date.now());
+  const startTimeRef = useRef<number>(0);
   const gameRef = useRef<Chess>(initialGame);
   const currentMoveIndexRef = useRef<number>(0);
   const puzzleKeyRef = useRef<string>('');
@@ -166,8 +171,6 @@ export default function ChessBoardComponent({
     setPuzzleState('playing');
     setWrongMoveMessage(null);
     setHintSquare(null);
-    setExplanation(null);
-    setIsLoadingExplanation(false);
     setMoveToPromote(null);
     setSelectedSquare(null);
     clearOpponentMoveTimeout();
@@ -181,6 +184,7 @@ export default function ChessBoardComponent({
     setHighlightSquares(buildInitialHighlight(puzzle));
   }, [clearAutoAdvanceTimeout, clearHintTimeout, clearInitialMoveTimeout, clearOpponentMoveTimeout, clearSnapbackTimeout, clearWrongFlashTimeout, puzzle]);
 
+  /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
     clearOpponentMoveTimeout();
     clearWrongFlashTimeout();
@@ -190,8 +194,6 @@ export default function ChessBoardComponent({
     clearAutoAdvanceTimeout();
     puzzleKeyRef.current = `${puzzle.id}:${puzzle.fen}:${puzzle.moves.join(' ')}`;
     setWasSolutionViewed(false);
-    setExplanation(null);
-    setIsLoadingExplanation(false);
     setWrongMoveMessage(null);
     setHintSquare(null);
     setMoveToPromote(null);
@@ -257,56 +259,7 @@ export default function ChessBoardComponent({
       clearAutoAdvanceTimeout();
     };
   }, [clearAutoAdvanceTimeout, clearHintTimeout, clearInitialMoveTimeout, clearOpponentMoveTimeout, clearSnapbackTimeout, clearWrongFlashTimeout, puzzle, setBoardState]);
-
-  const fetchExplanation = useCallback(async (
-    fen: string,
-    move: string,
-    isCorrect: boolean,
-    moveHistory: string[] = []
-  ) => {
-    setIsLoadingExplanation(true);
-    setExplanation(null);
-
-    try {
-      const response = await fetch('/api/explain', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          fen,
-          move,
-          isCorrect,
-          playerElo,
-          puzzleThemes: puzzle.themes,
-          moveHistory,
-        }),
-      });
-
-      if (response.ok) {
-        const data: ExplanationResponse = await response.json();
-        setExplanation(data);
-      } else {
-        console.warn(`Explanation API returned ${response.status}`);
-        setExplanation({
-          explanation: isCorrect
-            ? 'This is the strongest continuation in the position.'
-            : 'This move misses the most forcing continuation in the puzzle.',
-          concept: 'Tactics',
-          tip: 'Look for checks, captures, and threats before quieter moves.',
-        });
-      }
-    } catch (error) {
-      console.error('Failed to fetch explanation:', error);
-      setExplanation({
-        explanation: isCorrect
-          ? 'This is the strongest continuation in the position.'
-          : 'This move misses the most forcing continuation in the puzzle.',
-        concept: 'Tactics',
-        tip: 'Look for checks, captures, and threats before quieter moves.',
-      });
-    } finally {
-      setIsLoadingExplanation(false);
-    }
-  }, [playerElo, puzzle.themes]);
+  /* eslint-enable react-hooks/set-state-in-effect */
 
   const scheduleOpponentMove = useCallback((baseGame: Chess, moveIndex: number) => {
     const opponentMove = puzzle.moves[moveIndex];
@@ -423,9 +376,8 @@ export default function ChessBoardComponent({
 
     const currentFen = gameRef.current.fen();
     const nextGame = new Chess(currentFen);
-    let playedMove: Move;
     try {
-      playedMove = nextGame.move({
+      nextGame.move({
         from: sourceSquare,
         to: targetSquare,
         promotion: promotionChoice ?? undefined,
@@ -442,12 +394,6 @@ export default function ChessBoardComponent({
       setPuzzleState('solved');
       const timeSeconds = Math.floor((Date.now() - startTimeRef.current) / 1000);
       onPuzzleSolved(timeSeconds);
-      fetchExplanation(
-        nextGame.fen(),
-        playedMove.san,
-        true,
-        gameRef.current.history()
-      );
 
       // Emerald green highlight on final destination square
       setHighlightSquares({
@@ -479,7 +425,7 @@ export default function ChessBoardComponent({
     setPuzzleState('playing');
     scheduleOpponentMove(nextGame, opponentReplyIndex);
     return true;
-  }, [clearHintTimeout, clearSnapbackTimeout, clearWrongFlashTimeout, fetchExplanation, onPuzzleFailed, onPuzzleSolved, onNextPuzzle, puzzle, scheduleOpponentMove, setBoardState]);
+  }, [clearHintTimeout, clearSnapbackTimeout, clearWrongFlashTimeout, onPuzzleFailed, onPuzzleSolved, onNextPuzzle, puzzle, scheduleOpponentMove, setBoardState]);
 
   const onDrop = useCallback((sourceSquare: string, targetSquare: string, pieceType: string) => {
     setSelectedSquare(null);
@@ -650,40 +596,85 @@ export default function ChessBoardComponent({
     scheduleOpponentMove(nextGame, nextIndex);
   }, [clearHintTimeout, clearWrongFlashTimeout, puzzle.moves, scheduleOpponentMove, setBoardState]);
 
-  const handleGetHint = useCallback(() => {
-    const expectedMove = puzzle.moves[currentMoveIndexRef.current];
-    if (!expectedMove) {
+  const showHint = useCallback(() => {
+    if (puzzleState !== 'playing') {
       return;
     }
 
-    const fromSquare = expectedMove.slice(0, 2);
-    clearHintTimeout();
-    setHintSquare(fromSquare);
+    const moveToShow = puzzle.moves[currentMoveIndexRef.current];
+    if (!moveToShow) {
+      return;
+    }
 
+    const from = moveToShow.slice(0, 2);
+    setHintSquare(from);
+    clearHintTimeout();
     hintTimeoutRef.current = window.setTimeout(() => {
-      if (puzzleKeyRef.current) {
-        setHintSquare(null);
-        hintTimeoutRef.current = null;
+      setHintSquare(null);
+      hintTimeoutRef.current = null;
+    }, 4000);
+  }, [clearHintTimeout, puzzle.moves, puzzleState]);
+
+  useEffect(() => {
+    if (apiRef) {
+      apiRef.current = { showSolution: handleShowSolution, showHint };
+    }
+    return () => {
+      if (apiRef) {
+        apiRef.current = null;
       }
-    }, 2000);
-  }, [clearHintTimeout, puzzle.moves]);
+    };
+  }, [apiRef, handleShowSolution, showHint]);
 
   return (
-    <div className="flex flex-col lg:flex-row gap-6 w-full max-w-5xl mx-auto">
-      <div className="flex-shrink-0">
-        <div className="relative">
-          <Chessboard
-            options={{
-              position: game.fen(),
-              boardOrientation,
-              squareStyles: displayedSquareStyles,
-              boardStyle: {
-                width: 'min(480px, 100vw - 2rem)',
-                borderRadius: '8px',
-                boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
-              },
-              darkSquareStyle: { backgroundColor: '#4a7c59' },
-              lightSquareStyle: { backgroundColor: '#f0d9b5' },
+    <div
+      style={{
+        padding: '14px',
+        background: 'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.png)',
+        backgroundSize: 'cover',
+        backgroundPosition: 'center',
+        borderRadius: '6px',
+        boxShadow: '0 0 0 2px #1a0a02, inset 0 2px 0 rgba(255,200,100,0.12), inset 0 -2px 0 rgba(0,0,0,0.5), 0 12px 40px rgba(0,0,0,0.6)',
+      }}
+    >
+      <div className="relative">
+        <div
+          style={{
+            position: 'absolute',
+            inset: 0,
+            backgroundImage: 'url("/wood-texture.png")',
+            backgroundSize: 'cover',
+            opacity: 0.08,
+            pointerEvents: 'none',
+            mixBlendMode: 'multiply' as React.CSSProperties['mixBlendMode'],
+          }}
+        />
+        <Chessboard
+          options={{
+            position: game.fen(),
+            boardOrientation,
+            squareStyles: displayedSquareStyles,
+            darkSquareStyle: {
+              backgroundImage: 'url(/walnut-dark.png)',
+              backgroundSize: '110% 110%',
+              backgroundPosition: 'center',
+            },
+            lightSquareStyle: {
+              backgroundImage: 'url(/walnut-light.png)',
+              backgroundSize: '110% 110%',
+              backgroundPosition: 'center',
+            },
+            darkSquareNotationStyle: {
+              color: '#f0e0c0',
+            },
+            lightSquareNotationStyle: {
+              color: '#3a2410',
+            },
+            boardStyle: {
+              width: '100%',
+              borderRadius: '8px',
+              boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+            },
               animationDurationInMs: 200,
               allowDragging: true,
               canDragPiece: ({ piece, square }) => {
@@ -709,7 +700,7 @@ export default function ChessBoardComponent({
                 return onDrop(sourceSquare, targetSquare, piece.pieceType);
               },
             }}
-          />
+        />
 
           {moveToPromote && (
             <div className="absolute inset-0 flex items-center justify-center bg-black/60 z-10 rounded-lg backdrop-blur-sm">
@@ -737,133 +728,6 @@ export default function ChessBoardComponent({
               </div>
             </div>
           )}
-        </div>
-
-        <div className="flex gap-3 mt-4">
-          {puzzleState === 'playing' && !wrongMoveMessage && (
-            <button
-              onClick={handleShowSolution}
-              className="flex-1 py-2 px-4 rounded-lg bg-zinc-700 hover:bg-zinc-600 text-white text-sm font-medium transition-colors"
-            >
-              Show Solution
-            </button>
-          )}
-          {puzzleState === 'solved' && wasSolutionViewed && (
-            <button
-              onClick={resetPuzzle}
-              className="flex-1 py-2 px-4 rounded-lg bg-zinc-700 hover:bg-zinc-600 text-white text-sm font-medium transition-colors"
-            >
-              ↺ Play Again
-            </button>
-          )}
-        </div>
-      </div>
-
-      <div className="flex-1 flex flex-col gap-4">
-        <div className="bg-zinc-800 rounded-xl p-4 border border-zinc-700">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-zinc-400 text-sm font-medium">PUZZLE</span>
-            <span className="text-emerald-400 font-bold">♟ {puzzle.rating}</span>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            {puzzle.themes.slice(0, 4).map((theme) => (
-              <span
-                key={theme}
-                className="px-2 py-1 bg-zinc-700 rounded-md text-xs text-zinc-300 capitalize"
-              >
-                {theme.replace(/([A-Z])/g, ' $1').trim()}
-              </span>
-            ))}
-          </div>
-        </div>
-
-        <div className={`rounded-xl p-4 border transition-all ${
-          puzzleState === 'solved' && !wasSolutionViewed
-            ? 'bg-emerald-900/40 border-emerald-600'
-            : puzzleState === 'solved' && wasSolutionViewed
-            ? 'bg-indigo-900/40 border-indigo-600'
-            : wrongMoveMessage
-            ? 'bg-red-900/40 border-red-600'
-            : puzzleState === 'showing_solution'
-            ? 'bg-indigo-900/40 border-indigo-600'
-            : puzzleState === 'animating_initial' || puzzleState === 'waiting_for_opponent'
-            ? 'bg-amber-900/30 border-amber-600'
-            : 'bg-zinc-800 border-zinc-700'
-        }`}>
-          <p className="text-sm font-medium text-zinc-200">
-            {puzzleState === 'animating_initial' && 'Opponent is playing...'}
-            {puzzleState === 'playing' && !wrongMoveMessage && `Find the best move for ${boardOrientation}`}
-            {puzzleState === 'waiting_for_opponent' && 'Opponent is responding...'}
-            {wrongMoveMessage && `✗ ${wrongMoveMessage}`}
-            {puzzleState === 'solved' && !wasSolutionViewed && 'Puzzle complete!'}
-            {puzzleState === 'solved' && wasSolutionViewed && 'Solution complete'}
-            {puzzleState === 'showing_solution' && 'Here is the solution:'}
-          </p>
-
-          {wrongMoveMessage && (
-            <div className="mt-3 flex gap-2">
-              <button
-                onClick={handleGetHint}
-                className="flex-1 py-2 px-4 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-sm font-medium transition-colors"
-              >
-                Get a Hint
-              </button>
-              <button
-                onClick={handleShowSolution}
-                className="flex-1 py-2 px-4 rounded-lg bg-zinc-700 hover:bg-zinc-600 text-white text-sm font-medium transition-colors"
-              >
-                View Solution
-              </button>
-            </div>
-          )}
-        </div>
-
-        {(isLoadingExplanation || explanation) && (
-          <div className="bg-zinc-800 rounded-xl p-4 border border-zinc-700 flex-1">
-            <div className="flex items-center gap-2 mb-3">
-              <span className="text-zinc-400 text-sm font-medium">
-                {puzzleState === 'solved' ? '✓ WHY THIS WORKS' : '💡 COACH'}
-              </span>
-              {explanation?.concept && (
-                <span className="px-2 py-0.5 bg-indigo-900/60 border border-indigo-700 rounded-md text-xs text-indigo-300">
-                  {explanation.concept}
-                </span>
-              )}
-            </div>
-
-            {isLoadingExplanation ? (
-              <div className="space-y-2 animate-pulse">
-                <div className="h-3 bg-zinc-700 rounded w-full" />
-                <div className="h-3 bg-zinc-700 rounded w-5/6" />
-                <div className="h-3 bg-zinc-700 rounded w-4/6" />
-              </div>
-            ) : (
-              <div className="space-y-3">
-                <p className="text-zinc-200 text-sm leading-relaxed">
-                  {explanation?.explanation}
-                </p>
-                {explanation?.tip && (
-                  <div className="border-t border-zinc-700 pt-3">
-                    <p className="text-xs text-zinc-400 font-medium mb-1">💡 PATTERN TIP</p>
-                    <p className="text-zinc-300 text-sm">{explanation.tip}</p>
-                  </div>
-                )}
-              </div>
-            )}
-          </div>
-        )}
-
-        {puzzleState === 'playing' && !explanation && !isLoadingExplanation && (
-          <div className="bg-zinc-800/50 rounded-xl p-6 border border-zinc-700 border-dashed flex items-center justify-center flex-1">
-            <p className="text-zinc-500 text-sm text-center leading-relaxed">
-              Solve the puzzle to get an explanation.
-              <br />
-              <span className="text-zinc-600 text-xs">
-                Stuck? Click &quot;Show Solution&quot; for help.
-              </span>
-            </p>
-          </div>
-        )}
       </div>
     </div>
   );
