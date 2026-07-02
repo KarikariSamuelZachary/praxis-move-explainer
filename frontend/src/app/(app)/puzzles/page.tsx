@@ -198,7 +198,7 @@ export default function PuzzlesPage() {
   const isCurrentPuzzleSolved = sessionStats.solved > currentIndex;
 
   return (
-    <div className="min-h-[calc(100vh-3.5rem)] -mt-2 text-white [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+    <div className="min-h-[calc(100vh-2.25rem)] -mt-2 text-white [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
       <div className="mx-auto max-w-[1280px] pb-1 px-6 lg:px-10">
         {/* Main content */}
         {isLoading ? (
@@ -244,9 +244,9 @@ export default function PuzzlesPage() {
             </div>
           </div>
         ) : currentPuzzle ? (
-          <div className="grid items-start gap-6 xl:grid-cols-[minmax(0,1fr)_420px] 2xl:gap-8">
+          <div className="grid items-start justify-center gap-6 xl:grid-cols-[minmax(0,calc(100vh-70px))_420px]">
             <section className="overflow-visible">
-              <div className="mx-auto mt-[24px] w-full max-w-[calc(100vh-108px)]">
+              <div className="mx-auto mt-[24px] w-full max-w-[calc(100vh-70px)]">
                 <div className="w-full">
                   <ChessBoard
                     puzzle={currentPuzzle}
