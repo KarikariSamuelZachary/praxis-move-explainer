@@ -92,6 +92,26 @@ function EyeIcon() {
   );
 }
 
+function PlayAgainIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24">
+      <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
+      <path d="M21 3v5h-5" />
+      <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
+      <path d="M3 21v-5h5" />
+    </svg>
+  );
+}
+
+function NextIcon() {
+  return (
+    <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24">
+      <path d="M5 12h14" />
+      <path d="m12 5 7 7-7 7" />
+    </svg>
+  );
+}
+
 export default function PuzzlesPage() {
   const boardApi = useRef<BoardApi | null>(null);
   const [puzzles, setPuzzles] = useState<Puzzle[]>([]);
@@ -104,6 +124,7 @@ export default function PuzzlesPage() {
   });
   const [cycle, setCycle] = useState(1);
   const [showStats, setShowStats] = useState(false);
+  const [puzzleEnded, setPuzzleEnded] = useState(false);
   const loadIdRef = useRef(0);
 
   const loadPuzzles = useCallback(async () => {
@@ -144,6 +165,7 @@ export default function PuzzlesPage() {
   }
 
   function handleNextPuzzle() {
+    setPuzzleEnded(false);
     if (currentIndex + 1 >= puzzles.length) {
       // Session complete - start new Woodpecker cycle
       setCycle((prev) => prev + 1);
@@ -153,10 +175,18 @@ export default function PuzzlesPage() {
     }
   }
 
-  function handleShowSolution() {}
+  const handlePuzzleEnd = useCallback(() => {
+    setPuzzleEnded(true);
+  }, []);
+
+  const handlePlayAgain = useCallback(() => {
+    boardApi.current?.resetPuzzle();
+    setPuzzleEnded(false);
+  }, []);
 
   function startNewSession() {
     setShowStats(false);
+    setPuzzleEnded(false);
     loadPuzzles();
     setCycle((prev) => prev + 1);
   }
@@ -223,8 +253,7 @@ export default function PuzzlesPage() {
                     playerElo={PLAYER_ELO}
                     onPuzzleSolved={handlePuzzleSolved}
                     onPuzzleFailed={handlePuzzleFailed}
-                    onNextPuzzle={handleNextPuzzle}
-                    onShowSolution={handleShowSolution}
+                    onPuzzleEnd={handlePuzzleEnd}
                     apiRef={boardApi}
                   />
                 </div>
@@ -245,22 +274,45 @@ export default function PuzzlesPage() {
               </div>
 
               <div className="grid grid-cols-2 gap-3">
-                <button
-                  type="button"
-                  onClick={() => boardApi.current?.showHint()}
-                  className={`${CARD_CLASS} flex h-14 items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5`}
-                >
-                  <HintIcon />
-                  Hint
-                </button>
-                <button
-                  type="button"
-                  onClick={() => boardApi.current?.showSolution()}
-                  className={`${CARD_CLASS} flex h-14 items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5`}
-                >
-                  <EyeIcon />
-                  Show Solution
-                </button>
+                {puzzleEnded ? (
+                  <>
+                    <button
+                      type="button"
+                      onClick={handlePlayAgain}
+                      className={`${CARD_CLASS} flex h-14 items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5`}
+                    >
+                      <PlayAgainIcon />
+                      Play Again
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleNextPuzzle}
+                      className={`${CARD_CLASS} flex h-14 items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5`}
+                    >
+                      <NextIcon />
+                      Next Puzzle
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button
+                      type="button"
+                      onClick={() => boardApi.current?.showHint()}
+                      className={`${CARD_CLASS} flex h-14 items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5`}
+                    >
+                      <HintIcon />
+                      Hint
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => boardApi.current?.showSolution()}
+                      className={`${CARD_CLASS} flex h-14 items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5`}
+                    >
+                      <EyeIcon />
+                      Show Solution
+                    </button>
+                  </>
+                )}
               </div>
             </section>
           </div>
