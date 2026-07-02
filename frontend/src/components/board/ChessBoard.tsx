@@ -9,6 +9,7 @@ import { Puzzle } from '@/types';
 export type BoardApi = {
   showSolution: () => void;
   showHint: () => void;
+  resetPuzzle: () => void;
 };
 
 interface ChessBoardProps {
@@ -16,8 +17,7 @@ interface ChessBoardProps {
   playerElo: number;
   onPuzzleSolved: (timeSeconds: number) => void;
   onPuzzleFailed: () => void;
-  onNextPuzzle: () => void;
-  onShowSolution?: () => void;
+  onPuzzleEnd?: () => void;
   apiRef?: React.MutableRefObject<BoardApi | null>;
 }
 
@@ -86,7 +86,7 @@ export default function ChessBoardComponent({
   puzzle,
   onPuzzleSolved,
   onPuzzleFailed,
-  onNextPuzzle,
+  onPuzzleEnd,
   apiRef,
 }: ChessBoardProps) {
   const initialGame = buildInitialGame(puzzle);
@@ -265,6 +265,7 @@ export default function ChessBoardComponent({
     const opponentMove = puzzle.moves[moveIndex];
     if (!opponentMove) {
       setPuzzleState('solved');
+      onPuzzleEnd?.();
       return;
     }
 
@@ -299,12 +300,13 @@ export default function ChessBoardComponent({
 
       if (nextPlayerMoveIndex >= puzzle.moves.length) {
         setPuzzleState('solved');
+        onPuzzleEnd?.();
         return;
       }
 
       setPuzzleState('playing');
     }, 600);
-  }, [clearOpponentMoveTimeout, puzzle.moves, setBoardState]);
+  }, [clearOpponentMoveTimeout, onPuzzleEnd, puzzle.moves, setBoardState]);
 
   const validateAndMakeMove = useCallback((
     sourceSquare: string,
@@ -394,6 +396,7 @@ export default function ChessBoardComponent({
       setPuzzleState('solved');
       const timeSeconds = Math.floor((Date.now() - startTimeRef.current) / 1000);
       onPuzzleSolved(timeSeconds);
+      onPuzzleEnd?.();
 
       // Emerald green highlight on final destination square
       setHighlightSquares({
@@ -408,13 +411,6 @@ export default function ChessBoardComponent({
         }
       }, 1000);
 
-      // Auto-advance after 1.5 seconds
-      autoAdvanceTimeoutRef.current = setTimeout(() => {
-        if (scheduledPuzzleKey === puzzleKeyRef.current) {
-          onNextPuzzle();
-        }
-      }, 1500);
-
       return true;
     }
 
@@ -425,7 +421,7 @@ export default function ChessBoardComponent({
     setPuzzleState('playing');
     scheduleOpponentMove(nextGame, opponentReplyIndex);
     return true;
-  }, [clearHintTimeout, clearSnapbackTimeout, clearWrongFlashTimeout, onPuzzleFailed, onPuzzleSolved, onNextPuzzle, puzzle, scheduleOpponentMove, setBoardState]);
+  }, [clearHintTimeout, clearSnapbackTimeout, clearWrongFlashTimeout, onPuzzleEnd, onPuzzleFailed, onPuzzleSolved, puzzle, scheduleOpponentMove, setBoardState]);
 
   const onDrop = useCallback((sourceSquare: string, targetSquare: string, pieceType: string) => {
     setSelectedSquare(null);
@@ -589,12 +585,13 @@ export default function ChessBoardComponent({
 
     if (nextIndex >= puzzle.moves.length) {
       setPuzzleState('solved');
+      onPuzzleEnd?.();
       return;
     }
 
     setPuzzleState('showing_solution');
     scheduleOpponentMove(nextGame, nextIndex);
-  }, [clearHintTimeout, clearWrongFlashTimeout, puzzle.moves, scheduleOpponentMove, setBoardState]);
+  }, [clearHintTimeout, clearWrongFlashTimeout, onPuzzleEnd, puzzle.moves, scheduleOpponentMove, setBoardState]);
 
   const showHint = useCallback(() => {
     if (puzzleState !== 'playing') {
@@ -617,14 +614,14 @@ export default function ChessBoardComponent({
 
   useEffect(() => {
     if (apiRef) {
-      apiRef.current = { showSolution: handleShowSolution, showHint };
+      apiRef.current = { showSolution: handleShowSolution, showHint, resetPuzzle };
     }
     return () => {
       if (apiRef) {
         apiRef.current = null;
       }
     };
-  }, [apiRef, handleShowSolution, showHint]);
+  }, [apiRef, handleShowSolution, resetPuzzle, showHint]);
 
   return (
     <div
