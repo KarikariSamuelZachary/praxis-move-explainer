@@ -70,7 +70,7 @@ export default function TopNav() {
   return (
     <>
       {/* Desktop top nav */}
-      <nav className="fixed inset-x-0 top-0 z-40 flex h-14 items-center justify-between border-b border-black/40 px-10 text-white shadow-[0_4px_20px_rgba(0,0,0,0.45)] [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] xl:px-12 2xl:px-16">
+      <nav className="fixed inset-x-0 top-0 z-40 flex h-11 items-center justify-between border-b border-black/40 px-10 text-white shadow-[0_4px_20px_rgba(0,0,0,0.45)] [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] xl:px-12 2xl:px-16">
         <Link href="/puzzles" className="flex items-center gap-3 transition hover:opacity-80">
           <Image src="/praxis-logo.png" alt="Praxis" width={28} height={28} className="h-7 w-7 object-contain" />
           <span className="text-xl font-bold tracking-[0.16em]">PRAXIS</span>
