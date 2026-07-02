@@ -8,7 +8,7 @@ export default function AppLayout({
   return (
     <div className="h-screen overflow-hidden text-zinc-100">
       <TopNav />
-      <main className="h-screen overflow-hidden pt-16">
+      <main className="h-screen overflow-hidden pt-11">
         {children}
       </main>
     </div>
