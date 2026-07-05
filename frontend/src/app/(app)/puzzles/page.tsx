@@ -212,7 +212,7 @@ export default function PuzzlesPage() {
           /* Session complete screen */
           <div className="flex h-[70vh] items-center justify-center">
             <div className={`${CARD_CLASS} w-full max-w-md p-8 text-center shadow-2xl shadow-black/30`}>
-              <Image src="/woodpecker-bird.png" alt="" width={54} height={54} className="mx-auto mb-4 h-[54px] w-[54px] object-contain" />
+              <Image src="/woodpecker-bird-v2.png" alt="" width={54} height={54} className="mx-auto mb-4 h-[54px] w-[54px] object-contain" />
               <h2 className="mb-2 text-2xl font-bold">Cycle {cycle - 1} Complete!</h2>
               <p className="mb-6 text-white/60">
                 The Woodpecker Method works by repetition. Start the next cycle to reinforce these patterns.
@@ -260,17 +260,21 @@ export default function PuzzlesPage() {
               </div>
             </section>
 
-            <section className="flex w-full max-w-[420px] flex-col space-y-6 mt-[24px]">
-              <div className={`${CARD_CLASS} w-full p-4 shadow-2xl shadow-black/25`}>
-                <div className="flex items-start gap-5">
-                  <Image src="/woodpecker-bird.png" alt="" width={54} height={54} className="mt-1 h-[54px] w-[54px] object-contain" />
-                  <div className="flex-1">
-                    <h2 className="mb-5 text-3xl font-bold tracking-wide text-[#f7e5c6]">WOODPECKER</h2>
-                    <Link href="/woodpecker" className="mt-6 inline-flex w-full max-w-[300px] items-center justify-center rounded-lg bg-[#0f7b43] px-6 py-4 text-xl font-bold text-white shadow-lg shadow-black/25 transition hover:bg-[#10b981]">
-                      Go to Woodpecker
-                    </Link>
-                  </div>
+            <section className="flex w-full max-w-[420px] flex-col space-y-5 mt-[24px]">
+<div className={`${CARD_CLASS} mx-auto w-[400px] p-6 shadow-2xl shadow-black/25`}>
+                {/* Bird image, centered */}
+                <Image src="/woodpecker-bird-v2.png" alt="" width={250} height={250} className="mx-auto h-[250px] w-[250px] shrink-0 object-contain" />
+
+                {/* Content block: centered, no gap from image */}
+                <div className="mt-0 text-center">
+                  <div className="text-sm font-normal text-[#f7e5c6]/60">Reviews Due</div>
+                  <div className="mt-1 text-[50px] font-bold leading-none text-[#f7e5c6]">{reviewsDue}</div>
                 </div>
+
+                {/* Button: full-width, rounded, comfortable padding */}
+                <Link href="/woodpecker" className="mt-5 flex w-full items-center justify-center rounded-lg border border-[#f7e5c6]/30 bg-transparent px-6 py-[15px] text-xl font-bold text-[#f7e5c6] transition hover:border-[#f7e5c6]/60 hover:bg-[#f7e5c6]/5">
+                  Go to Woodpecker
+                </Link>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
