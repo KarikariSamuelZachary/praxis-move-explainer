@@ -66,6 +66,7 @@ export default function OnboardingPage() {
         body: JSON.stringify({ skill_level: selected }),
       });
       if (res.ok) {
+        setSubmitting(false);
         router.push('/puzzles');
         router.refresh();
       } else {
