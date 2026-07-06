@@ -303,7 +303,12 @@ export default function PuzzlesPage() {
         ) : currentPuzzle ? (
           <div className="grid items-start justify-center gap-6 xl:grid-cols-[minmax(0,calc(100vh-70px))_420px]">
             <section className="overflow-visible">
-              <div className="mx-auto mt-[24px] w-full max-w-[calc(100vh-70px)]">
+              <div className="relative mx-auto mt-[24px] w-full max-w-[calc(100vh-70px)]">
+                {currentRating !== null && (
+                  <div className="pointer-events-none absolute -top-6 right-0 z-10 rounded-full bg-black/30 px-3 py-1 text-sm text-white/70">
+                    {currentRating}
+                  </div>
+                )}
                 <div className="w-full">
                   <ChessBoard
                     puzzle={currentPuzzle}
