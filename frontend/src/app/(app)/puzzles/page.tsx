@@ -18,7 +18,6 @@ const ChessBoard = dynamic(() => import('@/components/board/ChessBoard'), {
   ),
 });
 
-const PLAYER_ELO = 1500; // TODO: get from user settings/auth
 const BATCH_SIZE = 10;
 const CARD_CLASS =
   'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
@@ -125,18 +124,15 @@ export default function PuzzlesPage() {
   const [cycle, setCycle] = useState(1);
   const [showStats, setShowStats] = useState(false);
   const [puzzleEnded, setPuzzleEnded] = useState(false);
+  const [currentRating, setCurrentRating] = useState<number | null>(null);
   const loadIdRef = useRef(0);
+  const hasScoredAttemptRef = useRef(false);
 
   const loadPuzzles = useCallback(async () => {
     const loadId = ++loadIdRef.current;
     setIsLoading(true);
     try {
-      const newPuzzles = await fetchPuzzleBatch(
-        BATCH_SIZE,
-        undefined,
-        PLAYER_ELO - 200,
-        PLAYER_ELO + 300
-      );
+      const newPuzzles = await fetchPuzzleBatch(BATCH_SIZE);
       if (loadId !== loadIdRef.current) return;
       setPuzzles(newPuzzles);
       setCurrentIndex(0);
@@ -152,16 +148,77 @@ export default function PuzzlesPage() {
     loadPuzzles();
   }, [loadPuzzles]);
 
+  useEffect(() => {
+    fetch('/api/user/rating')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.tactical_rating != null) {
+          setCurrentRating(data.tactical_rating);
+        }
+      })
+      .catch((error) => console.error('Failed to fetch user rating:', error));
+  }, []);
+
+  useEffect(() => {
+    hasScoredAttemptRef.current = false;
+  }, [currentIndex]);
+
   function handlePuzzleSolved(timeSeconds: number) {
     setSessionStats((prev) => ({
       ...prev,
       solved: prev.solved + 1,
       totalTime: prev.totalTime + timeSeconds,
     }));
+
+    if (!hasScoredAttemptRef.current) {
+      hasScoredAttemptRef.current = true;
+      const puzzle = puzzles[currentIndex];
+      if (puzzle) {
+        fetch('/api/puzzles/rating', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            puzzle_id: puzzle.id,
+            puzzle_rating: puzzle.rating,
+            solved: true,
+          }),
+        })
+          .then((res) => (res.ok ? res.json() : null))
+          .then((data) => {
+            if (data?.new_rating != null) {
+              setCurrentRating(data.new_rating);
+            }
+          })
+          .catch((error) => console.error('Failed to update rating:', error));
+      }
+    }
   }
 
   function handlePuzzleFailed() {
     setSessionStats((prev) => ({ ...prev, failed: prev.failed + 1 }));
+
+    if (!hasScoredAttemptRef.current) {
+      hasScoredAttemptRef.current = true;
+      const puzzle = puzzles[currentIndex];
+      if (puzzle) {
+        fetch('/api/puzzles/rating', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            puzzle_id: puzzle.id,
+            puzzle_rating: puzzle.rating,
+            solved: false,
+          }),
+        })
+          .then((res) => (res.ok ? res.json() : null))
+          .then((data) => {
+            if (data?.new_rating != null) {
+              setCurrentRating(data.new_rating);
+            }
+          })
+          .catch((error) => console.error('Failed to update rating:', error));
+      }
+    }
   }
 
   function handleNextPuzzle() {
@@ -250,7 +307,7 @@ export default function PuzzlesPage() {
                 <div className="w-full">
                   <ChessBoard
                     puzzle={currentPuzzle}
-                    playerElo={PLAYER_ELO}
+                    playerElo={currentRating ?? 1100}
                     onPuzzleSolved={handlePuzzleSolved}
                     onPuzzleFailed={handlePuzzleFailed}
                     onPuzzleEnd={handlePuzzleEnd}
