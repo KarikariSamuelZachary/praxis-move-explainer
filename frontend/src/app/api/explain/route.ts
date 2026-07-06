@@ -76,7 +76,7 @@ function sanitizeRequest(body: Partial<ExplanationRequest>): ExplanationRequest 
       : [],
     classification,
     isCorrect: typeof body.isCorrect === 'boolean' ? body.isCorrect : undefined,
-    playerElo: Math.min(Math.max(body.playerElo ?? 1200, 100), 3200),
+    playerElo: Math.min(Math.max(body.playerElo ?? 1100, 100), 3200),
     puzzleThemes: Array.isArray(body.puzzleThemes)
       ? body.puzzleThemes
           .filter((theme): theme is string => typeof theme === 'string')
