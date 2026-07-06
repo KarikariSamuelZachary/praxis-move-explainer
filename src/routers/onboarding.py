@@ -3,10 +3,11 @@ from psycopg2.extras import RealDictCursor
 from pydantic import BaseModel
 
 from core.database import get_db
+from routers.puzzles import SKILL_RATING_BANDS
 
 router = APIRouter()
 
-VALID_SKILL_LEVELS = {"new", "beginner", "intermediate", "advanced"}
+VALID_SKILL_LEVELS = set(SKILL_RATING_BANDS.keys())
 
 
 class SkillLevelBody(BaseModel):
@@ -45,10 +46,18 @@ def set_skill_level(request: Request, body: SkillLevelBody, conn=Depends(get_db)
         cur.execute("SELECT 1 FROM users WHERE clerk_id = %s", (clerk_id,))
         user_exists = cur.fetchone() is not None
 
+        band = SKILL_RATING_BANDS[body.skill_level]
+        starting_rating = (band[0] + band[1]) // 2
+
         if user_exists:
             cur.execute(
-                "UPDATE users SET skill_level = %s WHERE clerk_id = %s",
-                (body.skill_level, clerk_id),
+                """
+                UPDATE users
+                SET skill_level = %s,
+                    tactical_rating = COALESCE(tactical_rating, %s)
+                WHERE clerk_id = %s
+                """,
+                (body.skill_level, starting_rating, clerk_id),
             )
         else:
             email = request.headers.get("X-Clerk-User-Email")
@@ -57,13 +66,14 @@ def set_skill_level(request: Request, body: SkillLevelBody, conn=Depends(get_db)
 
             cur.execute(
                 """
-                INSERT INTO users (clerk_id, email, skill_level)
-                VALUES (%s, %s, %s)
+                INSERT INTO users (clerk_id, email, skill_level, tactical_rating)
+                VALUES (%s, %s, %s, %s)
                 ON CONFLICT (email) DO UPDATE
                 SET clerk_id = EXCLUDED.clerk_id,
-                    skill_level = EXCLUDED.skill_level
+                    skill_level = EXCLUDED.skill_level,
+                    tactical_rating = COALESCE(users.tactical_rating, EXCLUDED.tactical_rating)
                 """,
-                (clerk_id, email, body.skill_level),
+                (clerk_id, email, body.skill_level, starting_rating),
             )
     conn.commit()
 
