@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { redis } from '@/lib/redis';
 
 type AnalyzeRequest = {
   pgn?: string;
@@ -10,6 +11,29 @@ type AnalyzeErrorResponse = {
   error?: string;
 };
 
+const MAX_REQUESTS_PER_WINDOW = 5;
+const RATE_LIMIT_WINDOW_SECONDS = 60;
+
+function getClientIp(request: NextRequest): string {
+  const forwardedFor = request.headers.get('x-forwarded-for');
+  if (forwardedFor) {
+    return forwardedFor.split(',')[0].trim();
+  }
+
+  return 'unknown';
+}
+
+async function isRateLimited(ip: string): Promise<boolean> {
+  const key = `rate_limit:analyze:${ip}`;
+  const count = await redis.incr(key);
+
+  if (count === 1) {
+    await redis.expire(key, RATE_LIMIT_WINDOW_SECONDS);
+  }
+
+  return count > MAX_REQUESTS_PER_WINDOW;
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = (await request.json()) as AnalyzeRequest;
@@ -19,6 +43,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(
         { error: 'Missing required field: pgn' },
         { status: 400 }
+      );
+    }
+
+    const ip = getClientIp(request);
+    if (await isRateLimited(ip)) {
+      return NextResponse.json(
+        { detail: 'Too many requests. Please slow down.' },
+        { status: 429 }
       );
     }
 
