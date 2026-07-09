@@ -6,11 +6,6 @@ type AnalyzeRequest = {
   target_color?: 'white' | 'black' | 'both';
 };
 
-type AnalyzeErrorResponse = {
-  detail?: string;
-  error?: string;
-};
-
 type ParsedAnalyzePayload = {
   pgn: string;
   targetColor: 'white' | 'black' | 'both';
@@ -163,6 +158,13 @@ async function parseAnalyzeRequest(
     );
   }
 
+  if (pgn.length > MAX_PGN_BYTES) {
+    return NextResponse.json(
+      { error: 'PGN exceeds the maximum allowed size' },
+      { status: 413 }
+    );
+  }
+
   const targetColor =
     body.target_color === 'white' ||
     body.target_color === 'black' ||
@@ -212,20 +214,12 @@ export async function POST(request: NextRequest) {
 
     if (!response.ok) {
       const errorText = await response.text();
-      let errorDetail = errorText;
-      try {
-        const parsedError = JSON.parse(errorText) as AnalyzeErrorResponse;
-        errorDetail = parsedError.detail ?? parsedError.error ?? errorText;
-      } catch {
-        // Keep the raw body for non-JSON backend errors.
-      }
-
       console.error('FastAPI review endpoint failed:', {
         status: response.status,
         body: errorText,
       });
       return NextResponse.json(
-        { error: 'Failed to analyze PGN', detail: errorDetail },
+        { error: 'Failed to analyze PGN', detail: 'The analysis service could not process this game.' },
         { status: response.status }
       );
     }
@@ -242,7 +236,7 @@ export async function POST(request: NextRequest) {
     return NextResponse.json(
       {
         error: 'Failed to analyze PGN',
-        detail: error instanceof Error ? error.message : 'Unexpected analyze API error',
+        detail: 'An unexpected error occurred while analyzing the game.',
       },
       { status: 500 }
     );
