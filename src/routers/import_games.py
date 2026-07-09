@@ -1,7 +1,7 @@
 import logging
 from typing import List
 
-from fastapi import APIRouter, HTTPException, Path, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 
 from integrations.chess_com import (
     ChessComError,
@@ -16,6 +16,7 @@ from integrations.lichess import (
     LichessUserNotFound,
     fetch_recent_lichess_games,
 )
+from core.rate_limit import limit_by_clerk_user_id
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -39,6 +40,7 @@ def import_chesscom_games(
         le=50,
         description="Maximum number of recent games to return.",
     ),
+    _: None = Depends(limit_by_clerk_user_id(limit=5, window=60)),
 ):
     clerk_id = request.headers.get("X-Clerk-User-Id")
     if not clerk_id:
@@ -84,6 +86,7 @@ def import_lichess_games(
         le=50,
         description="Maximum number of recent games to return.",
     ),
+    _: None = Depends(limit_by_clerk_user_id(limit=5, window=60)),
 ):
     clerk_id = request.headers.get("X-Clerk-User-Id")
     if not clerk_id:
