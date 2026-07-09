@@ -2,9 +2,10 @@ import logging
 import os
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 
 from core.game_analyzer import GameAnalyzer
+from core.rate_limit import limit_by_ip
 from engines.stockfish_engine import StockfishEngine
 from llms.gemini_explainer import GeminiExplainer
 from llms.groq_explainer import GroqExplainer
@@ -67,8 +68,11 @@ def _normalize_review_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 
 
 @router.post("/review", response_model=List[ReviewMoveResponse])
-def review_game(request: ReviewRequest):
-    pgn = request.pgn.strip()
+def review_game(
+    body: ReviewRequest,
+    _: None = Depends(limit_by_ip(limit=5, window=60)),
+):
+    pgn = body.pgn.strip()
     if not pgn:
         raise HTTPException(status_code=400, detail="Missing PGN")
 
@@ -81,7 +85,7 @@ def review_game(request: ReviewRequest):
         explainer = _build_explainer()
         log.info("Selected review explainer: %s", explainer.__class__.__name__)
         analyzer = GameAnalyzer(engine=engine, explainer=explainer)
-        review_rows = analyzer.analyze_full_game(pgn, target_color=request.target_color)
+        review_rows = analyzer.analyze_full_game(pgn, target_color=body.target_color)
         return _normalize_review_rows(review_rows)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
