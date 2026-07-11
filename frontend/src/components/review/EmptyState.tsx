@@ -6,9 +6,9 @@ type EmptyStateProps = {
 
 export default function EmptyState({ title, description, icon }: EmptyStateProps) {
   return (
-    <div className="flex h-full w-full items-center justify-center rounded-[24px] border border-dashed border-amber-900/40 [background-image:linear-gradient(rgba(0,0,0,0.55),rgba(0,0,0,0.55)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] p-8">
+    <div className="flex h-full w-full items-center justify-center rounded-[24px] border border-dashed border-white/10 [background-image:linear-gradient(rgba(0,0,0,0.55),rgba(0,0,0,0.55)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] p-8">
       <div className="flex max-w-xs flex-col items-center text-center">
-        <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full border border-amber-900/40 bg-black/40 text-[#10b981]">
+        <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full border border-[#f7e5c6]/30 bg-black/40 text-[#10b981]">
           {icon ?? (
             <svg
               className="h-7 w-7"
@@ -28,8 +28,8 @@ export default function EmptyState({ title, description, icon }: EmptyStateProps
             </svg>
           )}
         </div>
-        <h3 className="text-base font-semibold tracking-tight text-zinc-100">{title}</h3>
-        <p className="mt-2 text-sm leading-6 text-zinc-400">{description}</p>
+        <h3 className="text-base font-semibold tracking-tight text-white">{title}</h3>
+        <p className="mt-2 text-sm leading-6 text-white/60">{description}</p>
       </div>
     </div>
   );
