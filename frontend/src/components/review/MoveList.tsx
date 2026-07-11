@@ -64,7 +64,7 @@ function PairRow({
 }) {
   return (
     <>
-      <span className="select-none self-center text-right text-xs font-medium text-zinc-500">
+      <span className="select-none self-center text-right text-xs font-medium text-white/50">
         {pair.number}.
       </span>
       <MoveButton
@@ -105,8 +105,8 @@ function MoveButton({
       onClick={() => onPlySelect(ply)}
       className={`group inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm transition ${
         isActive
-          ? 'bg-emerald-500/15 text-emerald-200 ring-1 ring-emerald-400/40'
-          : 'text-zinc-200 hover:bg-white/5 hover:text-white'
+          ? 'bg-[#10b981]/15 text-[#10b981] ring-1 ring-[#10b981]/40'
+          : 'text-white/90 hover:bg-white/5 hover:text-white'
       }`}
     >
       <span
