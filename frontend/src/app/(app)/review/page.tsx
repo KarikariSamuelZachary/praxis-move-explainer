@@ -5,7 +5,6 @@ import { useEffect, useState } from 'react';
 import AnalysisPanel from '@/components/review/AnalysisPanel';
 import BoardPanel from '@/components/review/BoardPanel';
 import ImportPanel, {
-  ImportExample,
   ImportSource,
 } from '@/components/review/ImportPanel';
 import ReviewShell from '@/components/review/ReviewShell';
@@ -99,28 +98,6 @@ export default function ReviewPage() {
     }
   }
 
-  function handleLoadExample(example: ImportExample) {
-    setPgnInput(example.pgn);
-    setImportSource('paste');
-    setErrorMessage(null);
-    setAnalysisState('idle');
-  }
-
-  function handleClearPgn() {
-    setPgnInput('');
-    setErrorMessage(null);
-    setAnalysisState(gameData ? 'ready' : 'idle');
-  }
-
-  function handleNewGame() {
-    setGameData(null);
-    setGameTitle('');
-    setActivePly(0);
-    setCoachExplanation(null);
-    setErrorMessage(null);
-    setAnalysisState('idle');
-  }
-
   async function handleAskCoach() {
     if (!gameData || analysisState !== 'ready') {
       return;
@@ -162,7 +139,7 @@ export default function ReviewPage() {
   const moveNumberLabel = formatMoveNumber(activePly);
 
   return (
-    <main className="h-full w-full overflow-y-auto p-3 lg:h-full lg:overflow-hidden lg:p-4 xl:p-5">
+    <div className="relative -mt-2 h-[calc(100vh-2.25rem)] w-full overflow-y-auto px-3 pb-[10px] pt-6 text-white lg:overflow-hidden lg:px-4 xl:px-5 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
       <ReviewShell
         importPanel={
           <ImportPanel
@@ -171,10 +148,8 @@ export default function ReviewPage() {
             source={importSource}
             onSourceChange={setImportSource}
             onImport={handleAnalyzeGame}
-            onLoadExample={handleLoadExample}
             isAnalyzing={analysisState === 'analyzing'}
             errorMessage={analysisState === 'error' ? errorMessage : null}
-            onClear={handleClearPgn}
             disabled={!hasGame && analysisState === 'analyzing'}
           />
         }
@@ -197,28 +172,10 @@ export default function ReviewPage() {
             isAskingCoach={isAskingCoach}
             onAskCoach={handleAskCoach}
             moveNumberLabel={moveNumberLabel}
-            plyIndex={activePly}
-            totalMoves={gameData?.length ?? 0}
           />
         }
       />
-
-      {hasGame && (
-        <div className="pointer-events-none absolute bottom-4 left-1/2 z-20 -translate-x-1/2">
-          <button
-            type="button"
-            onClick={handleNewGame}
-            className="pointer-events-auto inline-flex items-center gap-1.5 rounded-full border border-amber-900/50 bg-black/70 px-3 py-1.5 text-xs text-zinc-200 shadow-lg shadow-black/50 transition hover:border-emerald-500/40 hover:text-emerald-200"
-          >
-            <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24" aria-hidden>
-              <path d="M12 5v14" />
-              <path d="M5 12h14" />
-            </svg>
-            Import Another Game
-          </button>
-        </div>
-      )}
-    </main>
+    </div>
   );
 }
 
