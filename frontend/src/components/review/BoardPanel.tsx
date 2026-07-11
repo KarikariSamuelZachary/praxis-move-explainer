@@ -1,10 +1,9 @@
 'use client';
 
-import { CSSProperties, useState } from 'react';
+import { useState } from 'react';
 import { Chessboard as BaseChessboard } from 'react-chessboard';
 
 import { GameReviewMove } from '@/types';
-import MoveList from './MoveList';
 
 type BoardPanelProps = {
   title: string;
@@ -15,11 +14,6 @@ type BoardPanelProps = {
   isAnalyzing: boolean;
   hasGame: boolean;
 };
-
-const STYLED_PROPS = {
-  customDarkSquareStyle: { backgroundColor: '#b58863' },
-  customLightSquareStyle: { backgroundColor: '#f0d9b5' },
-} as const;
 
 export default function BoardPanel({
   title,
@@ -32,19 +26,10 @@ export default function BoardPanel({
 }: BoardPanelProps) {
   const [orientation, setOrientation] = useState<'white' | 'black'>('white');
   const [isEditingTitle, setIsEditingTitle] = useState(false);
-  const [theme, setTheme] = useState<'classic' | 'green' | 'midnight'>('classic');
 
   const clampedPly = hasGame ? Math.min(activePly, moves.length - 1) : 0;
   const currentMove = hasGame ? moves[clampedPly] : null;
   const position = currentMove?.fen ?? 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
-
-  const squareStyles = theme === 'midnight' ? {
-    customDarkSquareStyle: { backgroundColor: '#1e293b' },
-    customLightSquareStyle: { backgroundColor: '#475569' },
-  } : theme === 'green' ? {
-    customDarkSquareStyle: { backgroundColor: '#4a7c59' },
-    customLightSquareStyle: { backgroundColor: '#f0d9b5' },
-  } : STYLED_PROPS;
 
   return (
     <section className="flex h-full flex-col gap-4 overflow-y-auto rounded-[24px] border border-black/50 p-4 [background-image:linear-gradient(rgba(0,0,0,0.55),rgba(0,0,0,0.55)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]">
@@ -62,7 +47,7 @@ export default function BoardPanel({
             }}
             autoFocus
             placeholder="Untitled Game"
-            className="min-w-0 flex-1 rounded-lg border border-emerald-500/40 bg-black/40 px-2 py-1 text-base font-semibold text-zinc-100 outline-none focus:ring-2 focus:ring-emerald-500/30"
+            className="min-w-0 flex-1 rounded-lg border border-[#10b981]/40 bg-black/40 px-2 py-1 text-base font-semibold text-white outline-none focus:ring-2 focus:ring-[#10b981]/30"
           />
         ) : (
           <button
@@ -71,11 +56,11 @@ export default function BoardPanel({
             disabled={!hasGame}
             className="group flex min-w-0 flex-1 items-center gap-2 rounded-lg px-1 py-1 text-left transition hover:bg-white/5 disabled:cursor-not-allowed disabled:hover:bg-transparent"
           >
-            <h2 className="truncate text-base font-semibold tracking-tight text-zinc-100">
+            <h2 className="truncate text-base font-semibold tracking-tight text-white">
               {hasGame && title ? title : 'Untitled Game'}
             </h2>
             <svg
-              className="h-3.5 w-3.5 shrink-0 text-zinc-500 transition group-hover:text-emerald-300"
+              className="h-3.5 w-3.5 shrink-0 text-white/50 transition group-hover:text-[#10b981]"
               fill="none"
               stroke="currentColor"
               strokeLinecap="round"
@@ -95,7 +80,7 @@ export default function BoardPanel({
             type="button"
             onClick={() => setOrientation((current) => current === 'white' ? 'black' : 'white')}
             disabled={!hasGame}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-black/40 bg-black/40 px-2.5 py-1.5 text-xs text-zinc-200 transition hover:border-amber-900/50 hover:text-white disabled:opacity-50"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-black/50 bg-black/30 px-2.5 py-1.5 text-xs font-semibold text-white transition hover:bg-white/5 disabled:opacity-50"
           >
             <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24" aria-hidden>
               <path d="M17 1l4 4-4 4" />
@@ -105,22 +90,6 @@ export default function BoardPanel({
             </svg>
             Flip Board
           </button>
-
-          <label className="relative">
-            <select
-              value={theme}
-              onChange={(event) => setTheme(event.target.value as typeof theme)}
-              disabled={!hasGame}
-              className="cursor-pointer appearance-none rounded-lg border border-black/40 bg-black/40 px-2.5 py-1.5 pr-7 text-xs text-zinc-200 transition hover:border-amber-900/50 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <option value="classic">Classic</option>
-              <option value="green">Green</option>
-              <option value="midnight">Midnight</option>
-            </select>
-            <svg className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-zinc-400" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24" aria-hidden>
-              <path d="m6 9 6 6 6-6" />
-            </svg>
-          </label>
         </div>
       </header>
 
@@ -149,7 +118,6 @@ export default function BoardPanel({
           />
           <PlaybackButton
             label="Next"
-            primary
             disabled={!hasGame || clampedPly >= moves.length - 1}
             onClick={() => onPlySelect(Math.min(moves.length - 1, clampedPly + 1))}
             icon={
@@ -160,7 +128,6 @@ export default function BoardPanel({
           />
           <PlaybackButton
             label="Last"
-            primary
             disabled={!hasGame || clampedPly >= moves.length - 1}
             onClick={() => onPlySelect(moves.length - 1)}
             icon={
@@ -183,41 +150,64 @@ export default function BoardPanel({
           />
         </div>
 
-        <div className="relative mx-auto aspect-square w-full max-w-[560px] overflow-hidden rounded-2xl border border-black/60 shadow-2xl shadow-black/50">
-          <Chessboard
-            position={position}
-            boardOrientation={orientation}
-            allowDragging={false}
-            boardStyle={{
-              width: '100%',
-              height: '100%',
-              borderRadius: '0',
-            }}
-            animationDurationInMs={250}
-            {...squareStyles}
-          />
-          {isAnalyzing && (
-            <div className="absolute inset-0 flex items-center justify-center bg-black/40 backdrop-blur-sm">
-              <div className="flex items-center gap-2 rounded-full border border-emerald-400/30 bg-black/70 px-3 py-1.5 text-xs text-emerald-200">
-                <span className="h-3 w-3 rounded-full border-2 border-emerald-300/40 border-t-emerald-200 animate-spin" />
-                <span>Analyzing position...</span>
+        <div className="mx-auto aspect-square w-full max-w-[calc(100vh-260px)]" style={{
+          padding: '14px',
+          background: 'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.png)',
+          backgroundSize: 'cover',
+          backgroundPosition: 'center',
+          borderRadius: '6px',
+          boxShadow: '0 0 0 2px #1a0a02, inset 0 2px 0 rgba(255,200,100,0.12), inset 0 -2px 0 rgba(0,0,0,0.5), 0 12px 40px rgba(0,0,0,0.6)',
+        }}>
+          <div className="relative h-full w-full">
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                backgroundImage: 'url("/wood-texture.png")',
+                backgroundSize: 'cover',
+                opacity: 0.08,
+                pointerEvents: 'none',
+                mixBlendMode: 'multiply' as React.CSSProperties['mixBlendMode'],
+              }}
+            />
+            <BaseChessboard
+              options={{
+                position,
+                boardOrientation: orientation,
+                allowDragging: false,
+                boardStyle: {
+                  width: '100%',
+                  height: '100%',
+                  borderRadius: '8px',
+                  boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+                },
+                darkSquareStyle: {
+                  backgroundImage: 'url(/walnut-dark.png)',
+                  backgroundSize: '110% 110%',
+                  backgroundPosition: 'center',
+                },
+                lightSquareStyle: {
+                  backgroundImage: 'url(/walnut-light.png)',
+                  backgroundSize: '110% 110%',
+                  backgroundPosition: 'center',
+                },
+                darkSquareNotationStyle: { color: '#f0e0c0' },
+                lightSquareNotationStyle: { color: '#3a2410' },
+                animationDurationInMs: 200,
+              }}
+            />
+            {isAnalyzing && (
+              <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-black/40 backdrop-blur-sm">
+                <div className="flex items-center gap-2 rounded-full border border-[#10b981]/30 bg-black/70 px-3 py-1.5 text-xs text-[#10b981]">
+                  <span className="h-3 w-3 rounded-full border-2 border-[#10b981]/40 border-t-[#10b981] animate-spin" />
+                  <span>Analyzing position...</span>
+                </div>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
 
-        {hasGame ? (
-          <MoveList
-            moves={moves}
-            activePly={clampedPly}
-            onPlySelect={onPlySelect}
-          />
-        ) : (
-          <div className="w-full rounded-2xl border border-dashed border-amber-900/40 bg-black/30 p-3 text-center text-xs text-zinc-500">
-            The move list will appear here once a game is imported.
-          </div>
-        )}
-      </div>
+        </div>
     </section>
   );
 }
@@ -227,13 +217,11 @@ function PlaybackButton({
   icon,
   onClick,
   disabled,
-  primary,
 }: {
   label: string;
   icon: React.ReactNode;
   onClick: () => void;
   disabled?: boolean;
-  primary?: boolean;
 }) {
   return (
     <button
@@ -241,39 +229,9 @@ function PlaybackButton({
       onClick={onClick}
       disabled={disabled}
       aria-label={label}
-      className={`inline-flex items-center justify-center rounded-xl border px-3 py-2.5 text-sm font-medium transition disabled:cursor-not-allowed disabled:opacity-50 ${
-        primary
-          ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-200 hover:border-emerald-400 hover:bg-emerald-500/25'
-          : 'border-black/40 bg-black/40 text-zinc-200 hover:border-amber-900/50 hover:text-white'
-      }`}
+      className="inline-flex items-center justify-center rounded-lg border border-black/50 bg-black/30 px-3 py-2.5 text-sm font-semibold text-white transition hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-50"
     >
       {icon}
     </button>
-  );
-}
-
-type ChessboardProps = {
-  position: string;
-  boardOrientation: 'white' | 'black';
-  allowDragging?: boolean;
-  boardStyle?: CSSProperties;
-  animationDurationInMs?: number;
-  customDarkSquareStyle: CSSProperties;
-  customLightSquareStyle: CSSProperties;
-};
-
-function Chessboard({
-  customDarkSquareStyle,
-  customLightSquareStyle,
-  ...props
-}: ChessboardProps) {
-  return (
-    <BaseChessboard
-      options={{
-        ...props,
-        darkSquareStyle: customDarkSquareStyle,
-        lightSquareStyle: customLightSquareStyle,
-      }}
-    />
   );
 }
