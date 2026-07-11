@@ -81,7 +81,7 @@ function CollapseRail({
           onClick={onToggle}
           aria-label={expandLabel}
           title={expandLabel}
-          className="mt-2 inline-flex h-10 w-10 items-center justify-center rounded-full border border-amber-900/40 bg-black/60 text-zinc-200 shadow-lg shadow-black/40 transition hover:border-emerald-500/40 hover:text-emerald-200"
+          className="mt-2 inline-flex h-10 w-10 items-center justify-center rounded-full border border-[#f7e5c6]/30 bg-black/60 text-[#f7e5c6] shadow-lg shadow-black/40 transition hover:border-[#f7e5c6]/60 hover:bg-[#f7e5c6]/5"
         >
           <svg
             className={`h-4 w-4 transition ${chevronClass}`}
@@ -114,7 +114,7 @@ function CollapseRail({
           onClick={onToggle}
           aria-label={collapseLabel}
           title={collapseLabel}
-          className={`hidden xl:inline-flex absolute z-10 h-7 w-7 items-center justify-center rounded-full border border-amber-900/40 bg-black/70 text-zinc-300 shadow-lg shadow-black/50 transition hover:border-emerald-500/40 hover:text-emerald-200 ${collapseButtonPosition}`}
+          className={`hidden xl:inline-flex absolute z-10 h-7 w-7 items-center justify-center rounded-full border border-[#f7e5c6]/30 bg-black/70 text-[#f7e5c6]/80 shadow-lg shadow-black/50 transition hover:border-[#f7e5c6]/60 hover:text-[#f7e5c6] ${collapseButtonPosition}`}
         >
           <svg
             className={`h-3.5 w-3.5 transition ${chevronClass}`}
