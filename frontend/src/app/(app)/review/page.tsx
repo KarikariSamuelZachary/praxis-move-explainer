@@ -19,26 +19,12 @@ type AnalyzeErrorResponse = {
   error?: string;
 };
 
-function deriveTitleFromPgn(pgn: string, fallback = 'Imported Game'): string {
-  const eventMatch = pgn.match(/\[Event\s+"([^"]+)"\]/i);
-  if (eventMatch && eventMatch[1] && eventMatch[1].toLowerCase() !== '?') {
-    return eventMatch[1];
-  }
-  const whiteMatch = pgn.match(/\[White\s+"([^"]+)"\]/i);
-  const blackMatch = pgn.match(/\[Black\s+"([^"]+)"\]/i);
-  if (whiteMatch && blackMatch) {
-    return `${whiteMatch[1]} vs. ${blackMatch[1]}`;
-  }
-  return fallback;
-}
-
 export default function ReviewPage() {
   const [pgnInput, setPgnInput] = useState('');
   const [importSource, setImportSource] = useState<ImportSource>('paste');
   const [analysisState, setAnalysisState] = useState<AnalysisState>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [gameData, setGameData] = useState<GameReviewMove[] | null>(null);
-  const [gameTitle, setGameTitle] = useState('');
   const [activePly, setActivePly] = useState(0);
   const [coachExplanation, setCoachExplanation] = useState<ReviewExplanation | null>(null);
   const [isAskingCoach, setIsAskingCoach] = useState(false);
@@ -89,7 +75,6 @@ export default function ReviewPage() {
       }
 
       setGameData(data);
-      setGameTitle(deriveTitleFromPgn(pgnInput));
       setAnalysisState('ready');
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'Please check the format and try again.';
@@ -139,7 +124,7 @@ export default function ReviewPage() {
   const moveNumberLabel = formatMoveNumber(activePly);
 
   return (
-    <div className="relative -mt-2 h-[calc(100vh-2.25rem)] w-full overflow-y-auto px-3 pb-[10px] pt-6 text-white lg:overflow-hidden lg:px-4 xl:px-5 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+    <div className="relative -mt-2 h-[calc(100vh-2.25rem)] w-full overflow-y-auto px-6 pb-[10px] pt-6 text-white lg:overflow-hidden lg:px-10 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
       <ReviewShell
         importPanel={
           <ImportPanel
@@ -155,11 +140,8 @@ export default function ReviewPage() {
         }
         boardPanel={
           <BoardPanel
-            title={gameTitle}
-            onTitleChange={setGameTitle}
             moves={gameData ?? []}
             activePly={activePly}
-            onPlySelect={setActivePly}
             isAnalyzing={analysisState === 'analyzing'}
             hasGame={hasGame}
           />
@@ -172,6 +154,9 @@ export default function ReviewPage() {
             isAskingCoach={isAskingCoach}
             onAskCoach={handleAskCoach}
             moveNumberLabel={moveNumberLabel}
+            activePly={activePly}
+            lastPly={Math.max(0, (gameData?.length ?? 0) - 1)}
+            onPlySelect={setActivePly}
           />
         }
       />
