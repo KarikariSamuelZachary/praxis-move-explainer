@@ -11,6 +11,9 @@ type AnalysisPanelProps = {
   isAskingCoach: boolean;
   onAskCoach: () => void;
   moveNumberLabel: string;
+  activePly: number;
+  lastPly: number;
+  onPlySelect: (ply: number) => void;
 };
 
 const CLASSIFICATION_ROW: Record<
@@ -26,6 +29,16 @@ const CLASSIFICATION_ROW: Record<
   blunder: { label: 'Blunder', icon: '✗', tone: 'text-rose-300' },
 };
 
+const woodBoxStyle: React.CSSProperties = {
+  borderRadius: '4px',
+  background:
+    'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.png)',
+  backgroundSize: 'cover',
+  backgroundPosition: 'center',
+  boxShadow:
+    '0 0 0 2px #1a0a02, inset 0 2px 0 rgba(255,200,100,0.12), inset 0 -2px 0 rgba(0,0,0,0.5), 0 4px 12px rgba(0,0,0,0.5)',
+};
+
 export default function AnalysisPanel({
   currentMove,
   hasGame,
@@ -33,78 +46,190 @@ export default function AnalysisPanel({
   isAskingCoach,
   onAskCoach,
   moveNumberLabel,
+  activePly,
+  lastPly,
+  onPlySelect,
 }: AnalysisPanelProps) {
-  const classificationStyle = currentMove ? CLASSIFICATION_ROW[currentMove.classification] : null;
+  const classificationStyle = currentMove
+    ? CLASSIFICATION_ROW[currentMove.classification]
+    : null;
+
+  const atFirst = activePly <= 0;
+  const atLast = activePly >= lastPly;
+  const disabledAll = !hasGame;
 
   return (
-    <aside className="flex h-full flex-col gap-4 overflow-y-auto rounded-[24px] border border-black/50 p-4 [background-image:linear-gradient(rgba(0,0,0,0.55),rgba(0,0,0,0.55)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]">
-      {hasGame && currentMove ? (
-        <>
-          <section className="rounded-2xl border border-black/40 bg-black/40 p-4 [box-shadow:inset_0_1px_0_rgba(255,255,255,0.05)]">
-            <p className="text-[10px] uppercase tracking-[0.22em] text-white/50">{moveNumberLabel}</p>
-            <div className="mt-2 flex items-center gap-2">
-              <span className="font-mono text-2xl font-semibold text-white">{currentMove.san}</span>
-              {classificationStyle && (
-                <span className={`inline-flex items-center gap-1 rounded-full bg-black/40 px-2 py-0.5 text-[10px] font-medium ${classificationStyle.tone}`}>
-                  <span aria-hidden>{classificationStyle.icon}</span>
-                  {classificationStyle.label}
-                </span>
-              )}
-            </div>
-            <p className="mt-2 text-[11px] text-white/50">
-              {currentMove.cp_loss} cp loss · {currentMove.color} to move
-            </p>
-          </section>
-
-          {explanation ? (
-            <section className="rounded-2xl border border-[#f7e5c6]/20 bg-black/30 p-4">
-              <div className="flex items-center gap-2 text-[#f7e5c6]">
-                <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24" aria-hidden>
-                  <path d="M12 8a3 3 0 0 0-3 3v1a3 3 0 0 0 6 0v-1a3 3 0 0 0-3-3z" />
-                  <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                  <path d="M12 17v4" />
-                  <path d="M8 21h8" />
-                </svg>
-                <h3 className="text-[11px] font-semibold uppercase tracking-[0.22em]">Coach&apos;s Notes</h3>
-              </div>
-              <p className="mt-3 text-xs leading-6 text-white/80">{explanation.explanation}</p>
-            </section>
-          ) : (
-            <section className="rounded-2xl border border-dashed border-white/10 bg-black/30 p-4">
-              <div className="flex items-center gap-2 text-white/70">
-                <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24" aria-hidden>
-                  <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                </svg>
-                <h3 className="text-[11px] font-semibold uppercase tracking-[0.22em]">Coach&apos;s Notes</h3>
-              </div>
-              <p className="mt-2 text-xs leading-6 text-white/50">
-                Ask the coach to break down why this move was played.
+    <aside className="flex h-full flex-col gap-1.5 overflow-hidden">
+      <div
+        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto rounded-t-[24px] border border-b-0 border-black/50 p-4 [background-image:linear-gradient(rgba(0,0,0,0.55),rgba(0,0,0,0.55)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]"
+      >
+        {hasGame && currentMove ? (
+          <>
+            <section className="rounded-2xl border border-black/40 bg-black/40 p-4 [box-shadow:inset_0_1px_0_rgba(255,255,255,0.05)]">
+              <p className="text-[10px] uppercase tracking-[0.22em] text-white/50">
+                {moveNumberLabel}
               </p>
-              <button
-                type="button"
-                onClick={onAskCoach}
-                disabled={isAskingCoach}
-                className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#10b981] px-3 py-2 text-xs font-semibold text-white shadow-lg shadow-emerald-950/40 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400 disabled:shadow-none"
-              >
-                {isAskingCoach ? (
-                  <>
-                    <span className="h-3 w-3 rounded-full border-2 border-white/40 border-t-white animate-spin" />
-                    <span>Coach is thinking...</span>
-                  </>
-                ) : (
-                  <>
-                    <span>Ask Coach to explain this move</span>
-                  </>
+              <div className="mt-2 flex items-center gap-2">
+                <span className="font-mono text-2xl font-semibold text-white">
+                  {currentMove.san}
+                </span>
+                {classificationStyle && (
+                  <span
+                    className={`inline-flex items-center gap-1 rounded-full bg-black/40 px-2 py-0.5 text-[10px] font-medium ${classificationStyle.tone}`}
+                  >
+                    <span aria-hidden>{classificationStyle.icon}</span>
+                    {classificationStyle.label}
+                  </span>
                 )}
-              </button>
+              </div>
+              <p className="mt-2 text-[11px] text-white/50">
+                {currentMove.cp_loss} cp loss · {currentMove.color} to move
+              </p>
             </section>
-          )}
-        </>
-      ) : (
-        <section className="rounded-2xl border border-dashed border-white/10 bg-black/30 p-4 text-xs leading-6 text-white/50">
-          Per-move analysis will populate here once a game is imported.
-        </section>
-      )}
+
+            {explanation ? (
+              <section className="rounded-2xl border border-[#f7e5c6]/20 bg-black/30 p-4">
+                <div className="flex items-center gap-2 text-[#f7e5c6]">
+                  <svg
+                    className="h-4 w-4"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth="2"
+                    viewBox="0 0 24 24"
+                    aria-hidden
+                  >
+                    <path d="M12 8a3 3 0 0 0-3 3v1a3 3 0 0 0 6 0v-1a3 3 0 0 0-3-3z" />
+                    <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
+                    <path d="M12 17v4" />
+                    <path d="M8 21h8" />
+                  </svg>
+                  <h3 className="text-[11px] font-semibold uppercase tracking-[0.22em]">
+                    Coach&apos;s Notes
+                  </h3>
+                </div>
+                <p className="mt-3 text-xs leading-6 text-white/80">
+                  {explanation.explanation}
+                </p>
+              </section>
+            ) : (
+              <section className="rounded-2xl border border-dashed border-white/10 bg-black/30 p-4">
+                <div className="flex items-center gap-2 text-white/70">
+                  <svg
+                    className="h-4 w-4"
+                    fill="none"
+                    stroke="currentColor"
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    strokeWidth="2"
+                    viewBox="0 0 24 24"
+                    aria-hidden
+                  >
+                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
+                  </svg>
+                  <h3 className="text-[11px] font-semibold uppercase tracking-[0.22em]">
+                    Coach&apos;s Notes
+                  </h3>
+                </div>
+                <p className="mt-2 text-xs leading-6 text-white/50">
+                  Ask the coach to break down why this move was played.
+                </p>
+                <button
+                  type="button"
+                  onClick={onAskCoach}
+                  disabled={isAskingCoach}
+                  className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#10b981] px-3 py-2 text-xs font-semibold text-white shadow-lg shadow-emerald-950/40 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400 disabled:shadow-none"
+                >
+                  {isAskingCoach ? (
+                    <>
+                      <span className="h-3 w-3 rounded-full border-2 border-white/40 border-t-white animate-spin" />
+                      <span>Coach is thinking...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>Ask Coach to explain this move</span>
+                    </>
+                  )}
+                </button>
+              </section>
+            )}
+          </>
+        ) : (
+          <section className="rounded-2xl border border-dashed border-white/10 bg-black/30 p-4 text-xs leading-6 text-white/50">
+            Per-move analysis will populate here once a game is imported.
+          </section>
+        )}
+      </div>
+
+      {/* Movement buttons — bottom strip of the card cut into 4 wooden boxes */}
+      <div className="grid grid-cols-4 gap-1.5">
+        <button
+          type="button"
+          onClick={() => onPlySelect(0)}
+          disabled={disabledAll || atFirst}
+          aria-label="First move"
+          className="flex h-8 items-center justify-center transition-transform hover:scale-105 active:scale-95 disabled:pointer-events-none disabled:opacity-40"
+          style={{
+            cursor:
+              disabledAll || atFirst ? 'default' : 'pointer',
+            ...woodBoxStyle,
+            borderRadius: '4px 4px 4px 24px',
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="#f0e0c0">
+            <rect x="3" y="4" width="2.5" height="16" rx="1" />
+            <path d="M21 4 L9 12 L21 20 Z" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          onClick={() => onPlySelect(Math.max(0, activePly - 1))}
+          disabled={disabledAll || atFirst}
+          aria-label="Previous move"
+          className="flex h-8 items-center justify-center transition-transform hover:scale-105 active:scale-95 disabled:pointer-events-none disabled:opacity-40"
+          style={{
+            cursor: disabledAll || atFirst ? 'default' : 'pointer',
+            ...woodBoxStyle,
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="#f0e0c0">
+            <path d="M18 4 L6 12 L18 20 Z" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          onClick={() => onPlySelect(Math.min(lastPly, activePly + 1))}
+          disabled={disabledAll || atLast}
+          aria-label="Next move"
+          className="flex h-8 items-center justify-center transition-transform hover:scale-105 active:scale-95 disabled:pointer-events-none disabled:opacity-40"
+          style={{
+            cursor: disabledAll || atLast ? 'default' : 'pointer',
+            ...woodBoxStyle,
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="#f0e0c0">
+            <path d="M6 4 L18 12 L6 20 Z" />
+          </svg>
+        </button>
+        <button
+          type="button"
+          onClick={() => onPlySelect(lastPly)}
+          disabled={disabledAll || atLast}
+          aria-label="Last move"
+          className="flex h-8 items-center justify-center transition-transform hover:scale-105 active:scale-95 disabled:pointer-events-none disabled:opacity-40"
+          style={{
+            cursor: disabledAll || atLast ? 'default' : 'pointer',
+            ...woodBoxStyle,
+            borderRadius: '4px 4px 24px 4px',
+          }}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="#f0e0c0">
+            <path d="M3 4 L15 12 L3 20 Z" />
+            <rect x="18.5" y="4" width="2.5" height="16" rx="1" />
+          </svg>
+        </button>
+      </div>
     </aside>
   );
 }
