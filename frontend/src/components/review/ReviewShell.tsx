@@ -35,7 +35,7 @@ export default function ReviewShell({
 
   return (
     <div className="relative h-full w-full">
-      <div className={`grid h-full grid-cols-1 gap-3 transition-all duration-300 ease-in-out lg:grid-cols-[18rem_minmax(0,1fr)] lg:gap-4 ${gridCols}`}>
+      <div className={`grid h-full grid-cols-1 gap-6 transition-all duration-300 ease-in-out lg:grid-cols-[18rem_minmax(0,1fr)] ${gridCols}`}>
         <CollapseRail
           side="left"
           collapsed={leftCollapsed}
