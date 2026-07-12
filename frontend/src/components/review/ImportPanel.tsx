@@ -50,8 +50,10 @@ export default function ImportPanel({
 }: ImportPanelProps) {
   const inputId = useId();
   const [fileName, setFileName] = useState<string | null>(null);
+  const [hasFetchedGames, setHasFetchedGames] = useState(false);
 
   const canImport = !disabled && !isAnalyzing && pgn.trim().length > 0;
+  const showImportButton = source === 'paste' || hasFetchedGames;
 
   function handleFileChange(event: React.ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -86,7 +88,10 @@ export default function ImportPanel({
               type="button"
               role="tab"
               aria-selected={isActive}
-              onClick={() => onSourceChange(tab.key)}
+              onClick={() => {
+              onSourceChange(tab.key);
+              setHasFetchedGames(false);
+            }}
               className={`flex-1 cursor-pointer rounded-lg px-2 py-1.5 text-xs font-medium transition ${
                 isActive
                   ? 'bg-[#10b981]/20 text-[#10b981] ring-1 ring-[#10b981]/30'
@@ -143,6 +148,7 @@ export default function ImportPanel({
           pgn={pgn}
           onPgnChange={onPgnChange}
           isAnalyzing={isAnalyzing}
+          onGamesFetched={() => setHasFetchedGames(true)}
         />
       )}
 
@@ -153,29 +159,32 @@ export default function ImportPanel({
           pgn={pgn}
           onPgnChange={onPgnChange}
           isAnalyzing={isAnalyzing}
+          onGamesFetched={() => setHasFetchedGames(true)}
         />
       )}
 
-      <button
-        type="button"
-        onClick={onImport}
-        disabled={!canImport}
-        className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#10b981] px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-emerald-950/40 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400 disabled:shadow-none"
-      >
-        {isAnalyzing ? (
-          <>
-            <span className="h-4 w-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />
-            <span>Analyzing...</span>
-          </>
-        ) : (
-          <>
-            <span>Import Game</span>
-            <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24" aria-hidden>
-              <path d="m9 18 6-6-6-6" />
-            </svg>
-          </>
-        )}
-      </button>
+      {showImportButton && (
+        <button
+          type="button"
+          onClick={onImport}
+          disabled={!canImport}
+          className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#10b981] px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-emerald-950/40 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400 disabled:shadow-none"
+        >
+          {isAnalyzing ? (
+            <>
+              <span className="h-4 w-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />
+              <span>Analyzing...</span>
+            </>
+          ) : (
+            <>
+              <span>Import Game</span>
+              <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24" aria-hidden>
+                <path d="m9 18 6-6-6-6" />
+              </svg>
+            </>
+          )}
+        </button>
+      )}
 
       {errorMessage && (
         <p role="alert" className="rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-2 text-xs text-red-400">
@@ -192,12 +201,14 @@ function UsernameImport({
   pgn,
   onPgnChange,
   isAnalyzing,
+  onGamesFetched,
 }: {
   platform: string;
   apiPath: string;
   pgn: string;
   onPgnChange: (value: string) => void;
   isAnalyzing: boolean;
+  onGamesFetched: () => void;
 }) {
   const [username, setUsername] = useState('');
   const [isFetching, setIsFetching] = useState(false);
@@ -232,6 +243,7 @@ function UsernameImport({
         return;
       }
       setGames(data);
+      onGamesFetched();
     } catch (err) {
       setFetchError(
         err instanceof Error ? err.message : 'Failed to fetch games.'
