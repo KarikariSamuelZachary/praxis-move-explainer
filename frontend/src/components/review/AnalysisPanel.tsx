@@ -139,7 +139,7 @@ export default function AnalysisPanel({
                   type="button"
                   onClick={onAskCoach}
                   disabled={isAskingCoach}
-                  className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#10b981] px-3 py-2 text-xs font-semibold text-white shadow-lg shadow-emerald-950/40 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400 disabled:shadow-none"
+                  className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#10b981]/20 px-3 py-2 text-xs font-semibold text-[#10b981] ring-1 ring-[#10b981]/30 transition-colors hover:bg-[#10b981]/30 hover:ring-[#10b981]/50 disabled:cursor-not-allowed disabled:bg-zinc-700/40 disabled:text-zinc-400 disabled:ring-zinc-600/30"
                 >
                   {isAskingCoach ? (
                     <>
