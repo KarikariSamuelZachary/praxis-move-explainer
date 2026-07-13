@@ -5,6 +5,8 @@ import { Chessboard as BaseChessboard } from 'react-chessboard';
 
 import { GameReviewMove } from '@/types';
 
+import { ClassificationIcon } from './icons/ClassificationIcon';
+
 type BoardPanelProps = {
   moves: GameReviewMove[];
   activePly: number;
@@ -22,6 +24,25 @@ const woodBoxStyle: React.CSSProperties = {
     '0 0 0 2px #1a0a02, inset 0 2px 0 rgba(255,200,100,0.12), inset 0 -2px 0 rgba(0,0,0,0.5), 0 4px 12px rgba(0,0,0,0.5)',
 };
 
+const ICON_SIZE_PERCENT = 5.5;
+const ICON_MARGIN_PERCENT = 0.5;
+const SQUARE_PERCENT = 100 / 8;
+
+function getDestinationSquare(san: string, color: 'white' | 'black'): string {
+  const s = san.replace(/[!?+#]+$/, '').replace(/=[QRBN]$/, '');
+  if (s === 'O-O-O' || s === '0-0-0') return color === 'white' ? 'c1' : 'c8';
+  if (s === 'O-O' || s === '0-0') return color === 'white' ? 'g1' : 'g8';
+  return s.slice(-2);
+}
+
+function squareToPercent(square: string, orientation: 'white' | 'black') {
+  const file = square.charCodeAt(0) - 97;
+  const rank = parseInt(square[1], 10) - 1;
+  const col = orientation === 'white' ? file : 7 - file;
+  const row = orientation === 'white' ? 7 - rank : rank;
+  return { col, row };
+}
+
 export default function BoardPanel({
   moves,
   activePly,
@@ -35,6 +56,14 @@ export default function BoardPanel({
   const position =
     currentMove?.fen ??
     'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+
+  const showIcon = hasGame && activePly > 0 && currentMove;
+  const iconCoords = showIcon
+    ? squareToPercent(
+        getDestinationSquare(currentMove!.san, currentMove!.color),
+        orientation,
+      )
+    : null;
 
   return (
     <div className="relative mx-auto aspect-square w-full max-w-[calc(100vh-70px)]">
@@ -86,6 +115,24 @@ export default function BoardPanel({
               animationDurationInMs: 200,
             }}
           />
+          {showIcon && iconCoords && (
+            <div
+              style={{
+                position: 'absolute',
+                left: `${iconCoords.col * SQUARE_PERCENT + SQUARE_PERCENT - ICON_SIZE_PERCENT - ICON_MARGIN_PERCENT}%`,
+                top: `${iconCoords.row * SQUARE_PERCENT + ICON_MARGIN_PERCENT}%`,
+                width: `${ICON_SIZE_PERCENT}%`,
+                aspectRatio: '1 / 1',
+                pointerEvents: 'none',
+                zIndex: 5,
+              }}
+            >
+              <ClassificationIcon
+                classification={currentMove!.classification}
+                size="100%"
+              />
+            </div>
+          )}
           {isAnalyzing && (
             <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-black/40 backdrop-blur-sm">
               <div className="flex items-center gap-2 rounded-full border border-[#10b981]/30 bg-black/70 px-3 py-1.5 text-xs text-[#10b981]">
