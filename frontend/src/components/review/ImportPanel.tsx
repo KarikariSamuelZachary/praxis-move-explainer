@@ -322,7 +322,7 @@ function UsernameImport({
 
       {games.length > 0 && (
         <div className="flex flex-col gap-1.5">
-          <div className="wooden-scroll flex max-h-[220px] flex-col gap-1.5 overflow-y-auto">
+          <div className="wooden-scroll flex max-h-[318px] flex-col gap-1.5 overflow-y-auto">
             {games.map((game) => {
               const isSelected = hasPgn && game.pgn === pgn;
               return (
