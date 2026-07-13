@@ -61,7 +61,7 @@ export default function AnalysisPanel({
   return (
     <aside className="flex h-full flex-col gap-1.5 overflow-hidden">
       <div
-        className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto rounded-t-[24px] border border-b-0 border-black/50 p-4 [background-image:linear-gradient(rgba(0,0,0,0.55),rgba(0,0,0,0.55)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]"
+        className="wooden-scroll flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto rounded-t-[24px] border border-b-0 border-black/50 p-4 [background-image:linear-gradient(rgba(0,0,0,0.55),rgba(0,0,0,0.55)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]"
       >
         {hasGame && currentMove ? (
           <>

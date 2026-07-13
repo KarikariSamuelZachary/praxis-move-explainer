@@ -30,3 +30,27 @@ body {
   color: var(--foreground);
   font-family: Arial, Helvetica, sans-serif;
 }
+
+.wooden-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: #3a2410 transparent;
+}
+
+.wooden-scroll::-webkit-scrollbar {
+  width: 6px;
+}
+
+.wooden-scroll::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.3);
+  border-radius: 3px;
+}
+
+.wooden-scroll::-webkit-scrollbar-thumb {
+  background: #2a1810;
+  border: 1px solid #3a2410;
+  border-radius: 3px;
+}
+
+.wooden-scroll::-webkit-scrollbar-thumb:hover {
+  background: #4a2818;
+}

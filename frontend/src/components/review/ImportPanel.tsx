@@ -38,6 +38,16 @@ const SOURCE_TABS: { key: ImportSource; label: string }[] = [
 
 const MAX_CLIENT_PGN_BYTES = 2 * 1024 * 1024;
 
+const woodBoxStyle: React.CSSProperties = {
+  borderRadius: '4px',
+  background:
+    'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.png)',
+  backgroundSize: 'cover',
+  backgroundPosition: 'center',
+  boxShadow:
+    '0 0 0 2px #1a0a02, inset 0 2px 0 rgba(255,200,100,0.12), inset 0 -2px 0 rgba(0,0,0,0.5), 0 4px 12px rgba(0,0,0,0.5)',
+};
+
 export default function ImportPanel({
   pgn,
   onPgnChange,
@@ -168,11 +178,16 @@ export default function ImportPanel({
           type="button"
           onClick={onImport}
           disabled={!canImport}
-          className="inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#10b981] px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-emerald-950/40 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400 disabled:shadow-none"
+          className="inline-flex w-full items-center justify-center gap-2 rounded-xl px-4 py-3 text-sm font-semibold text-[#f0e0c0] transition-transform hover:scale-[1.02] active:scale-95 disabled:pointer-events-none disabled:opacity-40"
+          style={{
+            cursor: canImport ? 'pointer' : 'default',
+            ...woodBoxStyle,
+            borderRadius: '8px',
+          }}
         >
           {isAnalyzing ? (
             <>
-              <span className="h-4 w-4 rounded-full border-2 border-white/40 border-t-white animate-spin" />
+              <span className="h-4 w-4 rounded-full border-2 border-[#f0e0c0]/40 border-t-[#f0e0c0] animate-spin" />
               <span>Analyzing...</span>
             </>
           ) : (
@@ -278,15 +293,23 @@ function UsernameImport({
           type="button"
           onClick={handleFetchGames}
           disabled={!username.trim() || isFetching || isAnalyzing}
-          className="inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-[#10b981] px-3 py-2 text-xs font-semibold text-white shadow-lg shadow-emerald-950/40 transition-colors hover:bg-emerald-400 disabled:cursor-not-allowed disabled:bg-zinc-700 disabled:text-zinc-400 disabled:shadow-none"
+          aria-label="Fetch games"
+          className="flex h-[34px] w-[34px] shrink-0 items-center justify-center transition-transform hover:scale-105 active:scale-95 disabled:pointer-events-none disabled:opacity-40"
+          style={{
+            cursor:
+              !username.trim() || isFetching || isAnalyzing
+                ? 'default'
+                : 'pointer',
+            ...woodBoxStyle,
+          }}
         >
           {isFetching ? (
-            <>
-              <span className="h-3 w-3 rounded-full border-2 border-white/40 border-t-white animate-spin" />
-              <span>Fetching...</span>
-            </>
+            <span className="h-3 w-3 rounded-full border-2 border-[#f0e0c0]/40 border-t-[#f0e0c0] animate-spin" />
           ) : (
-            <span>Fetch Games</span>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f0e0c0" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="11" cy="11" r="7" />
+              <line x1="16.5" y1="16.5" x2="21" y2="21" />
+            </svg>
           )}
         </button>
       </div>
@@ -299,7 +322,7 @@ function UsernameImport({
 
       {games.length > 0 && (
         <div className="flex flex-col gap-1.5">
-          <div className="flex max-h-[220px] flex-col gap-1.5 overflow-y-auto">
+          <div className="wooden-scroll flex max-h-[220px] flex-col gap-1.5 overflow-y-auto">
             {games.map((game) => {
               const isSelected = hasPgn && game.pgn === pgn;
               return (
@@ -323,9 +346,18 @@ function UsernameImport({
                     </span>
                   </span>
                   {isSelected ? (
-                    <span className="text-[10px] font-medium uppercase tracking-wider text-[#10b981]">
-                      Selected
-                    </span>
+                    <svg
+                      className="h-3.5 w-3.5 shrink-0 text-[#10b981]"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth="2.5"
+                      viewBox="0 0 24 24"
+                      aria-hidden
+                    >
+                      <path d="m5 12 4 4L19 6" />
+                    </svg>
                   ) : (
                     <svg
                       className="h-3.5 w-3.5 shrink-0 text-white/50 transition group-hover:text-[#10b981]"
