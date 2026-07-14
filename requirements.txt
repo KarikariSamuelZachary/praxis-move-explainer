@@ -12,3 +12,4 @@ uvicorn>=0.46.0
 pydantic>=0.4.2
 svix>=1.75.0
 upstash-redis>=1.7.0
+fsrs>=6.0.0
