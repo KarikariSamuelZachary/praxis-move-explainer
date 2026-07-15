@@ -6,6 +6,14 @@ from psycopg2.extras import RealDictCursor
 from pydantic import BaseModel
 
 from core.database import get_db
+from core.fsrs import (
+    card_from_row,
+    is_lapse,
+    is_mastered,
+    now_utc,
+    rating_for,
+    scheduler,
+)
 
 router = APIRouter()
 
@@ -17,12 +25,7 @@ VALID_SOURCE_REASONS = {
 }
 
 
-class CreateSetBody(BaseModel):
-    name: str
-
-
 class AddEntryBody(BaseModel):
-    set_id: UUID
     puzzle_id: str
     theme: str
     source_reason: Optional[str] = None
@@ -30,7 +33,6 @@ class AddEntryBody(BaseModel):
 
 class RecordAttemptBody(BaseModel):
     entry_id: UUID
-    cycle_number: int
     solved_correctly: bool
     time_taken_ms: int
 
@@ -40,97 +42,6 @@ def _get_user_id(request: Request) -> str:
     if not user_id:
         raise HTTPException(status_code=400, detail="Missing X-Clerk-User-Id header")
     return user_id
-
-
-@router.post("/sets")
-def create_set(request: Request, body: CreateSetBody, conn=Depends(get_db)):
-    user_id = _get_user_id(request)
-    name = body.name.strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="Set name cannot be empty")
-
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute(
-            """
-            INSERT INTO woodpecker_sets (user_id, name)
-            VALUES (%s, %s)
-            RETURNING id, user_id, name, created_at, status, cycle_number
-            """,
-            (user_id, name),
-        )
-        row = cur.fetchone()
-    conn.commit()
-
-    return row
-
-
-@router.get("/sets")
-def list_sets(request: Request, conn=Depends(get_db)):
-    user_id = _get_user_id(request)
-
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute(
-            """
-            SELECT
-                s.id,
-                s.user_id,
-                s.name,
-                s.created_at,
-                s.status,
-                s.cycle_number,
-                COUNT(e.id) AS entry_count,
-                COUNT(e.id) FILTER (WHERE e.is_mastered) AS mastered_count
-            FROM woodpecker_sets s
-            LEFT JOIN woodpecker_entries e ON e.set_id = s.id
-            WHERE s.user_id = %s
-            GROUP BY s.id
-            ORDER BY s.created_at DESC
-            """,
-            (user_id,),
-        )
-        rows = cur.fetchall()
-
-    return rows
-
-
-@router.get("/sets/{set_id}")
-def get_set(set_id: UUID, request: Request, conn=Depends(get_db)):
-    user_id = _get_user_id(request)
-
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute(
-            """
-            SELECT id, user_id, name, created_at, status, cycle_number
-            FROM woodpecker_sets
-            WHERE id = %s AND user_id = %s
-            """,
-            (str(set_id), user_id),
-        )
-        woodpecker_set = cur.fetchone()
-        if woodpecker_set is None:
-            raise HTTPException(status_code=404, detail="Woodpecker set not found")
-
-        cur.execute(
-            """
-            SELECT
-                id,
-                set_id,
-                user_id,
-                puzzle_id,
-                theme,
-                added_at,
-                mastered_at,
-                is_mastered,
-                source_reason
-            FROM woodpecker_entries
-            WHERE set_id = %s AND user_id = %s
-            ORDER BY added_at ASC
-            """,
-            (str(set_id), user_id),
-        )
-        entries = cur.fetchall()
-
-    return {"set": woodpecker_set, "entries": entries}
 
 
 @router.post("/entries")
@@ -147,32 +58,37 @@ def add_entry(request: Request, body: AddEntryBody, conn=Depends(get_db)):
         raise HTTPException(status_code=400, detail="Invalid source_reason")
 
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        # Duplicate guard: if a non-mastered entry for the same puzzle already
+        # exists for this user, return it instead of creating a second one.
         cur.execute(
             """
-            SELECT id, status
-            FROM woodpecker_sets
-            WHERE id = %s AND user_id = %s
+            SELECT
+                id,
+                user_id,
+                puzzle_id,
+                theme,
+                added_at,
+                mastered_at,
+                is_mastered,
+                source_reason,
+                due,
+                state,
+                step,
+                stability,
+                difficulty,
+                reps,
+                lapses,
+                last_review
+            FROM woodpecker_entries
+            WHERE user_id = %s
+              AND puzzle_id = %s
+              AND is_mastered = FALSE
             """,
-            (str(body.set_id), user_id),
+            (user_id, puzzle_id),
         )
-        woodpecker_set = cur.fetchone()
-        if woodpecker_set is None:
-            raise HTTPException(status_code=404, detail="Woodpecker set not found")
-        if woodpecker_set["status"] != "active":
-            raise HTTPException(status_code=400, detail="Woodpecker set is not active")
-
-        cur.execute(
-            """
-            SELECT 1 FROM woodpecker_entries
-            WHERE set_id = %s
-            AND user_id = %s
-            AND puzzle_id = %s
-            AND is_mastered = FALSE
-            """,
-            (str(body.set_id), user_id, puzzle_id),
-        )
-        if cur.fetchone():
-            return {"skipped": True, "reason": "duplicate_puzzle"}
+        existing = cur.fetchone()
+        if existing is not None:
+            return {"skipped": True, "reason": "duplicate_puzzle", "entry": existing}
 
         # Daily entry cap for free users
         cur.execute(
@@ -204,41 +120,32 @@ def add_entry(request: Request, body: AddEntryBody, conn=Depends(get_db)):
 
         cur.execute(
             """
-            SELECT COUNT(*) AS total
-            FROM woodpecker_entries
-            WHERE set_id = %s
-              AND user_id = %s
-              AND theme = %s
-              AND is_mastered = FALSE
-            """,
-            (str(body.set_id), user_id, theme),
-        )
-        unmastered_theme_count = cur.fetchone()["total"]
-        if unmastered_theme_count >= 2:
-            return {"skipped": True, "reason": "theme_cap_reached"}
-
-        cur.execute(
-            """
             INSERT INTO woodpecker_entries (
-                set_id,
                 user_id,
                 puzzle_id,
                 theme,
                 source_reason
             )
-            VALUES (%s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s)
             RETURNING
                 id,
-                set_id,
                 user_id,
                 puzzle_id,
                 theme,
                 added_at,
                 mastered_at,
                 is_mastered,
-                source_reason
+                source_reason,
+                due,
+                state,
+                step,
+                stability,
+                difficulty,
+                reps,
+                lapses,
+                last_review
             """,
-            (str(body.set_id), user_id, puzzle_id, theme, body.source_reason),
+            (user_id, puzzle_id, theme, body.source_reason),
         )
         row = cur.fetchone()
     conn.commit()
@@ -249,39 +156,92 @@ def add_entry(request: Request, body: AddEntryBody, conn=Depends(get_db)):
 @router.post("/attempts")
 def record_attempt(request: Request, body: RecordAttemptBody, conn=Depends(get_db)):
     user_id = _get_user_id(request)
-    if body.cycle_number < 1:
-        raise HTTPException(status_code=400, detail="cycle_number must be positive")
     if body.time_taken_ms < 0:
         raise HTTPException(status_code=400, detail="time_taken_ms cannot be negative")
+
+    review_at = now_utc()
 
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             """
-            SELECT id
+            SELECT
+                id,
+                user_id,
+                state,
+                step,
+                stability,
+                difficulty,
+                due,
+                last_review,
+                reps,
+                lapses
             FROM woodpecker_entries
             WHERE id = %s AND user_id = %s
+            FOR UPDATE
             """,
             (str(body.entry_id), user_id),
         )
-        entry = cur.fetchone()
-        if entry is None:
+        row = cur.fetchone()
+        if row is None:
             raise HTTPException(status_code=404, detail="Woodpecker entry not found")
 
+        # --- FSRS scheduling ---
+        card = card_from_row(row)
+        prior_state = card.state
+        rating = rating_for(body.solved_correctly)
+        reviewed_card, _ = scheduler.review_card(
+            card=card, rating=rating, review_datetime=review_at
+        )
+
+        lapse = is_lapse(prior_state, rating)
+        mastered = is_mastered(reviewed_card)
+
+        # Persist the updated FSRS state and bookkeeping counters back onto the
+        # entry row.
+        increment_lapses = ", lapses = lapses + 1" if lapse else ""
+        cur.execute(
+            f"""
+            UPDATE woodpecker_entries
+            SET due          = %s,
+                stability    = %s,
+                difficulty   = %s,
+                state        = %s,
+                step         = %s,
+                last_review  = %s,
+                reps         = reps + 1{increment_lapses},
+                is_mastered  = %s,
+                mastered_at  = %s
+            WHERE id = %s AND user_id = %s
+            """,
+            (
+                reviewed_card.due,
+                reviewed_card.stability,
+                reviewed_card.difficulty,
+                int(reviewed_card.state),
+                reviewed_card.step,
+                review_at,
+                mastered,
+                review_at if mastered else None,
+                str(body.entry_id),
+                user_id,
+            ),
+        )
+
+        # Record the attempt log row (structure unchanged apart from the
+        # removed cycle_number column).
         cur.execute(
             """
             INSERT INTO woodpecker_attempts (
                 entry_id,
                 user_id,
-                cycle_number,
                 solved_correctly,
                 time_taken_ms
             )
-            VALUES (%s, %s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s)
             RETURNING
                 id,
                 entry_id,
                 user_id,
-                cycle_number,
                 solved_correctly,
                 time_taken_ms,
                 attempted_at
@@ -289,60 +249,29 @@ def record_attempt(request: Request, body: RecordAttemptBody, conn=Depends(get_d
             (
                 str(body.entry_id),
                 user_id,
-                body.cycle_number,
                 body.solved_correctly,
                 body.time_taken_ms,
             ),
         )
         attempt = cur.fetchone()
 
-        cur.execute(
-            """
-            SELECT cycle_number, solved_correctly, time_taken_ms
-            FROM (
-                SELECT DISTINCT ON (cycle_number)
-                    cycle_number,
-                    solved_correctly,
-                    time_taken_ms,
-                    attempted_at
-                FROM woodpecker_attempts
-                WHERE entry_id = %s
-                ORDER BY cycle_number DESC, attempted_at DESC
-                LIMIT 3
-            ) recent_cycles
-            ORDER BY cycle_number DESC
-            """,
-            (str(body.entry_id),),
-        )
-        recent_attempts = cur.fetchall()
-        cycles = [row["cycle_number"] for row in recent_attempts]
-        is_consecutive = (
-            len(cycles) == 3
-            and cycles[0] - cycles[1] == 1
-            and cycles[1] - cycles[2] == 1
-        )
-        mastered = (
-            is_consecutive
-            and all(
-                row["solved_correctly"] and row["time_taken_ms"] <= 20000
-                for row in recent_attempts
-            )
-        )
-
-        if mastered:
-            cur.execute(
-                """
-                UPDATE woodpecker_entries
-                SET is_mastered = TRUE,
-                    mastered_at = NOW()
-                WHERE id = %s AND user_id = %s
-                """,
-                (str(body.entry_id), user_id),
-            )
-
     conn.commit()
 
-    return {"attempt": attempt, "mastered": mastered}
+    return {
+        "attempt": attempt,
+        "scheduling": {
+            "prior_state": int(prior_state),
+            "rating": int(rating),
+            "new_state": int(reviewed_card.state),
+            "due": reviewed_card.due.isoformat(),
+            "stability": reviewed_card.stability,
+            "difficulty": reviewed_card.difficulty,
+            "step": reviewed_card.step,
+            "reps": row["reps"] + 1,
+            "lapses": row["lapses"] + (1 if lapse else 0),
+            "is_mastered": mastered,
+        },
+    }
 
 
 @router.get("/queue")
@@ -354,7 +283,6 @@ def get_queue(request: Request, conn=Depends(get_db)):
             """
             SELECT
                 e.id,
-                e.set_id,
                 e.user_id,
                 e.puzzle_id,
                 e.theme,
@@ -362,14 +290,19 @@ def get_queue(request: Request, conn=Depends(get_db)):
                 e.mastered_at,
                 e.is_mastered,
                 e.source_reason,
-                s.name AS set_name,
-                s.cycle_number
+                e.due,
+                e.state,
+                e.step,
+                e.stability,
+                e.difficulty,
+                e.reps,
+                e.lapses,
+                e.last_review
             FROM woodpecker_entries e
-            JOIN woodpecker_sets s ON s.id = e.set_id
             WHERE e.user_id = %s
               AND e.is_mastered = FALSE
-              AND s.status = 'active'
-            ORDER BY e.added_at ASC
+              AND e.due <= NOW()
+            ORDER BY e.due ASC
             """,
             (user_id,),
         )
