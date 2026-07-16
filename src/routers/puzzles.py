@@ -105,6 +105,35 @@ def get_puzzles(
     ]
 
 
+@router.get("/puzzles/{puzzle_id}", response_model=PuzzleResponse)
+def get_puzzle_by_id(
+    puzzle_id: str,
+    conn=Depends(get_db),
+):
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT id, fen, moves, rating, themes, game_url
+            FROM puzzles
+            WHERE id = %s
+            """,
+            (puzzle_id,),
+        )
+        row = cur.fetchone()
+
+    if row is None:
+        raise HTTPException(status_code=404, detail="Puzzle not found")
+
+    return PuzzleResponse(
+        id=row["id"],
+        fen=row["fen"],
+        moves=row["moves"].split(),
+        rating=row["rating"],
+        themes=row["themes"],
+        gameUrl=row["game_url"],
+    )
+
+
 @router.post("/puzzles/rating")
 def update_puzzle_rating(
     request: Request,
