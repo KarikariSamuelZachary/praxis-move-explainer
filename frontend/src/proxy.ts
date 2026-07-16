@@ -1,8 +1,8 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
 
-const isProtectedRoute = createRouteMatcher(["/puzzles(.*)", "/review(.*)", "/onboarding(.*)"]);
-const isAppRoute = createRouteMatcher(["/puzzles(.*)", "/review(.*)"]);
+const isProtectedRoute = createRouteMatcher(["/puzzles(.*)", "/review(.*)", "/woodpecker(.*)", "/onboarding(.*)"]);
+const isAppRoute = createRouteMatcher(["/puzzles(.*)", "/review(.*)", "/woodpecker(.*)"]);
 const isOnboardingRoute = createRouteMatcher(["/onboarding(.*)"]);
 
 async function getSkillLevel(userId: string): Promise<string | null> {
