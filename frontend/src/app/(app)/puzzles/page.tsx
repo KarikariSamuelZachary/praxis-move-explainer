@@ -18,6 +18,10 @@ const ChessBoard = dynamic(() => import('@/components/board/ChessBoard'), {
   ),
 });
 
+const SLOW_THRESHOLD_FLOOR_SECONDS = 45;
+const SLOW_THRESHOLD_SECONDS_PER_RATING_POINT_GAP = 1 / 10;
+const SLOW_THRESHOLD_CAP_SECONDS = 180;
+
 const BATCH_SIZE = 10;
 const CARD_CLASS =
   'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
@@ -174,6 +178,20 @@ export default function PuzzlesPage() {
       hasScoredAttemptRef.current = true;
       const puzzle = puzzles[currentIndex];
       if (puzzle) {
+        // Snapshot the rating BEFORE this solve so the slow-threshold
+        // computation uses the player's rating as it stood going into
+        // this puzzle, not the value updated asynchronously by the
+        // rating call below.
+        const userRatingBefore = currentRating ?? 0;
+        const ratingGap = Math.max(0, puzzle.rating - userRatingBefore);
+        const threshold = Math.min(
+          SLOW_THRESHOLD_CAP_SECONDS,
+          SLOW_THRESHOLD_FLOOR_SECONDS +
+            Math.floor(
+              ratingGap * SLOW_THRESHOLD_SECONDS_PER_RATING_POINT_GAP,
+            ),
+        );
+
         fetch('/api/puzzles/rating', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -190,6 +208,23 @@ export default function PuzzlesPage() {
             }
           })
           .catch((error) => console.error('Failed to update rating:', error));
+
+        if (timeSeconds > threshold) {
+          fetch('/api/woodpecker/entries', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              puzzle_id: puzzle.id,
+              theme: puzzle.themes[0] ?? 'middlegame',
+              source_reason: 'slow_solution',
+            }),
+          })
+            .then((res) => (res.ok ? res.json() : null))
+            .then(() => undefined)
+            .catch((error) =>
+              console.error('Failed to add woodpecker entry:', error),
+            );
+        }
       }
     }
   }
@@ -217,6 +252,21 @@ export default function PuzzlesPage() {
             }
           })
           .catch((error) => console.error('Failed to update rating:', error));
+
+        fetch('/api/woodpecker/entries', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            puzzle_id: puzzle.id,
+            theme: puzzle.themes[0] ?? 'middlegame',
+            source_reason: 'wrong_answer',
+          }),
+        })
+          .then((res) => (res.ok ? res.json() : null))
+          .then(() => undefined)
+          .catch((error) =>
+            console.error('Failed to add woodpecker entry:', error),
+          );
       }
     }
   }
