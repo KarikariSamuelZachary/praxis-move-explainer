@@ -125,13 +125,14 @@ export default function PuzzlesPage() {
     failed: 0,
     totalTime: 0,
   });
-  const [cycle, setCycle] = useState(1);
-  const [showStats, setShowStats] = useState(false);
   const [puzzleEnded, setPuzzleEnded] = useState(false);
   const [currentRating, setCurrentRating] = useState<number | null>(null);
   const [reviewsDue, setReviewsDue] = useState<number | null>(null);
+  const [isFetchingMore, setIsFetchingMore] = useState(false);
   const loadIdRef = useRef(0);
   const hasScoredAttemptRef = useRef(false);
+  const fetchingMoreRef = useRef(false);
+  const stuckAtEndRef = useRef(false);
 
   const fetchReviewsDue = useCallback(() => {
     fetch('/api/woodpecker/queue', { cache: 'no-store' })
@@ -160,9 +161,45 @@ export default function PuzzlesPage() {
     }
   }, []);
 
+  // Background prefetch: keep the buffer topped up so play never stalls.
+  // Append another BATCH_SIZE whenever <=3 unsolved puzzles remain.
+  const prefetchPuzzles = useCallback(async () => {
+    if (fetchingMoreRef.current) return;
+    fetchingMoreRef.current = true;
+    setIsFetchingMore(true);
+    try {
+      const more = await fetchPuzzleBatch(BATCH_SIZE);
+      if (more && more.length) {
+        setPuzzles((prev) => [...prev, ...more]);
+      }
+    } catch (error) {
+      console.error('Failed to prefetch puzzles:', error);
+    } finally {
+      fetchingMoreRef.current = false;
+      setIsFetchingMore(false);
+    }
+  }, []);
+
   useEffect(() => {
     loadPuzzles();
   }, [loadPuzzles]);
+
+  useEffect(() => {
+    if (isLoading || puzzles.length === 0) return;
+    if (puzzles.length - currentIndex <= 3) {
+      prefetchPuzzles();
+    }
+  }, [currentIndex, puzzles.length, isLoading, prefetchPuzzles]);
+
+  // Race fallback: if the player clicked Next at the very end of the
+  // loaded buffer, auto-advance as soon as the prefetched puzzles land.
+  useEffect(() => {
+    if (stuckAtEndRef.current && currentIndex + 1 < puzzles.length) {
+      stuckAtEndRef.current = false;
+      setPuzzleEnded(false);
+      setCurrentIndex((i) => i + 1);
+    }
+  }, [puzzles.length, currentIndex]);
 
   useEffect(() => {
     fetch('/api/user/rating')
@@ -286,13 +323,14 @@ export default function PuzzlesPage() {
   }
 
   function handleNextPuzzle() {
-    setPuzzleEnded(false);
-    if (currentIndex + 1 >= puzzles.length) {
-      // Session complete - start new Woodpecker cycle
-      setCycle((prev) => prev + 1);
-      setShowStats(true);
-    } else {
+    if (currentIndex + 1 < puzzles.length) {
+      setPuzzleEnded(false);
       setCurrentIndex((prev) => prev + 1);
+    } else {
+      // Ran out of prefetched puzzles — kick off a fetch and wait for
+      // it to land; the effect above will auto-advance the index.
+      stuckAtEndRef.current = true;
+      prefetchPuzzles();
     }
   }
 
@@ -304,13 +342,6 @@ export default function PuzzlesPage() {
     boardApi.current?.resetPuzzle();
     setPuzzleEnded(false);
   }, []);
-
-  function startNewSession() {
-    setShowStats(false);
-    setPuzzleEnded(false);
-    loadPuzzles();
-    setCycle((prev) => prev + 1);
-  }
 
   const currentPuzzle = puzzles[currentIndex];
   const displayedThemes = currentPuzzle?.themes?.slice(0, 4) ?? [];
@@ -332,41 +363,6 @@ export default function PuzzlesPage() {
             <div className={`${CARD_CLASS} px-10 py-8 text-center shadow-2xl shadow-black/30`}>
               <div className="mx-auto mb-4 h-9 w-9 animate-spin rounded-full border-2 border-[#10b981] border-t-transparent" />
               <p className="text-white/60">Loading puzzles...</p>
-            </div>
-          </div>
-        ) : showStats ? (
-          /* Session complete screen */
-          <div className="flex h-[70vh] items-center justify-center">
-            <div className={`${CARD_CLASS} w-full max-w-md p-8 text-center shadow-2xl shadow-black/30`}>
-              <Image src="/woodpecker-bird-v2.png" alt="" width={54} height={54} className="mx-auto mb-4 h-[54px] w-[54px] object-contain" />
-              <h2 className="mb-2 text-2xl font-bold">Cycle {cycle - 1} Complete!</h2>
-              <p className="mb-6 text-white/60">
-                The Woodpecker Method works by repetition. Start the next cycle to reinforce these patterns.
-              </p>
-              <div className="grid grid-cols-3 gap-4 mb-6">
-                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
-                  <div className="text-2xl font-bold text-[#10b981]">{sessionStats.solved}</div>
-                  <div className="text-xs text-white/60">Solved</div>
-                </div>
-                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
-                  <div className="text-2xl font-bold text-red-400">{sessionStats.failed}</div>
-                  <div className="text-xs text-white/60">Failed</div>
-                </div>
-                <div className="rounded-lg border border-white/10 bg-white/5 p-3">
-                  <div className="text-2xl font-bold text-white">
-                    {sessionStats.solved > 0
-                      ? Math.round(sessionStats.totalTime / sessionStats.solved)
-                      : 0}s
-                  </div>
-                  <div className="text-xs text-white/60">Avg Time</div>
-                </div>
-              </div>
-              <button
-                onClick={startNewSession}
-                className="w-full rounded-xl bg-[#10b981] py-3 font-semibold text-white shadow-lg shadow-emerald-950/40 transition-colors hover:bg-emerald-400"
-              >
-                Start Cycle {cycle}
-              </button>
             </div>
           </div>
         ) : currentPuzzle ? (
@@ -453,10 +449,15 @@ export default function PuzzlesPage() {
                     <button
                       type="button"
                       onClick={handleNextPuzzle}
-                      className={`${CARD_CLASS} flex h-14 items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5`}
+                      disabled={isFetchingMore}
+                      className={`${CARD_CLASS} flex h-14 items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5 disabled:opacity-60`}
                     >
-                      <NextIcon />
-                      Next Puzzle
+                      {isFetchingMore ? (
+                        <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-transparent" />
+                      ) : (
+                        <NextIcon />
+                      )}
+                      {isFetchingMore ? 'Loading…' : 'Next Puzzle'}
                     </button>
                   </>
                 ) : (
@@ -484,8 +485,14 @@ export default function PuzzlesPage() {
           </div>
         ) : (
           <div className="flex h-[70vh] items-center justify-center">
-            <div className={`${CARD_CLASS} px-8 py-6 text-white/60`}>
-              No puzzles available. Try refreshing.
+            <div className={`${CARD_CLASS} px-8 py-6 text-center text-white/60`}>
+              No puzzles available.
+              <button
+                onClick={loadPuzzles}
+                className="mt-4 w-full rounded-lg border border-white/20 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
+              >
+                Try again
+              </button>
             </div>
           </div>
         )}
