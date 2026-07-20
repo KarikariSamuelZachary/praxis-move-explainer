@@ -31,26 +31,7 @@ type WoodpeckerEntry = {
   is_mastered: boolean;
 };
 
-type Feedback = 'idle' | 'correct' | 'inaccurate' | 'mistake';
-
-function ClockIcon() {
-  return (
-    <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.6" viewBox="0 0 24 24">
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 7v5l3 2" />
-    </svg>
-  );
-}
-
-function InfoIcon() {
-  return (
-    <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.6" viewBox="0 0 24 24">
-      <circle cx="12" cy="12" r="9" />
-      <path d="M12 8h.01" />
-      <path d="M11 12h1v4h1" />
-    </svg>
-  );
-}
+type Feedback = 'idle' | 'correct' | 'mistake';
 
 function ExitIcon() {
   return (
@@ -58,27 +39,6 @@ function ExitIcon() {
       <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
       <path d="m16 17 5-5-5-5" />
       <path d="M21 12H9" />
-    </svg>
-  );
-}
-
-function KnightIcon() {
-  return (
-    <svg
-      className="h-20 w-20"
-      viewBox="0 0 64 64"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M22 56h28" />
-      <path d="M25 56V42h6l-2-4-4-2 2-4 4-2 4-6-2-4-4-2 2-4 4 2 4 4 2 6 4 4v22" />
-      <path d="M27 42h22" />
-      <path d="M33 18v4" />
-      <path d="M27 30v4" />
     </svg>
   );
 }
@@ -93,32 +53,12 @@ function CheckCircleIcon({ className = 'h-5 w-5' }: { className?: string }) {
   );
 }
 
-function AlertCircleIcon({ className = 'h-5 w-5' }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.18" />
-      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="1.5" />
-      <path d="M12 7v6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-      <circle cx="12" cy="16.5" r="1" fill="currentColor" />
-    </svg>
-  );
-}
-
 function XCircleIcon({ className = 'h-5 w-5' }: { className?: string }) {
   return (
     <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
       <circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.18" />
       <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="1.5" />
       <path d="m8.5 8.5 7 7M15.5 8.5l-7 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
-    </svg>
-  );
-}
-
-function CogIcon() {
-  return (
-    <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.6" viewBox="0 0 24 24">
-      <circle cx="12" cy="12" r="3" />
-      <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" />
     </svg>
   );
 }
@@ -144,6 +84,28 @@ function ProgressCells({ completed, total }: { completed: number; total: number 
 function getSideToMove(puzzle: Puzzle | null) {
   if (!puzzle) return 'White';
   return (puzzle.fen || '').split(/\s+/)[1] === 'b' ? 'Black' : 'White';
+}
+
+function formatTheme(theme: string): string {
+  // Convert Lichess camelCase theme keys ('mateIn2', 'xRayAttack') to
+  // readable labels ('Mate in 2', 'X ray attack').
+  const spaced = theme
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/([a-zA-Z])([0-9])/g, '$1 $2')
+    .replace(/([0-9])([a-zA-Z])/g, '$1 $2')
+    .trim();
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1).toLowerCase();
+}
+
+function formatSourceReason(reason: string): string {
+  switch (reason) {
+    case 'wrong_answer':
+      return 'You missed this one';
+    case 'slow_solution':
+      return 'You solved it slowly';
+    default:
+      return formatTheme(reason);
+  }
 }
 
 export default function WoodpeckerPage() {
@@ -325,34 +287,12 @@ export default function WoodpeckerPage() {
   const queueIsEmpty = !isLoading && queue !== null && queue.length === 0;
   const queueFinished = !isLoading && queue !== null && currentIndex >= queue.length;
 
-  const classificationRowState = (target: Feedback) => {
-    if (feedback === 'idle') {
-      return {
-        iconColor: 'text-white/60',
-        titleColor: 'text-white/80',
-        bodyOpacity: 'opacity-100',
-      };
-    }
-    if (feedback === target) {
-      return {
-        iconColor: 'text-emerald-400',
-        titleColor: 'text-emerald-300',
-        bodyOpacity: 'opacity-100',
-      };
-    }
-    return {
-      iconColor: 'text-white/25',
-      titleColor: 'text-white/30',
-      bodyOpacity: 'opacity-40',
-    };
-  };
-
   const showResult = feedback !== 'idle';
   const showingBoard = !!currentPuzzle && !queueFinished && !queueIsEmpty;
 
   return (
-    <div className="min-h-[calc(100vh-2.25rem)] -mt-2 overflow-y-auto text-white [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
-      <div className="mx-auto max-w-[1280px] px-6 pb-12 pt-6 lg:px-10">
+    <div className="relative -mt-2 h-[calc(100vh-2.25rem)] w-full overflow-hidden px-6 pb-[10px] pt-6 text-white lg:px-10 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+      <div className="mx-auto h-full w-full max-w-[1760px]">
         {isLoading ? (
           <div className="flex h-[70vh] items-center justify-center">
             <div className={`${CARD_CLASS} px-10 py-8 text-center shadow-2xl shadow-black/30`}>
@@ -407,63 +347,46 @@ export default function WoodpeckerPage() {
             </div>
           </div>
         ) : showingBoard ? (
-          <div className="grid items-start justify-center gap-6 xl:grid-cols-[420px_minmax(0,calc(100vh-70px))_420px]">
+          <div className="grid h-full grid-cols-1 gap-6 lg:grid-cols-[18rem_minmax(0,1fr)_22rem] xl:grid-cols-[20rem_minmax(0,1fr)_22rem]">
             {/* ============== LEFT CARD ============== */}
-            <section className="flex w-full max-w-[420px] flex-col gap-5">
-              <div className={`${CARD_CLASS} mx-auto w-[400px] p-6 shadow-2xl shadow-black/25`}>
-                <Image
-                  src="/woodpecker-bird-v2.png"
-                  alt=""
-                  width={120}
-                  height={120}
-                  className="mx-auto mb-3 h-[120px] w-[120px] object-contain"
-                />
-                <div className="text-center">
-                  <div className="text-[11px] font-bold uppercase tracking-[0.3em] text-[#f7e5c6]/60">
+            <section className="hidden min-h-0 min-w-0 lg:block">
+              <div className={`${CARD_CLASS} flex h-full w-full flex-col justify-between p-6 shadow-2xl shadow-black/25`}>
+                {/* Top: identity & progress */}
+                <div className="flex flex-col items-center">
+                  <Image
+                    src="/woodpecker-bird-v2.png"
+                    alt=""
+                    width={112}
+                    height={112}
+                    className="mb-5 h-[112px] w-[112px] object-contain"
+                  />
+                  <div className="text-[12px] font-bold uppercase tracking-[0.3em] text-[#f7e5c6]/60">
                     Woodpecker
                   </div>
-                  <div className="mt-1 text-xs text-white/50">Puzzle</div>
-                  <div className="mt-1 text-[44px] font-bold leading-none text-[#f7e5c6]">
+                  <div className="mt-2 text-[11px] uppercase tracking-wider text-white/40">Puzzle</div>
+                  <div className="mt-2 text-5xl font-bold leading-none text-[#f7e5c6]">
                     {Math.min(currentIndex + 1, cellTotal)} <span className="text-white/40">/ {cellTotal}</span>
                   </div>
-                </div>
-
-                <div className="mt-5">
-                  <ProgressCells completed={currentIndex} total={cellTotal} />
-                </div>
-
-                <div className="my-6 border-t border-white/10" />
-
-                <div className="flex items-center gap-3">
-                  <div className="flex h-10 w-10 items-center justify-center rounded-full border border-white/15 text-white/70">
-                    <ClockIcon />
-                  </div>
-                  <div className="flex-1">
-                    <div className="text-[11px] uppercase tracking-wider text-white/50">Remaining</div>
-                    <div className="text-2xl font-bold text-[#f7e5c6]">{remaining}</div>
+                  <div className="mt-6 w-full">
+                    <ProgressCells completed={currentIndex} total={cellTotal} />
                   </div>
                 </div>
-                <div className="mt-2 pl-[52px] text-xs text-white/50">
-                  Estimated time: {estimatedMinutes} min
-                </div>
 
-                <div className="my-6 border-t border-white/10" />
-
-                <div className="rounded-xl border border-white/10 bg-black/25 p-4">
-                  <div className="mb-2 flex items-center gap-2 text-[#f7e5c6]/80">
-                    <InfoIcon />
-                    <span className="text-sm font-semibold">Focus</span>
+                {/* Middle: remaining stats (centered) */}
+                <div className="flex flex-col items-center text-center">
+                  <div className="text-[11px] uppercase tracking-[0.2em] text-white/50">Remaining</div>
+                  <div className="mt-2 text-6xl font-bold leading-none text-[#f7e5c6]">{remaining}</div>
+                  <div className="mt-3 text-sm text-white/50">
+                    Estimated time: {estimatedMinutes} min
                   </div>
-                  <p className="pl-7 text-sm leading-relaxed text-white/60">
-                    These are your reviews. Take your time and think carefully.
-                  </p>
                 </div>
 
-                <div className="mt-6">
+                {/* Bottom: exit */}
+                <div>
                   <Link
                     href="/puzzles"
                     onClick={handleExit}
-                    className="flex w-full items-center justify-center gap-2 rounded-lg border border-[#f7e5c6]/30 bg-transparent px-6 py-3 text-base font-semibold text-[#f7e5c6] transition hover:border-[#f7e5c6]/60 hover:bg-[#f7e5c6]/5"
+                    className="flex w-full items-center justify-center gap-2 rounded-lg border border-[#f7e5c6]/30 bg-transparent px-4 py-3 text-sm font-semibold text-[#f7e5c6] transition hover:border-[#f7e5c6]/60 hover:bg-[#f7e5c6]/5"
                   >
                     <ExitIcon />
                     Exit Review
@@ -473,13 +396,8 @@ export default function WoodpeckerPage() {
             </section>
 
             {/* ============== CENTER: CHESSBOARD ============== */}
-            <section className="overflow-visible">
-              <div className="relative mx-auto w-full max-w-[calc(100vh-70px)]">
-                {currentEntry && (
-                  <div className="pointer-events-none absolute -top-6 right-0 z-10 rounded-full px-3 py-1 text-sm text-white/70">
-                    <span className="capitalize">{currentEntry.theme.replace(/_/g, ' ')}</span>
-                  </div>
-                )}
+            <section className="min-h-0 min-w-0">
+              <div className="relative mx-auto aspect-square w-full max-w-[calc(100vh-70px)]">
                 <div className="w-full">
                   <ChessBoard
                     puzzle={currentPuzzle}
@@ -490,83 +408,111 @@ export default function WoodpeckerPage() {
                     apiRef={boardApi}
                   />
                 </div>
-                <div className="mt-3 flex items-center justify-center gap-2 text-sm text-white/60">
-                  <span className="inline-block h-2 w-2 rounded-full bg-white" />
-                  <span>{sideToMove} to move</span>
-                </div>
               </div>
             </section>
 
             {/* ============== RIGHT CARD ============== */}
-            <section className="flex w-full max-w-[420px] flex-col gap-5">
-              <div className={`${CARD_CLASS} mx-auto w-[400px] p-6 shadow-2xl shadow-black/25`}>
-                <div className="mb-1 flex items-center gap-2">
-                  <span
-                    className={`text-xs font-bold uppercase tracking-[0.25em] ${
-                      showResult ? 'text-white/40' : 'text-emerald-400'
+            <section className="hidden min-h-0 min-w-0 xl:block">
+              <div className={`${CARD_CLASS} flex h-full w-full flex-col justify-between p-6 shadow-2xl shadow-black/25`}>
+                {/* Top: result banner (after move) OR "your move" header */}
+                {showResult ? (
+                  <div
+                    className={`flex flex-col gap-3 rounded-xl border p-4 ${
+                      feedback === 'correct'
+                        ? 'border-emerald-400/30 bg-emerald-500/10'
+                        : 'border-rose-400/30 bg-rose-500/10'
                     }`}
                   >
-                    {showResult ? 'Result' : 'Your Move'}
-                  </span>
-                </div>
-                <h2 className="text-xl font-semibold text-[#f7e5c6]">
-                  {showResult
-                    ? feedback === 'correct'
-                      ? 'Nice — keep going'
-                      : 'Logged for review'
-                    : `Find the best move for ${sideToMove}.`}
-                </h2>
-
-                <div className="my-6 flex flex-col items-center justify-center text-[#f7e5c6]/50">
-                  <KnightIcon />
-                  <p className="mt-4 text-sm text-white/50">
-                    {showResult
-                      ? 'Move on to the next review when you\'re ready.'
-                      : 'Make your move on the board'}
-                  </p>
-                </div>
-
-                <div className="border-t border-white/10 pt-5">
-                  <div className="mb-3 text-[11px] font-bold uppercase tracking-[0.25em] text-white/40">
-                    After you move
+                    <div className="flex items-center gap-2.5">
+                      {feedback === 'correct' ? (
+                        <CheckCircleIcon className="h-5 w-5 shrink-0 text-emerald-400" />
+                      ) : (
+                        <XCircleIcon className="h-5 w-5 shrink-0 text-rose-400" />
+                      )}
+                      <span
+                        className={`text-[11px] font-bold uppercase tracking-[0.25em] ${
+                          feedback === 'correct' ? 'text-emerald-400' : 'text-rose-400'
+                        }`}
+                      >
+                        Result
+                      </span>
+                    </div>
+                    <h2
+                      className={`text-2xl font-semibold leading-snug ${
+                        feedback === 'correct' ? 'text-emerald-200' : 'text-rose-200'
+                      }`}
+                    >
+                      {feedback === 'correct' ? 'Nice — keep going' : 'Logged for review'}
+                    </h2>
                   </div>
-                  <ul className="space-y-3">
-                    {(() => {
-                      const correct = classificationRowState('correct');
-                      const inaccurate = classificationRowState('inaccurate');
-                      const mistake = classificationRowState('mistake');
-                      return (
-                        <>
-                          <li className="flex items-start gap-3">
-                            <CheckCircleIcon className="mt-0.5 h-5 w-5 shrink-0" />
-                            <div className={correct.bodyOpacity}>
-                              <div className={`text-sm font-semibold ${correct.titleColor}`}>Correct</div>
-                              <div className="text-xs text-white/50">Great! You&apos;ve reinforced this idea.</div>
-                            </div>
-                          </li>
-                          <li className="flex items-start gap-3">
-                            <AlertCircleIcon className="mt-0.5 h-5 w-5 shrink-0" />
-                            <div className={inaccurate.bodyOpacity}>
-                              <div className={`text-sm font-semibold ${inaccurate.titleColor}`}>Inaccurate</div>
-                              <div className="text-xs text-white/50">Not the best. Let&apos;s see why.</div>
-                            </div>
-                          </li>
-                          <li className="flex items-start gap-3">
-                            <XCircleIcon className="mt-0.5 h-5 w-5 shrink-0" />
-                            <div className={mistake.bodyOpacity}>
-                              <div className={`text-sm font-semibold ${mistake.titleColor}`}>Mistake</div>
-                              <div className="text-xs text-white/50">This one hurts. Let&apos;s learn from it.</div>
-                            </div>
-                          </li>
-                        </>
-                      );
-                    })()}
-                  </ul>
+                ) : (
+                  <div className="flex flex-col gap-3">
+                    <div className="flex items-center gap-2.5">
+                      <span
+                        className={`inline-block h-2.5 w-2.5 rounded-full ${
+                          sideToMove === 'White' ? 'bg-white' : 'bg-zinc-800 ring-1 ring-white/40'
+                        }`}
+                      />
+                      <span className="text-[11px] font-bold uppercase tracking-[0.3em] text-[#f7e5c6]/60">
+                        Your Move
+                      </span>
+                    </div>
+                    <h2 className="text-3xl font-semibold leading-snug text-[#f7e5c6]">
+                      Find the best move for {sideToMove}.
+                    </h2>
+                  </div>
+                )}
+
+                {/* Middle: puzzle details */}
+                <div className="flex flex-col gap-5">
+                  <div>
+                    <div className="text-[11px] font-bold uppercase tracking-[0.25em] text-white/40">
+                      This Puzzle
+                    </div>
+                    <div className="mt-2.5 flex flex-wrap gap-1.5">
+                      {(currentPuzzle?.themes ?? []).map((t) => (
+                        <span
+                          key={t}
+                          className="rounded-full border border-[#f7e5c6]/20 bg-[#f7e5c6]/5 px-2.5 py-1 text-xs font-medium text-[#f7e5c6]/80"
+                        >
+                          {formatTheme(t)}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-2.5 border-t border-white/5 pt-4 text-sm">
+                    <div className="flex items-baseline justify-between">
+                      <span className="text-white/40">Rating</span>
+                      <span className="font-semibold text-[#f7e5c6]">
+                        {currentPuzzle?.rating ?? '—'}
+                      </span>
+                    </div>
+                    <div className="flex items-baseline justify-between">
+                      <span className="text-white/40">Puzzle</span>
+                      <span className="font-mono text-xs text-white/60">
+                        {currentPuzzle?.id ?? '—'}
+                      </span>
+                    </div>
+                    {currentEntry?.source_reason && (
+                      <div className="flex items-baseline justify-between">
+                        <span className="text-white/40">Added because</span>
+                        <span className="text-xs font-medium text-white/70">
+                          {formatSourceReason(currentEntry.source_reason)}
+                        </span>
+                      </div>
+                    )}
+                  </div>
                 </div>
 
-                <div className="mt-6 flex items-center justify-between border-t border-white/10 pt-5">
-                  <span className="text-sm font-semibold text-white/80">Auto-advance</span>
-                  <div className="flex items-center gap-3">
+                {/* Bottom: auto-advance toggle */}
+                <div>
+                  <div className="flex items-center justify-between rounded-xl border border-white/10 bg-black/25 px-4 py-3">
+                    <div className="flex flex-col">
+                      <span className="text-sm font-semibold text-white/80">Auto-advance</span>
+                      <span className="mt-0.5 text-[11px] text-white/40">
+                        Move to the next review automatically
+                      </span>
+                    </div>
                     <button
                       type="button"
                       onClick={() => setAutoAdvance((v) => !v)}
@@ -582,24 +528,17 @@ export default function WoodpeckerPage() {
                         }`}
                       />
                     </button>
-                    <button
-                      type="button"
-                      className="text-white/50 transition hover:text-white"
-                      aria-label="Settings"
-                    >
-                      <CogIcon />
-                    </button>
                   </div>
-                </div>
 
-                {!autoAdvance && feedback !== 'idle' && (
-                  <button
-                    onClick={handleNextClick}
-                    className="mt-4 w-full rounded-lg bg-emerald-500 py-2.5 text-sm font-semibold text-white shadow-lg shadow-emerald-950/40 transition hover:bg-emerald-400"
-                  >
-                    Next Review
-                  </button>
-                )}
+                  {!autoAdvance && feedback !== 'idle' && (
+                    <button
+                      onClick={handleNextClick}
+                      className="mt-4 w-full rounded-lg bg-emerald-500 py-2.5 text-sm font-semibold text-white shadow-lg shadow-emerald-950/40 transition hover:bg-emerald-400"
+                    >
+                      Next Review
+                    </button>
+                  )}
+                </div>
               </div>
             </section>
           </div>
