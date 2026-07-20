@@ -129,8 +129,20 @@ export default function PuzzlesPage() {
   const [showStats, setShowStats] = useState(false);
   const [puzzleEnded, setPuzzleEnded] = useState(false);
   const [currentRating, setCurrentRating] = useState<number | null>(null);
+  const [reviewsDue, setReviewsDue] = useState<number | null>(null);
   const loadIdRef = useRef(0);
   const hasScoredAttemptRef = useRef(false);
+
+  const fetchReviewsDue = useCallback(() => {
+    fetch('/api/woodpecker/queue', { cache: 'no-store' })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (Array.isArray(data)) {
+          setReviewsDue(data.length);
+        }
+      })
+      .catch((error) => console.error('Failed to fetch woodpecker queue:', error));
+  }, []);
 
   const loadPuzzles = useCallback(async () => {
     const loadId = ++loadIdRef.current;
@@ -161,7 +173,9 @@ export default function PuzzlesPage() {
         }
       })
       .catch((error) => console.error('Failed to fetch user rating:', error));
-  }, []);
+
+    fetchReviewsDue();
+  }, [fetchReviewsDue]);
 
   useEffect(() => {
     hasScoredAttemptRef.current = false;
@@ -220,7 +234,7 @@ export default function PuzzlesPage() {
             }),
           })
             .then((res) => (res.ok ? res.json() : null))
-            .then(() => undefined)
+            .then(() => fetchReviewsDue())
             .catch((error) =>
               console.error('Failed to add woodpecker entry:', error),
             );
@@ -263,7 +277,7 @@ export default function PuzzlesPage() {
           }),
         })
           .then((res) => (res.ok ? res.json() : null))
-          .then(() => undefined)
+          .then(() => fetchReviewsDue())
           .catch((error) =>
             console.error('Failed to add woodpecker entry:', error),
           );
@@ -301,12 +315,17 @@ export default function PuzzlesPage() {
   const currentPuzzle = puzzles[currentIndex];
   const displayedThemes = currentPuzzle?.themes?.slice(0, 4) ?? [];
   const themeCount = currentPuzzle ? Math.max(new Set(currentPuzzle.themes).size, 1) : 0;
-  const reviewsDue = Math.max(puzzles.length - sessionStats.solved, 0);
   const isCurrentPuzzleSolved = sessionStats.solved > currentIndex;
+  const avgSolveTime =
+    sessionStats.solved > 0
+      ? Math.round(sessionStats.totalTime / sessionStats.solved)
+      : 0;
+  const sideToMoveLabel =
+    currentPuzzle && getSideToMove(currentPuzzle) === 'black' ? 'Black' : 'White';
 
   return (
     <div className="min-h-[calc(100vh-2.25rem)] -mt-2 text-white [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
-      <div className="mx-auto max-w-[1280px] pb-1 px-6 lg:px-10">
+      <div className="mx-auto max-w-[1760px] pb-1 px-6 lg:px-10">
         {/* Main content */}
         {isLoading ? (
           <div className="flex h-[70vh] items-center justify-center">
@@ -351,14 +370,44 @@ export default function PuzzlesPage() {
             </div>
           </div>
         ) : currentPuzzle ? (
-          <div className="grid items-start justify-center gap-6 xl:grid-cols-[minmax(0,calc(100vh-70px))_420px]">
-            <section className="overflow-visible">
-              <div className="relative mx-auto mt-[24px] w-full max-w-[calc(100vh-70px)]">
-                {currentRating !== null && (
-                  <div className="pointer-events-none absolute -top-6 right-0 z-10 rounded-full px-3 py-1 text-sm text-white/70">
-                    {currentRating}
+          <div className="grid items-start justify-center gap-6 xl:grid-cols-[18rem_minmax(0,calc(100vh-70px))_22rem]">
+            {/* ============== LEFT: WOODPECKER CARD + SESSION STATS ============== */}
+            <section className="order-2 mt-[24px] flex flex-col space-y-5 xl:order-none">
+              <div className={`${CARD_CLASS} mx-auto w-full max-w-[400px] p-5 shadow-2xl shadow-black/25 xl:max-w-none`}>
+                <Image src="/woodpecker-bird-v2.png" alt="" width={160} height={160} className="mx-auto h-[160px] w-[160px] shrink-0 object-contain" />
+                <div className="mt-0 text-center">
+                  <div className="text-sm font-normal text-[#f7e5c6]/60">Reviews Due</div>
+                  <div className="mt-1 text-[50px] font-bold leading-none text-[#f7e5c6]">{reviewsDue ?? '—'}</div>
+                </div>
+                <Link href="/woodpecker" className="mt-5 flex w-full items-center justify-center rounded-lg border border-[#f7e5c6]/30 bg-transparent px-4 py-3 text-lg font-bold text-[#f7e5c6] transition hover:border-[#f7e5c6]/60 hover:bg-[#f7e5c6]/5">
+                  Go to Woodpecker
+                </Link>
+              </div>
+
+              <div className={`${CARD_CLASS} mx-auto w-full max-w-[400px] p-5 shadow-2xl shadow-black/25 xl:max-w-none`}>
+                <div className="text-center text-[11px] font-bold uppercase tracking-[0.25em] text-white/40">
+                  This Session
+                </div>
+                <div className="mt-4 grid grid-cols-3 gap-2 text-center">
+                  <div>
+                    <div className="text-2xl font-bold text-[#10b981]">{sessionStats.solved}</div>
+                    <div className="mt-1 text-[11px] uppercase tracking-wider text-white/40">Solved</div>
                   </div>
-                )}
+                  <div>
+                    <div className="text-2xl font-bold text-red-400">{sessionStats.failed}</div>
+                    <div className="mt-1 text-[11px] uppercase tracking-wider text-white/40">Failed</div>
+                  </div>
+                  <div>
+                    <div className="text-2xl font-bold text-[#f7e5c6]">{avgSolveTime}s</div>
+                    <div className="mt-1 text-[11px] uppercase tracking-wider text-white/40">Avg Time</div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            {/* ============== CENTER: CHESSBOARD ============== */}
+            <section className="order-1 overflow-visible xl:order-none">
+              <div className="relative mx-auto mt-[24px] w-full max-w-[calc(100vh-70px)]">
                 <div className="w-full">
                   <ChessBoard
                     puzzle={currentPuzzle}
@@ -372,21 +421,22 @@ export default function PuzzlesPage() {
               </div>
             </section>
 
-            <section className="flex w-full max-w-[420px] flex-col space-y-5 mt-[24px]">
-<div className={`${CARD_CLASS} mx-auto w-[400px] p-6 shadow-2xl shadow-black/25`}>
-                {/* Bird image, centered */}
-                <Image src="/woodpecker-bird-v2.png" alt="" width={250} height={250} className="mx-auto h-[250px] w-[250px] shrink-0 object-contain" />
-
-                {/* Content block: centered, no gap from image */}
-                <div className="mt-0 text-center">
-                  <div className="text-sm font-normal text-[#f7e5c6]/60">Reviews Due</div>
-                  <div className="mt-1 text-[50px] font-bold leading-none text-[#f7e5c6]">{reviewsDue}</div>
+            {/* ============== RIGHT: STATUS CARD + ACTIONS ============== */}
+            <section className="order-3 mx-auto mt-[24px] flex w-full max-w-[420px] flex-col space-y-5 xl:order-none xl:max-w-none">
+              <div className={`${CARD_CLASS} p-6 shadow-2xl shadow-black/25`}>
+                <div className="flex items-center gap-2.5">
+                  <span className={`inline-block h-2.5 w-2.5 rounded-full ${sideToMoveLabel === 'White' ? 'bg-white' : 'bg-zinc-800 ring-1 ring-white/40'}`} />
+                  <span className="text-[11px] font-bold uppercase tracking-[0.3em] text-[#f7e5c6]/60">Your Move</span>
                 </div>
-
-                {/* Button: full-width, rounded, comfortable padding */}
-                <Link href="/woodpecker" className="mt-5 flex w-full items-center justify-center rounded-lg border border-[#f7e5c6]/30 bg-transparent px-6 py-[15px] text-xl font-bold text-[#f7e5c6] transition hover:border-[#f7e5c6]/60 hover:bg-[#f7e5c6]/5">
-                  Go to Woodpecker
-                </Link>
+                <h2 className="mt-3 text-2xl font-semibold leading-snug text-[#f7e5c6]">
+                  Find the best move for {sideToMoveLabel}.
+                </h2>
+                <div className="mt-5 border-t border-white/5 pt-4">
+                  <div className="text-[11px] font-bold uppercase tracking-[0.25em] text-white/40">Your Rating</div>
+                  <div className="mt-1.5 text-4xl font-bold leading-none text-[#f7e5c6]">
+                    {currentRating ?? '—'}
+                  </div>
+                </div>
               </div>
 
               <div className="grid grid-cols-2 gap-3">
