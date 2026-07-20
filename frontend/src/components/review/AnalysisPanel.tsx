@@ -156,7 +156,7 @@ export default function AnalysisPanel({
             )}
           </>
         ) : (
-          <section className="rounded-2xl border border-dashed border-white/10 bg-black/30 p-4 text-xs leading-6 text-white/50">
+          <section className="rounded-2xl border border-dashed border-[#f7e5c6]/20 bg-black/30 p-4 text-sm leading-6 text-[#f7e5c6]/60">
             Per-move analysis will populate here once a game is imported.
           </section>
         )}
