@@ -104,8 +104,8 @@ export default function ImportPanel({
             }}
               className={`flex-1 cursor-pointer rounded-lg px-2 py-1.5 text-xs font-medium transition ${
                 isActive
-                  ? 'bg-[#10b981]/20 text-[#10b981] ring-1 ring-[#10b981]/30'
-                  : 'text-white/70 hover:text-white'
+                  ? 'bg-[#f7e5c6]/15 text-[#f7e5c6] ring-1 ring-[#f7e5c6]/40'
+                  : 'text-[#f7e5c6]/70 hover:text-[#f7e5c6]'
               }`}
             >
               {tab.label}
@@ -333,21 +333,21 @@ function UsernameImport({
                   disabled={isAnalyzing}
                   className={`group flex w-full items-center justify-between gap-2 rounded-xl border px-3 py-2 text-left text-xs transition disabled:opacity-50 ${
                     isSelected
-                      ? 'border-[#10b981]/50 bg-[#10b981]/15 text-[#10b981]'
-                      : 'border-transparent bg-black/30 text-white hover:border-white/10 hover:bg-black/50'
+                      ? 'border-[#f7e5c6]/50 bg-[#f7e5c6]/15 text-[#f7e5c6]'
+                      : 'border-transparent bg-black/30 text-[#f7e5c6]/80 hover:border-[#f7e5c6]/20 hover:bg-black/50'
                   }`}
                 >
                   <span className="flex flex-col">
                     <span className="font-medium">
                       {game.white.username ?? '?'} vs. {game.black.username ?? '?'}
                     </span>
-                    <span className="text-[11px] text-white/50">
+                    <span className="text-[11px] text-[#f7e5c6]/50">
                       {formatGameDate(game.end_time)} · {game.time_class} · {game.result}
                     </span>
                   </span>
                   {isSelected ? (
                     <svg
-                      className="h-3.5 w-3.5 shrink-0 text-[#10b981]"
+                      className="h-3.5 w-3.5 shrink-0 text-[#f7e5c6]"
                       fill="none"
                       stroke="currentColor"
                       strokeLinecap="round"
@@ -360,7 +360,7 @@ function UsernameImport({
                     </svg>
                   ) : (
                     <svg
-                      className="h-3.5 w-3.5 shrink-0 text-white/50 transition group-hover:text-[#10b981]"
+                      className="h-3.5 w-3.5 shrink-0 text-[#f7e5c6]/50 transition group-hover:text-[#f7e5c6]"
                       fill="none"
                       stroke="currentColor"
                       strokeLinecap="round"
