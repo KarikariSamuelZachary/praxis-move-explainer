@@ -10,6 +10,94 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --font-display: var(--font-cinzel);
+}
+
+@theme {
+  --color-walnut-950: #120c08;
+  --color-walnut-900: #1b120d;
+  --color-walnut-800: #2a1c12;
+  --color-gold: #d9b87c;
+  --color-gold-bright: #efd9a7;
+  --color-cream: #ede3d0;
+  --color-wood-mute: #a79b8a;
+  --color-moss: #2e9e5b;
+  --color-moss-bright: #37be7e;
+}
+
+/*
+ * Plain-CSS fallbacks for the landing palette.
+ * The Turbopack/Tailwind pipeline in this project drops custom @theme
+ * tokens, so the landing utilities are defined by hand.
+ */
+:root {
+  --gold: #d9b87c;
+  --gold-bright: #efd9a7;
+  --cream: #ede3d0;
+  --wood-mute: #a79b8a;
+  --moss: #2e9e5b;
+  --moss-bright: #37be7e;
+  --walnut-950: #120c08;
+  --walnut-900: #1b120d;
+  --walnut-800: #2a1c12;
+}
+
+.text-gold { color: var(--gold); }
+.text-gold-bright { color: var(--gold-bright); }
+.text-gold\/80 { color: color-mix(in srgb, var(--gold) 80%, transparent); }
+.text-cream { color: var(--cream); }
+.text-cream\/90 { color: color-mix(in srgb, var(--cream) 90%, transparent); }
+.text-cream\/80 { color: color-mix(in srgb, var(--cream) 80%, transparent); }
+.text-cream\/75 { color: color-mix(in srgb, var(--cream) 75%, transparent); }
+.text-wood-mute { color: var(--wood-mute); }
+.text-wood-mute\/80 { color: color-mix(in srgb, var(--wood-mute) 80%, transparent); }
+.text-wood-mute\/70 { color: color-mix(in srgb, var(--wood-mute) 70%, transparent); }
+.text-moss-bright { color: var(--moss-bright); }
+
+.bg-gold { background-color: var(--gold); }
+.bg-gold\/30 { background-color: color-mix(in srgb, var(--gold) 30%, transparent); }
+.bg-moss { background-color: var(--moss); }
+.bg-moss-bright { background-color: var(--moss-bright); }
+.bg-moss\/70 { background-color: color-mix(in srgb, var(--moss) 70%, transparent); }
+.bg-cream\/70 { background-color: color-mix(in srgb, var(--cream) 70%, transparent); }
+.bg-walnut-950 { background-color: var(--walnut-950); }
+.bg-walnut-950\/85 { background-color: color-mix(in srgb, var(--walnut-950) 85%, transparent); }
+.bg-walnut-900 { background-color: var(--walnut-900); }
+.bg-walnut-900\/60 { background-color: color-mix(in srgb, var(--walnut-900) 60%, transparent); }
+
+.border-gold { border-color: var(--gold); }
+.border-gold\/60 { border-color: color-mix(in srgb, var(--gold) 60%, transparent); }
+.border-cream\/30 { border-color: color-mix(in srgb, var(--cream) 30%, transparent); }
+
+.hover\:bg-moss-bright:hover { background-color: var(--moss-bright); }
+.hover\:text-gold-bright:hover { color: var(--gold-bright); }
+.group:hover .group-hover\:text-gold { color: var(--gold); }
+.group:hover .group-hover\:text-gold-bright { color: var(--gold-bright); }
+.group:hover .group-hover\:text-wood-mute { color: var(--wood-mute); }
+.group:hover .group-hover\:border-gold\/60 { border-color: color-mix(in srgb, var(--gold) 60%, transparent); }
+
+@keyframes scroll-dot {
+  0% {
+    transform: translateY(0);
+    opacity: 1;
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateY(12px);
+    opacity: 0;
+  }
+}
+
+@keyframes float-slow {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-10px);
+  }
 }
 
 html,
