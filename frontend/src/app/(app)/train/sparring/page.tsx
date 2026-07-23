@@ -2,7 +2,19 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Chess } from 'chess.js';
-import { Chessboard } from 'react-chessboard';
+import dynamic from 'next/dynamic';
+
+const Chessboard = dynamic(
+  () => import('react-chessboard').then((module) => module.Chessboard),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="flex h-full w-full items-center justify-center rounded-[8px] bg-black/35 text-sm text-[#f7e5c6]/65">
+        Loading board
+      </div>
+    ),
+  }
+);
 
 type BotSource = 'ready' | 'in_book' | 'playing_naturally' | 'correcting_blunder' | 'thinking' | 'error';
 
