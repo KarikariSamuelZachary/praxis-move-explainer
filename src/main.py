@@ -12,8 +12,9 @@ from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from core.database import init_db
 from core.migrations import run_migrations
+from engines.maia_engine import close_maia3, start_maia3
 from engines.stockfish_engine import STOCKFISH_CANDIDATE_PATHS
-from routers import import_games, onboarding, puzzles, review, user, webhooks, woodpecker
+from routers import import_games, maia_debug, onboarding, puzzles, review, train, user, webhooks, woodpecker
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT_DIR / ".env")
@@ -92,14 +93,29 @@ def startup():
     init_db()
     run_migrations()
 
+    # Maia-3 (human-like chess model). Launched lazily on first request, but
+    # we start it eagerly here so a missing checkpoint surfaces at startup
+    # (the checkpoint should already be cached by the build pre-warm step).
+    try:
+        start_maia3()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("Maia-3 engine failed to start at boot: %s", exc)
+
+
+@app.on_event("shutdown")
+def shutdown():
+    close_maia3()
+
 # --- Routers ---
 app.include_router(onboarding.router, prefix="/onboarding")
 app.include_router(puzzles.router, prefix="/api")
 app.include_router(review.router, prefix="/api")
 app.include_router(import_games.router, prefix="/api")
+app.include_router(train.router, prefix="/api")
 app.include_router(user.router, prefix="/api/user")
 app.include_router(webhooks.router, prefix="/webhooks")
 app.include_router(woodpecker.router, prefix="/api/woodpecker")
+app.include_router(maia_debug.router, prefix="/api")
 
 # --- App Running? ---
 @app.get("/praxis")
