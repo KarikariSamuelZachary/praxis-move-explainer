@@ -173,6 +173,182 @@ def run_migrations():
                     ON tactical_rating_history(user_id)
                 """
             )
+
+            # --- opponent game ingestion ------------------------------------
+            # Public games imported for training against an opponent profile.
+            # Kept separate from user-owned/review games so future training
+            # features can query opponent corpora without mixing ownership.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS opponent_import_jobs (
+                    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    requested_by_user_id TEXT NOT NULL REFERENCES users(clerk_id),
+                    status              TEXT NOT NULL DEFAULT 'queued'
+                                        CHECK (status IN ('queued', 'running', 'completed', 'failed')),
+                    lichess_username    TEXT,
+                    chesscom_username   TEXT,
+                    requested_limit     INTEGER NOT NULL DEFAULT 100,
+                    imported_count      INTEGER NOT NULL DEFAULT 0,
+                    error_message       TEXT,
+                    created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    started_at          TIMESTAMPTZ,
+                    completed_at        TIMESTAMPTZ
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS opponent_games (
+                    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    requested_by_user_id TEXT NOT NULL REFERENCES users(clerk_id),
+                    import_job_id       UUID REFERENCES opponent_import_jobs(id) ON DELETE SET NULL,
+                    provider            TEXT NOT NULL CHECK (provider IN ('lichess', 'chesscom')),
+                    opponent_username   TEXT NOT NULL,
+                    game_url            TEXT NOT NULL,
+                    pgn                 TEXT NOT NULL,
+                    white_player        JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    black_player        JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    result              TEXT NOT NULL DEFAULT '',
+                    end_time            BIGINT NOT NULL DEFAULT 0,
+                    time_class          TEXT NOT NULL DEFAULT '',
+                    raw_summary         JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    imported_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (requested_by_user_id, provider, opponent_username, game_url)
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_opponent_games_lookup
+                    ON opponent_games(requested_by_user_id, provider, opponent_username)
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS opponent_repertoire_moves (
+                    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    opponent_game_id     UUID NOT NULL REFERENCES opponent_games(id) ON DELETE CASCADE,
+                    requested_by_user_id TEXT NOT NULL REFERENCES users(clerk_id),
+                    provider             TEXT NOT NULL CHECK (provider IN ('lichess', 'chesscom')),
+                    opponent_username    TEXT NOT NULL,
+                    position_key         TEXT NOT NULL,
+                    move_uci             TEXT NOT NULL,
+                    move_san             TEXT NOT NULL DEFAULT '',
+                    ply_index            INTEGER NOT NULL,
+                    played_color         TEXT NOT NULL CHECK (played_color IN ('white', 'black')),
+                    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (opponent_game_id, ply_index)
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_opponent_repertoire_lookup
+                    ON opponent_repertoire_moves(
+                        requested_by_user_id,
+                        provider,
+                        opponent_username,
+                        position_key
+                    )
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_opponent_import_jobs_user_created
+                    ON opponent_import_jobs(requested_by_user_id, created_at DESC)
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_games (
+                    id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    user_id             TEXT NOT NULL REFERENCES users(clerk_id),
+                    provider            TEXT CHECK (provider IN ('lichess', 'chesscom', 'pgn')),
+                    source_username     TEXT,
+                    game_url            TEXT NOT NULL DEFAULT '',
+                    pgn                 TEXT NOT NULL,
+                    white_player        JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    black_player        JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    result              TEXT NOT NULL DEFAULT '',
+                    end_time            BIGINT NOT NULL DEFAULT 0,
+                    time_class          TEXT NOT NULL DEFAULT '',
+                    imported_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (user_id, provider, game_url)
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_games_user_time
+                    ON user_games(user_id, end_time DESC, imported_at DESC)
+                """
+            )
+
+            # --- weakness profile analysis ----------------------------------
+            # Generic corpus analysis result tables. `source_type` lets this
+            # profile either opponent imports now or user-owned games later.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS weakness_profile_jobs (
+                    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    requested_by_user_id  TEXT NOT NULL REFERENCES users(clerk_id),
+                    source_type           TEXT NOT NULL CHECK (source_type IN ('opponent', 'user')),
+                    provider              TEXT,
+                    opponent_username     TEXT,
+                    status                TEXT NOT NULL DEFAULT 'queued'
+                                          CHECK (status IN ('queued', 'running', 'completed', 'failed')),
+                    requested_limit       INTEGER NOT NULL DEFAULT 50,
+                    analyzed_games_count  INTEGER NOT NULL DEFAULT 0,
+                    analyzed_moves_count  INTEGER NOT NULL DEFAULT 0,
+                    mistake_count         INTEGER NOT NULL DEFAULT 0,
+                    blunder_count         INTEGER NOT NULL DEFAULT 0,
+                    summary               JSONB NOT NULL DEFAULT '{}'::jsonb,
+                    error_message         TEXT,
+                    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    started_at            TIMESTAMPTZ,
+                    completed_at          TIMESTAMPTZ
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS weakness_profile_moves (
+                    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    profile_job_id        UUID NOT NULL REFERENCES weakness_profile_jobs(id) ON DELETE CASCADE,
+                    requested_by_user_id  TEXT NOT NULL REFERENCES users(clerk_id),
+                    source_type           TEXT NOT NULL CHECK (source_type IN ('opponent', 'user')),
+                    source_game_id        UUID,
+                    game_url              TEXT NOT NULL DEFAULT '',
+                    provider              TEXT,
+                    opponent_username     TEXT,
+                    phase                 TEXT NOT NULL,
+                    move_bucket           TEXT NOT NULL,
+                    move_number           INTEGER NOT NULL,
+                    color                 TEXT NOT NULL,
+                    san                   TEXT NOT NULL,
+                    classification        TEXT NOT NULL,
+                    cp_loss               INTEGER NOT NULL,
+                    mistake_type          TEXT NOT NULL,
+                    fen_before            TEXT NOT NULL,
+                    fen_after             TEXT NOT NULL,
+                    best_move_san         TEXT NOT NULL DEFAULT '',
+                    best_move_uci         TEXT NOT NULL DEFAULT '',
+                    created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_weakness_profile_jobs_user_created
+                    ON weakness_profile_jobs(requested_by_user_id, created_at DESC)
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_weakness_profile_moves_job_loss
+                    ON weakness_profile_moves(profile_job_id, cp_loss DESC)
+                """
+            )
         conn.commit()
         log.info("Database migrations completed successfully")
     except Exception:
