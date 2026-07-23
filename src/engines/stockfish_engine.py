@@ -66,7 +66,12 @@ class StockfishEngine:
             self.engine.quit()
             self.engine = None
 
-    def evaluate(self, board: chess.Board, depth_limit: Optional[int] = None) -> Evaluation:
+    def evaluate(
+        self,
+        board: chess.Board,
+        depth_limit: Optional[int] = None,
+        pov: Optional[chess.Color] = None,
+    ) -> Evaluation:
         if not self.engine:
             raise RuntimeError("Engine not started. Use context manager or call start()")
 
@@ -79,9 +84,9 @@ class StockfishEngine:
         score = info.get("score")
         pv = info.get("pv", [])
 
-        # Convert score to centipawns from current player's perspective
+        # Convert score to centipawns from the requested side's perspective.
         if score:
-            cp_score = self._score_to_centipawns(score, board.turn)
+            cp_score = self._score_to_centipawns(score, pov if pov is not None else board.turn)
         else:
             cp_score = 0
 
