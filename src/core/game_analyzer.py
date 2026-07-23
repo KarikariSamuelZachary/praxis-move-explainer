@@ -134,13 +134,14 @@ class GameAnalyzer:
         self,
         pgn_string: str,
         target_color: str = "both",
+        include_explanations: bool = True,
     ) -> List[Dict[str, Any]]:
         """
         Analyze every move in a PGN and return a JSON-ready review list.
 
-        Each entry includes the position before the move, SAN, mover color,
-        classification, and centipawn loss. Mistakes and blunders also include
-        an explanation payload from the configured LLM.
+        Each entry includes the position, SAN, mover color, classification,
+        and centipawn loss. Mistakes and blunders include an explanation
+        payload only when `include_explanations` is True.
         """
         game = self._parse_game(pgn_string)
         board = game.board()
@@ -181,13 +182,17 @@ class GameAnalyzer:
 
             turn_entry: Dict[str, Any] = {
                 "fen": fen_after,
+                "fen_before": fen_before,
+                "move_number": move_number,
                 "san": move_san,
                 "color": move_color,
                 "classification": classification,
                 "cp_loss": cp_loss,
+                "best_move_san": eval_before.best_move_san,
+                "best_move_uci": eval_before.best_move_uci,
             }
 
-            if classification in {"mistake", "blunder"}:
+            if include_explanations and classification in {"mistake", "blunder"}:
                 mistake = self._build_mistake(
                     fen_before=fen_before,
                     fen_after=fen_after,
