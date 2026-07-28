@@ -1,0 +1,35 @@
+# Git / local dev metadata
+.git/
+.claude/
+
+# Python virtual environment and bytecode
+venv/
+__pycache__/
+*.py[cod]
+
+# Frontend build output and installed dependencies
+frontend/.next/
+frontend/node_modules/
+
+# Local environment files / secrets
+.env
+*.env.local
+src/.env
+frontend/.env.local
+url
+
+# Local data and backup artifacts not needed in a production image
+data/raw/
+praxis_subset.csv
+test_game.pgn
+woodpecker-bird-original.png.bak
+landing_page mockup image.png
+
+# Generic local artifacts
+*.log
+*.db
+*.sqlite3
+.coverage
+.coverage.*
+.DS_Store
+Thumbs.db
