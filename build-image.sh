@@ -10,6 +10,5 @@ az acr login --name "$ACR_NAME"
 
 docker tag "${IMAGE_NAME}:latest" "${ACR_NAME}.azurecr.io/${IMAGE_NAME}:latest"
 docker push "${ACR_NAME}.azurecr.io/${IMAGE_NAME}:latest"
-EOF
 
 chmod +x build-image.sh
