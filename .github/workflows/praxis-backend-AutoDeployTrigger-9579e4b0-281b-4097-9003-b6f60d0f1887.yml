@@ -1,0 +1,49 @@
+name: Trigger auto deployment for praxis-backend
+
+# When this action will be executed
+on:
+  # Automatically trigger it when detected changes in repo
+  push:
+    branches: 
+      [ main ]
+    paths:
+    - '**'
+    - '.github/workflows/praxis-backend-AutoDeployTrigger-9579e4b0-281b-4097-9003-b6f60d0f1887.yml'
+
+  # Allow manual trigger 
+  workflow_dispatch:      
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    permissions: 
+      id-token: write #This is required for requesting the OIDC JWT Token
+      contents: read #Required when GH token is used to authenticate with private repo
+
+    steps:
+      - name: Checkout to the branch
+        uses: actions/checkout@v2
+
+      - name: Azure Login
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.PRAXISBACKEND_AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.PRAXISBACKEND_AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.PRAXISBACKEND_AZURE_SUBSCRIPTION_ID }}
+
+      - name: Build and push container image to registry
+        uses: azure/container-apps-deploy-action@v2
+        with:
+          appSourcePath: ${{ github.workspace }}
+          _dockerfilePathKey_: _dockerfilePath_
+          _targetLabelKey_: _targetLabel_
+          registryUrl: praxismoveacr.azurecr.io
+          registryUsername: ${{ secrets.PRAXISBACKEND_REGISTRY_USERNAME }}
+          registryPassword: ${{ secrets.PRAXISBACKEND_REGISTRY_PASSWORD }}
+          containerAppName: praxis-backend
+          resourceGroup: praxis-move-rg
+          imageToBuild: praxismoveacr.azurecr.io/praxis-backend:${{ github.sha }}
+          _buildArgumentsKey_: |
+            _buildArgumentsValues_
+
+
