@@ -46,7 +46,6 @@ def run_migrations():
                 """
             )
             cur.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_username_key")
-            cur.execute("CREATE EXTENSION IF NOT EXISTS pgcrypto")
 
             # --- woodpecker_entries -----------------------------------------
             # Per-puzzle FSRS scheduling schema. The legacy cycle-based
@@ -347,6 +346,30 @@ def run_migrations():
                 """
                 CREATE INDEX IF NOT EXISTS idx_weakness_profile_moves_job_loss
                     ON weakness_profile_moves(profile_job_id, cp_loss DESC)
+                """
+            )
+
+            # --- puzzles -----------------------------------------------------
+            # The puzzles table is seeded out-of-band (see praxis_subset.csv /
+            # src/seed_puzzles.py) rather than created here, so only add the
+            # indexes when the table already exists. This keeps a fresh deploy
+            # (puzzles not yet loaded) from crashing on startup while ensuring
+            # every environment that actually serves puzzles filters by rating
+            # and theme via indexes instead of 500k-row seq scans.
+            cur.execute(
+                """
+                DO $$
+                BEGIN
+                    IF to_regclass('public.puzzles') IS NOT NULL THEN
+                        CREATE INDEX IF NOT EXISTS idx_puzzles_rating
+                            ON puzzles (rating);
+                        -- GIN index accelerates the API's
+                        -- `themes @> ARRAY[<theme>]::text[]` filter used by
+                        -- GET /api/puzzles.
+                        CREATE INDEX IF NOT EXISTS idx_puzzles_themes
+                            ON puzzles USING GIN (themes);
+                    END IF;
+                END $$;
                 """
             )
         conn.commit()
