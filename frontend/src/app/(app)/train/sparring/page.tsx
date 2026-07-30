@@ -40,7 +40,7 @@ type ApiErrorResponse = {
   error?: string;
 };
 
-const START_FEN = 'start';
+const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 const woodPanelClass =
   'border border-black/50 [background-image:linear-gradient(rgba(0,0,0,0.56),rgba(0,0,0,0.56)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.48),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
 
