@@ -288,7 +288,9 @@ export default function WoodpeckerPage() {
   const queueFinished = !isLoading && queue !== null && currentIndex >= queue.length;
 
   const showResult = feedback !== 'idle';
-  const showingBoard = !!currentPuzzle && !queueFinished && !queueIsEmpty;
+  const hasQueueRemaining = !isLoading && queue !== null && !queueFinished && !queueIsEmpty;
+  const showingBoard = !!currentPuzzle && hasQueueRemaining;
+  const puzzleUnavailable = hasQueueRemaining && !currentPuzzle;
 
   return (
     <div className="relative -mt-2 h-[calc(100vh-2.25rem)] w-full overflow-hidden px-6 pb-[10px] pt-6 text-white lg:px-10 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
@@ -342,6 +344,26 @@ export default function WoodpeckerPage() {
                   className="rounded-xl bg-[#10b981] px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-emerald-950/40 transition-colors hover:bg-emerald-400"
                 >
                   Refresh
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : puzzleUnavailable ? (
+          <div className="flex h-[70vh] items-center justify-center">
+            <div className={`${CARD_CLASS} w-full max-w-md p-8 text-center shadow-2xl shadow-black/30`}>
+              <h2 className="mb-2 text-2xl font-bold text-[#f7e5c6]">Puzzle unavailable</h2>
+              <p className="mb-6 text-white/60">
+                This review's puzzle couldn't be loaded. Skip it to continue your session.
+              </p>
+              <div className="flex justify-center gap-3">
+                <button
+                  onClick={() => {
+                    setCompletedCount((c) => c + 1);
+                    setCurrentIndex((i) => i + 1);
+                  }}
+                  className="rounded-xl bg-[#10b981] px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-emerald-950/40 transition-colors hover:bg-emerald-400"
+                >
+                  Skip &middot; {Math.min(currentIndex + 1, cellTotal)} / {cellTotal}
                 </button>
               </div>
             </div>
