@@ -6,13 +6,14 @@ import platform
 import shutil
 import time
 from pathlib import Path
+from typing import Optional
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from core.database import init_db
 from core.migrations import run_migrations
-from engines.maia_engine import close_maia3, start_maia3
+from engines.maia_engine import close_maia3, is_maia_available, start_maia3
 from engines.stockfish_engine import STOCKFISH_CANDIDATE_PATHS
 from routers import import_games, maia_debug, onboarding, puzzles, review, train, user, webhooks, woodpecker
 
@@ -26,6 +27,46 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 log = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Maia-3 health flag.
+#
+# `app.state` is the FastAPI-recommended place for process-local application
+# state. We mirror it into a module-level `_maia_available` so that code paths
+# that have the `app` object (request handlers) and code paths that do not
+# (utilities, tests, scripts) can both read the same source of truth. Both
+# are written together by `_record_maia_health()` and read by the
+# `/api/debug/maia-health` endpoint and by any code path that wants to
+# short-circuit before attempting a Maia call.
+#
+# Three states matter:
+#   Unknown  -> boot hasn't completed yet (transient; only during startup).
+#   True     -> Maia started successfully; inference is expected to work.
+#   False    -> boot-time start_maia3() raised; Maia calls WILL fail with
+#               MaiaUnavailableError. Other features (Game Review, Puzzles,
+#               Woodpecker) keep working — the failure must be loud but
+#               contained to Maia-dependent paths.
+# ---------------------------------------------------------------------------
+_maia_available: Optional[bool] = None
+
+
+def _record_maia_health(ok: bool) -> None:
+    global _maia_available
+    _maia_available = ok
+    try:
+        app.state.maia_available = ok
+    except Exception:  # noqa: BLE001
+        # app.state is attached to the FastAPI instance and is always
+        # available by the time we call this from startup(); the guard is
+        # only here so unit-test imports of main don't blow up before app
+        # construction in exotic import orders.
+        pass
+
+
+def maia_available() -> Optional[bool]:
+    """Public accessor: True/False after startup, None before."""
+    return _maia_available
 
 
 def get_stockfish_debug_info():
@@ -93,13 +134,25 @@ def startup():
     init_db()
     run_migrations()
 
-    # Maia-3 (human-like chess model). Launched lazily on first request, but
-    # we start it eagerly here so a missing checkpoint surfaces at startup
-    # (the checkpoint should already be cached by the build pre-warm step).
+    # Maia-3 (human-like chess model). We attempt to start it eagerly at
+    # boot so a missing checkpoint surfaces immediately rather than on the
+    # first sparring request. Other features (Game Review, Puzzles,
+    # Woodpecker) do NOT depend on Maia, so a startup failure must NOT
+    # take the app down — but it must be loud, not swallowed as a quiet
+    # warning. We log the full traceback at ERROR and record an explicit
+    # health flag that is readable by the /api/debug/maia-health endpoint
+    # and by any code path that wants to short-circuit a Maia call.
     try:
         start_maia3()
+        _record_maia_health(True)
+        log.info("Maia-3 engine started successfully")
     except Exception as exc:  # noqa: BLE001
-        log.warning("Maia-3 engine failed to start at boot: %s", exc)
+        _record_maia_health(False)
+        # log.exception → ERROR level + full traceback. This is the loud
+        # signal that replaces the previous swallowed warning. Downstream
+        # callers will get a typed MaiaUnavailableError if they try to use
+        # Maia, not a confusing generic failure.
+        log.exception("Maia-3 engine failed to start at boot: %s", exc)
 
 
 @app.on_event("shutdown")
