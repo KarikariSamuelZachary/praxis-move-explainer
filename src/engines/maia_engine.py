@@ -114,7 +114,24 @@ class Maia3Engine:
 
     @property
     def started(self) -> bool:
-        return self.engine is not None
+        # The engine handle exists AND the underlying subprocess hasn't
+        # terminated. python-chess attaches `transport` to the SimpleEngine
+        # once popen_uci() has forked the subprocess; its get_returncode()
+        # returns None while alive and an int exit code once terminated.
+        # This is the same probe python-chess itself uses in __repr__(), so
+        # it's stable across versions even though `transport` isn't strictly
+        # public API. A bare `self.engine is not None` check would keep
+        # reporting True after a mid-session OOM/SIGKILL — which is exactly
+        # the bug we're closing here.
+        if self.engine is None:
+            return False
+        transport = getattr(self.engine, "transport", None)
+        if transport is None:
+            return False
+        try:
+            return transport.get_returncode() is None
+        except Exception:  # noqa: BLE001
+            return False
 
     def start(self):
         log.info("Starting Maia-3 UCI engine: %s", " ".join(self.command))
@@ -135,6 +152,14 @@ class Maia3Engine:
                 pass
             self.engine = None
 
+    def mark_dead(self) -> None:
+        # Drop the engine handle WITHOUT attempting `quit()` — the
+        # subprocess is gone, so poking it via UCI would hang or raise
+        # BrokenPipeError. After this `.started` reports False, the health
+        # endpoint flips to unavailable, and get_maia3()/start_maia3() can
+        # rebuild from a clean slate on the next cold start.
+        self.engine = None
+
     def best_move(
         self,
         board: chess.Board,
@@ -147,6 +172,13 @@ class Maia3Engine:
         `temperature=0` selects the argmax human move; a small positive value
         samples from Maia-3's human-move distribution (useful for the sparring
         bot). Returns a dict with uci, san, elo, temperature, and inference_ms.
+
+        Raises MaiaUnavailableError whenever the engine is not usable —
+        whether that's because it never started, or because it crashed
+        mid-session (OOM, SIGKILL, UCI protocol failure). In the mid-session
+        case the singleton is marked dead so the health endpoint flips to
+        False and the next request sees a fast typed error instead of
+        repeatedly poking the same dead subprocess.
         """
         if not self.engine:
             raise MaiaUnavailableError(
@@ -157,8 +189,47 @@ class Maia3Engine:
                 "from PATH)."
             )
 
-        with self._lock:
-            return self._best_move_locked(board, elo=elo, temperature=temperature)
+        try:
+            with self._lock:
+                return self._best_move_locked(board, elo=elo, temperature=temperature)
+        except chess.engine.EngineError as exc:
+            # Mid-session failure of some kind. Distinguish two cases so the
+            # health endpoint reflects reality: if the subprocess has truly
+            # terminated (OOM kill, SIGKILL, broken UCI pipe once it's gone),
+            # mark dead so subsequent is_maia_available() reports False and
+            # callers fail fast; if the subprocess is still alive (a
+            # transient protocol error on a healthy process), do NOT mark
+            # dead — a later request may still succeed.
+            transport = getattr(self.engine, "transport", None)
+            really_dead = (
+                transport is None
+                or not callable(getattr(transport, "get_returncode", None))
+                or transport.get_returncode() is not None
+            )
+            if really_dead:
+                log.error(
+                    "Maia-3 subprocess terminated mid-request (returncode=%r): %s",
+                    (transport.get_returncode() if transport is not None else None),
+                    exc,
+                )
+                self.mark_dead()
+                raise MaiaUnavailableError(
+                    "Maia-3 engine became unavailable mid-request — the "
+                    "underlying subprocess terminated (e.g. OOM, crash, or "
+                    "UCI protocol failure). It has been marked dead; "
+                    "subsequent requests will fail fast until the engine is "
+                    "restarted (next cold boot via start_maia3())."
+                ) from exc
+            log.error(
+                "Maia-3 raised EngineError but subprocess is still alive "
+                "(not marking dead): %s",
+                exc,
+            )
+            raise MaiaUnavailableError(
+                "Maia-3 raised an engine error mid-request. The subprocess "
+                "is still alive, so it has NOT been marked dead — retry may "
+                "succeed. See the application logs for the underlying error."
+            ) from exc
 
     def _best_move_locked(
         self,

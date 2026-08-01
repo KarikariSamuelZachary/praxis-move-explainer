@@ -70,11 +70,15 @@ def debug_maia_move(request: MaiaMoveRequest) -> MaiaMoveResponse:
 def debug_maia_health() -> Dict[str, Any]:
     """Lightweight Maia-3 health probe.
 
-    Returns immediately without making any inference. `available` mirrors
-    the boot-time `is_maia_available()` flag exactly; `model` is the
-    configured preset name; `started_at` gives the Unix timestamp of the
-    first time this process observed Maia as up (None if it has never been
-    up this boot). No auth beyond the existing X-Internal-Secret middleware.
+    Returns immediately without making any inference. `available` reflects
+    the live state of the shared Maia-3 singleton: is_maia_available() probes
+    the underlying subprocess's returncode on every call (not a cached
+    boot-time flag), so it returns False both when Maia never started AND
+    when it crashed mid-session and was marked dead by best_move(). `model`
+    is the configured preset name; `started_at` gives the Unix timestamp of
+    the first time this process observed Maia as up (None if it has never
+    been up this boot). No auth beyond the existing X-Internal-Secret
+    middleware.
     """
     global _maia_started_at
 

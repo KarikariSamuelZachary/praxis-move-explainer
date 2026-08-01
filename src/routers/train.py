@@ -230,20 +230,21 @@ def get_sparring_move(
         candidate_move = None
 
     if candidate_move not in board.legal_moves:
-        # We're about to fall back to Maia-3. If Maia never started at boot,
-        # surface a clear, typed "Maia unavailable" 503 to the caller rather
-        # than letting the error fall through into the Stockfish `except`
-        # below (which mislabels everything as a Stockfish failure). 503 is
-        # the correct code: the request is well-formed, the server is up,
-        # but a required dependency is currently down. The sparring UI shows
-        # this as the error detail.
+        # About to fall back to Maia-3. is_maia_available() does a real
+        # subprocess liveness check (not just a boot-time flag), so it
+        # returns False both when Maia never started at boot AND when it
+        # crashed mid-session. Short-circuit here with a clear typed 503
+        # rather than letting an unhandled chess.engine exception fall
+        # through into the Stockfish `except` block below (which mislabels
+        # everything as a Stockfish failure). 503 = the request was fine;
+        # the dependency is down.
         if not is_maia_available():
             raise HTTPException(
                 status_code=503,
                 detail=(
-                    "Maia-3 is unavailable — the opponent has no book move for "
-                    "this position and the human-like model did not start. "
-                    "See /api/debug/maia-health for status."
+                    "Maia-3 is unavailable — the opponent has no book move "
+                    "for this position and the human-like model is not "
+                    "running. See /api/debug/maia-health for status."
                 ),
             )
 
@@ -254,13 +255,28 @@ def get_sparring_move(
                 temperature=body.maia_temperature,
             )
         except MaiaUnavailableError as exc:
-            # Defensive: is_maia_available() said True but the call still
-            # failed (engine crashed between the check and the call). Treat
-            # identically to the pre-check branch so the user always sees a
-            # Maia-specific message.
+            # Typed "engine unavailable" — covers never-started, mid-session
+            # crash (best_move() marks the subprocess dead and re-raises this
+            # type), and the defensive pre-check branch above. Always 503:
+            # the request was fine, the dependency is down.
             raise HTTPException(
                 status_code=503,
-                detail="Maia-3 became unavailable mid-request. Retry shortly.",
+                detail=(
+                    "Maia-3 is unavailable — the opponent has no book move "
+                    "for this position and the human-like model is not "
+                    "running. See /api/debug/maia-health for status."
+                ),
+            ) from exc
+        except Exception as exc:  # noqa: BLE001
+            # Broader fallback — matches the maia_debug endpoint's handling.
+            # Anything unexpected (e.g. an asyncio timeout, a chess.Board
+            # edge case) must NOT surface as an unhandled 500; it surfaces as
+            # a 502 with the underlying error so the sparring UI can show a
+            # clear message and the operator can triage from the log line.
+            log.exception("Unexpected Maia-3 failure in sparring flow")
+            raise HTTPException(
+                status_code=502,
+                detail=f"Maia-3 inference failed: {exc}",
             ) from exc
 
         move_uci = maia_result.get("best_move_uci") or ""
