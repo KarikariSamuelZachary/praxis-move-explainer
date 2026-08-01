@@ -4,7 +4,7 @@ import chess
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Request
 
 from core.rate_limit import limit_by_clerk_user_id
-from engines.maia_engine import get_maia3
+from engines.maia_engine import MaiaUnavailableError, get_maia3, is_maia_available
 from engines.stockfish_engine import StockfishEngine
 from schemas.train_schemas import (
     OpponentImportJobResponse,
@@ -230,11 +230,39 @@ def get_sparring_move(
         candidate_move = None
 
     if candidate_move not in board.legal_moves:
-        maia_result = get_maia3().best_move(
-            board,
-            elo=opponent_elo,
-            temperature=body.maia_temperature,
-        )
+        # We're about to fall back to Maia-3. If Maia never started at boot,
+        # surface a clear, typed "Maia unavailable" 503 to the caller rather
+        # than letting the error fall through into the Stockfish `except`
+        # below (which mislabels everything as a Stockfish failure). 503 is
+        # the correct code: the request is well-formed, the server is up,
+        # but a required dependency is currently down. The sparring UI shows
+        # this as the error detail.
+        if not is_maia_available():
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Maia-3 is unavailable — the opponent has no book move for "
+                    "this position and the human-like model did not start. "
+                    "See /api/debug/maia-health for status."
+                ),
+            )
+
+        try:
+            maia_result = get_maia3().best_move(
+                board,
+                elo=opponent_elo,
+                temperature=body.maia_temperature,
+            )
+        except MaiaUnavailableError as exc:
+            # Defensive: is_maia_available() said True but the call still
+            # failed (engine crashed between the check and the call). Treat
+            # identically to the pre-check branch so the user always sees a
+            # Maia-specific message.
+            raise HTTPException(
+                status_code=503,
+                detail="Maia-3 became unavailable mid-request. Retry shortly.",
+            ) from exc
+
         move_uci = maia_result.get("best_move_uci") or ""
         move_san = maia_result.get("best_move_san") or ""
         source = "playing_naturally"
