@@ -21,6 +21,15 @@ import chess.engine
 
 log = logging.getLogger(__name__)
 
+
+class MaiaUnavailableError(RuntimeError):
+    """Raised when Maia-3 inference is attempted but the engine never started.
+
+    Distinct from a generic RuntimeError so callers (e.g. the sparring flow)
+    can surface a clear "Maia unavailable" message to the user instead of
+    mislabeling the failure as a downstream Stockfish/eval problem.
+    """
+
 # Smallest model preset (CPU-friendly). Used as the default.
 MAIA3_DEFAULT_MODEL = "maia3-5m"
 MAIA3_DEFAULT_ELO = 1500
@@ -103,6 +112,10 @@ class Maia3Engine:
     def __exit__(self, exc_type, exc_val, exc_tb):
         self.close()
 
+    @property
+    def started(self) -> bool:
+        return self.engine is not None
+
     def start(self):
         log.info("Starting Maia-3 UCI engine: %s", " ".join(self.command))
         self.engine = chess.engine.SimpleEngine.popen_uci(self.command)
@@ -136,8 +149,12 @@ class Maia3Engine:
         bot). Returns a dict with uci, san, elo, temperature, and inference_ms.
         """
         if not self.engine:
-            raise RuntimeError(
-                "Maia-3 engine not started. Use the context manager or get_maia3()."
+            raise MaiaUnavailableError(
+                "Maia-3 engine is not running. The startup attempt failed or "
+                "was never made; see the application logs for the underlying "
+                "reason (commonly a missing checkpoint, unreachable Hugging "
+                "Face at build time, or the `maia3-uci` entrypoint missing "
+                "from PATH)."
             )
 
         with self._lock:
@@ -200,21 +217,67 @@ class Maia3Engine:
 
 # --- Module-level singleton (lifecycle managed by FastAPI startup/shutdown) ---
 
+# The singleton. `None` means "not started". A non-`None` value with
+# `.started == False` would be a known-failed boot (leftover state is bad —
+# see below); `start_maia3()` must never _leave_ such a half-constructed
+# instance here, because `get_maia3()` would then return it and the runtime
+# check `if _maia3 is None` would wrongly believe Maia is up. On any start
+# failure we ensure `_maia3` is reset back to `None` so the failure is loud
+# and retriable, not silently swallowed.
 _maia3: Optional[Maia3Engine] = None
 
 
 def start_maia3() -> Maia3Engine:
+    """Start the singleton Maia-3 engine or raise on failure.
+
+    This function is safe to call from startup: it never leaves the module
+    in a "looks-started-but-is-broken" state. If `Maia3Engine.start()`
+    raises, the module global is rolled back to `None` before propagating
+    so a later `is_maia_available()` returns False — no false positive.
+    """
     global _maia3
-    if _maia3 is None:
-        _maia3 = Maia3Engine()
-        _maia3.start()
+    if _maia3 is not None and _maia3.started:
+        return _maia3
+
+    instance = Maia3Engine()
+    instance.start()  # raises on failure BEFORE we publish the global
+    _maia3 = instance
     return _maia3
 
 
 def get_maia3() -> Maia3Engine:
+    """Return the shared Maia-3 engine, raising MaiaUnavailableError if absent.
+
+    Unlike the previous implementation, this never silently retries a
+    failed boot at request time (a request-time retry would mask the root
+    cause with a generic `popen_uci` failure and a 30s+ tail latency). If
+    the boot-time `start_maia3()` failed, callers see a clear, typed error
+    immediately. If Maia has simply never been started (e.g. a unit test
+    hitting the debug endpoint without invoking startup), we attempt to
+    start it once — that path keeps the debug endpoint self-sufficient.
+    """
     if _maia3 is None:
-        return start_maia3()
+        try:
+            return start_maia3()
+        except Exception as exc:
+            raise MaiaUnavailableError(
+                "Maia-3 engine is not running and start-on-demand failed."
+            ) from exc
+    if _maia3 is not None and not _maia3.started:
+        # Defensive: should not happen given start_maia3() roll-back, but
+        # guard against direct monkey-patching of `_maia3` in tests.
+        raise MaiaUnavailableError(
+            "Maia-3 singleton is present but the underlying UCI process is "
+            "not running. This indicates a crashed/closed engine."
+        )
     return _maia3
+
+
+def is_maia_available() -> bool:
+    """Cheap, side-effect-free health check used by startup logging and the
+    /api/debug/maia-health endpoint. True only when the singleton exists
+    AND the underlying UCI subprocess is actually live."""
+    return _maia3 is not None and _maia3.started
 
 
 def close_maia3():
