@@ -1,490 +1,289 @@
 'use client';
 
+import Image from 'next/image';
 import Link from 'next/link';
-import { useEffect, useMemo, useState } from 'react';
+import dynamic from 'next/dynamic';
 
-type ImportStatus = 'idle' | 'queued' | 'running' | 'completed' | 'failed' | 'error';
-type ProfileStatus = 'idle' | 'queued' | 'running' | 'completed' | 'failed' | 'error';
+const MiniBoard = dynamic(
+  () => import('react-chessboard').then((module) => module.Chessboard),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="h-full w-full animate-pulse rounded-md bg-black/35" aria-hidden="true" />
+    ),
+  }
+);
 
-type StartImportResponse = {
-  job_id: string;
-  status: 'queued';
-  lichess_username?: string | null;
-  chesscom_username?: string | null;
-  limit: number;
-};
+const CARD_CLASS =
+  'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
 
-type JobStatusResponse = {
-  job_id: string;
-  status: 'queued' | 'running' | 'completed' | 'failed';
-  imported_count: number;
-  error_message?: string | null;
-};
+const RECOMMENDED_FEN = '1K1k4/1P6/8/8/8/8/r7/2R5 w - - 0 1';
 
-type AccuracyRow = {
+type Tone = 'emerald' | 'amber' | 'purple' | 'blue';
+
+type TrainingMode = {
   key: string;
-  accuracy: number;
-  total_moves: number;
-  mistakes: number;
-  blunders: number;
+  title: string;
+  description: string;
+  illustration: string;
+  cta: string;
+  tone: Tone;
+  href?: string;
 };
 
-type MistakeTypeRow = {
-  type: string;
-  count: number;
+const TRAINING_MODES: TrainingMode[] = [
+  {
+    key: 'opponent-prep',
+    title: 'Opponent\nPreparation',
+    description: 'Enter any Lichess or Chess.com username and face an AI version of their playing style.',
+    illustration: '/opponent-prep-illustration.webp',
+    cta: 'Start Opponent Prep',
+    tone: 'emerald',
+  },
+  {
+    key: 'engine-sparring',
+    title: 'Engine\nSparring',
+    description: 'Challenge different versions of Stockfish with adjustable strength and playstyles.',
+    illustration: '/engine-sparring-illustration.webp',
+    cta: 'Choose Engine',
+    tone: 'amber',
+    href: '/train/sparring',
+  },
+  {
+    key: 'endgame-trainer',
+    title: 'Endgame\nTrainer',
+    description: 'Master fundamental endgames through focused, position-based practice.',
+    illustration: '/endgame-trainer-illustration.webp',
+    cta: 'Explore Endgames',
+    tone: 'purple',
+  },
+  {
+    key: 'scenario-trainer',
+    title: 'Scenario\nTrainer',
+    description: 'Practice critical positions, converts, defenses, traps and more game situations.',
+    illustration: '/scenario-trainer-illustration.webp',
+    cta: 'Browse Scenarios',
+    tone: 'blue',
+  },
+];
+
+const TONE_STYLES: Record<
+  Tone,
+  { ring: string; iconBg: string; iconText: string; button: string; buttonText: string }
+> = {
+  emerald: {
+    ring: 'ring-emerald-400/50',
+    iconBg: 'bg-emerald-500/35',
+    iconText: 'text-emerald-300',
+    button: 'bg-emerald-500/20 hover:bg-emerald-500/30 ring-1 ring-emerald-500/30 hover:ring-emerald-500/50',
+    buttonText: 'text-emerald-300',
+  },
+  amber: {
+    ring: 'ring-amber-400/50',
+    iconBg: 'bg-amber-500/35',
+    iconText: 'text-amber-300',
+    button: 'bg-amber-500/20 hover:bg-amber-500/30 ring-1 ring-amber-500/30 hover:ring-amber-500/50',
+    buttonText: 'text-amber-300',
+  },
+  purple: {
+    ring: 'ring-purple-400/50',
+    iconBg: 'bg-purple-500/35',
+    iconText: 'text-purple-300',
+    button: 'bg-purple-500/20 hover:bg-purple-500/30 ring-1 ring-purple-500/30 hover:ring-purple-500/50',
+    buttonText: 'text-purple-300',
+  },
+  blue: {
+    ring: 'ring-blue-400/50',
+    iconBg: 'bg-blue-500/35',
+    iconText: 'text-blue-300',
+    button: 'bg-blue-500/20 hover:bg-blue-500/30 ring-1 ring-blue-500/30 hover:ring-blue-500/50',
+    buttonText: 'text-blue-300',
+  },
 };
 
-type WorstPosition = {
-  fen: string;
-  game_url: string;
-  move_number: number;
-  san: string;
-  color: string;
-  classification: string;
-  cp_loss: number;
-  phase: string;
-  move_bucket: string;
-  mistake_type: string;
-  best_move_san: string;
-};
+function SwordsIcon() {
+  return (
+    <svg className="h-7 w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" aria-hidden="true">
+      <path d="M14.5 17.5 3 6V3h3l11.5 11.5" />
+      <path d="M13 19l6-6" />
+      <path d="M16 16l4 4" />
+      <path d="M19 21l2-2" />
+      <path d="M14.5 6.5 21 3v3l-3.5 3.5" />
+      <path d="M5 14l4 4" />
+      <path d="M7 16l-2 2" />
+      <path d="M3 19l-1 1" />
+    </svg>
+  );
+}
 
-type WeaknessSummary = {
-  accuracy_by_phase?: AccuracyRow[];
-  accuracy_by_move_bucket?: AccuracyRow[];
-  common_mistake_types?: MistakeTypeRow[];
-  worst_positions?: WorstPosition[];
-};
+function CrownIcon() {
+  return (
+    <svg className="h-7 w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" aria-hidden="true">
+      <path d="M3 7l4 5 5-7 5 7 4-5-1 12H4L3 7z" />
+      <path d="M5 21h14" />
+      <path d="M7 4.5l1 1.5" />
+      <path d="M17 4.5l-1 1.5" />
+      <path d="M12 4v2" />
+    </svg>
+  );
+}
 
-type WeaknessProfileResponse = {
-  job_id: string;
-  status: 'queued' | 'running' | 'completed' | 'failed';
-  analyzed_games_count: number;
-  analyzed_moves_count: number;
-  mistake_count: number;
-  blunder_count: number;
-  summary: WeaknessSummary;
-  error_message?: string | null;
-};
+function RookIcon() {
+  return (
+    <svg className="h-7 w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" aria-hidden="true">
+      <path d="M5 8V4h2v1h2V4h2v1h2V4h2v1h2V4h2v4" />
+      <path d="M5 8v10h14V8" />
+      <path d="M3 20h18" />
+      <path d="M5 18h14v2H5z" />
+    </svg>
+  );
+}
 
-type ApiErrorResponse = {
-  detail?: string;
-  error?: string;
-};
+function TargetIcon() {
+  return (
+    <svg className="h-7 w-7" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" aria-hidden="true">
+      <circle cx="12" cy="12" r="9" />
+      <circle cx="12" cy="12" r="5" />
+      <circle cx="12" cy="12" r="1.4" fill="currentColor" />
+      <path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
+    </svg>
+  );
+}
 
-const woodPanelClass =
-  'border border-black/50 [background-image:linear-gradient(rgba(0,0,0,0.56),rgba(0,0,0,0.56)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.48),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
+function ArrowRightIcon() {
+  return (
+    <svg className="h-4 w-4 transition-transform duration-200 group-hover/cta:translate-x-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" aria-hidden="true">
+      <path d="M5 12h14" />
+      <path d="m12 5 7 7-7 7" />
+    </svg>
+  );
+}
+
+function StarIcon() {
+  return (
+    <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" aria-hidden="true">
+      <path d="m12 3 2.7 5.6 6.1.8-4.5 4.3 1.1 6.1L12 17l-5.4 2.8 1.1-6.1L3.2 9.4l6.1-.8L12 3z" />
+    </svg>
+  );
+}
+
+function ModeIcon({ kind }: { kind: TrainingMode['key'] }) {
+  if (kind === 'opponent-prep') return <SwordsIcon />;
+  if (kind === 'engine-sparring') return <CrownIcon />;
+  if (kind === 'endgame-trainer') return <RookIcon />;
+  return <TargetIcon />;
+}
+
+function TrainingModeCard({ mode }: { mode: TrainingMode }) {
+  const tone = TONE_STYLES[mode.tone];
+  const ctaClass = `group/cta relative mt-3 flex h-10 w-full cursor-pointer items-center justify-center gap-2 rounded-lg text-sm font-semibold ring-1 transition-colors duration-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#efd9a7] ${tone.button} ${tone.buttonText}`;
+
+  return (
+    <article
+      className={`${CARD_CLASS} group relative flex min-h-[18rem] flex-col overflow-hidden p-4 shadow-2xl shadow-black/30 transition duration-300 hover:border-[#d9b87c]/30 motion-safe:hover:-translate-y-1`}
+    >
+      <Image
+        src={mode.illustration}
+        alt=""
+        fill
+        sizes="(min-width: 1280px) 25vw, (min-width: 640px) 50vw, 100vw"
+        className="select-none object-cover object-center opacity-30 transition-transform duration-500 motion-safe:group-hover:scale-[1.04]"
+      />
+      <div
+        className="pointer-events-none absolute inset-0 bg-gradient-to-b from-black/60 via-black/40 to-black/75"
+        aria-hidden="true"
+      />
+
+      <div className="relative flex items-center gap-3">
+        <div
+          className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-full ring-1 transition duration-300 ${tone.ring} ${tone.iconBg} ${tone.iconText}`}
+        >
+          <ModeIcon kind={mode.key} />
+        </div>
+        <h3 className="whitespace-pre-line font-display text-2xl font-semibold leading-tight text-[#f7e5c6]">
+          {mode.title}
+        </h3>
+      </div>
+
+      <p className="relative mt-3 text-sm leading-relaxed text-white/70">{mode.description}</p>
+
+      <div className="relative flex-1" />
+
+      {mode.href ? (
+        <Link href={mode.href} className={ctaClass}>
+          <span>{mode.cta}</span>
+          <ArrowRightIcon />
+        </Link>
+      ) : (
+        <button type="button" className={ctaClass}>
+          <span>{mode.cta}</span>
+          <ArrowRightIcon />
+        </button>
+      )}
+    </article>
+  );
+}
+
+function RecommendedPanel() {
+  return (
+    <section className={`${CARD_CLASS} flex flex-col gap-2 p-3 self-end shadow-2xl shadow-black/25`} aria-label="Recommended for you">
+      <header className="flex items-center gap-2">
+        <span className="text-[#f7e5c6]/70">
+          <StarIcon />
+        </span>
+        <h2 className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#f7e5c6]/65">
+          Recommended For You
+        </h2>
+      </header>
+
+      <div className="flex items-center gap-3">
+        <div className="h-20 w-20 shrink-0 overflow-hidden rounded-lg shadow-lg shadow-black/50 ring-1 ring-black/60">
+          <MiniBoard
+            options={{
+              position: RECOMMENDED_FEN,
+              allowDragging: false,
+              showNotation: false,
+              darkSquareStyle: {
+                backgroundImage: 'url(/walnut-dark.png)',
+                backgroundSize: '140% 140%',
+                backgroundPosition: 'center',
+              },
+              lightSquareStyle: {
+                backgroundImage: 'url(/walnut-light.png)',
+                backgroundSize: '140% 140%',
+                backgroundPosition: 'center',
+              },
+              boardStyle: { width: '100%', height: '100%' },
+            }}
+          />
+        </div>
+        <h3 className="min-w-0 flex-1 font-display text-lg font-semibold leading-snug text-[#f7e5c6]">
+          Strengthen your endgames
+        </h3>
+      </div>
+
+      <button
+        type="button"
+        className="group/cta inline-flex h-9 w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-[#d9b87c]/45 px-4 text-sm font-semibold text-[#efd9a7] transition-colors duration-200 hover:bg-[#d9b87c]/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#efd9a7]"
+      >
+        <span>Start Rook Endings</span>
+        <ArrowRightIcon />
+      </button>
+    </section>
+  );
+}
 
 export default function TrainPage() {
-  const [lichessUsername, setLichessUsername] = useState('');
-  const [chesscomUsername, setChesscomUsername] = useState('');
-  const [limit, setLimit] = useState(100);
-  const [status, setStatus] = useState<ImportStatus>('idle');
-  const [jobId, setJobId] = useState<string | null>(null);
-  const [importedCount, setImportedCount] = useState(0);
-  const [message, setMessage] = useState<string | null>(null);
-  const [profileStatus, setProfileStatus] = useState<ProfileStatus>('idle');
-  const [profileJobId, setProfileJobId] = useState<string | null>(null);
-  const [profileMessage, setProfileMessage] = useState<string | null>(null);
-  const [profile, setProfile] = useState<WeaknessProfileResponse | null>(null);
-
-  const canSubmit = useMemo(
-    () =>
-      status !== 'queued' &&
-      status !== 'running' &&
-      (lichessUsername.trim().length > 0 || chesscomUsername.trim().length > 0),
-    [chesscomUsername, lichessUsername, status]
-  );
-
-  useEffect(() => {
-    if (!jobId || (status !== 'queued' && status !== 'running')) {
-      return;
-    }
-
-    let isCancelled = false;
-    const interval = window.setInterval(async () => {
-      try {
-        const response = await fetch(`/api/train/opponent-import/${jobId}`);
-        if (!response.ok) {
-          const body = (await response.json().catch(() => ({}))) as ApiErrorResponse;
-          throw new Error(body.detail ?? body.error ?? `Status request failed (${response.status})`);
-        }
-
-        const data = (await response.json()) as JobStatusResponse;
-        if (isCancelled) {
-          return;
-        }
-
-        setStatus(data.status);
-        setImportedCount(data.imported_count);
-        if (data.status === 'completed') {
-          setMessage(`Imported ${data.imported_count} public games.`);
-        }
-        if (data.status === 'failed') {
-          setMessage(data.error_message ?? 'Opponent import failed.');
-        }
-      } catch (error) {
-        if (!isCancelled) {
-          setStatus('error');
-          setMessage(error instanceof Error ? error.message : 'Failed to check import status.');
-        }
-      }
-    }, 2000);
-
-    return () => {
-      isCancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [jobId, status]);
-
-  useEffect(() => {
-    if (!profileJobId || (profileStatus !== 'queued' && profileStatus !== 'running')) {
-      return;
-    }
-
-    let isCancelled = false;
-    const interval = window.setInterval(async () => {
-      try {
-        const response = await fetch(`/api/train/weakness-profile/${profileJobId}`);
-        if (!response.ok) {
-          const body = (await response.json().catch(() => ({}))) as ApiErrorResponse;
-          throw new Error(body.detail ?? body.error ?? `Profile request failed (${response.status})`);
-        }
-
-        const data = (await response.json()) as WeaknessProfileResponse;
-        if (isCancelled) {
-          return;
-        }
-
-        setProfileStatus(data.status);
-        setProfile(data);
-        if (data.status === 'completed') {
-          setProfileMessage(`Analyzed ${data.analyzed_games_count} games and ${data.analyzed_moves_count} moves.`);
-        }
-        if (data.status === 'failed') {
-          setProfileMessage(data.error_message ?? 'Weakness profile failed.');
-        }
-      } catch (error) {
-        if (!isCancelled) {
-          setProfileStatus('error');
-          setProfileMessage(error instanceof Error ? error.message : 'Failed to check profile status.');
-        }
-      }
-    }, 2500);
-
-    return () => {
-      isCancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [profileJobId, profileStatus]);
-
-  async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!canSubmit) {
-      return;
-    }
-
-    setStatus('queued');
-    setMessage(null);
-    setImportedCount(0);
-    setJobId(null);
-
-    try {
-      const response = await fetch('/api/train/opponent-import', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          lichess_username: lichessUsername.trim() || null,
-          chesscom_username: chesscomUsername.trim() || null,
-          limit,
-        }),
-      });
-
-      if (!response.ok) {
-        const body = (await response.json().catch(() => ({}))) as ApiErrorResponse;
-        throw new Error(body.detail ?? body.error ?? `Import request failed (${response.status})`);
-      }
-
-      const data = (await response.json()) as StartImportResponse;
-      setJobId(data.job_id);
-      setStatus(data.status);
-      setMessage('Import job queued.');
-    } catch (error) {
-      setStatus('error');
-      setMessage(error instanceof Error ? error.message : 'Failed to start import.');
-    }
-  }
-
-  async function handleBuildProfile() {
-    const provider =
-      lichessUsername.trim().length > 0 && chesscomUsername.trim().length === 0
-        ? 'lichess'
-        : chesscomUsername.trim().length > 0 && lichessUsername.trim().length === 0
-          ? 'chesscom'
-          : null;
-    const opponentUsername =
-      provider === 'lichess'
-        ? lichessUsername.trim()
-        : provider === 'chesscom'
-          ? chesscomUsername.trim()
-          : null;
-
-    setProfileStatus('queued');
-    setProfileMessage(null);
-    setProfile(null);
-    setProfileJobId(null);
-
-    try {
-      const response = await fetch('/api/train/weakness-profile', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          source_type: 'opponent',
-          provider,
-          opponent_username: opponentUsername,
-          limit,
-        }),
-      });
-
-      if (!response.ok) {
-        const body = (await response.json().catch(() => ({}))) as ApiErrorResponse;
-        throw new Error(body.detail ?? body.error ?? `Profile request failed (${response.status})`);
-      }
-
-      const data = (await response.json()) as { job_id: string; status: 'queued' };
-      setProfileJobId(data.job_id);
-      setProfileStatus(data.status);
-      setProfileMessage('Weakness profile queued.');
-    } catch (error) {
-      setProfileStatus('error');
-      setProfileMessage(error instanceof Error ? error.message : 'Failed to build profile.');
-    }
-  }
-
-  const isWorking = status === 'queued' || status === 'running';
-  const isProfileWorking = profileStatus === 'queued' || profileStatus === 'running';
-
   return (
-    <div className="relative -mt-2 h-[calc(100vh-2.25rem)] w-full overflow-y-auto px-6 py-8 text-white lg:px-10 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
-      <div className="mx-auto grid max-w-6xl gap-6 lg:grid-cols-[minmax(0,1fr)_20rem]">
-        <form
-          onSubmit={handleSubmit}
-          className={`${woodPanelClass} flex flex-col gap-5 rounded-[8px] p-5`}
-        >
-          <div>
-            <h1 className="text-2xl font-semibold text-[#f7e5c6]">Train</h1>
-          </div>
+    <div className="relative h-[calc(100vh-2.75rem)] w-full overflow-hidden px-6 py-6 text-white lg:px-12 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+      <div className="mx-auto flex h-full max-w-[1600px] flex-col justify-center gap-5">
+        <RecommendedPanel />
 
-          <div className="grid gap-4 md:grid-cols-2">
-            <label className="flex flex-col gap-2 text-sm font-medium text-[#f7e5c6]/85">
-              Lichess username
-              <input
-                value={lichessUsername}
-                onChange={(event) => setLichessUsername(event.target.value)}
-                disabled={isWorking}
-                className="h-11 rounded-xl border border-black/50 bg-black/60 px-3 text-sm text-white outline-none transition placeholder:text-white/30 focus:border-[#10b981]/60 focus:ring-2 focus:ring-[#10b981]/20 disabled:opacity-60"
-                placeholder="Opponent on Lichess"
-              />
-            </label>
-
-            <label className="flex flex-col gap-2 text-sm font-medium text-[#f7e5c6]/85">
-              Chess.com username
-              <input
-                value={chesscomUsername}
-                onChange={(event) => setChesscomUsername(event.target.value)}
-                disabled={isWorking}
-                className="h-11 rounded-xl border border-black/50 bg-black/60 px-3 text-sm text-white outline-none transition placeholder:text-white/30 focus:border-[#10b981]/60 focus:ring-2 focus:ring-[#10b981]/20 disabled:opacity-60"
-                placeholder="Opponent on Chess.com"
-              />
-            </label>
-          </div>
-
-          <label className="flex max-w-48 flex-col gap-2 text-sm font-medium text-[#f7e5c6]/85">
-            Games per site
-            <input
-              type="number"
-              min={1}
-              max={500}
-              value={limit}
-              onChange={(event) => setLimit(Number(event.target.value))}
-              disabled={isWorking}
-              className="h-11 rounded-xl border border-black/50 bg-black/60 px-3 text-sm text-white outline-none transition focus:border-[#10b981]/60 focus:ring-2 focus:ring-[#10b981]/20 disabled:opacity-60"
-            />
-          </label>
-
-          <button
-            type="submit"
-            disabled={!canSubmit}
-            className="inline-flex h-11 w-full max-w-56 items-center justify-center gap-2 rounded-lg border border-[#f7e5c6]/25 bg-[#f7e5c6]/12 px-4 text-sm font-semibold text-[#f7e5c6] transition hover:bg-[#f7e5c6]/18 disabled:pointer-events-none disabled:opacity-40"
-          >
-            {isWorking && (
-              <span className="h-4 w-4 rounded-full border-2 border-[#f7e5c6]/40 border-t-[#f7e5c6] animate-spin" />
-            )}
-            {isWorking ? 'Importing' : 'Import opponent games'}
-          </button>
-        </form>
-
-        <section className={`${woodPanelClass} flex min-h-48 flex-col gap-4 rounded-[8px] p-5`}>
-          <h2 className="text-sm font-semibold uppercase tracking-[0.14em] text-[#f7e5c6]/70">
-            Import Status
-          </h2>
-          <div className="rounded-xl border border-black/50 bg-black/45 p-4">
-            <div className="text-2xl font-semibold text-[#f7e5c6]">
-              {formatStatus(status)}
-            </div>
-            <div className="mt-1 text-sm text-[#f7e5c6]/65">
-              {importedCount} games stored
-            </div>
-          </div>
-          {jobId && (
-            <div className="break-all rounded-xl border border-black/40 bg-black/30 px-3 py-2 text-xs text-[#f7e5c6]/60">
-              {jobId}
-            </div>
-          )}
-          {message && (
-            <p
-              role="status"
-              className={`rounded-xl border px-3 py-2 text-sm ${
-                status === 'failed' || status === 'error'
-                  ? 'border-red-400/30 bg-red-400/10 text-red-300'
-                  : 'border-[#10b981]/30 bg-[#10b981]/10 text-[#a7f3d0]'
-              }`}
-            >
-              {message}
-            </p>
-          )}
-
-          <button
-            type="button"
-            onClick={handleBuildProfile}
-            disabled={isProfileWorking || status !== 'completed'}
-            className="inline-flex h-11 items-center justify-center gap-2 rounded-lg border border-[#10b981]/35 bg-[#10b981]/12 px-4 text-sm font-semibold text-[#a7f3d0] transition hover:bg-[#10b981]/18 disabled:pointer-events-none disabled:opacity-40"
-          >
-            {isProfileWorking && (
-              <span className="h-4 w-4 rounded-full border-2 border-[#a7f3d0]/40 border-t-[#a7f3d0] animate-spin" />
-            )}
-            {isProfileWorking ? 'Profiling' : 'Build weakness profile'}
-          </button>
-          <Link
-            href="/train/sparring"
-            className="inline-flex h-11 items-center justify-center rounded-lg border border-[#f7e5c6]/25 bg-[#f7e5c6]/12 px-4 text-sm font-semibold text-[#f7e5c6] transition hover:bg-[#f7e5c6]/18"
-          >
-            Open sparring board
-          </Link>
+        <section className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4" aria-label="Training modes">
+          {TRAINING_MODES.map((mode) => (
+            <TrainingModeCard key={mode.key} mode={mode} />
+          ))}
         </section>
-
-        <section className={`${woodPanelClass} flex flex-col gap-5 rounded-[8px] p-5 lg:col-span-2`}>
-          <div className="flex flex-wrap items-center justify-between gap-3">
-            <h2 className="text-lg font-semibold text-[#f7e5c6]">Weakness Profile</h2>
-            <div className="text-sm text-[#f7e5c6]/65">
-              {profile ? `${profile.mistake_count} mistakes · ${profile.blunder_count} blunders` : formatStatus(profileStatus)}
-            </div>
-          </div>
-
-          {profileMessage && (
-            <p
-              role="status"
-              className={`rounded-xl border px-3 py-2 text-sm ${
-                profileStatus === 'failed' || profileStatus === 'error'
-                  ? 'border-red-400/30 bg-red-400/10 text-red-300'
-                  : 'border-[#10b981]/30 bg-[#10b981]/10 text-[#a7f3d0]'
-              }`}
-            >
-              {profileMessage}
-            </p>
-          )}
-
-          {profile?.status === 'completed' ? (
-            <div className="grid gap-5 xl:grid-cols-[1fr_1fr_1.4fr]">
-              <SummaryTable
-                title="Accuracy by Phase"
-                rows={profile.summary.accuracy_by_phase ?? []}
-              />
-              <MistakeTypes rows={profile.summary.common_mistake_types ?? []} />
-              <WorstPositions rows={profile.summary.worst_positions ?? []} />
-            </div>
-          ) : (
-            <div className="rounded-xl border border-black/40 bg-black/30 px-4 py-8 text-center text-sm text-[#f7e5c6]/60">
-              Build a profile after importing games to see phase accuracy, mistake patterns, and critical positions.
-            </div>
-          )}
-        </section>
-      </div>
-    </div>
-  );
-}
-
-function formatStatus(status: ImportStatus | ProfileStatus): string {
-  if (status === 'idle') {
-    return 'Ready';
-  }
-  return status.charAt(0).toUpperCase() + status.slice(1);
-}
-
-function SummaryTable({ title, rows }: { title: string; rows: AccuracyRow[] }) {
-  return (
-    <div className="rounded-xl border border-black/45 bg-black/35 p-4">
-      <h3 className="text-sm font-semibold text-[#f7e5c6]">{title}</h3>
-      <div className="mt-3 flex flex-col gap-2">
-        {rows.map((row) => (
-          <div key={row.key} className="grid grid-cols-[1fr_auto] gap-3 text-sm">
-            <span className="capitalize text-[#f7e5c6]/70">{row.key}</span>
-            <span className="font-semibold text-[#a7f3d0]">{row.accuracy}%</span>
-            <div className="col-span-2 h-2 rounded-full bg-black/50">
-              <div
-                className="h-full rounded-full bg-[#10b981]"
-                style={{ width: `${Math.max(0, Math.min(100, row.accuracy))}%` }}
-              />
-            </div>
-            <span className="col-span-2 text-xs text-[#f7e5c6]/45">
-              {row.total_moves} moves · {row.mistakes} mistakes · {row.blunders} blunders
-            </span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function MistakeTypes({ rows }: { rows: MistakeTypeRow[] }) {
-  return (
-    <div className="rounded-xl border border-black/45 bg-black/35 p-4">
-      <h3 className="text-sm font-semibold text-[#f7e5c6]">Common Mistake Types</h3>
-      <div className="mt-3 flex flex-col gap-2">
-        {rows.map((row) => (
-          <div key={row.type} className="flex items-center justify-between gap-3 rounded-lg bg-black/30 px-3 py-2 text-sm">
-            <span className="capitalize text-[#f7e5c6]/75">{row.type}</span>
-            <span className="font-semibold text-[#f7e5c6]">{row.count}</span>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-function WorstPositions({ rows }: { rows: WorstPosition[] }) {
-  return (
-    <div className="rounded-xl border border-black/45 bg-black/35 p-4">
-      <h3 className="text-sm font-semibold text-[#f7e5c6]">Worst Positions</h3>
-      <div className="mt-3 flex max-h-80 flex-col gap-2 overflow-y-auto pr-1">
-        {rows.map((row, index) => (
-          <a
-            key={`${row.game_url}-${row.move_number}-${index}`}
-            href={row.game_url}
-            target="_blank"
-            rel="noreferrer"
-            className="rounded-lg border border-transparent bg-black/30 px-3 py-2 text-sm transition hover:border-[#f7e5c6]/25 hover:bg-black/45"
-          >
-            <div className="flex items-center justify-between gap-3">
-              <span className="font-semibold text-[#f7e5c6]">
-                {row.move_number}. {row.san}
-              </span>
-              <span className="text-rose-300">{row.cp_loss} cp</span>
-            </div>
-            <div className="mt-1 text-xs capitalize text-[#f7e5c6]/55">
-              {row.phase} · {row.mistake_type} · best {row.best_move_san || 'unknown'}
-            </div>
-          </a>
-        ))}
       </div>
     </div>
   );
