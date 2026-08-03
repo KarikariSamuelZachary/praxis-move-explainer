@@ -11,6 +11,34 @@ from core import database
 
 log = logging.getLogger(__name__)
 
+# Minimum total recorded samples at a position before pick_repertoire_move
+# will commit to a book move. Below this the sampler returns None and the
+# caller falls through to Maia, so we never confidently sample from one
+# or two noisy observations. 5 is a middle ground: small enough that a
+# handful of real games is enough to trust established opening prep, but
+# big enough to kill the "seen once or twice" case. Tune up if you see
+# noisy moves leaking into sparring; tune down if too many positions
+# fall through to Maia.
+MIN_REPERTOIRE_SAMPLES = 5
+
+# Exponential recency decay rate, per year, applied to each recorded
+# move's sampling weight. weight = frequency * exp(-lambda * age_years).
+# With lambda = 0.5/yr the half-life is ln(2)/0.5 ~= 1.39 years, so:
+#   1 month  -> 0.96   (recent opening prep dominates)
+#   6 months -> 0.78
+#   1 year   -> 0.61
+#   2 years  -> 0.37
+#   3 years  -> 0.22   (old habits still contribute, but weakly)
+# This matches the intuition that opening repertoires evolve on a
+# multi-month/year timescale, not weekly — so recent games should steer
+# sampling without discarding established prep just because it's old.
+# Games with end_time = 0 (missing date) get neutral weight 1.0 so a
+# missing timestamp never nukes a move's candidacy.
+RECENCY_DECAY_LAMBDA_PER_YEAR = 0.5
+# Seconds per year (365.25 days, leap-year averaged) used to convert the
+# Unix-seconds age into years inside the SQL decay expression.
+_SECONDS_PER_YEAR = 365.25 * 86400.0
+
 
 def _position_key(board: chess.Board) -> str:
     return " ".join(board.fen().split()[:4])
@@ -255,28 +283,71 @@ def pick_repertoire_move(
             cur.execute(
                 """
                 SELECT
-                    move_uci,
-                    MIN(move_san) AS move_san,
-                    COUNT(*)::int AS frequency
-                FROM opponent_repertoire_moves
-                WHERE requested_by_user_id = %s
-                  AND provider = %s
-                  AND LOWER(opponent_username) = LOWER(%s)
-                  AND position_key = %s
-                GROUP BY move_uci
+                    r.move_uci,
+                    MIN(r.move_san) AS move_san,
+                    COUNT(*)::int AS frequency,
+                    -- Per-move recency-weighted frequency. Each repertoire
+                    -- row is one move occurrence in one game, so we join to
+                    -- opponent_games for that game's end_time and sum the
+                    -- exponential decay across all occurrences of the move.
+                    -- end_time = 0 (missing) -> neutral weight 1.0 so a bad
+                    -- timestamp never zeroes out a real move.
+                    SUM(
+                        CASE
+                            WHEN g.end_time > 0
+                                THEN exp(
+                                    ( -%s
+                                      * EXTRACT(EPOCH FROM (NOW() - to_timestamp(g.end_time)))
+                                      / %s
+                                    )::double precision
+                                )
+                            ELSE 1.0
+                        END
+                    )::double precision AS weighted_frequency
+                FROM opponent_repertoire_moves r
+                JOIN opponent_games g ON g.id = r.opponent_game_id
+                WHERE r.requested_by_user_id = %s
+                  AND r.provider = %s
+                  AND LOWER(r.opponent_username) = LOWER(%s)
+                  AND r.position_key = %s
+                GROUP BY r.move_uci
                 """,
-                (requested_by_user_id, provider, opponent_username, _position_key(board)),
+                (
+                    RECENCY_DECAY_LAMBDA_PER_YEAR,
+                    _SECONDS_PER_YEAR,
+                    requested_by_user_id,
+                    provider,
+                    opponent_username,
+                    _position_key(board),
+                ),
             )
             rows = [dict(row) for row in cur.fetchall()]
 
         if not rows:
             return None
 
-        choice = random.choices(
-            rows,
-            weights=[max(1, int(row["frequency"])) for row in rows],
-            k=1,
-        )[0]
+        # Data floor: total raw samples at this position must clear the
+        # threshold, otherwise we refuse to sample and let the caller fall
+        # through to Maia. Evaluated on raw frequency (how many times we've
+        # actually seen the position), never on the decayed weight, so that
+        # old-but-voluminous positions still qualify.
+        total_samples = sum(int(row["frequency"]) for row in rows)
+        if total_samples < MIN_REPERTOIRE_SAMPLES:
+            return None
+
+        weighted = [float(row["weighted_frequency"] or 0.0) for row in rows]
+        total_weighted = sum(weighted)
+        # Defensive fallback: if every game had a wildly old end_time such
+        # that exp() underflowed to 0.0 (impossible for real online chess,
+        # but cheap to guard), sample on raw frequency so we never feed
+        # random.choices an all-zero weight list.
+        if total_weighted <= 0.0:
+            weighted = [float(int(row["frequency"])) for row in rows]
+            total_weighted = sum(weighted)
+        if total_weighted <= 0.0:
+            return None
+
+        choice = random.choices(rows, weights=weighted, k=1)[0]
         return choice
     finally:
         database.connection_pool.putconn(conn)
