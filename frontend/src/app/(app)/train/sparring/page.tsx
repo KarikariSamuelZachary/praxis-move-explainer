@@ -186,12 +186,21 @@ export default function SparringPage() {
       return false;
     }
 
+    if (sourceSquare === targetSquare) {
+      return false;
+    }
+
     const nextGame = new Chess(gameRef.current.fen());
-    const move = nextGame.move({
-      from: sourceSquare,
-      to: targetSquare,
-      promotion: 'q',
-    });
+    let move: ReturnType<typeof nextGame.move> | null = null;
+    try {
+      move = nextGame.move({
+        from: sourceSquare,
+        to: targetSquare,
+        promotion: 'q',
+      });
+    } catch {
+      return false;
+    }
 
     if (!move) {
       return false;
