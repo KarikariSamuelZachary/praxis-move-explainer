@@ -3,6 +3,8 @@
 import Image from 'next/image';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
+import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 
 const MiniBoard = dynamic(
   () => import('react-chessboard').then((module) => module.Chessboard),
@@ -29,6 +31,7 @@ type TrainingMode = {
   cta: string;
   tone: Tone;
   href?: string;
+  onClick?: () => void;
 };
 
 const TRAINING_MODES: TrainingMode[] = [
@@ -167,11 +170,260 @@ function StarIcon() {
   );
 }
 
+function CloseIcon() {
+  return (
+    <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" aria-hidden="true">
+      <path d="M18 6 6 18M6 6l12 12" />
+    </svg>
+  );
+}
+
+function SearchIcon() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f0e0c0" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="11" cy="11" r="7" />
+      <line x1="16.5" y1="16.5" x2="21" y2="21" />
+    </svg>
+  );
+}
+
 function ModeIcon({ kind }: { kind: TrainingMode['key'] }) {
   if (kind === 'opponent-prep') return <SwordsIcon />;
   if (kind === 'engine-sparring') return <CrownIcon />;
   if (kind === 'endgame-trainer') return <RookIcon />;
   return <TargetIcon />;
+}
+
+type ImportProvider = 'lichess' | 'chesscom';
+
+const IMPORT_PROVIDERS: { key: ImportProvider; label: string }[] = [
+  { key: 'lichess', label: 'Lichess' },
+  { key: 'chesscom', label: 'Chess.com' },
+];
+
+type ImportStartResponse = {
+  job_id: string;
+  status: string;
+  lichess_username?: string | null;
+  chesscom_username?: string | null;
+  limit: number;
+};
+
+type ImportStatusResponse = {
+  job_id: string;
+  status: 'queued' | 'running' | 'completed' | 'failed';
+  lichess_username?: string | null;
+  chesscom_username?: string | null;
+  requested_limit: number;
+  imported_count: number;
+  error_message?: string | null;
+};
+
+type ApiErrorResponse = {
+  detail?: string;
+  error?: string;
+};
+
+const POLL_INTERVAL_MS = 1500;
+const MAX_POLL_ATTEMPTS = 80;
+const IMPORT_LIMIT = 200;
+
+function OpponentPrepDialog({ onClose }: { onClose: () => void }) {
+  const router = useRouter();
+  const [provider, setProvider] = useState<ImportProvider>('lichess');
+  const [username, setUsername] = useState('');
+  const [phase, setPhase] = useState<'idle' | 'importing' | 'error'>('idle');
+  const [error, setError] = useState<string | null>(null);
+  const [statusNote, setStatusNote] = useState<string | null>(null);
+
+  const trimmed = username.trim();
+  const isImporting = phase === 'importing';
+
+  async function handleSubmit() {
+    if (!trimmed || isImporting) {
+      return;
+    }
+
+    setPhase('importing');
+    setError(null);
+    setStatusNote('Starting import job…');
+
+    try {
+      const startRes = await fetch('/api/train/opponent-import', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          [provider === 'lichess' ? 'lichess_username' : 'chesscom_username']: trimmed,
+          limit: IMPORT_LIMIT,
+        }),
+      });
+      if (!startRes.ok) {
+        const body = (await startRes.json().catch(() => ({}))) as ApiErrorResponse;
+        throw new Error(body.detail ?? body.error ?? `Import request failed (${startRes.status})`);
+      }
+      const startData = (await startRes.json()) as ImportStartResponse;
+      const jobId = startData.job_id;
+
+      for (let attempt = 1; attempt <= MAX_POLL_ATTEMPTS; attempt += 1) {
+        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+
+        const pollRes = await fetch(`/api/train/opponent-import/${encodeURIComponent(jobId)}`, {
+          cache: 'no-store',
+        });
+        if (!pollRes.ok) {
+          const body = (await pollRes.json().catch(() => ({}))) as ApiErrorResponse;
+          throw new Error(body.detail ?? body.error ?? `Status request failed (${pollRes.status})`);
+        }
+        const pollData = (await pollRes.json()) as ImportStatusResponse;
+
+        if (pollData.status === 'completed') {
+          if (pollData.imported_count === 0) {
+            throw new Error(
+              `No public games found for ${IMPORT_PROVIDERS.find((p) => p.key === provider)?.label} username “${trimmed}”.`
+            );
+          }
+          setStatusNote(null);
+          router.push('/train/sparring');
+          onClose();
+          return;
+        }
+        if (pollData.status === 'failed') {
+          throw new Error(
+            pollData.error_message ?? 'Import failed on the server. Try again in a moment.'
+          );
+        }
+        setStatusNote(
+          pollData.status === 'running'
+            ? `Importing games… (${pollData.imported_count} so far)`
+            : 'Queued for import…'
+        );
+      }
+      throw new Error('Import is taking longer than expected. Close this and try again shortly.');
+    } catch (err) {
+      setPhase('error');
+      setError(err instanceof Error ? err.message : 'Failed to import opponent.');
+    }
+  }
+
+  function handleClose() {
+    if (isImporting) {
+      return;
+    }
+    onClose();
+  }
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4"
+      onClick={handleClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label="Import an opponent"
+    >
+      <div
+        className={`${CARD_CLASS} relative w-full max-w-md rounded-2xl p-5`}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <button
+          type="button"
+          onClick={handleClose}
+          disabled={isImporting}
+          aria-label="Close"
+          className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-lg text-[#f7e5c6]/70 transition hover:bg-white/8 hover:text-[#f7e5c6] disabled:opacity-40 disabled:pointer-events-none"
+        >
+          <CloseIcon />
+        </button>
+
+        <h2 className="font-display text-xl font-semibold text-[#f7e5c6]">Import an opponent</h2>
+        <p className="mt-1 text-sm text-[#f7e5c6]/60">
+          Fetch a public Lichess or Chess.com player. We&apos;ll train a Maia clone on up to {IMPORT_LIMIT} of their recent games.
+        </p>
+
+        <div className="mt-4 grid grid-cols-2 overflow-hidden rounded-[8px] border border-black/50 bg-black/50 p-1">
+          {IMPORT_PROVIDERS.map((entry) => (
+            <button
+              key={entry.key}
+              type="button"
+              onClick={() => setProvider(entry.key)}
+              disabled={isImporting}
+              className={`h-10 rounded-[6px] text-sm font-semibold transition disabled:opacity-60 ${
+                provider === entry.key
+                  ? 'bg-[#f7e5c6] text-[#241206]'
+                  : 'text-[#f7e5c6]/70 hover:bg-white/8'
+              }`}
+            >
+              {entry.label}
+            </button>
+          ))}
+        </div>
+
+        <div className="mt-3 flex gap-2">
+          <input
+            type="text"
+            value={username}
+            onChange={(event) => setUsername(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.preventDefault();
+                handleSubmit();
+              }
+            }}
+            placeholder={`${IMPORT_PROVIDERS.find((p) => p.key === provider)?.label} username`}
+            disabled={isImporting}
+            className="min-w-0 flex-1 rounded-xl border border-black/50 bg-black/60 px-3 py-2 text-sm text-white outline-none transition placeholder:text-white/30 focus:border-emerald-400/60 focus:ring-2 focus:ring-emerald-400/20 disabled:opacity-60"
+          />
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={!trimmed || isImporting}
+            aria-label="Import opponent"
+            className="flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-xl border border-black/50 bg-black/60 transition-transform hover:scale-105 active:scale-95 disabled:pointer-events-none disabled:opacity-40"
+          >
+            {isImporting ? (
+              <span className="h-3 w-3 rounded-full border-2 border-[#f0e0c0]/40 border-t-[#f0e0c0] animate-spin" />
+            ) : (
+              <SearchIcon />
+            )}
+          </button>
+        </div>
+
+        {statusNote && isImporting && (
+          <p className="mt-3 rounded-xl border border-emerald-400/25 bg-emerald-400/8 px-3 py-2 text-xs text-emerald-200">
+            {statusNote}
+          </p>
+        )}
+
+        {error && phase === 'error' && (
+          <p
+            role="alert"
+            className="mt-3 rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-2 text-xs text-red-300"
+          >
+            {error}
+          </p>
+        )}
+
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={handleClose}
+            disabled={isImporting}
+            className="h-9 rounded-lg border border-black/50 bg-black/40 px-4 text-sm font-semibold text-[#f7e5c6]/70 transition hover:bg-black/60 hover:text-[#f7e5c6] disabled:opacity-40 disabled:pointer-events-none"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleSubmit}
+            disabled={!trimmed || isImporting}
+            className="group/cta flex h-9 items-center justify-center gap-2 rounded-lg bg-emerald-500/20 px-4 text-sm font-semibold text-emerald-300 ring-1 ring-emerald-500/30 transition hover:bg-emerald-500/30 hover:ring-emerald-500/50 disabled:pointer-events-none disabled:opacity-40"
+          >
+            <span>{isImporting ? 'Importing…' : 'Import & Start'}</span>
+            {!isImporting && <ArrowRightIcon />}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function TrainingModeCard({ mode }: { mode: TrainingMode }) {
@@ -214,6 +466,11 @@ function TrainingModeCard({ mode }: { mode: TrainingMode }) {
           <span>{mode.cta}</span>
           <ArrowRightIcon />
         </Link>
+      ) : mode.onClick ? (
+        <button type="button" onClick={mode.onClick} className={ctaClass}>
+          <span>{mode.cta}</span>
+          <ArrowRightIcon />
+        </button>
       ) : (
         <button type="button" className={ctaClass}>
           <span>{mode.cta}</span>
@@ -274,17 +531,29 @@ function RecommendedPanel() {
 }
 
 export default function TrainPage() {
+  const [isOpponentPrepOpen, setIsOpponentPrepOpen] = useState(false);
+
+  const wiredModes = TRAINING_MODES.map((mode) =>
+    mode.key === 'opponent-prep'
+      ? { ...mode, onClick: () => setIsOpponentPrepOpen(true) }
+      : mode
+  );
+
   return (
     <div className="relative h-[calc(100vh-2.75rem)] w-full overflow-hidden px-6 py-6 text-white lg:px-12 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
       <div className="mx-auto flex h-full max-w-[1600px] flex-col justify-center gap-5">
         <RecommendedPanel />
 
         <section className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4" aria-label="Training modes">
-          {TRAINING_MODES.map((mode) => (
+          {wiredModes.map((mode) => (
             <TrainingModeCard key={mode.key} mode={mode} />
           ))}
         </section>
       </div>
+
+      {isOpponentPrepOpen && (
+        <OpponentPrepDialog onClose={() => setIsOpponentPrepOpen(false)} />
+      )}
     </div>
   );
 }
