@@ -29,6 +29,8 @@ from services.opponent_repertoire import (
     list_opponent_profiles,
     pick_repertoire_move,
 )
+from services.opponent_style import compute_opponent_style
+from services.opponent_style_reranker import rerank_candidates
 from services.weakness_profile import (
     create_weakness_profile_job,
     get_weakness_profile_job,
@@ -249,11 +251,107 @@ def get_sparring_move(
             )
 
         try:
-            maia_result = get_maia3().best_move(
-                board,
-                elo=opponent_elo,
-                temperature=body.maia_temperature,
-            )
+            maia_engine = get_maia3()
+
+            # --- Style-bias re-ranker (progressive enhancement) ------------
+            # When the opponent has >= MIN_STYLE_GAMES imported, we lean
+            # Maia's candidate distribution toward the opponent's observed
+            # playing style (sacrifice frequency) via rerank_candidates().
+            # When the style profile is insufficient (or the style layer
+            # itself fails), we silently fall back to the original
+            # best_move() path -- per the wire-up contract the request MUST
+            # NOT block or fail because the style layer is unavailable.
+            #
+            # Two failure axes get separate try/excepts:
+            #   * compute_opponent_style() reads + python-chess-parses the
+            #     opponent's full PGN corpus from the DB -- it can fail in
+            #     ways unrelated to Maia (corrupt PGN rows, transient DB
+            #     errors). A failure here degrades to unbiased Maia.
+            #   * rerank_candidates() is pure-Python (board copies +
+            #     per-candidate sac detection); if it raises it degrades to
+            #     the unbiased best_move() call.
+            # best_move_candidates() is itself a Maia call -- its
+            # MaiaUnavailableError propagates up to the outer handler (503),
+            # correctly distinguishing "engine down" from "style layer
+            # hiccupped".
+            #
+            # LATENCY SURFACE: compute_opponent_style replays every imported
+            # PGN on each call (no cache yet). For a 200-game opponent this
+            # adds ~1-2s to every out-of-book sparring move. Memoization is
+            # a deliberate future task; the wire-up intentionally pays the
+            # cost up front so the bias can be live-verified.
+            try:
+                style = compute_opponent_style(
+                    requested_by_user_id=clerk_id,
+                    provider=body.provider,
+                    opponent_username=body.opponent_username,
+                )
+            except Exception as exc:  # noqa: BLE001
+                log.warning(
+                    "compute_opponent_style failed for %s/%s — falling "
+                    "back to unbiased Maia. Underlying: %s",
+                    body.provider, body.opponent_username, exc,
+                )
+                style = None
+
+            move_uci = ""
+            move_san = ""
+
+            if style is not None and style.get("sufficient"):
+                candidates = maia_engine.best_move_candidates(
+                    board,
+                    multipv=5,
+                    self_elo=opponent_elo,
+                    oppo_elo=opponent_elo,
+                )
+                try:
+                    rerank = rerank_candidates(
+                        candidates=candidates,
+                        style=style,
+                        board=board,
+                    )
+                    move_uci = rerank.get("chosen_move_uci", "") or ""
+                    if move_uci:
+                        move_san = board.san(chess.Move.from_uci(move_uci))
+                        log.info(
+                            "style-bias re-ranker invoked: opponent=%s/%s "
+                            "sacrifice_frequency=%s applied_bias=%s "
+                            "source=%s chose=%s",
+                            body.provider, body.opponent_username,
+                            rerank.get("sacrifice_frequency"),
+                            rerank.get("applied_bias"),
+                            rerank.get("source"),
+                            move_uci,
+                        )
+                    else:
+                        log.debug(
+                            "rerank_candidates returned no move "
+                            "(source=%s) — falling back to best_move()",
+                            rerank.get("source"),
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "rerank_candidates failed for %s/%s — falling "
+                        "back to unbiased Maia. Underlying: %s",
+                        body.provider, body.opponent_username, exc,
+                    )
+                    move_uci = ""
+                    move_san = ""
+
+            if not move_uci:
+                # Fallback: insufficient data, reranker failure, or no
+                # candidates produced a usable move. Uses best_move() with
+                # the configured temperature -- the sparring flow's
+                # pre-wiring behavior. maia_engine is the same singleton as
+                # best_move_candidates above; if it had died mid-request the
+                # prior call already raised MaiaUnavailableError.
+                maia_result = maia_engine.best_move(
+                    board,
+                    elo=opponent_elo,
+                    temperature=body.maia_temperature,
+                )
+                move_uci = maia_result.get("best_move_uci") or ""
+                move_san = maia_result.get("best_move_san") or ""
         except MaiaUnavailableError as exc:
             # Typed "engine unavailable" — covers never-started, mid-session
             # crash (best_move() marks the subprocess dead and re-raises this
@@ -279,8 +377,6 @@ def get_sparring_move(
                 detail=f"Maia-3 inference failed: {exc}",
             ) from exc
 
-        move_uci = maia_result.get("best_move_uci") or ""
-        move_san = maia_result.get("best_move_san") or ""
         source = "playing_naturally"
         repertoire_frequency = None
         try:
