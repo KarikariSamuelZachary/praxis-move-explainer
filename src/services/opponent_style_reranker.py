@@ -92,14 +92,22 @@ DESIGN DECISIONS (recorded here because they shape the whole module)
 
 (3) BIAS MECHANISM: RE-WEIGHTED SAMPLE, not straight re-rank.
 
-    For each candidate i, compute a base weight from its rank (rank-1
-    gets the highest) -- Maia's actual softmax probabilities are NOT
-    exposed in the candidate dict (see best_move_candidates docstring:
-    only {move, score, wdl}), so we use rank-decay as a coarse base rate
-    that preserves Maia's "rank 1 is overwhelmingly most likely for a
-    1500 player" prior. The bias then multiplies this base weight
-    upwards for sacrifice-looking candidates, scaling with the
-    opponent's sacrifice_frequency.
+    For each candidate i, compute a base weight from its
+    `policy` field (the softmax probability of the candidate, exposed
+    by scripts/maia3_patched_uci.py -- see the POLICY-PATCH NOTE in
+    src/engines/maia_engine.py). If the policy field is absent (e.g.
+    the patch is broken, the wrapper is missing from disk, or
+    upstream maia3 changed its UCI format), fall back to the
+    geometric rank-decay proxy at BASE_RANK_DECAY -- this is the
+    documented coarse stand-in (see the "BASE_RANK_DECAY" paragraph
+    below).
+
+    The bias then multiplies this base weight upwards for
+    sacrifice-looking candidates, scaling with the opponent's
+    sacrifice_frequency. The same re-weighting pattern is used for
+    the queen-trade signal (see decision (4) below) -- per-candidate
+    multipliers compose multiplicatively on top of the base rate, so
+    each signal tilts Maia's distribution independently.
 
     Straight re-ranking (always pick the highest-weighted candidate) is
     rejected because it would always force the sac-looking move to be
@@ -112,6 +120,57 @@ DESIGN DECISIONS (recorded here because they shape the whole module)
 
     This mirrors pick_repertoire_move's use of random.choices with
     weighted frequencies, so it's idiomatic to this codebase.
+
+(4) QUEEN-TRADE BIAS (multiplicative with sac, gated by a timing
+    window): the opponent's `queens_stay_on_rate` (fraction of games
+    ending with both queens on) and `queen_trade_move_number` (weighted
+    mean ply at which the last queen was captured) are converted into a
+    per-candidate multiplier.
+
+    Derivation:
+      qtp            = 1.0 - queens_stay_on_rate          (in [0, 1])
+      centered       = 2.0 * qtp - 1.0                   (in [-1, 1])
+      window_weight  = max(0, 1 - |candidate_ply -
+                                  queen_trade_move_number| / half_width)
+                                                            (in [0, 1])
+      qt_mult        = clamp(1.0 + QUEEN_TRADE_BIAS_STRENGTH *
+                              centered * window_weight * is_qt,
+                              min=0.05)
+
+    where `is_qt` is the per-candidate "this move captures a queen"
+    indicator and `clamp` keeps weights strictly positive (random.choices
+    rejects non-positive weights). The clamp is a defensive floor --
+    in the calibration range used here (centered in [-1, 1],
+    window_weight in [0, 1], strength=1.5) the floor only triggers at
+    the extreme (centered=-1, is_qt=1, window_weight=1) which represents
+    an opponent who NEVER trades queens and we're offering a queen-
+    capture move at the most in-character moment -- the right
+    behavior there is to strongly suppress but not literally zero out.
+
+    Why a window_weight on `queen_trade_move_number`: the timing signal
+    tells us WHEN the opponent typically trades queens. A queen trade at
+    that ply is on-pattern; a queen trade 30 plies later is anti-pattern
+    (game has already moved past the typical structure) and shouldn't be
+    amplified. The window_weight makes the bias a local phenomenon --
+    only fires in the neighborhood of the opponent's typical trade
+    timing. `queen_trade_move_number=None` (no qualifying games) maps to
+    window_weight=1.0 (no timing gate; only the preference signal from
+    queens_stay_on_rate applies).
+
+    Why multiplicative with the sac multiplier: the two signals are
+    independent stylistic axes (material aggression vs. queen-trade
+    structure preference). Either can apply on its own; both can apply
+    on the same candidate without double-counting. The product form
+    preserves each signal's relative strength while letting them
+    compound on candidates that are both sac-looking AND queen-trades.
+
+    Why not used for suppression of QUIET moves: the bias is symmetric
+    around 1.0 -- if `centered<0` and `is_qt=1`, the weight is reduced
+    (prefer not to trade queens). For `is_qt=0` the multiplier is 1.0
+    regardless of centered, so quiet candidates are unaffected. This
+    matters: a "queens-stay-on" opponent who happens to be in a
+    position with a strong sac-looking non-queen-trade move should
+    still be able to play that move at base rate.
 
 ================================================================================
 CONSTANTS
@@ -138,16 +197,54 @@ calibration against the empirical range seen in opponent_style_test:
   These cover the range empirical-opponent_style_test fixture C produced:
   0.065 unweighted / 0.119 recency-weighted for the high-sac stretch.
 
-BASE_RANK_DECAY sets how steeply base weights fall with rank. We use
-geometric base=0.5: rank 1 -> 1.0, rank 2 -> 0.5, rank 3 -> 0.25, ...
+BASE_RANK_DECAY sets how steeply base weights fall with rank in the
+FALLBACK path (when the patched UCI wrapper isn't in use and the
+candidate dict lacks a `policy` field). We use geometric base=0.5:
+rank 1 -> 1.0, rank 2 -> 0.5, rank 3 -> 0.25, ...
 
   Justification: Maia's topk softmax typically concentrates 40-70% of
   mass on rank 1 and decays steeply (the standard "human-like" move
   distribution is long-tailed but rank-1-dominant). Base=0.5 reproduces
-  that shape coarsely without claiming fidelity we don't have (since
-  Maia's probs aren't exposed). When actual probs ARE eventually exposed
-  in the candidate dict, swap the base weight formula to use them and
-  drop BASE_RANK_DECAY.
+  that shape coarsely without claiming fidelity we don't have. The
+  PATCHED path (candidate["policy"] present) is preferred when
+  available -- it uses the actual softmax probability from the model
+  and is strictly more accurate than any rank-decay proxy. The proxy
+  remains as a defense-in-depth fallback: if the patch is broken, the
+  reranker still works (no crash, no exception) but the base weight is
+  approximated. verify_maia3_patch() in maia_engine.py catches the
+  broken-patch case at startup and logs at ERROR.
+
+QUEEN_TRADE_BIAS_STRENGTH tunes how strongly `queens_stay_on_rate` and
+`queen_trade_move_number` tilt the per-candidate weight for a move that
+captures a queen. Calibration at strength=1.5:
+
+  Effective relative weight of a queen-trade candidate (peak timing,
+  full window_weight=1):
+    centered= 1.0  (opponent always trades)   -> mult = 1 + 1.5*1*1 = 2.5
+    centered= 0.5  (opponent trades half)     -> mult = 1 + 1.5*0.5 = 1.75
+    centered= 0.0  (neutral)                  -> mult = 1.0  (no effect)
+    centered=-0.5  (opponent keeps queens)    -> mult = 1 - 1.5*0.5 = 0.25
+    centered=-1.0  (opponent never trades)    -> clamped to 0.05 floor
+
+  Outside the timing window (|candidate_ply - queen_trade_move_number|
+  >= half_width) the mult is 1.0 -- the timing gate makes this a
+  LOCAL bias, not a global one. Picked to be stronger than the sac
+  signal at peak (sac max ~1.6x at sac_freq=0.15) because queen trade
+  is a clearer stylistic preference (binary: did the opponent usually
+  trade queens?) than sac frequency (continuous, noisy).
+
+QUEEN_TRADE_WINDOW_HALF_WIDTH is the ply-distance at which the timing
+gate reaches zero. Set to 24 plies (12 fullmoves): a queen trade within
+12 fullmoves of the opponent's typical trade point gets the full bias,
+and a queen trade 12+ fullmoves away gets no bias. Wide enough to
+absorb normal game-length variance; narrow enough to suppress the bias
+on moves well past the opponent's typical trade timing.
+
+QUEEN_TRADE_WEIGHT_FLOOR is the minimum per-candidate multiplier after
+the queen-trade bias. Defensive: keeps weights strictly positive
+(random.choices rejects non-positive weights). Only triggers at the
+extreme (centered=-1, is_qt=1, full window); the typical-calibration
+multipliers all sit comfortably above it.
 
 FAMILY_LEAN_DISABLED is a sentinel marking where family-lean WOULD be
 applied if/when a candidate-family classifier ships. It is returned in
@@ -175,6 +272,47 @@ STYLE_BIAS_STRENGTH = 4.0
 # See the module docstring's "BASE_RANK_DECAY" paragraph above.
 BASE_RANK_DECAY = 0.5
 
+# How strongly a high queen-trade preference tilts the weight for a
+# move that captures a queen. See the module docstring's
+# "QUEEN_TRADE_BIAS_STRENGTH" paragraph.
+QUEEN_TRADE_BIAS_STRENGTH = 1.5
+
+# Half-width (in plies) of the triangular timing window centered on the
+# opponent's typical queen-trade ply. See the module docstring's
+# "QUEEN_TRADE_WINDOW_HALF_WIDTH" paragraph.
+QUEEN_TRADE_WINDOW_HALF_WIDTH = 24.0
+
+# Defensive floor on the per-candidate queen-trade multiplier. Keeps
+# weights strictly positive so random.choices doesn't reject the input.
+# See the module docstring's "QUEEN_TRADE_WEIGHT_FLOOR" paragraph.
+QUEEN_TRADE_WEIGHT_FLOOR = 0.05
+
+# --- setup-structure signature (v1) ----------------------------------------
+#
+# Per-candidate multiplicative boost for moves whose resulting board shape
+# (pawn skeleton + piece squares, POV-normalized per
+# opponent_style._pov_snapshot_squares) matches a shape the profiled player
+# has actually reached in their historic games. The signatures come from
+# `style["setup_signatures"]` (produced by compute_opponent_style). See the
+# design spec docstring in opponent_style.py for the rationale.
+#
+# SETUP_SIGNATURE_BIAS_STRENGTH = max boost strength. sig_mult = 1 + B * S
+# where S in [0, 1] is the max Jaccard composite across all historic
+# snapshots. With B = 2.5, sig_mult in [1.0, 3.5]: boost-only (no
+# suppression of non-matching candidates), see the spec's 7.1.
+# Default 2.5 keeps Maia's policy as the default and tilts toward
+# setup-consistent moves when there's match evidence; tune empirically via
+# Test 10's head-to-head distribution.
+SETUP_SIGNATURE_BIAS_STRENGTH = 2.5
+
+# Jaccard composite weights. Pawn structure leads (most stable oracle of
+# opening setup in chess theory); piece placement disambiguates two setups
+# with similar pawn skeletons but different piece development (e.g.
+# ...Bf5 vs ...Bg4). The two weights MUST sum to 1.0; the composite is
+# `S = w_pawn * J_pawn + w_piece * J_piece` in [0, 1].
+SETUP_PAWN_WEIGHT = 0.65
+SETUP_PIECE_WEIGHT = 0.35
+
 # Sentinel returned in bias_breakdown's "family_lean" key to mark that v1
 # made an explicit no-bias decision rather than silently dropping the
 # signal. See the module docstring's decision (1).
@@ -182,14 +320,233 @@ FAMILY_LEAN_DISABLED = "disabled_in_v1_no_candidate_family_classifier"
 
 
 def _base_weight(rank: int) -> float:
-    """Geometric base weight from a 1-indexed rank.
+    """Geometric base weight from a 1-indexed rank -- the FALLBACK path.
 
-    rank=1 -> 1.0, rank=2 -> 0.5, rank=3 -> 0.25, ... This is a coarse
-    proxy for Maia's softmax probability, which is not exposed in the
-    candidate dict (see the module docstring's "BASE_RANK_DECAY" note
-    for the trade and the upgrade path).
+    rank=1 -> 1.0, rank=2 -> 0.5, rank=3 -> 0.25, ... Used when the
+    candidate dict lacks a `policy` field (i.e. the patched UCI wrapper
+    isn't in use). See the module docstring's "BASE_RANK_DECAY" note
+    for the trade and the upgrade path.
     """
     return BASE_RANK_DECAY ** max(0, rank - 1)
+
+
+def _candidate_base_weight(candidate: Dict[str, Any], rank: int) -> tuple:
+    """Base weight for sampling, plus a flag indicating which path was used.
+
+    Returns (weight, used_policy). `used_policy=True` means the
+    candidate's `policy` field was present and used; `used_policy=False`
+    means the rank-decay proxy was used (patch missing or policy value
+    malformed). The flag is surfaced in the per-row breakdown so
+    operators can see which path the reranker took.
+
+    A candidate's policy is considered usable iff it parses to a float
+    in (0, 1]. We don't require it sum to 1.0 across the candidate
+    list (Maia-3's topk returns only the top-N; the rest of the mass is
+    on candidates not returned by analyse()).
+    """
+    policy = candidate.get("policy")
+    if policy is not None:
+        try:
+            p = float(policy)
+            if 0.0 < p <= 1.0:
+                return p, True
+        except (TypeError, ValueError):
+            pass
+    return _base_weight(rank), False
+
+
+def _candidate_ply(board: chess.Board) -> int:
+    """1-indexed half-move ply at which a candidate move from `board` lands.
+
+    White's first move is ply 1, black's first ply 2, etc. Used to compare
+    against the opponent's `queen_trade_move_number` (a ply count) for the
+    queen-trade timing window. Verified by hand against the standard
+    start position: start -> 1, after 1.e4 -> 2, after 1.e4 e5 -> 3.
+    """
+    return board.fullmove_number * 2 - (1 if board.turn == chess.WHITE else 0)
+
+
+def _is_queen_trade_move(board: chess.Board, candidate_uci: str) -> bool:
+    """A candidate is a queen-trade move iff it captures a queen on its
+    destination square.
+
+    Defensive on every edge: non-legal candidate, unparseable UCI, or
+    a move to an empty square all return False. En-passant and
+    promotions are handled implicitly (en passant never captures a
+    queen; promotion captures on the destination square use the same
+    `piece_at(to_square)` lookup).
+    """
+    try:
+        candidate = chess.Move.from_uci(candidate_uci)
+    except ValueError:
+        return False
+    if candidate not in board.legal_moves:
+        return False
+    captured = board.piece_at(candidate.to_square)
+    return captured is not None and captured.piece_type == chess.QUEEN
+
+
+def _queen_trade_window_weight(
+    current_ply: int,
+    opponent_trade_ply: Optional[float],
+    half_width: float = QUEEN_TRADE_WINDOW_HALF_WIDTH,
+) -> float:
+    """Triangular timing window in [0, 1] centered on opponent_trade_ply.
+
+    Returns 1.0 if we're exactly at the typical trade ply, 0.0 if we're
+    half_width or more plies away, and a linear ramp in between. Used to
+    gate the queen-trade bias so it only fires in the neighborhood of
+    the opponent's typical trade point.
+
+    `opponent_trade_ply=None` (no qualifying games for this opponent)
+    returns 1.0 -- no timing info means we don't gate, only the
+    `queens_stay_on_rate` preference signal applies.
+    """
+    if opponent_trade_ply is None or opponent_trade_ply <= 0:
+        return 1.0
+    delta = abs(current_ply - float(opponent_trade_ply))
+    if delta >= half_width:
+        return 0.0
+    return 1.0 - (delta / half_width)
+
+
+def _pov_normalized_squares(
+    board: chess.Board, side_just_moved: chess.Color
+) -> tuple:
+    """Return (pawn_set, piece_set) for `board` normalized to side_just_moved's POV.
+
+    Mirrors `opponent_style._pov_snapshot_squares`'s convention so the
+    resulting-board signature computed here is directly comparable to the
+    historic snapshots stored in `style["setup_signatures"]` (both are
+    POV-normalized to "the profiled player advances from rank 1").
+
+    Returns two frozensets of square names:
+      * pawn_set  -- all pawn squares (POV-normalized)
+      * piece_set -- union of all N/B/R/Q/K squares (POV-normalized)
+
+    The two are returned as separate sets because the Jaccard composite
+    weights them differently (pawn structure leads; see
+    SETUP_PAWN_WEIGHT). The piece set is one flattened union (not
+    per-piece-type) to keep the math simple and cheap; per-piece-type
+    Jaccard was considered and deferred as marginal-signal-vs-cost.
+    """
+    if side_just_moved == chess.BLACK:
+        b = board.mirror()
+    else:
+        b = board
+    pawn_set = frozenset(
+        chess.square_name(sq) for sq in b.pieces(chess.PAWN, chess.WHITE)
+    )
+    piece_set = frozenset(
+        chess.square_name(sq)
+        for ptype in (chess.KNIGHT, chess.BISHOP, chess.ROOK,
+                      chess.QUEEN, chess.KING)
+        for sq in b.pieces(ptype, chess.WHITE)
+    )
+    return pawn_set, piece_set
+
+
+def _setup_similarity(
+    cand_pawn: frozenset,
+    cand_piece: frozenset,
+    hist_pawn: frozenset,
+    hist_piece: frozenset,
+) -> float:
+    """Jaccard composite similarity between a candidate's resulting board
+    and one historic snapshot, both already POV-normalized.
+
+    S = SETUP_PAWN_WEIGHT * J_pawn + SETUP_PIECE_WEIGHT * J_piece
+    where each J is the standard Jaccard index over the corresponding set:
+        J = |A ∩ B| / |A ∪ B|   in [0, 1].
+
+    Empty-set convention: two empty sets are VACUOUSLY IDENTICAL (J=1.0),
+    matching the standard mathematical convention. A real position in
+    the [10, 20] ply window always has pawns (so J_pawn's empty-both
+    case is a degenerate test-only corner), and always has a king (so
+    J_piece can only be empty in malformed-input cases -- we still
+    return J=1.0 rather than 0.0 to keep the "identical" semantics).
+
+    Jaccard (not Dice) because both directions matter for setup matching:
+    a candidate position with extra developed pieces the historic lacks
+    isn't the same setup -- Jaccard penalizes that symmetrically, Dice
+    would over-credit near-subsets. See the spec's 5.
+
+    Returns 0.0 iff both unions are empty AND we fall through to the
+    RV=0 fallback (never happens for any real position; defensive).
+    """
+    pawn_union = cand_pawn | hist_pawn
+    piece_union = cand_piece | hist_piece
+    j_pawn = (
+        1.0 if not pawn_union
+        else (len(cand_pawn & hist_pawn) / len(pawn_union))
+    )
+    j_piece = (
+        1.0 if not piece_union
+        else (len(cand_piece & hist_piece) / len(piece_union))
+    )
+    return SETUP_PAWN_WEIGHT * j_pawn + SETUP_PIECE_WEIGHT * j_piece
+
+
+def _candidate_setup_mult(
+    resulting_board: chess.Board,
+    side_just_moved: chess.Color,
+    hist_signatures: Optional[List[Dict[str, Any]]],
+) -> tuple:
+    """Compute the per-candidate setup-signature multiplier.
+
+    Returns (sig_mult, best_S, matched_ply):
+      * sig_mult  -- 1 + SETUP_SIGNATURE_BIAS_STRENGTH * max_S, in
+                     [1.0, 1 + SETUP_SIGNATURE_BIAS_STRENGTH]. Boost-only
+                     (never below 1.0). When `hist_signatures` is None or
+                     empty, returns (1.0, None, None) -- the feature is a
+                     no-op for this candidate (no historic evidence).
+      * best_S    -- the max Jaccard composite across all historic
+                     snapshots (None iff no signatures were available).
+      * matched_ply -- the snapshot_ply of the best-matching historic
+                     snapshot (None iff no signatures were available).
+                     Surfaced in the per-row audit for operator inspection.
+
+    The resulting_board is the board AFTER pushing the candidate; the
+    caller is responsible for the push (and for not mutating the live
+    board -- use board.copy(stack=False)). `side_just_moved` is the color
+    of the side that just moved (i.e. the profiled player's color in the
+    live sparring session), used for POV normalization.
+
+    Cost: ~N signatures x 1 Jaccard composite per candidate. With N=250
+    (the cap) and 5 candidates, total ~1250 Jaccards on ~15-element
+    sets -- well under 1ms in Python. Cheap vs the 1-3s Maia inference.
+    """
+    if not hist_signatures:
+        return 1.0, None, None
+
+    cand_pawn, cand_piece = _pov_normalized_squares(
+        resulting_board, side_just_moved
+    )
+
+    best_s = 0.0
+    best_ply: Optional[int] = None
+    for snap in hist_signatures:
+        # Historic snapshot shape: {"pawn_squares": [...],
+        # "piece_squares": {"N": [...], ...}, "snapshot_ply": int}.
+        # Frozen once for cheap intersection.
+        hist_pawn = frozenset(snap.get("pawn_squares") or ())
+        hist_piece_list = snap.get("piece_squares") or {}
+        hist_piece = frozenset(
+            sq
+            for letter in ("N", "B", "R", "Q", "K")
+            for sq in (hist_piece_list.get(letter) or ())
+        )
+        s = _setup_similarity(cand_pawn, cand_piece, hist_pawn, hist_piece)
+        if s > best_s or (s == best_s and best_ply is None):
+            # Strict-greater keeps the FIRST max (deterministic for ties);
+            # the second clause picks any ply when best_s is still 0.0 so
+            # a 0-similarity match still reports a ply (rare; only if
+            # every signature shares nothing with the candidate).
+            best_s = s
+            best_ply = snap.get("snapshot_ply")
+
+    sig_mult = 1.0 + SETUP_SIGNATURE_BIAS_STRENGTH * best_s
+    return sig_mult, best_s, best_ply
 
 
 def _is_live_sac_move(board_before: chess.Board, candidate_uci: str) -> bool:
@@ -313,9 +670,14 @@ def rerank_candidates(
             least "sufficient" (bool); when False, behavior is
             identical to unbiased Maia (top candidate returned) and no
             bias is applied -- this is the regression contract.
+            Optional fields consumed: "sacrifice_frequency" (sac
+            multiplier), "queens_stay_on_rate" and
+            "queen_trade_move_number" (queen-trade multiplier).
         board: The chess.Board the candidates are FOR (the same board
             best_move_candidates was called with). Used only to push
-            candidate copies for live-sac detection -- never mutated.
+            candidate copies for live-sac detection and to inspect the
+            destination square for queen-trade detection -- never
+            mutated.
         rng: Optional pre-seeded random.Random instance; if None, the
             module-level `random` is used (matches pick_repertoire_move's
             pattern). Tests should pass a seeded Random for
@@ -326,13 +688,25 @@ def rerank_candidates(
             chosen_move_uci: str        -- the chosen candidate's UCI
             chosen_index: int           -- index in the input list
             applied_bias: bool          -- True iff sufficient=True AND
-                                           at least one candidate was
-                                           sac-looking (i.e. real bias
-                                           was applied to the sample).
-                                           False if insufficient or no
-                                           candidate triggered the
-                                           sac indicator.
-            source: str                  -- "style_biased_sacrifice" |
+                                           at least one per-signal
+                                           multiplier (sac_mult or
+                                           qt_mult) actually deviated
+                                           from 1.0 on at least one
+                                           candidate. False if
+                                           insufficient OR no
+                                           candidate's bias_multiplier
+                                           differs from 1.0 by more
+                                           than 1e-9 (i.e. the bias
+                                           was triggered in principle
+                                           but its calibration was
+                                           zero, e.g. sac_freq=0 or
+                                           the queen-trade timing
+                                           window is fully closed).
+                                           "Indicator fired" alone is
+                                           not enough -- the
+                                           calibration has to actually
+                                           move the multiplier.
+            source: str                  -- "style_biased"             |
                                            "default_top_candidate"   |
                                            "insufficient_data"        |
                                            "no_candidates"
@@ -344,12 +718,47 @@ def rerank_candidates(
                                               transparency (NOT used as
                                               a bias -- see decision 1
                                               in the module docstring).
+            base_source: str             -- "policy" | "rank_decay" |
+                                           "mixed". Which base-weight
+                                           path the reranker took.
+                                           "policy" = every candidate
+                                           had a usable policy field
+                                           (the patched UCI wrapper
+                                           is in use). "rank_decay" =
+                                           no candidate had a policy
+                                           field (patch missing; the
+                                           reranker used the geometric
+                                           rank-decay proxy as a
+                                           fallback). "mixed" = some
+                                           had it, some didn't. Useful
+                                           for operators to audit
+                                           whether the patch is live
+                                           without re-running
+                                           verify_maia3_patch().
             bias_breakdown: dict|None  -- per-candidate weight trace
                                            so callers can introspect
                                            what the re-ranker actually
                                            saw and how it weighted.
                                            Only populated when
                                            applied_bias=True.
+                                           Shape:
+                                             {
+                                               "weights": [ {index,
+                                                             move, rank,
+                                                             base_weight,
+                                                             base_source,
+                                                             sac_indicator,
+                                                             sac_multiplier,
+                                                             qt_indicator,
+                                                             qt_window_weight,
+                                                             qt_multiplier,
+                                                             bias_multiplier,
+                                                             weight}, ... ],
+                                               "family_lean": <sentinel>,
+                                               "signals_applied":
+                                                 ["sacrifice",
+                                                  "queen_trade"]  # subset
+                                             }
             game_count: int             -- surfaced from style, raw
                                            game count, for transparency
 
@@ -357,15 +766,25 @@ def rerank_candidates(
       * Insufficient data (style["sufficient"]=False): returns
         candidates[0] deterministically, applied_bias=False,
         source="insufficient_data" -- the regression contract.
-      * Sufficient data but no candidate is sac-looking: returns
-        candidates[0] deterministically (the rank-1 base weight is the
-        maximum possible; with no bias differential the sampler can
-        only ever pick rank 1), applied_bias=False,
-        source="default_top_candidate".
-      * Sufficient data and >=1 candidate is sac-looking: weighted
-        random sample using weights[i] = base(rank_i) *
-        (1 + alpha * sac_freq * sac_indicator_i). applied_bias=True,
-        source="style_biased_sacrifice", bias_breakdown populated.
+      * Sufficient data but no candidate's per-signal multiplier
+        actually deviates from 1.0 (no sac candidates, or sac_freq=0;
+        no queen-trade candidates, OR all queen-trade candidates have
+        window_weight=0 / centered=0): returns candidates[0]
+        deterministically, applied_bias=False,
+        source="default_top_candidate". Same behavior as v1.
+        "Indicator fired" is not enough -- the calibration has to
+        actually move the multiplier off 1.0 for the bias to matter.
+      * Sufficient data and >=1 candidate's per-signal multiplier
+        actually deviates from 1.0: weighted random sample using
+            weight[i] = base(rank_i) * sac_mult_i * qt_mult_i
+        where:
+            sac_mult_i = 1 + STYLE_BIAS_STRENGTH * sac_freq * sac_i
+            qt_mult_i  = max(QUEEN_TRADE_WEIGHT_FLOOR,
+                             1 + QUEEN_TRADE_BIAS_STRENGTH *
+                                 centered * window_w * qt_i)
+        applied_bias=True, source="style_biased", bias_breakdown
+        populated (including the list of signals whose multiplier
+        actually deviated from 1.0 on at least one candidate).
 
     Idempotency / purity:
       * Does not mutate `board` (uses board.copy(stack=False)).
@@ -380,6 +799,8 @@ def rerank_candidates(
             "source": "no_candidates",
             "sacrifice_frequency": style.get("sacrifice_frequency"),
             "opening_family_lean": style.get("opening_family_lean"),
+            "base_source": _derive_base_source([]),
+            "setup_present": bool(style.get("setup_signatures")),
             "bias_breakdown": None,
             "game_count": style.get("game_count", 0),
         }
@@ -394,26 +815,99 @@ def rerank_candidates(
             "source": "insufficient_data",
             "sacrifice_frequency": style.get("sacrifice_frequency"),
             "opening_family_lean": style.get("opening_family_lean"),
+            "base_source": _derive_base_source(candidates),
+            "setup_present": bool(style.get("setup_signatures")),
             "bias_breakdown": None,
             "game_count": style.get("game_count", 0),
         }
 
+    # --- pre-compute signal strengths from the style profile -----------------
     sac_frequency = style.get("sacrifice_frequency") or 0.0
 
-    # --- compute per-candidate live-sac indicator and weights --------------
-    # base_weight_i = geometric rank-decay. bias_multiplier_i depends on
-    # whether the candidate flagged as sac-looking. The multiplicative
-    # form preserves rank-decay as the base rate; bias is a relative tilt
-    # applied on top.
+    # queens_stay_on_rate: float in [0, 1]. None (defensive) -> 0.5
+    # (neutral, no preference), matching the pattern of "unknown signal
+    # doesn't bias either direction".
+    queens_stay_on_rate = style.get("queens_stay_on_rate")
+    if queens_stay_on_rate is None:
+        queens_stay_on_rate = 0.5
+    queen_trade_pref = 1.0 - float(queens_stay_on_rate)
+    qt_centered = 2.0 * queen_trade_pref - 1.0  # [-1, 1]
+
+    queen_trade_move_number = style.get("queen_trade_move_number")
+    current_ply = _candidate_ply(board)
+    qt_window_w = _queen_trade_window_weight(
+        current_ply, queen_trade_move_number
+    )
+
+    # setup-structure signatures from the style profile (None or a non-empty
+    # list per compute_opponent_style's contract). Passed to
+    # _candidate_setup_mult per candidate, with `side_just_moved` = the
+    # side to move on `board` (the sparring bot's color -- the candidate,
+    # once pushed, produces a resulting board on the OPPONENT's turn).
+    setup_signatures = style.get("setup_signatures")
+    setup_present = bool(setup_signatures)
+
+    # --- compute per-candidate live indicators and weights ------------------
+    # base_weight_i = candidate["policy"] when the patched UCI wrapper
+    # is in use (the actual softmax probability of the candidate), or
+    # the geometric rank-decay proxy when it isn't. Three independent
+    # multiplicative bias terms compose on top:
+    #   sac_mult_i  = 1 + STYLE_BIAS_STRENGTH * sac_freq * sac_indicator_i
+    #   qt_mult_i   = clamp(1 + QUEEN_TRADE_BIAS_STRENGTH *
+    #                          qt_centered * qt_window_w * qt_indicator_i,
+    #                       min=QUEEN_TRADE_WEIGHT_FLOOR)
+    #   setup_mult_i = 1 + SETUP_SIGNATURE_BIAS_STRENGTH * max_similarity_i
+    # weight_i = base_i * sac_mult_i * qt_mult_i * setup_mult_i
     weights: List[float] = []
-    sac_indicators: List[bool] = []
+    sac_mults: List[float] = []
+    qt_mults: List[float] = []
+    setup_mults: List[float] = []
     breakdown_rows: List[Dict[str, Any]] = []
+    any_used_policy = False
+    side_just_moved = board.turn
     for idx, candidate in enumerate(candidates):
         uci = candidate.get("move", "")
+
         is_sac = _is_live_sac_move(board, uci)
-        sac_indicators.append(is_sac)
-        base = _base_weight(idx + 1)
-        bias_mult = 1.0 + STYLE_BIAS_STRENGTH * sac_frequency * (1.0 if is_sac else 0.0)
+        sac_mult = 1.0 + STYLE_BIAS_STRENGTH * sac_frequency * (1.0 if is_sac else 0.0)
+        sac_mults.append(sac_mult)
+
+        is_qt = _is_queen_trade_move(board, uci)
+        qt_mult_raw = 1.0 + QUEEN_TRADE_BIAS_STRENGTH * qt_centered * qt_window_w * (
+            1.0 if is_qt else 0.0
+        )
+        qt_mult = max(QUEEN_TRADE_WEIGHT_FLOOR, qt_mult_raw)
+        qt_mults.append(qt_mult)
+
+        # Setup signature: push the candidate onto a board copy to get
+        # the resulting board, then compute the POV-normalized similarity
+        # to the historic snapshot set. board.copy(stack=False) is a
+        # cheap root-pop-free shallow copy (we don't need move history
+        # here, just the piece map). The push is reverted implicitly --
+        # we don't reuse the copy across candidates.
+        setup_mult = 1.0
+        setup_S: Optional[float] = None
+        setup_matched_ply: Optional[int] = None
+        if setup_present:
+            try:
+                rb = board.copy(stack=False)
+                mv = chess.Move.from_uci(uci) if uci else None
+                if mv is not None and mv in rb.legal_moves:
+                    rb.push(mv)
+                    setup_mult, setup_S, setup_matched_ply = _candidate_setup_mult(
+                        rb, side_just_moved, setup_signatures
+                    )
+            except (ValueError, IndexError):
+                # Defensive: a malformed UCI or an unexpected board state
+                # should never silence the other biases -- fall back to
+                # the no-effect setup_mult=1.0.
+                setup_mult, setup_S, setup_matched_ply = 1.0, None, None
+        setup_mults.append(setup_mult)
+
+        base, used_policy = _candidate_base_weight(candidate, idx + 1)
+        if used_policy:
+            any_used_policy = True
+        bias_mult = sac_mult * qt_mult * setup_mult
         weight = base * bias_mult
         weights.append(weight)
         breakdown_rows.append({
@@ -421,15 +915,50 @@ def rerank_candidates(
             "move": uci,
             "rank": idx + 1,
             "base_weight": round(base, 4),
+            "base_source": "policy" if used_policy else "rank_decay",
             "sac_indicator": is_sac,
+            "sac_multiplier": round(sac_mult, 4),
+            "qt_indicator": is_qt,
+            "qt_window_weight": round(qt_window_w, 4),
+            "qt_multiplier": round(qt_mult, 4),
+            "setup_S": (round(setup_S, 4) if setup_S is not None else None),
+            "setup_multiplier": round(setup_mult, 4),
+            "setup_matched_ply": setup_matched_ply,
             "bias_multiplier": round(bias_mult, 4),
             "weight": round(weight, 4),
         })
 
-    # --- if no candidate is sac-looking, the bias has no effect -- reflect
-    # that honestly in the result
-    any_sac = any(sac_indicators)
-    if not any_sac:
+    # --- if no candidate's bias_multiplier actually deviates from 1.0, the
+    # bias has no effect -- reflect that honestly in the result. Note this
+    # is strictly stronger than "no indicator fired": a candidate CAN
+    # trigger a signal (e.g. is_qt=True with a queen-capture move) but
+    # have no effect on its weight if the signal's calibration is zero
+    # (e.g. sac_freq=0, or window_weight=0, or centered=0). The right
+    # "did anything tilt?" test is the actual multiplier, not the
+    # indicator -- the indicator is the per-candidate TRIGGER for the
+    # multiplier, but only the multiplier affects sampling.
+    def _mult_deviated(mults: List[float]) -> bool:
+        # Float compare with a tiny epsilon to absorb rounding noise; the
+        # multipliers are computed from a closed-form product of
+        # closed-form scalars so a true "exactly 1.0" is the only case
+        # the no-bias path cares about.
+        return any(abs(m - 1.0) > 1e-9 for m in mults)
+
+    sac_actually_biased = _mult_deviated(sac_mults)
+    qt_actually_biased = _mult_deviated(qt_mults)
+    setup_actually_biased = _mult_deviated(setup_mults)
+    # base_source: "policy" if every candidate had a usable policy,
+    # "rank_decay" if every candidate was missing one, "mixed" if the
+    # list had both. Surface this at the top level of the result so
+    # operators can audit which path the reranker took. This is purely
+    # informational -- the reranker still works with any combination.
+    if any_used_policy:
+        base_source = "policy" if all(
+            row.get("base_source") == "policy" for row in breakdown_rows
+        ) else "mixed"
+    else:
+        base_source = "rank_decay"
+    if not (sac_actually_biased or qt_actually_biased or setup_actually_biased):
         # Sampling would still be a no-op: weights are all just
         # geometric rank-decay, and rank 1 has the largest weight. The
         # sampler MIGHT pick a non-top candidate (it's random), but
@@ -446,9 +975,22 @@ def rerank_candidates(
             "source": "default_top_candidate",
             "sacrifice_frequency": sac_frequency,
             "opening_family_lean": style.get("opening_family_lean"),
+            "base_source": base_source,
+            "setup_present": setup_present,
             "bias_breakdown": None,
             "game_count": style.get("game_count", 0),
         }
+
+    # --- record which signals actually contributed (so callers can audit
+    # the bias breakdown without recomputing). A signal is "applied" iff
+    # it actually tilted at least one candidate's weight.
+    signals_applied: List[str] = []
+    if sac_actually_biased:
+        signals_applied.append("sacrifice")
+    if qt_actually_biased:
+        signals_applied.append("queen_trade")
+    if setup_actually_biased:
+        signals_applied.append("setup_signature")
 
     # --- weighted sample ----------------------------------------------------
     sampler = rng if rng is not None else random
@@ -463,12 +1005,48 @@ def rerank_candidates(
         "chosen_move_uci": candidates[chosen_in_weights].get("move", ""),
         "chosen_index": chosen_in_weights,
         "applied_bias": True,
-        "source": "style_biased_sacrifice",
+        "source": "style_biased",
         "sacrifice_frequency": sac_frequency,
         "opening_family_lean": style.get("opening_family_lean"),
+        "base_source": base_source,
+        "setup_present": setup_present,
         "bias_breakdown": {
             "weights": breakdown_rows,
             "family_lean": FAMILY_LEAN_DISABLED,
+            "signals_applied": signals_applied,
         },
         "game_count": style.get("game_count", 0),
     }
+
+
+def _derive_base_source(candidates: List[Dict[str, Any]]) -> str:
+    """Returns "policy" | "rank_decay" | "mixed" for a candidate list.
+
+    Used at the top of the return-shape so operators can audit which
+    base-weight path the reranker took, even on the no-bias paths
+    (insufficient_data, default_top_candidate, no_candidates) where no
+    bias_breakdown is returned.
+
+    Empty input -> "rank_decay" (no candidates means no policy to read;
+    this is a vacuous label).
+    """
+    if not candidates:
+        return "rank_decay"
+    has_policy = 0
+    has_rank = 0
+    for c in candidates:
+        policy = c.get("policy")
+        if policy is not None:
+            try:
+                p = float(policy)
+                if 0.0 < p <= 1.0:
+                    has_policy += 1
+                    continue
+            except (TypeError, ValueError):
+                pass
+        has_rank += 1
+    if has_policy and not has_rank:
+        return "policy"
+    if has_rank and not has_policy:
+        return "rank_decay"
+    return "mixed"
