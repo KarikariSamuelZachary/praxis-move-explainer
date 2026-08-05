@@ -141,7 +141,7 @@ export default function SparringPage() {
   }, [botColor, selectedProfile]);
 
   useEffect(() => {
-    if (!isStarted || !selectedProfile || gameOver || isThinking) {
+    if (!isStarted || !selectedProfile || gameOver || isThinking || status === 'error') {
       return;
     }
 
@@ -149,7 +149,7 @@ export default function SparringPage() {
     if (turnColor === botColor) {
       requestBotMove();
     }
-  }, [botColor, game, gameOver, isStarted, isThinking, requestBotMove, selectedProfile]);
+  }, [botColor, game, gameOver, isStarted, isThinking, requestBotMove, selectedProfile, status]);
 
   function startGame() {
     const nextGame = new Chess();
@@ -209,6 +209,7 @@ export default function SparringPage() {
     setGame(nextGame);
     setLastMove(null);
     setMessage(null);
+    setStatus('ready');
     return true;
   }
 
