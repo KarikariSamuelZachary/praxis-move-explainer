@@ -13,13 +13,14 @@ log = logging.getLogger(__name__)
 
 # Minimum total recorded samples at a position before pick_repertoire_move
 # will commit to a book move. Below this the sampler returns None and the
-# caller falls through to Maia, so we never confidently sample from one
-# or two noisy observations. 5 is a middle ground: small enough that a
-# handful of real games is enough to trust established opening prep, but
-# big enough to kill the "seen once or twice" case. Tune up if you see
-# noisy moves leaking into sparring; tune down if too many positions
-# fall through to Maia.
-MIN_REPERTOIRE_SAMPLES = 5
+# caller falls through to Maia. Set to 1 so EVERY seen move is admissible:
+# the user imported these games deliberately and a single real occurrence
+# is signal, not noise. When 2+ moves are recorded at a position the
+# recency-weighted sampler below (random.choices with weights=weighted)
+# picks in proportion to frequency, so a once-seen side line gets a small
+# but nonzero share vs a thrice-seen main line. Tune up only if once-seen
+# exploratory moves start leaking into sparring too often.
+MIN_REPERTOIRE_SAMPLES = 1
 
 # Exponential recency decay rate, per year, applied to each recorded
 # move's sampling weight. weight = frequency * exp(-lambda * age_years).
