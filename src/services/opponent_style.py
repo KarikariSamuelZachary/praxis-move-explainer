@@ -221,6 +221,40 @@ SAC_MATERIAL_THRESHOLD = 3
 SAC_RECOUP_PLIES = 3
 SAC_RECOUP_TOLERANCE = 0.5
 
+# --- setup-structure signature (v1) ----------------------------------------
+#
+# A "setup signature" is a per-game snapshot of the PROFILED player's pawn
+# skeleton + piece placement, taken at plies inside [PLY_MIN, PLY_MAX] after
+# the profiled player's move. Aggregated across their historic games, the
+# set of snapshots feeds the style-bias re-ranker's per-candidate
+# `setup_mult` -- a multiplicative boost for moves whose resulting board
+# shape is similar (Jaccard composite, computed in opponent_style_reranker)
+# to a shape the profiled player has actually reached. This is the
+# mechanism that makes the sparring bot play the profiled player's
+# unusual setups (e.g. Scandinavian ...a6 ...Bf5 ...e6) once the bot is
+# out of the per-position repertoire book, rather than always defaulting
+# to Maia-3's aggregate-preferred move in that family.
+#
+# Why ply-window [10, 20]:
+#   * ply >= 10: by half-move 10 the profiled player has made >=4 moves --
+#     their unusual setup is plausibly in place. Earlier plies risk
+#     capturing still-in-book positions.
+#   * ply <= 20: below the typical middlegame where the *opponent's* choices
+#     start to dominate the shape. The profiled player's setup-consistent
+#     voice is loudest in the 10-20 ply window.
+# Tunable constants; widening toward [10, 26] is reasonable if a player's
+# setups form late (per-opening-family tuning is a v2 concern).
+#
+# SNAPSHOTS_MAX_PER_OPPONENT bounds the total snapshot dict payload surfaced
+# by compute_opponent_style (~200KB worst case at the cap) so an opponent
+# with hundreds of games doesn't blow up the per-request transport size.
+# Games are read end_time DESC so the cap keeps most-recent games when
+# it triggers -- a defensive bound, not a signal filter.
+SETUP_SIGNATURE_PLY_MIN = 10
+SETUP_SIGNATURE_PLY_MAX = 20
+SETUP_SIGNATURE_MIN_GAMES = 3   # mirrors MIN_STYLE_GAMES; same rationale
+SNAPSHOTS_MAX_PER_OPPONENT = 250
+
 # Static material values used by the sacrifice detector. King counts as 0
 # so a king safety manouvre never inflates material.
 _PIECE_VALUE = {
@@ -510,6 +544,65 @@ def _is_sacrifice(
     return (material_before - material_now) >= SAC_MATERIAL_THRESHOLD
 
 
+def _pov_snapshot_squares(
+    board: chess.Board, pov: chess.Color
+) -> Dict[str, Any]:
+    """Extract pawn + piece squares from `board` normalized to `pov`'s view.
+
+    Returns a snapshot dict shaped per the setup-signature contract:
+        {
+          "pawn_squares":   List[str],      # POV-normalized pawn squares
+          "piece_squares":  Dict[str, List[str]]  # N/B/R/Q/K -> squares
+        }
+
+    POV normalization:
+      * pov == WHITE: read WHITE's pieces as-is (squares are rank 1-8).
+      * pov == BLACK: mirror the board vertically first, then read WHITE's
+        pieces of the mirrored board (which were originally BLACK's, now
+        shown from BLACK's POV with squares on rank 1-8). This is the
+        symmetric convention so a player's White and Black setups pool
+        into one canonical view: a `...a6 ...e6` shape the profiled
+        player played as BLACK and a `a3 ...e3` shape they played as
+        WHITE (if any) both map to the same canonical signature.
+
+    Square names are always post-mirror (chess.square_name on the
+    possibly-mirrored board), so the reranker's opposite-side live board
+    can apply the same mirror convention and compare apples-to-apples.
+
+    Piece types are collapsed into single-letter keys to keep the
+    serialized payload tight. The king is included -- castled-vs-uncastled
+    setups differ by one king square in the comparison, giving the
+    `setup_mult` cheap sensitivity to castling side without needing a
+    separate fingerprint.
+
+    Caller is expected to have already pushed the move that led to this
+    board; this function is read-only and does not mutate `board`.
+    """
+    if pov == chess.BLACK:
+        b = board.mirror()
+    else:
+        b = board
+    pawn_squares = sorted(
+        chess.square_name(sq) for sq in b.pieces(chess.PAWN, chess.WHITE)
+    )
+    piece_squares: Dict[str, List[str]] = {}
+    for ptype, letter in (
+        (chess.KNIGHT, "N"),
+        (chess.BISHOP, "B"),
+        (chess.ROOK, "R"),
+        (chess.QUEEN, "Q"),
+        (chess.KING, "K"),
+    ):
+        piece_squares[letter] = sorted(
+            chess.square_name(sq)
+            for sq in b.pieces(ptype, chess.WHITE)
+        )
+    return {
+        "pawn_squares": pawn_squares,
+        "piece_squares": piece_squares,
+    }
+
+
 def _analyze_game(
     pgn: str, normalized_opponent: str
 ) -> Optional[Dict[str, Any]]:
@@ -538,14 +631,32 @@ def _analyze_game(
         "queens_on_at_end": bool,            # True iff BOTH queens are on
                                              #   the board at game end
                                              #   (feeds queens_stay_on_rate)
-        "queens_off_at_end": bool,            # True iff BOTH queens are OFF
-                                             #   the board at game end
-                                             #   (feeds queen_trade_move_number
-                                             #   eligibility; the asymmetric
-                                             #   middle case — exactly one
-                                             #   queen on — has both bools
-                                             #   False and contributes to
-                                             #   neither signal)
+"queens_off_at_end": bool,            # True iff BOTH queens are OFF
+                                              #   the board at game end
+                                              #   (feeds queen_trade_move_number
+                                              #   eligibility; the asymmetric
+                                              #   middle case — exactly one
+                                              #   queen on — has both bools
+                                              #   False and contributes to
+                                              #   neither signal)
+        "setup_snapshots": List[Dict],        # per-game setup-signature
+                                              #   snapshots captured at
+                                              #   plies in
+                                              #   [SETUP_SIGNATURE_PLY_MIN,
+                                              #    SETUP_SIGNATURE_PLY_MAX]
+                                              #   after the profiled
+                                              #   player's move, each
+                                              #   POV-normalized to that
+                                              #   player's color (see
+                                              #   _pov_snapshot_squares).
+                                              #   Feeds the reranker's
+                                              #   `setup_mult` bias at
+                                              #   sparring time. Empty
+                                              #   list iff no profiled-
+                                              #   player move fell in the
+                                              #   window (impossible for a
+                                              #   real game that reached
+                                              #   ply 10+, but defensive).
       }
 
     All non-sacrifice signals here are derived by replaying the mainline
@@ -570,9 +681,17 @@ def _analyze_game(
     sacrifices = 0
     opp_castled = "never"
     queen_capture_plies: List[int] = []
+    # Per-game setup-signature snapshots. Captured AFTER the profiled
+    # player's move at every ply inside [SETUP_SIGNATURE_PLY_MIN,
+    # SETUP_SIGNATURE_PLY_MAX] (1-indexed half-moves). An evenly-paced
+    # game yields ~5-6 snapshots (the profiled player's moves 5-10); the
+    # cost is ~6 dict-appends per game so this is cheap on the mainline
+    # walk we already do.
+    setup_snapshots: List[Dict[str, Any]] = []
 
     for idx, move in enumerate(mainline):
-        if board.turn == opponent_color:
+        is_opponent_move = board.turn == opponent_color
+        if is_opponent_move:
             opponent_moves += 1
             if _is_sacrifice(board, move, mainline, idx, opponent_color):
                 sacrifices += 1
@@ -596,6 +715,19 @@ def _analyze_game(
             queen_capture_plies.append(idx + 1)
         board.push(move)
 
+        # Setup signature: snapshot AFTER the just-pushed move, iff the
+        # move was by the profiled player AND its 1-indexed ply is inside
+        # the [PLY_MIN, PLY_MAX] window. `idx` is 0-indexed so ply=idx+1.
+        # Snapshots are POV-normalized to the profiled player's color so
+        # the player's White and Black setups pool into one canonical
+        # view -- see _pov_snapshot_squares.
+        if is_opponent_move:
+            ply = idx + 1
+            if SETUP_SIGNATURE_PLY_MIN <= ply <= SETUP_SIGNATURE_PLY_MAX:
+                snapshot = _pov_snapshot_squares(board, opponent_color)
+                snapshot["snapshot_ply"] = ply
+                setup_snapshots.append(snapshot)
+
     white_queens = len(board.pieces(chess.QUEEN, chess.WHITE))
     black_queens = len(board.pieces(chess.QUEEN, chess.BLACK))
     queens_on_at_end = white_queens > 0 and black_queens > 0
@@ -612,6 +744,7 @@ def _analyze_game(
         ),
         "queens_on_at_end": queens_on_at_end,
         "queens_off_at_end": queens_off_at_end,
+        "setup_snapshots": setup_snapshots,
     }
 
 
@@ -660,6 +793,14 @@ def compute_opponent_style(
           "castling_side_distribution": dict | None,
           "queen_trade_move_number": float | None,
           "queens_stay_on_rate": float | None,
+          "setup_signatures": List[Dict] | None,  # per-game POV-normalized
+                                                  #   pawn + piece snapshots
+                                                  #   captured in the
+                                                  #   [SETUP_SIGNATURE_PLY_MIN,
+                                                  #    SETUP_SIGNATURE_PLY_MAX]
+                                                  #   window; None iff below
+                                                  #   SETUP_SIGNATURE_MIN_GAMES
+                                                  #   OR no snapshots captured.
           "sacrifice_events": int,       # raw total, transparency/debug
           "opponent_moves": int,         # raw total, transparency/debug
         }
@@ -757,6 +898,7 @@ def compute_opponent_style(
             "castling_side_distribution": None,
             "queen_trade_move_number": None,
             "queens_stay_on_rate": None,
+            "setup_signatures": None,
             "sacrifice_events": 0,
             "opponent_moves": 0,
         }
@@ -807,6 +949,14 @@ def compute_opponent_style(
     # queen-trade-timing (b): the symmetric "both queens on at end" rate.
     weighted_queens_on_games = 0.0
 
+    # setup-structure snapshots: aggregated across parseable games. Each
+    # snapshot is the dict from _pov_snapshot_squares + `snapshot_ply`. We
+    # collect them in insertion order so end_time DESC ROW ORDER from the
+    # SQL means snapshots are roughly most-recent-first; if we blow past
+    # SNAPSHOTS_MAX_PER_OPPONENT we trim the tail (oldest snapshots in
+    # this list ~ oldest games, since the SQL orders end_time DESC).
+    aggregated_setup_snapshots: List[Dict[str, Any]] = []
+
     for row in rows:
         end_time = int(row.get("end_time") or 0)
         pgn = row.get("pgn") or ""
@@ -837,6 +987,11 @@ def compute_opponent_style(
 
         weighted_plies += weight * analyzed["plies"]
         castling_side_weight[analyzed["opp_castled"]] += weight
+
+        # setup-signature snapshots are unweighted at v1 (each snapshot
+        # counts equally; recency/frequency weighting of snapshots is a
+        # documented v2 deferred concern -- see the spec's §13).
+        aggregated_setup_snapshots.extend(analyzed["setup_snapshots"])
 
         if analyzed["queens_on_at_end"]:
             weighted_queens_on_games += weight
@@ -972,6 +1127,31 @@ def compute_opponent_style(
         # average_game_length and sacrifice_frequency above.
         queens_stay_on_rate = 0.0
 
+    # --- setup-structure signatures ------------------------------------------
+    # Aggregated across parseable games. Defensive cap: if an opponent has
+    # many games, trim to the most-recent (rows came back end_time DESC so
+    # `aggregated_setup_snapshots` is roughly most-recent-first -- a
+    # snapshot from a given game is appended after the previous game's
+    # snapshots in the row order, and end_time DESC at the SQL preserves
+    # that recency alpha). The cap is a transport-size bound, not a signal
+    # filter; ~250 snapshots is well past noise floor for Jaccard max.
+    if len(aggregated_setup_snapshots) > SNAPSHOTS_MAX_PER_OPPONENT:
+        aggregated_setup_snapshots = aggregated_setup_snapshots[
+            :SNAPSHOTS_MAX_PER_OPPONENT
+        ]
+    # None iff below the setup-signature floor OR no snapshots were
+    # captured (defensive -- impossible for any game >= PLY_MIN, but a
+    # whole sample of aborts is possible). Mirrors the existing
+    # opening_family_lean None-vs-empty contract.
+    setup_signatures: Optional[List[Dict[str, Any]]] = (
+        aggregated_setup_snapshots
+        if (
+            game_count >= SETUP_SIGNATURE_MIN_GAMES
+            and aggregated_setup_snapshots
+        )
+        else None
+    )
+
     return {
         "sufficient": sufficient,
         "game_count": game_count,
@@ -987,6 +1167,7 @@ def compute_opponent_style(
             else None
         ),
         "queens_stay_on_rate": round(queens_stay_on_rate, 4),
+        "setup_signatures": setup_signatures,
         "sacrifice_events": raw_sacrifices,
         "opponent_moves": raw_opponent_moves,
     }
