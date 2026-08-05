@@ -9,9 +9,46 @@ on first use (pre-warmed at deploy time via `scripts/prewarm_maia3.py`).
 
 We run the `maia3-uci --model maia3-5m` entrypoint (smallest, CPU-friendly) as
 a single long-lived UCI engine instance configured per-request via UCI options.
+
+POLICY-PATCH NOTE
+=================
+The standard maia3-uci output does NOT include the candidate's policy
+probability in the UCI `info` line (the subprocess computes
+`torch.softmax(logits).topk(N)` internally but only emits `score cp`,
+`wdl`, and `pv`). The style-bias re-ranker
+(src/services/opponent_style_reranker.py) needs that policy as the
+base weight for its weighted sample; without it, the reranker falls
+back to a geometric rank-decay proxy (see
+opponent_style_reranker.py:148-150).
+
+To expose the policy, this module:
+
+  1. Patches `chess.engine._parse_uci_info` at import time to capture a
+     `policy` token if present in the info line.
+
+  2. Resolves to `scripts/maia3_patched_uci.py` (a thin wrapper that
+     imports `maia3.uci`, monkey-patches `Maia3UCIEngine.cmd_go` to
+     emit `policy {prob}` per candidate, then runs the standard UCI
+     loop) when available -- the upstream `maia3-uci` is used as a
+     fallback.
+
+  3. Surfaces the captured policy on each candidate dict as
+     `candidate["policy"]` (float, the softmax probability).
+
+  4. Exposes `verify_maia3_patch()` for startup self-test. Returns
+     True iff a one-shot `best_move_candidates()` call yields at
+     least one candidate with a `policy` key. Logged at ERROR on
+     failure so operators see a clear trail when the wrapper is
+     missing or upstream maia3 changed its UCI format.
+
+If the patch is broken, the reranker transparently degrades to its
+rank-decay proxy (no crash, no exception) -- the verify self-test
+fires only as a warning to the operator.
 """
 import logging
 import os
+import re
+import sys
 import time
 from threading import Lock
 from typing import Optional
@@ -20,6 +57,39 @@ import chess
 import chess.engine
 
 log = logging.getLogger(__name__)
+
+# --- python-chess parser patch ---------------------------------------------
+# Captures a `policy <float>` token from UCI info lines. The standard
+# parser silently drops unknown tokens; we re-scan the raw arg after the
+# standard parser runs and lift the policy value into info["policy"].
+# Applied at import time so every info dict flowing through python-chess
+# (whether from this wrapper or any other consumer in the process) gets
+# the policy field for free.
+#
+# Token boundary: UCI info lines are space-separated, so "policy" is a
+# distinct token. We match `(?:^|\s)policy\s+<float>` -- start-of-string
+# or whitespace before "policy", then whitespace + a float. The simpler
+# `\bpolicy` doesn't work because the preceding token in maia3-uci's
+# output is a permille integer (e.g. `... wdl 556 26 418 policy 0.64 ...`),
+# and `\b` is a word-boundary match that fails when the adjacent chars
+# on BOTH sides are word chars ("8" and "p"). Requiring whitespace (or
+# start) on the left side of "policy" handles this correctly.
+_POLICY_RE = re.compile(r"(?:^|\s)policy\s+(\d+\.?\d*|\.\d+)")
+_original_parse_uci_info = chess.engine._parse_uci_info
+
+
+def _patched_parse_uci_info(arg, root_board, selector=chess.engine.INFO_ALL):
+    info = _original_parse_uci_info(arg, root_board, selector)
+    m = _POLICY_RE.search(arg)
+    if m:
+        try:
+            info["policy"] = float(m.group(1))
+        except ValueError:
+            pass
+    return info
+
+
+chess.engine._parse_uci_info = _patched_parse_uci_info
 
 
 class MaiaUnavailableError(RuntimeError):
@@ -40,10 +110,19 @@ def resolve_maia3_command() -> list[str]:
     Resolve the UCI launch command for the Maia-3 5M preset.
 
     Preference order:
-      1. MAIA3_COMMAND env var (full pre-split command line).
-      2. `maia3-uci --model maia3-5m` on PATH.
-      3. `python -m maia3.uci --model maia3-5m` if requested via
+      1. MAIA3_COMMAND env var (full pre-split command line). Wins over
+         everything -- this is the operator's explicit override (e.g. to
+         pin a specific version, or to bypass our patched wrapper for
+         debugging).
+      2. The patched wrapper at scripts/maia3_patched_uci.py if it
+         exists on disk. Auto-detected so deployments don't need to set
+         MAIA3_COMMAND explicitly. The wrapper adds the `policy` token
+         to the UCI info line; see module docstring's POLICY-PATCH NOTE.
+      3. `maia3-uci --model maia3-5m` on PATH (upstream, no policy).
+      4. `python -m maia3.uci --model maia3-5m` if requested via
          MAIA3_USE_PYTHON_MODULE=1.
+
+    Rollback to upstream: set MAIA3_COMMAND="maia3-uci --model maia3-5m".
     """
     configured = os.getenv("MAIA3_COMMAND")
     if configured:
@@ -51,9 +130,14 @@ def resolve_maia3_command() -> list[str]:
 
         return shlex.split(configured)
 
-    if os.getenv("MAIA3_USE_PYTHON_MODULE") == "1":
-        import sys
+    here = os.path.dirname(os.path.abspath(__file__))
+    wrapper = os.path.normpath(
+        os.path.join(here, "..", "..", "scripts", "maia3_patched_uci.py")
+    )
+    if os.path.exists(wrapper):
+        return [sys.executable, wrapper, "--model", MAIA3_DEFAULT_MODEL]
 
+    if os.getenv("MAIA3_USE_PYTHON_MODULE") == "1":
         return [sys.executable, "-m", "maia3.uci", "--model", MAIA3_DEFAULT_MODEL]
 
     return ["maia3-uci", "--model", MAIA3_DEFAULT_MODEL]
@@ -589,10 +673,27 @@ class Maia3Engine:
                 except Exception:  # noqa: BLE001
                     wdl_dict = None
 
+            # policy: the softmax probability of the candidate (the value
+            # maia3-uci uses to rank multipv candidates). Only present
+            # when running through scripts/maia3_patched_uci.py -- the
+            # upstream maia3-uci doesn't emit it. Absent/malformed ->
+            # None; the re-ranker falls back to its geometric rank-decay
+            # base weight in that case (see _candidate_base_weight in
+            # opponent_style_reranker.py).
+            policy = info.get("policy")
+            if policy is not None:
+                try:
+                    policy = float(policy)
+                    if policy < 0.0:
+                        policy = None
+                except (TypeError, ValueError):
+                    policy = None
+
             candidates.append({
                 "move": move_uci,
                 "score": score_cp,
                 "wdl": wdl_dict,
+                "policy": policy,
             })
 
         # Asymmetric reset suffix (Part A fix — see the big comment block
@@ -888,3 +989,62 @@ def close_maia3():
     if _maia3 is not None:
         _maia3.close()
         _maia3 = None
+
+
+def verify_maia3_patch() -> bool:
+    """One-shot self-test: confirm the policy field is being parsed.
+
+    The patched UCI wrapper (scripts/maia3_patched_uci.py) emits a
+    `policy` token in each info line; the python-chess parser patch
+    (applied at import in this module) captures it into
+    info["policy"]; the engine surfaces it on each candidate dict. If
+    ANY link in that chain is broken -- the wrapper is missing from
+    disk, MAIA3_COMMAND bypasses it, upstream maia3 changed its UCI
+    format, or the parser patch was clobbered -- best_move_candidates()
+    will return candidates without a `policy` key.
+
+    This function issues a tiny test call (multipv=1) and checks the
+    first candidate. Returns True iff the patch is live. Returns False
+    on any failure (engine unavailable, no candidates, missing policy
+    key) and logs at ERROR so the operator gets a clear trail.
+
+    Safe to call at startup; ~150 ms on a warm engine.
+    """
+    if _maia3 is None or not _maia3.started:
+        log.error(
+            "verify_maia3_patch: engine not running -- cannot verify "
+            "policy patch. Call start_maia3() first."
+        )
+        return False
+    try:
+        candidates = _maia3.best_move_candidates(
+            chess.Board(),
+            multipv=1,
+            self_elo=MAIA3_DEFAULT_ELO,
+            oppo_elo=MAIA3_DEFAULT_ELO,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.error(
+            "verify_maia3_patch: best_move_candidates() failed: %s", exc
+        )
+        return False
+    if not candidates:
+        log.error("verify_maia3_patch: best_move_candidates returned no candidates")
+        return False
+    if "policy" not in candidates[0] or candidates[0]["policy"] is None:
+        log.error(
+            "verify_maia3_patch: policy field missing from candidate dict. "
+            "The maia3-uci subprocess is not emitting policy tokens (or the "
+            "python-chess parser patch is broken). The style-bias re-ranker "
+            "will fall back to its geometric rank-decay base weight "
+            "(opponent_style_reranker.py:BASE_RANK_DECAY). Check that: "
+            "(a) scripts/maia3_patched_uci.py exists on disk and is the "
+            "command being launched (MAIA3_COMMAND env var), (b) the "
+            "maia3 package hasn't been upgraded to a version where "
+            "Maia3UCIEngine.cmd_go changed signature, (c) no other code "
+            "has replaced chess.engine._parse_uci_info. Candidates "
+            "returned: %r",
+            candidates[0],
+        )
+        return False
+    return True
