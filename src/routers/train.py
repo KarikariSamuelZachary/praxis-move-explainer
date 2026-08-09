@@ -316,11 +316,22 @@ def get_sparring_move(
                         log.info(
                             "style-bias re-ranker invoked: opponent=%s/%s "
                             "sacrifice_frequency=%s applied_bias=%s "
-                            "source=%s chose=%s",
+                            "source=%s base=%s "
+                            "setup_present=%s setup_family=%s "
+                            "setup_family_confidence=%s "
+                            "setup_filtered_count=%s signals=%s chose=%s",
                             body.provider, body.opponent_username,
                             rerank.get("sacrifice_frequency"),
                             rerank.get("applied_bias"),
                             rerank.get("source"),
+                            rerank.get("base_source"),
+                            rerank.get("setup_present"),
+                            rerank.get("setup_family"),
+                            rerank.get("setup_family_confidence"),
+                            rerank.get("setup_filtered_count"),
+                            (
+                                rerank.get("bias_breakdown", {}) or {}
+                            ).get("signals_applied") if rerank.get("applied_bias") else None,
                             move_uci,
                         )
                     else:
