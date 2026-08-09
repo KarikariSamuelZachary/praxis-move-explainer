@@ -313,6 +313,22 @@ SETUP_SIGNATURE_BIAS_STRENGTH = 2.5
 SETUP_PAWN_WEIGHT = 0.65
 SETUP_PIECE_WEIGHT = 0.35
 
+# SETUP_FAMILY_DETECTION_THRESHOLD = min Jaccard composite a snapshot
+# family must reach against the candidate's live position for the family
+# to be considered a viable match. Below this we treat it as "no family
+# evidence" and fall back to the UNFILTERED snapshot set (preserves the
+# reranker's pre-family-filter behavior). The Jaccard here includes BOTH
+# the user's pawn set AND the opponent's pawn set (POV-mirrored), since
+# openings are defined by both sides' pawn shapes -- Italian (Black e5)
+# and Scandinavian (Black d-pawn traded) share the user's pawn skeleton
+# but differ in opp_pawn shape, so opp_pawn is what disambiguates.
+# Default 0.5: a real match (profiled player played the same setup)
+# typically scores S >= 0.85 with opp_pawns included, so 0.5 leaves
+# headroom for pawn-count differences (e.g. transposed move order where
+# one side hasn't pushed the border pawn yet) while filtering openings
+# whose pawn shape is structurally different.
+SETUP_FAMILY_DETECTION_THRESHOLD = 0.5
+
 # Sentinel returned in bias_breakdown's "family_lean" key to mark that v1
 # made an explicit no-bias decision rather than silently dropping the
 # signal. See the module docstring's decision (1).
@@ -413,19 +429,27 @@ def _queen_trade_window_weight(
 def _pov_normalized_squares(
     board: chess.Board, side_just_moved: chess.Color
 ) -> tuple:
-    """Return (pawn_set, piece_set) for `board` normalized to side_just_moved's POV.
+    """Return (pawn_set, piece_set, opp_pawn_set) for `board` normalized
+    to side_just_moved's POV.
 
     Mirrors `opponent_style._pov_snapshot_squares`'s convention so the
     resulting-board signature computed here is directly comparable to the
     historic snapshots stored in `style["setup_signatures"]` (both are
     POV-normalized to "the profiled player advances from rank 1").
 
-    Returns two frozensets of square names:
-      * pawn_set  -- all pawn squares (POV-normalized)
-      * piece_set -- union of all N/B/R/Q/K squares (POV-normalized)
+    Returns three frozensets of square names:
+      * pawn_set      -- all pawn squares (POV-normalized)
+      * piece_set     -- union of all N/B/R/Q/K squares (POV-normalized)
+      * opp_pawn_set  -- opponent's pawns (POV-normalized via mirror);
+                         used ONLY by `_filter_signatures_by_family` to
+                         disambiguate openings whose user-side pawn shape
+                         is identical (e.g. Italian vs Scandinavian).
+                         `_setup_similarity` ignores this field -- the
+                         setup_mult bias is computed on user-side shape
+                         only, matching the spec.
 
-    The two are returned as separate sets because the Jaccard composite
-    weights them differently (pawn structure leads; see
+    The two scoring sets are returned as separate frozensets because the
+    Jaccard composite weights them differently (pawn structure leads; see
     SETUP_PAWN_WEIGHT). The piece set is one flattened union (not
     per-piece-type) to keep the math simple and cheap; per-piece-type
     Jaccard was considered and deferred as marginal-signal-vs-cost.
@@ -443,7 +467,10 @@ def _pov_normalized_squares(
                       chess.QUEEN, chess.KING)
         for sq in b.pieces(ptype, chess.WHITE)
     )
-    return pawn_set, piece_set
+    opp_pawn_set = frozenset(
+        chess.square_name(sq) for sq in b.pieces(chess.PAWN, chess.BLACK)
+    )
+    return pawn_set, piece_set, opp_pawn_set
 
 
 def _setup_similarity(
@@ -519,7 +546,7 @@ def _candidate_setup_mult(
     if not hist_signatures:
         return 1.0, None, None
 
-    cand_pawn, cand_piece = _pov_normalized_squares(
+    cand_pawn, cand_piece, _ = _pov_normalized_squares(
         resulting_board, side_just_moved
     )
 
@@ -547,6 +574,160 @@ def _candidate_setup_mult(
 
     sig_mult = 1.0 + SETUP_SIGNATURE_BIAS_STRENGTH * best_s
     return sig_mult, best_s, best_ply
+
+
+def _filter_signatures_by_family(
+    signatures: Optional[List[Dict[str, Any]]],
+    cand_pawn: frozenset,
+    cand_opp_pawn: frozenset,
+    player_color: Optional[str] = None,
+    threshold: float = SETUP_FAMILY_DETECTION_THRESHOLD,
+) -> tuple:
+    """Filter historic setup-signatures by opening family before setup_mult.
+
+    This is the fix for the "Scandinavian Ne2 vs Bd2" bug. Without family
+    filtering, the reranker compared a candidate's resulting board against
+    the WHOLE snapshot pool, which for the user (200 games, 7 Scandi)
+    contains ~190 Italian/Scotch/Caro-Kann etc snapshots whose user-side
+    pawn shape happens to look a lot like Scandi's (both have e4 and d3
+    pawns for White). The non-Scandi majority drowned Scandi's signal,
+    and the bot picked Ne2 (a move the user has played in Scandi, but
+    also happens to match Caro-Kann-ish shapes).
+
+    Family detection algorithm:
+      * For each snapshot that has a `family` tag, compute the Jaccard
+        of `cand_pawn ∪ cand_opp_pawn` against the snapshot's
+        `pawn_squares ∪ opp_pawn_squares`.
+      * The `cand_opp_pawn` set disambiguates openings that share
+        user-side pawn skeleton: Italian Black has e5 pawn still on the
+        board, Scandinavian Black has the d-pawn traded -- so the union
+        Jaccard differs between the two families.
+      * Per family, track the MAX Jaccard across snapshots in that
+        family (the best single historic match) and also the vote count
+        (how many snapshots in that family exceeded `threshold`).
+      * Pick the family with the highest max Jaccard. Ties broken by
+        votes (a family with more match evidence wins ties). We use
+        MAX Jaccard (not vote-count) as the primary key because for
+        minority openings like Scandi (7 games) a vote-count winner
+        would always be the dominant family (Caro-Kann 105 games) even
+        when Scandinavian has a perfect S=1.0 match.
+      * Return the filtered snapshot list (snapshots in the winning
+        family, optionally also matching player_color).
+
+    Returns:
+      (filtered_sigs, family_label, confidence)
+        * filtered_sigs: list of snapshots in the winning family.
+          Returned as-is (caller iterates for setup_mult). When the
+          input lists have no `family` tags (i.e. snapshots produced
+          before this feature shipped), returns the ORIGINAL list
+          unchanged + family_label=None+confidence=None -- this is the
+          backward-compat path that preserves the pre-filter behavior
+          for existing tests and for any style cache produced before
+          the upgrade.
+        * family_label: str (e.g. "Scandinavian Defense") or None.
+        * confidence: float in [0, 1] = the winning family's MAX
+          Jaccard (the strongest single-snapshot match in that family).
+          None on the backward-compat path.
+
+    Edge cases:
+      * Input signatures is None/empty -> returns (None, None, None).
+        Caller in `rerank_candidates` treats this as "no setup signal"
+        and setup_mult=1.0 for every candidate.
+      * No snapshot has a `family` tag (all-snapshots-untagged path) ->
+        returns (signatures, None, None) -- backward-compat.
+      * The winning family's max Jaccard is BELOW `threshold` ->
+        returns (signatures, None, None) -- i.e. "no family evidence"
+        so we DON'T restrict to a single family (which would be a
+        misleading confinement); preserve the unfiltered pool.
+      * `player_color` filter: when supplied ("white"|"black"), only
+        snapshots where `snap["player_color"] == player_color` are
+        returned from the winning family. The user's Scandi games are
+        all as white -- a position the user is playing AS BLACK should
+        not borrow their white-Scandi snapshots.
+    """
+    if not signatures:
+        return None, None, None
+
+    # Build per-family aggregated state: family -> {max_s, votes}
+    family_state: Dict[str, Dict[str, Any]] = {}
+    any_tagged = False
+    for snap in signatures:
+        family = snap.get("family")
+        if not family:
+            continue
+        any_tagged = True
+        hist_pawn = frozenset(snap.get("pawn_squares") or ())
+        hist_opp_pawn = frozenset(snap.get("opp_pawn_squares") or ())
+        # Union Jaccard across both sides' pawn shapes -- this is the
+        # disambiguating metric. Italian vs Scandinavian have identical
+        # user-pawn skeletons but different opp-pawn shapes, so the
+        # union Jaccard catches the difference. (We don't weight pieces
+        # here intentionally: family detection is purely structural on
+        # pawn shape; pieces vary too much move-to-move inside one
+        # opening to be a reliable family marker.)
+        union_cand = cand_pawn | cand_opp_pawn
+        union_hist = hist_pawn | hist_opp_pawn
+        if not union_cand and not union_hist:
+            # Degenerate both-empty; vacuous match (J=1.0). Only
+            # matters in test fixtures; defensive.
+            j = 1.0
+        elif not (union_cand and union_hist):
+            # One side empty, the other not: zero overlap.
+            j = 0.0
+        else:
+            j = len(union_cand & union_hist) / len(union_cand | union_hist)
+        state = family_state.setdefault(family, {"max_s": 0.0, "votes": 0})
+        if j > state["max_s"]:
+            state["max_s"] = j
+        if j >= threshold:
+            state["votes"] += 1
+
+    if not any_tagged:
+        # Backward-compat: snapshots lack family tags (produced before
+        # this feature shipped, or by an old test fixture). Return the
+        # original list so behavior is unchanged.
+        return list(signatures), None, None
+
+    if not family_state:
+        # All snapshots had empty/None family tags (shouldn't happen
+        # given the any_tagged check above, but defensive): fallback
+        # to unfiltered.
+        return list(signatures), None, None
+
+    # Pick winner: highest max Jaccard; ties broken by votes.
+    best_family = None
+    best_max_s = 0.0
+    best_votes = -1
+    for family, state in family_state.items():
+        if state["max_s"] > best_max_s or (
+            state["max_s"] == best_max_s and state["votes"] > best_votes
+        ):
+            best_family = family
+            best_max_s = state["max_s"]
+            best_votes = state["votes"]
+
+    if best_max_s < threshold:
+        # No family reached the match threshold -- preserve unfiltered
+        # pool so the user's minority-opening signal isn't lost. This
+        # is the "fall back, don't restrict" branch.
+        return list(signatures), None, None
+
+    # Filter to the winning family (and optionally player_color).
+    filtered: List[Dict[str, Any]] = []
+    for snap in signatures:
+        if snap.get("family") != best_family:
+            continue
+        if player_color is not None and snap.get("player_color") != player_color:
+            continue
+        filtered.append(snap)
+    if not filtered:
+        # Threshold said match but filtering by color emptied the set
+        # (e.g. user is playing black but their family match is only
+        # in white-POV snapshots). Fall back to the unfiltered pool so
+        # we don't silence the signal entirely.
+        return list(signatures), None, None
+
+    return filtered, best_family, best_max_s
 
 
 def _is_live_sac_move(board_before: chess.Board, candidate_uci: str) -> bool:
@@ -801,6 +982,9 @@ def rerank_candidates(
             "opening_family_lean": style.get("opening_family_lean"),
             "base_source": _derive_base_source([]),
             "setup_present": bool(style.get("setup_signatures")),
+            "setup_family": None,
+            "setup_family_confidence": None,
+            "setup_filtered_count": 0,
             "bias_breakdown": None,
             "game_count": style.get("game_count", 0),
         }
@@ -817,6 +1001,9 @@ def rerank_candidates(
             "opening_family_lean": style.get("opening_family_lean"),
             "base_source": _derive_base_source(candidates),
             "setup_present": bool(style.get("setup_signatures")),
+            "setup_family": None,
+            "setup_family_confidence": None,
+            "setup_filtered_count": 0,
             "bias_breakdown": None,
             "game_count": style.get("game_count", 0),
         }
@@ -846,6 +1033,35 @@ def rerank_candidates(
     # once pushed, produces a resulting board on the OPPONENT's turn).
     setup_signatures = style.get("setup_signatures")
     setup_present = bool(setup_signatures)
+
+    # Family-filter the snapshot pool once before the candidate loop.
+    # We compute cand_pawn + cand_opp_pawn off the CURRENT board (the
+    # board the candidates are for, BEFORE pushing any candidate -- the
+    # family of the position doesn't change across candidate moves,
+    # only the user-side pawn shape advances; using the pre-push board
+    # saves N candidate-side snapshots of Jaccard work per family).
+    #
+    # If `_filter_signatures_by_family` finds a winning family above
+    # SETUP_FAMILY_DETECTION_THRESHOLD, `setup_effective` is the
+    # family-filtered subset. Otherwise it falls back to the unfiltered
+    # pool (preserves pre-filter behavior, including a None-input that
+    # makes setup_mult=1.0 for every candidate -- the standard no-signal
+    # path).
+    setup_filtered_family: Optional[str] = None
+    setup_filtered_confidence: Optional[float] = None
+    if setup_present and setup_signatures:
+        live_pawn, _, live_opp_pawn = _pov_normalized_squares(board, board.turn)
+        setup_effective, setup_filtered_family, setup_filtered_confidence = (
+            _filter_signatures_by_family(
+                setup_signatures, live_pawn, live_opp_pawn,
+                player_color=None,  # color-filter is v2; v1 merges pool
+            )
+        )
+    else:
+        setup_effective = setup_signatures
+    setup_filtered_count = (
+        len(setup_effective) if setup_effective is not None else 0
+    )
 
     # --- compute per-candidate live indicators and weights ------------------
     # base_weight_i = candidate["policy"] when the patched UCI wrapper
@@ -888,14 +1104,14 @@ def rerank_candidates(
         setup_mult = 1.0
         setup_S: Optional[float] = None
         setup_matched_ply: Optional[int] = None
-        if setup_present:
+        if setup_present and setup_effective:
             try:
                 rb = board.copy(stack=False)
                 mv = chess.Move.from_uci(uci) if uci else None
                 if mv is not None and mv in rb.legal_moves:
                     rb.push(mv)
                     setup_mult, setup_S, setup_matched_ply = _candidate_setup_mult(
-                        rb, side_just_moved, setup_signatures
+                        rb, side_just_moved, setup_effective
                     )
             except (ValueError, IndexError):
                 # Defensive: a malformed UCI or an unexpected board state
@@ -977,6 +1193,12 @@ def rerank_candidates(
             "opening_family_lean": style.get("opening_family_lean"),
             "base_source": base_source,
             "setup_present": setup_present,
+            "setup_family": setup_filtered_family,
+            "setup_family_confidence": (
+                round(setup_filtered_confidence, 4)
+                if setup_filtered_confidence is not None else None
+            ),
+            "setup_filtered_count": setup_filtered_count,
             "bias_breakdown": None,
             "game_count": style.get("game_count", 0),
         }
@@ -1010,6 +1232,12 @@ def rerank_candidates(
         "opening_family_lean": style.get("opening_family_lean"),
         "base_source": base_source,
         "setup_present": setup_present,
+        "setup_family": setup_filtered_family,
+        "setup_family_confidence": (
+            round(setup_filtered_confidence, 4)
+            if setup_filtered_confidence is not None else None
+        ),
+        "setup_filtered_count": setup_filtered_count,
         "bias_breakdown": {
             "weights": breakdown_rows,
             "family_lean": FAMILY_LEAN_DISABLED,
