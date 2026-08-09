@@ -246,14 +246,19 @@ SAC_RECOUP_TOLERANCE = 0.5
 # setups form late (per-opening-family tuning is a v2 concern).
 #
 # SNAPSHOTS_MAX_PER_OPPONENT bounds the total snapshot dict payload surfaced
-# by compute_opponent_style (~200KB worst case at the cap) so an opponent
-# with hundreds of games doesn't blow up the per-request transport size.
-# Games are read end_time DESC so the cap keeps most-recent games when
-# it triggers -- a defensive bound, not a signal filter.
+# by compute_opponent_style. Defensive bound on transport size, NOT a signal
+# filter. Originally 250 (which truncated the snapshot pool to ~40 most-
+# recent games worth and could exclude minority openings entirely -- the
+# live diagnostic on iaminspiredbroo's 200-game corpus showed this: 7
+# Scandinavian games were all dropped, leaving zero Scandinavian snapshots
+# and breaking family-filtering for the user's preferred opening). Raised
+# to 10000: ~1000 snapshots for a 200-game opponent, well within memory
+# budget, and the per-candidate Jaccard scan (~1ms at this size) is
+# still cheap vs the 1-3s Maia inference.
 SETUP_SIGNATURE_PLY_MIN = 10
 SETUP_SIGNATURE_PLY_MAX = 20
 SETUP_SIGNATURE_MIN_GAMES = 3   # mirrors MIN_STYLE_GAMES; same rationale
-SNAPSHOTS_MAX_PER_OPPONENT = 250
+SNAPSHOTS_MAX_PER_OPPONENT = 10000
 
 # Static material values used by the sacrifice detector. King counts as 0
 # so a king safety manouvre never inflates material.
@@ -551,8 +556,19 @@ def _pov_snapshot_squares(
 
     Returns a snapshot dict shaped per the setup-signature contract:
         {
-          "pawn_squares":   List[str],      # POV-normalized pawn squares
-          "piece_squares":  Dict[str, List[str]]  # N/B/R/Q/K -> squares
+          "pawn_squares":      List[str],   # POV-normalized pawn squares
+          "piece_squares":     Dict[str, List[str]],  # N/B/R/Q/K -> squares
+          "opp_pawn_squares":  List[str],   # opponent's pawns, user-POV
+                                             # mirrored to keep canonical
+                                             # orientation. Used ONLY by
+                                             # the reranker's family-detection
+                                             # Jaccard (openings are defined
+                                             # by BOTH sides' pawn shapes --
+                                             # Scandinavian and Italian have
+                                             # identical user POV pawns but
+                                             # different opponent pawns);
+                                             # setup_MULT scoring ignores
+                                             # this field.
         }
 
     POV normalization:
@@ -597,9 +613,20 @@ def _pov_snapshot_squares(
             chess.square_name(sq)
             for sq in b.pieces(ptype, chess.WHITE)
         )
+    # Opponent's pawns in the user's POV orientation (mirrored already
+    # when pov==BLACK). Used only by the reranker's family detection
+    # Jaccard to distinguish openings whose user-side pawn shape is
+    # identical (e.g. Italian "e4+d3" vs Scandinavian "e4-traded+d3"
+    # share White's pawn skeleton; the OPPONENT's pawn shape differs:
+    # Italian Black has e5 pawn on the board, Scandinavian Black has
+    # d-pawn traded). setup_MULT scoring ignores this field.
+    opp_pawn_squares = sorted(
+        chess.square_name(sq) for sq in b.pieces(chess.PAWN, chess.BLACK)
+    )
     return {
         "pawn_squares": pawn_squares,
         "piece_squares": piece_squares,
+        "opp_pawn_squares": opp_pawn_squares,
     }
 
 
@@ -737,6 +764,7 @@ def _analyze_game(
         "opponent_moves": opponent_moves,
         "sacrifices": sacrifices,
         "family": _opening_family(game),
+        "opponent_color": "white" if opponent_color == chess.WHITE else "black",
         "plies": len(mainline),
         "opp_castled": opp_castled,
         "last_queen_capture_ply": (
@@ -991,6 +1019,17 @@ def compute_opponent_style(
         # setup-signature snapshots are unweighted at v1 (each snapshot
         # counts equally; recency/frequency weighting of snapshots is a
         # documented v2 deferred concern -- see the spec's §13).
+        # Tag each snapshot with the game's opening family and the
+        # profiled player's color in this game, so the reranker can
+        # filter by family + color before computing setup_mult. Without
+        # this filter, a Scandinavian position would match against
+        # Italian/Scotch snapshots (the dominant majority), drowning the
+        # 7 Scandinavian games' signal in 200+ non-Scandinavian ones.
+        game_family = analyzed["family"]
+        game_color = analyzed["opponent_color"]
+        for snap in analyzed["setup_snapshots"]:
+            snap["family"] = game_family
+            snap["player_color"] = game_color
         aggregated_setup_snapshots.extend(analyzed["setup_snapshots"])
 
         if analyzed["queens_on_at_end"]:
