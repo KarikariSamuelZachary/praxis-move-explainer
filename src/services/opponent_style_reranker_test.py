@@ -1042,7 +1042,7 @@ def test_setup_signature_head_to_head():
     # non-rank-1 match per the design intent).
     b_after_b5 = board.copy(stack=False)
     b_after_b5.push(chess.Move.from_uci("c3b5"))
-    pawns_b5, pieces_b5 = reranker_mod._pov_normalized_squares(b_after_b5, chess.WHITE)
+    pawns_b5, pieces_b5, _ = reranker_mod._pov_normalized_squares(b_after_b5, chess.WHITE)
 
     # Engineered redistribution: c3a4 rank 1 (low policy),
     # c3b5 rank 2 (high policy + setup-matching), c3e4 rank 3, c3d5 rank 4.
@@ -1226,7 +1226,7 @@ def test_setup_composition_with_sac():
     # Build a signature matching c3e4's resulting board (the sac-looking candidate).
     b_after_e4 = board.copy(stack=False)
     b_after_e4.push(chess.Move.from_uci("c3e4"))
-    pawns_e4, pieces_e4 = reranker_mod._pov_normalized_squares(b_after_e4, chess.WHITE)
+    pawns_e4, pieces_e4, _ = reranker_mod._pov_normalized_squares(b_after_e4, chess.WHITE)
     sig_e4 = {
         "pawn_squares": sorted(pawns_e4),
         "piece_squares": _pieces_by_type_dict(b_after_e4, chess.WHITE),
@@ -1319,8 +1319,8 @@ def test_setup_color_flip_normalization():
         "rnbqkbnr/pppp1ppp/8/4p3/8/8/PPPPPPPP/RNBQKBNR w KQkq e6 0 2"
     )
 
-    pawns_w, pieces_w = reranker_mod._pov_normalized_squares(after_e4_white, chess.WHITE)
-    pawns_b, pieces_b = reranker_mod._pov_normalized_squares(after_e5_black, chess.BLACK)
+    pawns_w, pieces_w, opp_w = reranker_mod._pov_normalized_squares(after_e4_white, chess.WHITE)
+    pawns_b, pieces_b, opp_b = reranker_mod._pov_normalized_squares(after_e5_black, chess.BLACK)
 
     assert pawns_w == pawns_b, (
         f"POV-normalized pawns should be identical for color-flipped "
@@ -1330,8 +1330,15 @@ def test_setup_color_flip_normalization():
         f"POV-normalized pieces should be identical for color-flipped "
         f"setups; got white={sorted(pieces_w)} black={sorted(pieces_b)}"
     )
+    # opp_pawn sets should also be mirror-identical (Black's pawn on e5
+    # from white-POV mirrors to white's pawn on e4 from black-POV).
+    assert opp_w == opp_b, (
+        f"POV-normalized opp_pawns should be identical for color-flipped "
+        f"setups; got white={sorted(opp_w)} black={sorted(opp_b)}"
+    )
     print(f"  [PASS] POV-white pawns == POV-black pawns (after mirror)")
     print(f"  [PASS] POV-white pieces == POV-black pieces (after mirror)")
+    print(f"  [PASS] POV-white opp_pawns == POV-black opp_pawns (after mirror)")
 
     # Now run the reranker on both boards with the SAME signature and
     # a candidate that mirrors across colors (e2e4 for white-pov board,
