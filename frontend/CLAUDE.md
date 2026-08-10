@@ -23,6 +23,8 @@ frontend/          Next.js app
     components/
       auth/        SignInModal.tsx, SignUpModal.tsx (headless Clerk)
       board/       ChessBoard.tsx (main board component)
+      landing/     Marketing landing page (gsap ScrollTrigger + Lenis,
+                   Cinzel display font, wood/gold palette)
     proxy.ts       clerkMiddleware + route protection
   public/          Static assets including hero-chess.png
 
@@ -67,6 +69,17 @@ src/               FastAPI backend
 - Border: zinc-700 (#3f3f46)
 - Text: zinc-100 (#f4f4f5)
 - Muted text: zinc-400 (#a1a1aa)
+
+### Landing page exception (components/landing)
+- Wood/gold editorial palette (walnut-950 #120c08, gold #d9b87c,
+  gold-bright #efd9a7, cream #ede3d0, wood-mute #a79b8a, moss #2e9e5b).
+- IMPORTANT: this project's Tailwind/Turbopack pipeline silently drops
+  custom `@theme` color tokens. The landing palette is defined as plain
+  CSS utility classes in globals.css (`:root` vars + hand-written
+  `.text-gold`, `.bg-moss`, ... classes). Add new landing colors there,
+  not in `@theme`.
+- Animations: gsap + ScrollTrigger + Lenis (installed deps). Respect
+  prefers-reduced-motion — every animated component has a static fallback.
 
 ## Environment Variables
 ### Vercel (frontend)
