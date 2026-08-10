@@ -1,13 +1,18 @@
 import logging
 import random
 from io import StringIO
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import chess
 import chess.pgn
 from psycopg2.extras import RealDictCursor
 
 from core import database
+from services.opponent_style import (
+    compute_opening_results,
+    compute_time_control_distribution,
+)
+from services.opponent_traps import compute_opponent_traps
 
 log = logging.getLogger(__name__)
 
@@ -205,7 +210,19 @@ def list_opponent_profiles(*, requested_by_user_id: str) -> list[Dict[str, Any]]
                     opponent_username,
                     COUNT(*)::int AS game_count,
                     JSONB_AGG(white_player) AS white_players,
-                    JSONB_AGG(black_player) AS black_players
+                    JSONB_AGG(black_player) AS black_players,
+                    -- The time-control signal reads the PGN's [TimeControl]
+                    -- header per game (no mainline replay — see
+                    -- compute_time_control_distribution). We aggregate the
+                    -- raw rows here so the per-opponent time-control
+                    -- distribution computes in the same pass that builds
+                    -- this profile list, avoiding a second round-trip per
+                    -- opponent. JSONB_AGG preserves insertion order so the
+                    -- pgns[i] / end_times[i] / time_classes[i] pairing
+                    -- stays aligned.
+                    JSONB_AGG(pgn) AS pgns,
+                    JSONB_AGG(end_time) AS end_times,
+                    JSONB_AGG(time_class) AS time_classes
                 FROM opponent_games
                 WHERE requested_by_user_id = %s
                 GROUP BY provider, opponent_username
@@ -215,19 +232,94 @@ def list_opponent_profiles(*, requested_by_user_id: str) -> list[Dict[str, Any]]
             )
             rows = [dict(row) for row in cur.fetchall()]
 
-        return [
-            {
-                "provider": row["provider"],
-                "opponent_username": row["opponent_username"],
-                "game_count": row["game_count"],
-                "rating": _rating_from_player_lists(
-                    opponent_username=row["opponent_username"],
-                    white_players=row.get("white_players") or [],
-                    black_players=row.get("black_players") or [],
-                ),
-            }
-            for row in rows
-        ]
+        profiles: List[Dict[str, Any]] = []
+        for row in rows:
+            pgns = row.get("pgns") or []
+            end_times = row.get("end_times") or []
+            time_classes = row.get("time_classes") or []
+            opponent_username = row["opponent_username"]
+            # Each game row carries the opponent's username so
+            # `compute_opening_results` can resolve which side the
+            # opponent played (the `_analyze_game` / `_opponent_color`
+            # path casefolds-and-matches against the PGN's [White]/
+            # [Black] headers; this is the same resolution
+            # `compute_opponent_style` does, just surfaced via the row
+            # because the listing path doesn't take an opponent_username
+            # arg per-row the way compute_opponent_style does).
+            games = [
+                {
+                    "pgn": pgn,
+                    "end_time": end_time,
+                    "opponent_username": opponent_username,
+                }
+                for pgn, end_time in zip(pgns, end_times)
+            ]
+            # Time control: gated internally by MIN_STYLE_GAMES; for
+            # opponents below the floor the distribution/most_common come
+            # back None and the sparring page just doesn't prefill the
+            # Time Control field.
+            tc_profile = compute_time_control_distribution(games) if games else None
+            # Opening W/L/D: NO floor here (the spec for "Openings He Lost
+            # Against" is deliberately floor-less — every bucket with at
+            # least one game is shown, however small). by_opening is {} for
+            # a row set with no parseable PGNs, which the Opponent Prep
+            # page renders as an empty "no openings data" panel.
+            opening_results = compute_opening_results(games) if games else None
+            # Traps: read/aggregation over opponent_game_blunders.
+            # Returns [] when zero groups qualify — the common case for
+            # opponents with sparse blunder data or before the analysis
+            # job has run. Uses the same conn (no extra pool checkout).
+            traps = compute_opponent_traps(
+                conn,
+                requested_by_user_id=requested_by_user_id,
+                provider=row["provider"],
+                opponent_username=opponent_username,
+            )
+            profiles.append(
+                {
+                    "provider": row["provider"],
+                    "opponent_username": opponent_username,
+                    "game_count": row["game_count"],
+                    "rating": _rating_from_player_lists(
+                        opponent_username=opponent_username,
+                        white_players=row.get("white_players") or [],
+                        black_players=row.get("black_players") or [],
+                    ),
+                    "ratings_by_time_class": _ratings_by_time_class(
+                        opponent_username=opponent_username,
+                        white_players=row.get("white_players") or [],
+                        black_players=row.get("black_players") or [],
+                        time_classes=time_classes,
+                    ),
+                    "playing_style": _playing_style_from_sac_freq(
+                        opening_results.get("weighted_sacrifice_frequency")
+                        if opening_results
+                        else None
+                    ),
+                    "preferred_time_control": (
+                        tc_profile["most_common"] if tc_profile else None
+                    ),
+                    "time_control_distribution": (
+                        tc_profile["distribution"] if tc_profile else None
+                    ),
+                    # Per-opening buckets are the SAME family labels
+                    # `opening_family_lean` (in compute_opponent_style)
+                    # produces — both go through `_analyze_game`'s single
+                    # `_opening_family(game)` call, so the Opponent Prep
+                    # page's frequency and results views zip together by
+                    # key without a remap.
+                    "opening_results": (
+                        opening_results["by_opening"] if opening_results else None
+                    ),
+                    "openings_lost_against": _openings_lost_against(
+                        opening_results["by_opening"]
+                        if opening_results and opening_results.get("by_opening")
+                        else None
+                    ),
+                    "traps": traps,
+                }
+            )
+        return profiles
     finally:
         database.connection_pool.putconn(conn)
 
@@ -373,3 +465,172 @@ def _rating_from_player_lists(
         return 1500
 
     return round(sum(ratings) / len(ratings))
+
+
+# Thresholds mapping recency-weighted sacrifice frequency to a
+# "playing style" pill label. Chosen to roughly match the spec's
+# "Passive / Balanced / Aggressive" bins against the v1 sacrifice
+# heuristic's typical output range:
+#   * < 0.05    -> "Passive"    (below 1 sac per 20 opponent moves;
+#                                 defensively patient play)
+#   * 0.05-0.15 -> "Balanced"   (1 sac per 7-20 moves; mix of safety
+#                                 and tactical resource-giving)
+#   * >= 0.15   -> "Aggressive" (1 sac per ~7 moves or more; the
+#                                 profile that needs cautious prep)
+# These are deliberately coarse — the spec asks for a single-word pill,
+# not a calibrated aggression index. Tune the bands only if a real
+# opponent's corpus lands off the chart (the existing
+# compute_opening_results test fixtures all sit at 0.0 -> Passive).
+_SAC_FREQ_BANDS: tuple[tuple[float, str], ...] = (
+    (0.05, "Passive"),
+    (0.15, "Balanced"),
+    # Anything >= 0.15 falls through to the implicit "Aggressive" label
+    # below — kept as a single literal so the Linter doesn't flag a
+    # tuple-with-no-final-element. The iteration above catches <= 0.15
+    # exactly; >= 0.15 returns "Aggressive" via the fall-through return.
+)
+
+
+def _playing_style_from_sac_freq(
+    weighted_sacrifice_frequency: Optional[float],
+) -> Optional[str]:
+    """Map a recency-weighted sacrifice rate to a single-word pill.
+
+    Returns None iff the corpus had zero opponent moves (defensive —
+    see compute_opening_results' docstring on `weighted_sacrifice_frequency`).
+    Otherwise returns one of "Passive" / "Balanced" / "Aggressive" per the
+    bands above. The pill is a SPEC-level UI label, not a calibrated
+    psychometric score — the bands are coarse on purpose.
+    """
+    if weighted_sacrifice_frequency is None:
+        return None
+    for threshold, label in _SAC_FREQ_BANDS:
+        if weighted_sacrifice_frequency < threshold:
+            return label
+    return "Aggressive"
+
+
+# Time-class labels we surface on the per-time-class rating row. The
+# provider's `time_class` string is normalized to one of these — a
+# free-form label like "daily" or "correspondence" is folded into
+# "daily" (Lichess uses both spellings; Chess.com uses "daily" only).
+_TIME_CLASS_CANONICAL = {
+    "bullet": "bullet",
+    "blitz": "blitz",
+    "rapid": "rapid",
+    "classical": "classical",
+    "daily": "daily",
+    "correspondence": "daily",
+}
+
+
+def _canonical_time_class(raw: Optional[str]) -> Optional[str]:
+    """Normalize a provider's time-class string to the canonical row labels.
+
+    Returns None for empty/unknown time classes (the game is excluded from
+    the per-time-class average rather than folded into an "Other" bin —
+    keeping the row to its four canonical labels only).
+    """
+    if not raw:
+        return None
+    key = str(raw).strip().lower()
+    return _TIME_CLASS_CANONICAL.get(key)
+
+
+def _ratings_by_time_class(
+    *,
+    opponent_username: str,
+    white_players: list[Dict[str, Any]],
+    black_players: list[Dict[str, Any]],
+    time_classes: list[str],
+) -> Optional[Dict[str, int]]:
+    """Average opponent rating per time-class bucket, indexed by canonical label.
+
+    Iterates the parallel white_players/black_players/time_classes arrays
+    (same length — JSONB_AGG preserves order in this query's GROUP BY),
+    filters to entries where the opponent played (matched by casefolded
+    username against white/black player dict), and accumulates their
+    per-game rating into the bucket matching that game's time_class.
+
+    A bucket's value is the rounded MEAN of the opponent's per-game
+    ratings in that bucket — same averaging convention as the overall
+    `rating` field, just scoped to a time class. A bucket is OMITTED
+    from the returned dict when the opponent has zero games at that
+    speed (so callers can render "—" vs an integer).
+
+    Returns None iff the opponent had no games with a parseable
+    rating AND time-class — distinguishable from "{}", which means
+    "had games but none in any canonical bucket" (effectively zero
+    games on file, defensive).
+    """
+    normalized = _normalize_username(opponent_username)
+    # length of all three lists must match — the SQL JSONB_AGGs in the
+    # listing query align them via row order, so any length mismatch is a
+    # backend bug worth surfacing rather than silently hiding.
+    if not (len(white_players) == len(black_players) == len(time_classes)):
+        log.warning(
+            "ratings_by_time_class: list-length mismatch for %s/%s (w=%d b=%d tc=%d) — skipping",
+            opponent_username,
+            "<unknown provider>",
+            len(white_players),
+            len(black_players),
+            len(time_classes),
+        )
+        return None
+
+    buckets: Dict[str, list[int]] = {}
+    for player, time_class in zip(
+        white_players + black_players, time_classes + time_classes
+    ):
+        if _player_username(player or {}) != normalized:
+            continue
+        rating = _player_rating(player or {})
+        if rating is None:
+            continue
+        canonical = _canonical_time_class(time_class)
+        if canonical is None:
+            continue
+        buckets.setdefault(canonical, []).append(rating)
+
+    if not buckets:
+        return None
+    return {label: round(sum(rs) / len(rs)) for label, rs in buckets.items()}
+
+
+def _openings_lost_against(
+    by_opening: Optional[Dict[str, Dict[str, Any]]],
+) -> list[Dict[str, Any]]:
+    """Project opening_results into the "Lost Against" panel's row shape.
+
+    For each bucket, computes `loss_percentage =
+    weighted_losses / (weighted_wins + weighted_losses + weighted_draws)`
+    over the same recency-weighted W/L/D counts opening_results exposes.
+    Buckets whose decided-or-drawn total is 0 (every game was "*"
+    aborted, OR the bucket is empty) are excluded — same contract
+    `win_rate`'s not-None case signals, so the percentage is always
+    meaningful when shown.
+
+    Sorted by descending loss_percentage so the Opponent Prep panel's
+    "most-lost-against-first" ordering is preserved at the API layer
+    (the frontend doesn't need to re-sort). Empty list when by_opening
+    is None (no parseable PGNs at all).
+    """
+    if not by_opening:
+        return []
+    rows: list[Dict[str, Any]] = []
+    for name, stats in by_opening.items():
+        weighted_wins = float(stats.get("weighted_wins") or 0.0)
+        weighted_losses = float(stats.get("weighted_losses") or 0.0)
+        weighted_draws = float(stats.get("weighted_draws") or 0.0)
+        decided_or_drawn = weighted_wins + weighted_losses + weighted_draws
+        if decided_or_drawn <= 0.0:
+            continue
+        rows.append(
+            {
+                "name": name,
+                "loss_percentage": round(weighted_losses / decided_or_drawn, 4),
+                "games": int(round(stats.get("weighted_count") or 0)),
+            }
+        )
+    rows.sort(key=lambda row: row["loss_percentage"], reverse=True)
+    return rows
