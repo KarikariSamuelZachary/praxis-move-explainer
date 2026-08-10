@@ -83,13 +83,19 @@ export default function LandingPage() {
       ref={rootRef}
       className="landing-root relative min-h-screen overflow-x-clip font-sans text-cream"
     >
-      {/* Page-wide warm vignette over the wood texture */}
+      {/* Same walnut backdrop the app pages use — fixed, sections scroll over it */}
+      <div
+        aria-hidden
+        className="pointer-events-none fixed inset-0 z-0 bg-cover bg-center"
+        style={{ backgroundImage: 'url(/walnut-dark.png)' }}
+      />
+      {/* Page-wide warm vignette — light enough to let the walnut grain show */}
       <div
         aria-hidden
         className="pointer-events-none fixed inset-0 z-0"
         style={{
           background:
-            'radial-gradient(ellipse 90% 70% at 50% 30%, rgba(43,28,16,0.55), rgba(10,6,4,0.92) 78%)',
+            'radial-gradient(ellipse 90% 70% at 50% 30%, rgba(43,28,16,0.38), rgba(14,9,6,0.66) 80%)',
         }}
       />
 
