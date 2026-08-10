@@ -257,6 +257,96 @@ def run_migrations():
                     ON opponent_import_jobs(requested_by_user_id, created_at DESC)
                 """
             )
+
+            # --- opponent game analysis (Stockfish blunder classification) ---
+            #
+            # Three tables that persist the per-opponent move-classification
+            # pass: a job-state row per opponent (for polling/progress), a
+            # per-game analysis marker (the "this game has been scored"
+            # sentinel), and the per-blunder detail rows.
+            #
+            # The per-game marker (opponent_game_analysis) is the crucial
+            # table: it is written EVEN IF the game produced zero blunders.
+            # Using presence-in-this-table (rather than presence-in-the-
+            # blunders-table) as the "analyzed" sentinel is what makes
+            # re-runs skip already-analyzed games correctly — a zero-blunder
+            # game would otherwise be re-analyzed forever if the system
+            # checked the blunders table for its existence.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS opponent_analysis_jobs (
+                    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    requested_by_user_id TEXT NOT NULL REFERENCES users(clerk_id),
+                    provider             TEXT NOT NULL CHECK (provider IN ('lichess', 'chesscom')),
+                    opponent_username    TEXT NOT NULL,
+                    status               TEXT NOT NULL DEFAULT 'idle'
+                                         CHECK (status IN ('idle', 'running', 'complete')),
+                    started_at           TIMESTAMPTZ,
+                    heartbeat_at         TIMESTAMPTZ,
+                    analyzed_games       INTEGER NOT NULL DEFAULT 0,
+                    total_games          INTEGER NOT NULL DEFAULT 0,
+                    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (requested_by_user_id, provider, opponent_username)
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS opponent_game_analysis (
+                    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    requested_by_user_id TEXT NOT NULL REFERENCES users(clerk_id),
+                    provider             TEXT NOT NULL CHECK (provider IN ('lichess', 'chesscom')),
+                    opponent_username    TEXT NOT NULL,
+                    game_id              UUID NOT NULL REFERENCES opponent_games(id) ON DELETE CASCADE,
+                    status               TEXT NOT NULL CHECK (status IN ('analyzed', 'failed')),
+                    analyzed_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    error                TEXT,
+                    UNIQUE (provider, opponent_username, game_id)
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_opponent_game_analysis_game_id
+                    ON opponent_game_analysis(game_id)
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS opponent_game_blunders (
+                    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    requested_by_user_id TEXT NOT NULL REFERENCES users(clerk_id),
+                    provider             TEXT NOT NULL CHECK (provider IN ('lichess', 'chesscom')),
+                    opponent_username    TEXT NOT NULL,
+                    game_id              UUID NOT NULL REFERENCES opponent_games(id) ON DELETE CASCADE,
+                    analysis_id          UUID NOT NULL REFERENCES opponent_game_analysis(id) ON DELETE CASCADE,
+                    fen                  TEXT NOT NULL,
+                    position_key         TEXT NOT NULL,
+                    move_number          INTEGER NOT NULL,
+                    move_san             TEXT NOT NULL,
+                    classification       TEXT NOT NULL CHECK (classification IN ('mistake', 'blunder')),
+                    centipawn_loss       INTEGER NOT NULL,
+                    analyzed_at          TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_opponent_game_blunders_lookup
+                    ON opponent_game_blunders(
+                        requested_by_user_id,
+                        provider,
+                        opponent_username,
+                        position_key
+                    )
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_opponent_game_blunders_analysis_id
+                    ON opponent_game_blunders(analysis_id)
+                """
+            )
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS user_games (
