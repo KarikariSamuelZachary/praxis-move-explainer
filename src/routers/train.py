@@ -1,15 +1,18 @@
 import logging
+from typing import Any, Dict, Optional
 
 import chess
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Query, Request
 
 from core.rate_limit import limit_by_clerk_user_id
 from engines.maia_engine import MaiaUnavailableError, get_maia3, is_maia_available
 from engines.stockfish_engine import StockfishEngine
 from schemas.train_schemas import (
+    OpponentAnalysisStatusResponse,
     OpponentImportJobResponse,
     OpponentImportRequest,
     OpponentImportStartResponse,
+    OpponentProfileInfoResponse,
     OpponentProfileListResponse,
     OpponentProfileResponse,
     SparringMoveRequest,
@@ -18,6 +21,7 @@ from schemas.train_schemas import (
     WeaknessProfileRequest,
     WeaknessProfileStartResponse,
 )
+from services.opponent_game_analysis import get_opponent_analysis_status
 from services.opponent_import import (
     create_opponent_import_job,
     get_opponent_import_job,
@@ -171,6 +175,131 @@ def list_train_opponents(
             for profile in list_opponent_profiles(requested_by_user_id=clerk_id)
         ]
     )
+
+
+# --- Opponent profile info (avatar + verified) -----------------------------
+#
+# Lazy-fetch endpoint that backs the Opponent Preparation page's profile
+# card. Not part of the profile list response because (a) it's a per-card
+# detail and would inflate the list payload if every imported opponent
+# were expanded, and (b) the upstream providers expose avatar/verified
+# ONLY through the public profile API (chess.com) or not at all (lichess).
+#
+# In-process TTL cache keyed by (provider, username). 1 hour is short
+# enough to pick up an avatar change the player makes (rare) but long
+# enough that re-mounting the sparring page within a session doesn't
+# re-hit chess.com. Cache lives in module scope so every FastAPI worker
+# gets its own copy — fine for a non-critical display hint.
+_CHESSCOM_PROFILE_TTL_SECONDS = 3600
+_chesscom_profile_cache: dict[tuple[str, str], tuple[float, Dict[str, Any]]] = {}
+
+
+def _chesscom_profile_cached(username: str) -> Optional[Dict[str, Any]]:
+    """Fetch + cache the chess.com profile payload for `username`.
+
+    Returns None on any upstream failure (404, network error, malformed
+    body) so the frontend always gets a response and can fall back to
+    an initials avatar + no verified badge — never an HTTP error. Cache
+    misses go to the network; cache hits return the stored dict without
+    touching chess.com.
+    """
+    import time as _time
+
+    key = (username.strip().lower(),)
+    # newer Python: dict tuple key uses (,) for one element; the real
+    # cache key below is (provider, username). Re-key to the provider-
+    # aware form to keep callers from colliding across providers in
+    # future if Lichess ever adds avatars.
+    now = _time.time()
+    cache_key = ("chesscom", username.strip().lower())
+    cached = _chesscom_profile_cache.get(cache_key)
+    if cached is not None:
+        cached_at, payload = cached
+        if now - cached_at < _CHESSCOM_PROFILE_TTL_SECONDS:
+            return payload
+        # stale: drop and refetch below.
+        _chesscom_profile_cache.pop(cache_key, None)
+    try:
+        from integrations.chess_com import fetch_chesscom_profile
+
+        payload = fetch_chesscom_profile(username)
+    except Exception as exc:  # noqa: BLE001 -- intentionally broad
+        log.warning("chess.com profile fetch failed for %s: %s", username, exc)
+        return None
+    _chesscom_profile_cache[cache_key] = (now, payload)
+    return payload
+
+
+@router.get(
+    "/train/opponent-profile-info",
+    response_model=OpponentProfileInfoResponse,
+)
+def get_opponent_profile_info(
+    request: Request,
+    provider: str = Query(..., min_length=1),
+    opponent_username: str = Query(..., min_length=1, max_length=100),
+    _: None = Depends(limit_by_clerk_user_id(limit=30, window=60)),
+):
+    clerk_id = request.headers.get("X-Clerk-User-Id")
+    if not clerk_id:
+        raise HTTPException(status_code=400, detail="Missing X-Clerk-User-Id header")
+
+    if provider not in ("lichess", "chesscom"):
+        raise HTTPException(status_code=400, detail="provider must be 'lichess' or 'chesscom'")
+
+    if provider == "lichess":
+        # Lichess does NOT expose an avatar URL or verified flag on the
+        # public profile endpoint — return the explicit null/false so
+        # the frontend renders the initials fallback and omits the
+        # check badge without hitting the network.
+        return OpponentProfileInfoResponse(
+            provider="lichess",
+            opponent_username=opponent_username,
+            avatar_url=None,
+            verified=False,
+        )
+
+    payload = _chesscom_profile_cached(opponent_username) or {
+        "avatar": None,
+        "verified": False,
+    }
+    return OpponentProfileInfoResponse(
+        provider="chesscom",
+        opponent_username=opponent_username,
+        avatar_url=payload.get("avatar"),
+        verified=bool(payload.get("verified")),
+    )
+
+
+@router.get(
+    "/train/opponent-analysis",
+    response_model=OpponentAnalysisStatusResponse,
+)
+def get_opponent_analysis(
+    request: Request,
+    provider: str = Query(..., min_length=1),
+    opponent_username: str = Query(..., min_length=1, max_length=100),
+    _: None = Depends(limit_by_clerk_user_id(limit=30, window=60)),
+):
+    clerk_id = request.headers.get("X-Clerk-User-Id")
+    if not clerk_id:
+        raise HTTPException(status_code=400, detail="Missing X-Clerk-User-Id header")
+
+    if provider not in ("lichess", "chesscom"):
+        raise HTTPException(status_code=400, detail="provider must be 'lichess' or 'chesscom'")
+
+    status = get_opponent_analysis_status(
+        requested_by_user_id=clerk_id,
+        provider=provider,
+        opponent_username=opponent_username,
+    )
+    if not status:
+        raise HTTPException(
+            status_code=404,
+            detail="No analysis job found for this opponent",
+        )
+
+    return OpponentAnalysisStatusResponse(**status)
 
 
 @router.post(
