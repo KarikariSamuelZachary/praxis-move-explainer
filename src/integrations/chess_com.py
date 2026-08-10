@@ -139,3 +139,62 @@ def fetch_recent_chesscom_games(username: str, limit: int = 10) -> List[Dict[str
 
     games.sort(key=lambda g: g.get("end_time") or 0, reverse=True)
     return games[:limit]
+
+
+# Public Chess.com profile endpoint. Returns a JSON object with the
+# player's display metadata -- including `avatar` (a 200x200 PNG URL on
+# most accounts) and `verified` (a boolean that highlights accounts
+# Chess.com staff have confirmed). The Opponent Preparation page
+# fetches this lazily on first profile render and caches the response
+# server-side; the per-game endpoints above do NOT include either
+# field, so without this fetch the sparring page would have no way to
+# show an avatar.
+PROFILE_URL = "https://api.chess.com/pub/player/{username}"
+
+
+def fetch_chesscom_profile(username: str) -> Dict[str, Any]:
+    """Fetch a Chess.com player's public profile metadata.
+
+    Returns a dict shaped `{avatar: str|None, verified: bool}` projected
+    from the upstream `/pub/player/{username}` JSON. Missing/null
+    `avatar` becomes None (frontend falls back to an initials circle);
+    missing `verified` becomes False (frontend omits the check badge).
+
+    Raises:
+        ValueError: If `username` is empty/whitespace.
+        ChessComUserNotFound: If Chess.com returns 404 for the username.
+        ChessComError: For any other upstream failure (non-2xx, network).
+
+    Used by the Opponent Preparation page's lazy `/api/train/opponent-
+    profile-info` endpoint. NOT called during the import flow -- it's
+    purely a display-time fetch.
+    """
+    username = (username or "").strip().lower()
+    if not username:
+        raise ValueError("username must not be empty")
+
+    url = PROFILE_URL.format(username=username)
+    try:
+        data = _http_get_json(url)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 404:
+            raise ChessComUserNotFound(
+                f"Chess.com username '{username}' not found"
+            ) from exc
+        raise ChessComError(
+            f"Chess.com profile request failed (HTTP {exc.code})"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise ChessComError(
+            f"Unable to reach Chess.com: {exc.reason}"
+        ) from exc
+
+    if not isinstance(data, dict):
+        raise ChessComError("Chess.com profile response was not a JSON object")
+
+    avatar = data.get("avatar")
+    if avatar is not None and not isinstance(avatar, str):
+        avatar = None
+    verified = bool(data.get("verified"))
+
+    return {"avatar": avatar, "verified": verified}
