@@ -4,13 +4,24 @@ import { useEffect, useRef, useState } from 'react';
 import { Chess } from 'chess.js';
 import { Chessboard } from 'react-chessboard';
 
-const TACTIC_FEN = '6k1/5ppp/8/8/8/8/8/R6K w - - 0 1';
-const MOVE = { from: 'a1', to: 'a8' };
+const PUZZLES = [
+  // Back-rank mate
+  { fen: '6k1/5ppp/8/8/8/8/8/R6K w - - 0 1', move: { from: 'a1', to: 'a8' } },
+  // Scholar's mate
+  {
+    fen: 'r1bqkb1r/pppp1ppp/2n2n2/4p2Q/2B1P3/8/PPPP1PPP/RNB1K1NR w KQkq - 4 4',
+    move: { from: 'h5', to: 'f7' },
+  },
+  // Smothered mate
+  { fen: '6rk/6pp/8/4N3/8/8/8/7K w - - 0 1', move: { from: 'e5', to: 'f7' } },
+];
 
 export default function TacticBoard() {
   const wrapperRef = useRef<HTMLDivElement>(null);
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
-  const [fen, setFen] = useState(TACTIC_FEN);
+  const puzzleRef = useRef(0);
+  const [puzzle, setPuzzle] = useState(PUZZLES[0]);
+  const [fen, setFen] = useState(PUZZLES[0].fen);
   const [showArrow, setShowArrow] = useState(false);
   const [solved, setSolved] = useState(false);
 
@@ -28,23 +39,30 @@ export default function TacticBoard() {
     };
 
     const runCycle = () => {
-      setFen(TACTIC_FEN);
+      const current = PUZZLES[puzzleRef.current];
+      setPuzzle(current);
+      setFen(current.fen);
       setSolved(false);
       setShowArrow(true);
 
       // Play the winning move after the arrow has telegraphed it
       timersRef.current.push(
         setTimeout(() => {
-          const game = new Chess(TACTIC_FEN);
-          game.move(MOVE);
+          const game = new Chess(current.fen);
+          game.move(current.move);
           setShowArrow(false);
           setFen(game.fen());
           setSolved(true);
         }, 2100)
       );
 
-      // Reset and loop
-      timersRef.current.push(setTimeout(runCycle, 5200));
+      // Reset with the next puzzle and loop
+      timersRef.current.push(
+        setTimeout(() => {
+          puzzleRef.current = (puzzleRef.current + 1) % PUZZLES.length;
+          runCycle();
+        }, 5200)
+      );
     };
 
     const observer = new IntersectionObserver(
@@ -87,10 +105,10 @@ export default function TacticBoard() {
               position: fen,
               allowDragging: false,
               arrows: showArrow
-                ? [{ startSquare: MOVE.from, endSquare: MOVE.to, color: '#37be7e' }]
+                ? [{ startSquare: puzzle.move.from, endSquare: puzzle.move.to, color: '#37be7e' }]
                 : [],
               squareStyles: solved
-                ? { a8: { backgroundColor: 'rgba(55, 190, 126, 0.45)' } }
+                ? { [puzzle.move.to]: { backgroundColor: 'rgba(55, 190, 126, 0.45)' } }
                 : {},
               darkSquareStyle: {
                 backgroundImage: 'url(/walnut-dark.png)',
