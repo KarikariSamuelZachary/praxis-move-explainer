@@ -109,7 +109,7 @@ OTHER_NAME = "TestRival"
 
 
 def _pgn(moves_san, *, opponent_plays_white, eco, opening, end_time,
-         site="https://example.test"):
+         site="https://example.test", result="*"):
     game = chess.pgn.Game()
     game.headers["White"] = OPP_NAME if opponent_plays_white else OTHER_NAME
     game.headers["Black"] = OTHER_NAME if opponent_plays_white else OPP_NAME
@@ -117,7 +117,7 @@ def _pgn(moves_san, *, opponent_plays_white, eco, opening, end_time,
     game.headers["Site"] = site
     game.headers["Date"] = "2024.01.01"
     game.headers["Round"] = "-"
-    game.headers["Result"] = "*"
+    game.headers["Result"] = result
     if eco:
         game.headers["ECO"] = eco
     if opening:
@@ -132,7 +132,7 @@ def _pgn(moves_san, *, opponent_plays_white, eco, opening, end_time,
 
     exporter = chess.pgn.StringExporter(headers=True, variations=False, comments=False)
     pgn_text = game.accept(exporter)
-    return {"pgn": pgn_text, "end_time": end_time}
+    return {"pgn": pgn_text, "end_time": end_time, "opponent_username": OPP_NAME}
 
 
 # A quiet Italian Game mainline (16 plies), no captures, leaves plenty of
@@ -328,6 +328,220 @@ def _fixture_signals():
         _signals_game(_KSIDE_NO_Q_BLACK, opp_white=False, eco="C50", opening="Italian Game"),
         _signals_game(_NEVER_NO_Q_B,     opp_white=True,  eco="A04", opening="Reti Opening"),
     ]
+
+
+# ---------------------------------------------------------------------------
+# Time-control fixtures for `compute_time_control_distribution`.
+# ---------------------------------------------------------------------------
+# Helper builds a PGN-shaped row with the opponent as White, a fixed quiet
+# move list, and the requested [TimeControl] header set. The moves are
+# deliberately minimal — the time-control signal reads ONLY the PGN header
+# block (regex over `[Key "Value"]` lines, no mainline replay) so the move
+# list's exact contents do not affect the bucket; we keep just enough for
+# the row to be valid PGN.
+_TC_QUIET_MOVES = ["e4", "e5", "Nf3", "Nc6"]
+
+
+def _tc_game(time_control, end_time):
+    """One opponent-game row with a chosen [TimeControl] header and end_time."""
+    game = chess.pgn.Game()
+    game.headers["White"] = OPP_NAME
+    game.headers["Black"] = OTHER_NAME
+    game.headers["Event"] = "TestGame"
+    game.headers["Site"] = "https://example.test"
+    game.headers["Date"] = "2024.01.01"
+    game.headers["Round"] = "-"
+    game.headers["Result"] = "*"
+    game.headers["TimeControl"] = time_control
+
+    board = game.board()
+    node = game
+    for san in _TC_QUIET_MOVES:
+        move = board.parse_san(san)
+        node = node.add_main_variation(move)
+        board.push(move)
+
+    exporter = chess.pgn.StringExporter(headers=True, variations=False, comments=False)
+    pgn_text = game.accept(exporter)
+    return {"pgn": pgn_text, "end_time": end_time, "opponent_username": OPP_NAME}
+
+
+def _fixture_time_controls():
+    """6 games spanning 3 time-control buckets, neutral weighting.
+
+      3 games at [TimeControl "600+0"] -> bucket "10+0"
+      2 games at [TimeControl "180+2"] -> bucket "3+2"
+      1 game  at [TimeControl "60+0"]  -> bucket "1+0"
+
+    All end_time=0 (weight=1.0 each) so the closed-form expected values are
+    simple arithmetic over 6 games, and the recency mechanism itself is
+    exercised separately by fixture G. Asserts the percentages AND the most-
+    common pick (the spec: "verifying both the percentages and the most-
+    common pick").
+    """
+    return [
+        _tc_game("600+0", 0),
+        _tc_game("600+0", 0),
+        _tc_game("600+0", 0),
+        _tc_game("180+2", 0),
+        _tc_game("180+2", 0),
+        _tc_game("60+0", 0),
+    ]
+
+
+def _fixture_time_controls_recency_tilt():
+    """7 games engineered so raw count and recency-weight disagree.
+
+      3 RECENT "10+0" games at end_time = NOW          -> weight 1.0 each
+      4 OLD    "3+2"  games at end_time = NOW - 4yrs    -> weight ~0.135 each
+
+    Raw count tilts toward "3+2" (4 > 3); recency-weighted share tilts
+    toward "10+0" (3.0 > 4 * 0.135 ~= 0.541). If
+    compute_time_control_distribution were a raw tally it would pick
+    "3+2"; the test asserts it picks "10+0", proving the SAME decay
+    constant the other signals use (STYLE_RECENCY_DECAY_LAMBDA_PER_YEAR)
+    is reused here, not a new decay rate.
+    """
+    four_years_ago = NOW - (4 * YEAR_SEC)
+    return [
+        _tc_game("600+0", NOW),
+        _tc_game("600+0", NOW),
+        _tc_game("600+0", NOW),
+        _tc_game("180+2", four_years_ago),
+        _tc_game("180+2", four_years_ago),
+        _tc_game("180+2", four_years_ago),
+        _tc_game("180+2", four_years_ago),
+    ]
+
+
+# ---------------------------------------------------------------------------
+# Opening-results fixtures for `compute_opening_results`.
+# ---------------------------------------------------------------------------
+# 7 games engineered across 3 openings with a mix of wins/losses/draws and
+# the opponent playing BOTH colors — exercising every code path the W/L/D
+# math walks: white-win, white-loss, white-draw, black-win, black-loss,
+# black-draw, and a single-game "openings he lost against" bucket.
+#
+# The `_pgn` helper writes the [Result] header verbatim; `compute_opening_
+# results` reads it via `_analyze_game`'s new `result` field, which flips
+# the POV per the opponent's resolved color. So:
+#   opp=white, Result="1-0"  -> "win"
+#   opp=white, Result="0-1"  -> "loss"
+#   opp=white, Result="1/2-1/2" -> "draw"
+#   opp=black, Result="0-1"  -> "win"
+#   opp=black, Result="1-0"  -> "loss"
+#   opp=black, Result="1/2-1/2" -> "draw"
+#
+# All end_time=0 (neutral weighting = 1.0 each) so the closed-form expected
+# values are simple arithmetic over 7 games.
+#
+# Engineered layout (3 buckets; weighted_count = number of games, since
+# weight is 1.0 per game at neutral end_time):
+#
+#   "Italian Game":      3 games (1 win as white, 1 loss as white,
+#                                1 draw as black)
+#     weighted_wins=1, weighted_losses=1, weighted_draws=1
+#     win_rate = 1 / (1+1+1) = 0.3333
+#
+#   "Sicilian Defense":  3 games (1 win as black, 1 loss as black,
+#                                 1 win as white)
+#     weighted_wins=2, weighted_losses=1, weighted_draws=0
+#     win_rate = 2 / (2+1+0) = 0.6667
+#
+#   "Scotch Game":       1 game (1 loss as white) — the single-game
+#                        "Openings He Lost Against" bucket the spec
+#                        explicitly wants surfaced (NO floor).
+#     weighted_wins=0, weighted_losses=1, weighted_draws=0
+#     win_rate = 0 / (0+1+0) = 0.0
+#
+# All three buckets hit the MIN_STYLE_GAMES floor as a group (7 games >
+# 3, though compute_opening_results deliberately doesn't gate on this —
+# the no-floor contract is the spec's explicit ask).
+def _fixture_opening_results():
+    """7 games across 3 openings, both colors, mix of W/L/D.
+
+    Neutral weighting (end_time=0). Closed-form expected by_opening is
+    documented in the fixture's header comment above.
+    """
+    games = []
+
+    # --- Italian Game (3 games) -----------------------------------------
+    # opp=white, win
+    games.append(_pgn(
+        _QUIET_ITALIAN, opponent_plays_white=True,
+        eco="C50", opening="Italian Game", end_time=0, result="1-0",
+    ))
+    # opp=white, loss
+    games.append(_pgn(
+        _QUIET_ITALIAN, opponent_plays_white=True,
+        eco="C50", opening="Italian Game", end_time=0, result="0-1",
+    ))
+    # opp=black, draw
+    games.append(_pgn(
+        _QUIET_ITALIAN, opponent_plays_white=False,
+        eco="C50", opening="Italian Game", end_time=0, result="1/2-1/2",
+    ))
+
+    # --- Sicilian Defense (3 games) ------------------------------------
+    # opp=black, win  (Result "0-1" -> black POV "win")
+    games.append(_pgn(
+        _QUIET_ITALIAN, opponent_plays_white=False,
+        eco="B20", opening="Sicilian Defense", end_time=0, result="0-1",
+    ))
+    # opp=black, loss (Result "1-0" -> black POV "loss")
+    games.append(_pgn(
+        _QUIET_ITALIAN, opponent_plays_white=False,
+        eco="B20", opening="Sicilian Defense", end_time=0, result="1-0",
+    ))
+    # opp=white, win
+    games.append(_pgn(
+        _QUIET_ITALIAN, opponent_plays_white=True,
+        eco="B20", opening="Sicilian Defense", end_time=0, result="1-0",
+    ))
+
+    # --- Scotch Game (1 game) — the single-game "lost against" bucket ---
+    # opp=white, loss
+    games.append(_pgn(
+        _QUIET_ITALIAN, opponent_plays_white=True,
+        eco="C45", opening="Scotch Game", end_time=0, result="0-1",
+    ))
+
+    return games
+
+
+# ---------------------------------------------------------------------------
+# A second opening-results fixture adding a "*" (unfinished/aborted) game
+# to verify the contract that "*" games contribute to weighted_count but
+# to NONE of the W/L/D numerators and are excluded from win_rate's
+# denominator (so an all-aborted bucket has win_rate=None, not 0.0).
+# ---------------------------------------------------------------------------
+def _fixture_opening_results_with_aborted():
+    """The 7 games from _fixture_opening_results() PLUS 1 aborted game in a
+    NEW single-game bucket and 1 aborted game added to an EXISTING bucket.
+
+      row 8: opp=white, Result="*", opening "Caro-Kann Defense"
+             -> NEW bucket "Caro-Kann Defense" with weighted_count=1 and
+                win_rate=None (every game in it is "*").
+
+      row 9: opp=white, Result="*", opening "Italian Game"
+             -> ADDED to the existing Italian bucket. Its weighted_count
+                goes 3 -> 4, but its W/L/D numerators and win_rate stay
+                IDENTICAL (the "*" game contributes to the bucket's
+                weighted_count only). This is the decisive test of the
+                "*" denominator-exclusion contract.
+    """
+    good = _fixture_opening_results()
+    aborted = [
+        _pgn(
+            _QUIET_ITALIAN, opponent_plays_white=True,
+            eco="B10", opening="Caro-Kann Defense", end_time=0, result="*",
+        ),
+        _pgn(
+            _QUIET_ITALIAN, opponent_plays_white=True,
+            eco="C50", opening="Italian Game", end_time=0, result="*",
+        ),
+    ]
+    return good + aborted
 
 
 def _fixture_signals_with_bad_pgns():
@@ -888,6 +1102,495 @@ def _assert_unparseable_excluded(result_clean, result_dirty):
           f"and dirty (6+2 bad) fixtures — denominator consistency verified.")
 
 
+def _assert_time_controls(result):
+    """Assert `compute_time_control_distribution` on the 6-game fixture F.
+
+    Fixture F (neutral weighting, end_time=0 so weight=1.0 each):
+      3 games at [TimeControl "600+0"]  -> bucket "10+0"
+      2 games at [TimeControl "180+2"]  -> bucket "3+2"
+      1 game  at [TimeControl "60+0"]   -> bucket "1+0"
+
+    Closed-form expected values (weight=1.0 each, simple arithmetic over
+    6 games; only 3 buckets exist so all are within the top-N kept and
+    no "Other" bucket is created):
+
+      weighted_game_count   = 6.0
+      weighted_with_tc      = 6.0      (every game has a TC header)
+      distribution = {
+        "10+0": 3/6 = 0.5,
+        "3+2":  2/6 = 0.3333,
+        "1+0":  1/6 = 0.1667,
+      }   (sorted desc; no "Other" key)
+      most_common = "10+0"
+    """
+    print(f"\n  Time-control fixture results:")
+    print(f"    game_count           = {result['game_count']}  (expected 6)")
+    print(f"    weighted_game_count  = {result['weighted_game_count']}  (expected 6.0)")
+    print(f"    weighted_with_tc      = {result['weighted_with_tc']}  (expected 6.0)")
+    print(f"    most_common          = {result['most_common']}  (expected '10+0')")
+    print(f"    distribution         = {result['distribution']}")
+
+    assert result["sufficient"] is True, (
+        f"time-controls: 6 games is above MIN_STYLE_GAMES=3, "
+        f"got sufficient={result['sufficient']}"
+    )
+    assert result["game_count"] == 6, (
+        f"time-controls: expected 6 games, got {result['game_count']}"
+    )
+    assert abs(result["weighted_game_count"] - 6.0) < 1e-3, (
+        f"time-controls: weighted_game_count should be 6.0 under neutral "
+        f"weighting, got {result['weighted_game_count']}"
+    )
+    # Every game has a parseable [TimeControl], so the TC-bearing weight
+    # equals total weight (no data-quality gap).
+    assert abs(result["weighted_with_tc"] - 6.0) < 1e-3, (
+        f"time-controls: weighted_with_tc should equal weighted_game_count "
+        f"(every game has a TC header), got {result['weighted_with_tc']} "
+        f"vs {result['weighted_game_count']}"
+    )
+
+    distribution = result["distribution"]
+    assert distribution is not None, (
+        "time-controls: distribution should be populated on sufficient=True "
+        "with all games carrying a TC header"
+    )
+    # Exactly the 3 engineered buckets — no "Other" (only 3 buckets, well
+    # below _TOP_TIME_CONTROL_BUCKETS).
+    assert "Other" not in distribution, (
+        f"time-controls: with only 3 buckets no 'Other' should be created, "
+        f"got {distribution}"
+    )
+    assert set(distribution.keys()) == {"10+0", "3+2", "1+0"}, (
+        f"time-controls: expected buckets {{10+0, 3+2, 1+0}}, got "
+        f"{set(distribution.keys())}"
+    )
+    # Percentages (stored as fractions in [0, 1]).
+    assert abs(distribution["10+0"] - 0.5) < 1e-3, (
+        f"time-controls: '10+0' should be 3/6 = 0.5, got {distribution['10+0']}"
+    )
+    assert abs(distribution["3+2"] - (2 / 6)) < 1e-3, (
+        f"time-controls: '3+2' should be 2/6 = 0.3333, got {distribution['3+2']}"
+    )
+    assert abs(distribution["1+0"] - (1 / 6)) < 1e-3, (
+        f"time-controls: '1+0' should be 1/6 = 0.1667, got {distribution['1+0']}"
+    )
+    # Distribution sums to ~1.0 (it's a probability distribution).
+    total = sum(distribution.values())
+    assert abs(total - 1.0) < 1e-3, (
+        f"time-controls: distribution should sum to ~1.0, got {total}"
+    )
+    # Sorted by descending weight (matches the existing signal sorts).
+    keys_in_order = list(distribution.keys())
+    assert keys_in_order == ["10+0", "3+2", "1+0"], (
+        f"time-controls: distribution should be sorted desc, got {keys_in_order}"
+    )
+
+    # The single most-common bucket.
+    assert result["most_common"] == "10+0", (
+        f"time-controls: most_common should be '10+0' (3 of 6 games), "
+        f"got {result['most_common']}"
+    )
+    print(f"  [PASS] time-control distribution (neutral): 3 buckets, "
+          f"percentages match, most_common='10+0'")
+
+
+def _assert_time_control_recency_tilt(games, result):
+    """Assert the recency decay is OPERATIVE in compute_time_control_distribution.
+
+    Fixture G (designed so raw count and recency-weight disagree):
+      3 recent "10+0" games at end_time NOW            (weight 1.0 each)
+      4 OLD    "3+2" games at end_time NOW - 4 years    (weight ~0.135 each)
+
+    Raw count tilts toward "3+2" (4 > 3), so if this function were a raw
+    tally it would pick "3+2". With the recency decay reused from the rest
+    of the module (lambda=0.5/yr -> 4yr weight ~0.135), the weighted share
+    of "10+0" (3.0) dominates "3+2" (4 * 0.135 ~= 0.541), so the
+    most_common bucket flips to "10+0". This is the test that
+    distinguishes "reuse of the existing decay" from "raw count" — a
+    raw-tally implementation would FAIL this assertion.
+    """
+    expected_4yr_weight = 2.71828 ** (-0.5 * 4)
+    expected_3plus2_weight = 4 * expected_4yr_weight
+    expected_10plus0_weight = 3.0
+    expected_total = expected_10plus0_weight + expected_3plus2_weight
+    expected_10plus0_share = expected_10plus0_weight / expected_total
+    expected_3plus2_share = expected_3plus2_weight / expected_total
+
+    print(f"\n  Recency-tilt fixture closed-form:")
+    print(f"    4-yr-decay weight per game = {round(expected_4yr_weight, 4)}")
+    print(f"    weighted 10+0 = 3.0        weighted 3+2 = {round(expected_3plus2_weight, 4)}")
+    print(f"    expected share 10+0 = {round(expected_10plus0_share, 4)}")
+    print(f"    expected share 3+2  = {round(expected_3plus2_share, 4)}")
+    print(f"    raw counts: 10+0=3, 3+2=4  (raw tally would pick 3+2)")
+    print(f"    result most_common = {result['most_common']}")
+    print(f"    result distribution = {result['distribution']}")
+
+    assert result["sufficient"] is True, (
+        f"time-control recency: 7 games is above MIN_STYLE_GAMES, "
+        f"got sufficient={result['sufficient']}"
+    )
+    assert result["game_count"] == 7, (
+        f"time-control recency: expected 7 games, got {result['game_count']}"
+    )
+    distribution = result["distribution"]
+    assert distribution is not None, (
+        "time-control recency: distribution should be populated"
+    )
+    # The decisive assertion: recency tilts most_common to "10+0" even
+    # though raw counts favour "3+2".
+    assert result["most_common"] == "10+0", (
+        f"time-control recency: most_common should be '10+0' under recency "
+        f"weighting (3 recent > 4 four-year-old), got "
+        f"{result['most_common']} -- the function looks like a raw tally "
+        f"instead of reusing STYLE_RECENCY_DECAY_LAMBDA_PER_YEAR"
+    )
+    assert abs(distribution["10+0"] - expected_10plus0_share) < 1e-3, (
+        f"time-control recency: '10+0' share should be "
+        f"{expected_10plus0_share:.4f} under decay, got "
+        f"{distribution['10+0']}"
+    )
+    assert abs(distribution["3+2"] - expected_3plus2_share) < 1e-3, (
+        f"time-control recency: '3+2' share should be "
+        f"{expected_3plus2_share:.4f} under decay, got "
+        f"{distribution['3+2']}"
+    )
+    print(f"  [PASS] time-control recency tilt verified: most_common flips "
+          f"to the recent bucket ('10+0') despite losing raw-count "
+          f"(3 vs 4) — the existing decay constant is reused, not "
+          f"redefined.")
+
+
+def _assert_time_control_floor(result):
+    """Assert the MIN_STYLE_GAMES floor suppresses the time-control signal.
+
+    2 games (fixture F's first 2 rows) is below MIN_STYLE_GAMES=3, so
+    both `distribution` and `most_common` must be None — the sparring page
+    must NOT prefill a Time Control field off a 2-game opponent. This
+    matches the existing fall-through contract `compute_opponent_style`
+    uses via the same floor constant.
+    """
+    assert result["sufficient"] is False, (
+        f"time-control floor: 2 games is below MIN_STYLE_GAMES=3, "
+        f"got sufficient={result['sufficient']}"
+    )
+    assert result["game_count"] == 2, (
+        f"time-control floor: expected 2 games, got {result['game_count']}"
+    )
+    assert result["distribution"] is None, (
+        f"time-control floor: distribution should be None below floor, "
+        f"got {result['distribution']}"
+    )
+    assert result["most_common"] is None, (
+        f"time-control floor: most_common should be None below floor, "
+        f"got {result['most_common']}"
+    )
+    # transparency counts: the floor is on raw count, never weighted, so
+    # weighted_game_count is reported 0.0 in the insufficient path (matches
+    # compute_opponent_style below-floor response shape).
+    assert result["weighted_game_count"] == 0.0, (
+        f"time-control floor: weighted_game_count should be 0.0 below floor, "
+        f"got {result['weighted_game_count']}"
+    )
+    print(f"  [PASS] time-control floor: below MIN_STYLE_GAMES -> "
+          f"distribution=None, most_common=None (sparring page will not "
+          f"prefill).")
+
+
+def _assert_opening_results(result):
+    """Assert `compute_opening_results` on the 7-game fixture (mix of W/L/D).
+
+    Closed-form expected by_opening values (weight=1.0 each under neutral
+    end_time=0 — simple arithmetic over the games in each bucket):
+
+      "Italian Game":      3 games -> weighted_count=3.0
+        weighted_wins=1.0   weighted_losses=1.0   weighted_draws=1.0
+        win_rate = 1 / (1+1+1) = 0.3333
+
+      "Sicilian Defense":  3 games -> weighted_count=3.0
+        weighted_wins=2.0   weighted_losses=1.0   weighted_draws=0.0
+        win_rate = 2 / (2+1+0) = 0.6667
+
+      "Scotch Game":       1 game  -> weighted_count=1.0
+        weighted_wins=0.0   weighted_losses=1.0   weighted_draws=0.0
+        win_rate = 0 / (0+1+0) = 0.0
+        (the spec: "show every bucket with at least one game, however
+         small" — the NO-FLOOR contract is the decisive difference from
+         compute_time_control_distribution / compute_opponent_style.)
+
+    by_opening must be sorted by descending weighted_count. Italian and
+    Sicilian tie at 3.0 — a stable sort preserves insertion order, which
+    is the order the games were appended (Italian first, Sicilian second,
+    Scotch last). This is the order the spec wants ("most-played-first
+    ordering matches the frequency panel's").
+    """
+    print(f"\n  Opening-results fixture results:")
+    print(f"    game_count                          = {result['game_count']}  (expected 7)")
+    print(f"    weighted_game_count                 = {result['weighted_game_count']}  (expected 7.0)")
+    print(f"    weighted_parseable_game_count       = {result['weighted_parseable_game_count']}  (expected 7.0)")
+    print(f"    by_opening                          = {json.dumps(result['by_opening'], sort_keys=True)}")
+
+    assert result["game_count"] == 7, (
+        f"opening-results: expected 7 games, got {result['game_count']}"
+    )
+    # NO floor on this signal: sufficient is not in the response shape at
+    # all (unlike compute_time_control_distribution which returns
+    # sufficient=False below MIN_STYLE_GAMES). Asserting the key's
+    # ABSENCE is the regression guard for "don't add filtering".
+    assert "sufficient" not in result, (
+        f"opening-results: 'sufficient' must NOT be in the response "
+        f"(no floor per spec); got sufficient={result.get('sufficient')!r}"
+    )
+    assert abs(result["weighted_game_count"] - 7.0) < 1e-3, (
+        f"opening-results: weighted_game_count should be 7.0, got "
+        f"{result['weighted_game_count']}"
+    )
+    # Every game is parseable (all built via _pgn with a valid move list),
+    # so weighted_parseable_game_count == weighted_game_count.
+    assert abs(result["weighted_parseable_game_count"] - 7.0) < 1e-3, (
+        f"opening-results: weighted_parseable_game_count should equal "
+        f"weighted_game_count (all games parseable), got "
+        f"{result['weighted_parseable_game_count']}"
+    )
+
+    by_opening = result["by_opening"]
+    assert set(by_opening.keys()) == {
+        "Italian Game", "Sicilian Defense", "Scotch Game",
+    }, (
+        f"opening-results: expected 3 buckets {{Italian, Sicilian, Scotch}}, "
+        f"got {set(by_opening.keys())}"
+    )
+
+    # --- Italian Game: 1 W / 1 L / 1 D -> win_rate 1/3 ------------------
+    italian = by_opening["Italian Game"]
+    assert abs(italian["weighted_count"] - 3.0) < 1e-3, (
+        f"opening-results: Italian weighted_count should be 3.0, got "
+        f"{italian['weighted_count']}"
+    )
+    assert abs(italian["weighted_wins"] - 1.0) < 1e-3, (
+        f"opening-results: Italian weighted_wins should be 1.0, got "
+        f"{italian['weighted_wins']}"
+    )
+    assert abs(italian["weighted_losses"] - 1.0) < 1e-3, (
+        f"opening-results: Italian weighted_losses should be 1.0, got "
+        f"{italian['weighted_losses']}"
+    )
+    assert abs(italian["weighted_draws"] - 1.0) < 1e-3, (
+        f"opening-results: Italian weighted_draws should be 1.0, got "
+        f"{italian['weighted_draws']}"
+    )
+    assert abs(italian["win_rate"] - (1 / 3)) < 1e-3, (
+        f"opening-results: Italian win_rate should be 1/3 = 0.3333, got "
+        f"{italian['win_rate']}"
+    )
+    print(f"  [PASS] Italian Game: 1W/1L/1D -> win_rate={italian['win_rate']}")
+
+    # --- Sicilian Defense: 2 W / 1 L / 0 D -> win_rate 2/3 -------------
+    sicilian = by_opening["Sicilian Defense"]
+    assert abs(sicilian["weighted_count"] - 3.0) < 1e-3, (
+        f"opening-results: Sicilian weighted_count should be 3.0, got "
+        f"{sicilian['weighted_count']}"
+    )
+    assert abs(sicilian["weighted_wins"] - 2.0) < 1e-3, (
+        f"opening-results: Sicilian weighted_wins should be 2.0 (1 as "
+        f"black, 1 as white), got {sicilian['weighted_wins']}"
+    )
+    assert abs(sicilian["weighted_losses"] - 1.0) < 1e-3, (
+        f"opening-results: Sicilian weighted_losses should be 1.0 "
+        f"(as black), got {sicilian['weighted_losses']}"
+    )
+    assert abs(sicilian["weighted_draws"] - 0.0) < 1e-3, (
+        f"opening-results: Sicilian weighted_draws should be 0.0, got "
+        f"{sicilian['weighted_draws']}"
+    )
+    assert abs(sicilian["win_rate"] - (2 / 3)) < 1e-3, (
+        f"opening-results: Sicilian win_rate should be 2/3 = 0.6667, got "
+        f"{sicilian['win_rate']}"
+    )
+    print(f"  [PASS] Sicilian Defense: 2W/1L/0D (both colors) -> "
+          f"win_rate={sicilian['win_rate']}")
+
+    # --- Scotch Game: 0 W / 1 L / 0 D -> win_rate 0.0 (NO FLOOR) -------
+    # This is the spec's decisive no-floor assertion: a 1-game bucket
+    # MUST appear. If compute_opening_results had inherited
+    # MIN_STYLE_GAMES filtering, this bucket would be absent and the
+    # assertion would fail.
+    scotch = by_opening["Scotch Game"]
+    assert abs(scotch["weighted_count"] - 1.0) < 1e-3, (
+        f"opening-results: Scotch weighted_count should be 1.0, got "
+        f"{scotch['weighted_count']}"
+    )
+    assert abs(scotch["weighted_wins"] - 0.0) < 1e-3, (
+        f"opening-results: Scotch weighted_wins should be 0.0, got "
+        f"{scotch['weighted_wins']}"
+    )
+    assert abs(scotch["weighted_losses"] - 1.0) < 1e-3, (
+        f"opening-results: Scotch weighted_losses should be 1.0, got "
+        f"{scotch['weighted_losses']}"
+    )
+    assert abs(scotch["weighted_draws"] - 0.0) < 1e-3, (
+        f"opening-results: Scotch weighted_draws should be 0.0, got "
+        f"{scotch['weighted_draws']}"
+    )
+    assert scotch["win_rate"] == 0.0, (
+        f"opening-results: Scotch win_rate should be 0.0 (1 loss, 0 wins), "
+        f"got {scotch['win_rate']}"
+    )
+    print(f"  [PASS] Scotch Game: 0W/1L/0D (single-game bucket, NO floor) "
+          f"-> win_rate={scotch['win_rate']}")
+
+    # --- sort order: by descending weighted_count, stable on ties -----
+    # Italian (3.0) and Sicilian (3.0) tie; Scotch (1.0) last. A stable
+    # sort preserves insertion order (Italian before Sicilian, since the
+    # first Italian game was appended before the first Sicilian).
+    keys_in_order = list(by_opening.keys())
+    assert keys_in_order[0] in ("Italian Game", "Sicilian Defense"), (
+        f"opening-results: first bucket should be a 3-game bucket, got "
+        f"{keys_in_order[0]}"
+    )
+    assert keys_in_order[-1] == "Scotch Game", (
+        f"opening-results: last bucket should be Scotch (1 game, lowest "
+        f"weighted_count), got {keys_in_order[-1]} -- sort by descending "
+        f"weighted_count is broken"
+    )
+    print(f"  [PASS] by_opening sorted by descending weighted_count "
+          f"(order: {keys_in_order})")
+
+
+def _assert_opening_results_with_aborted(result, result_clean):
+    """Assert "*" (unfinished/aborted) games are handled per the contract.
+
+    Fixture = 7 clean games + 2 aborted games:
+      row 8: opp=white, Result="*", "Caro-Kann Defense"  -> NEW bucket
+      row 9: opp=white, Result="*", "Italian Game"        -> existing bucket
+
+    Contract checks (from compute_opening_results' docstring):
+      A. "*" contributes to the bucket's weighted_count only.
+      B. "*" contributes to NONE of the W/L/D numerators.
+      C. "*" is excluded from win_rate's denominator.
+      D. An ALL-"*" bucket has win_rate=None (not 0.0) — the honest
+         "absent", not "loses every game".
+
+    Concretely:
+      - "Caro-Kann Defense" is a new single-game bucket with
+        weighted_count=1.0, all W/L/D = 0.0, win_rate=None.
+      - "Italian Game" weighted_count goes 3.0 -> 4.0 (the aborted game
+        IS counted toward the bucket's mass), but its W/L/D numerators
+        and win_rate stay IDENTICAL to the clean fixture's Italian
+        bucket (1.0 / 1.0 / 1.0 / 0.3333) — the aborted game contributes
+        to weighted_count only and is excluded from win_rate's
+        denominator. This is the decisive test of (A)+(B)+(C).
+      - The other two buckets (Sicilian, Scotch) are untouched.
+    """
+    print(f"\n  Aborted-game fixture results:")
+    print(f"    game_count (dirty)        = {result['game_count']}  (expected 9)")
+    print(f"    weighted_game_count (dirty) = {result['weighted_game_count']}  (expected 9.0)")
+    print(f"    by_opening (dirty)         = {json.dumps(result['by_opening'], sort_keys=True)}")
+
+    assert result["game_count"] == 9, (
+        f"opening-results aborted: expected 9 games (7 clean + 2 aborted), "
+        f"got {result['game_count']}"
+    )
+    assert abs(result["weighted_game_count"] - 9.0) < 1e-3, (
+        f"opening-results aborted: weighted_game_count should be 9.0, "
+        f"got {result['weighted_game_count']}"
+    )
+    assert abs(result["weighted_parseable_game_count"] - 9.0) < 1e-3, (
+        f"opening-results aborted: weighted_parseable_game_count should be "
+        f"9.0 (aborted games are still parseable — they have valid PGNs, "
+        f"just result='*'), got {result['weighted_parseable_game_count']}"
+    )
+
+    by_opening = result["by_opening"]
+    # All four buckets present (the original 3 + the new Caro-Kann).
+    assert set(by_opening.keys()) == {
+        "Italian Game", "Sicilian Defense", "Scotch Game", "Caro-Kann Defense",
+    }, (
+        f"opening-results aborted: expected 4 buckets (Caro-Kann added), "
+        f"got {set(by_opening.keys())}"
+    )
+
+    # --- D: all-"*" bucket has win_rate=None ---------------------------
+    caro = by_opening["Caro-Kann Defense"]
+    assert abs(caro["weighted_count"] - 1.0) < 1e-3, (
+        f"opening-results aborted: Caro-Kann weighted_count should be 1.0, "
+        f"got {caro['weighted_count']}"
+    )
+    assert abs(caro["weighted_wins"] - 0.0) < 1e-3, (
+        f"opening-results aborted: Caro-Kann weighted_wins should be 0.0, "
+        f"got {caro['weighted_wins']}"
+    )
+    assert abs(caro["weighted_losses"] - 0.0) < 1e-3, (
+        f"opening-results aborted: Caro-Kann weighted_losses should be 0.0, "
+        f"got {caro['weighted_losses']}"
+    )
+    assert abs(caro["weighted_draws"] - 0.0) < 1e-3, (
+        f"opening-results aborted: Caro-Kann weighted_draws should be 0.0, "
+        f"got {caro['weighted_draws']}"
+    )
+    assert caro["win_rate"] is None, (
+        f"opening-results aborted: Caro-Kann win_rate should be None "
+        f"(every game in it is '*' -- no result signal), got "
+        f"{caro['win_rate']!r} -- the contract is None (absent), not 0.0 "
+        f"(would imply 'loses every game')"
+    )
+    print(f"  [PASS] Caro-Kann (all-'*') bucket: win_rate=None (honest "
+          f"'absent', not 0.0-as-signal)")
+
+    # --- A+B+C: "*" contributes to weighted_count only, not W/L/D, not
+    #     win_rate's denominator. Italian in the dirty fixture has the
+    #     aborted game added (weighted_count 3.0 -> 4.0) but its W/L/D
+    #     and win_rate are IDENTICAL to the clean fixture's Italian.
+    italian_dirty = by_opening["Italian Game"]
+    italian_clean = result_clean["by_opening"]["Italian Game"]
+    assert abs(italian_dirty["weighted_count"] - 4.0) < 1e-3, (
+        f"opening-results aborted: Italian weighted_count should be 4.0 "
+        f"(3 clean + 1 aborted), got {italian_dirty['weighted_count']}"
+    )
+    assert abs(italian_dirty["weighted_count"]
+               - italian_clean["weighted_count"] - 1.0) < 1e-3, (
+        f"opening-results aborted: Italian weighted_count should be "
+        f"clean+1 (the aborted game counts toward the bucket's mass), "
+        f"got {italian_dirty['weighted_count']} vs clean "
+        f"{italian_clean['weighted_count']}"
+    )
+    # W/L/D and win_rate IDENTICAL clean vs dirty.
+    assert italian_dirty["weighted_wins"] == italian_clean["weighted_wins"], (
+        f"opening-results aborted: Italian weighted_wins should be "
+        f"identical clean vs dirty (the '*' game contributes to NONE of "
+        f"the W/L/D numerators), got {italian_dirty['weighted_wins']} vs "
+        f"{italian_clean['weighted_wins']}"
+    )
+    assert italian_dirty["weighted_losses"] == italian_clean["weighted_losses"], (
+        f"opening-results aborted: Italian weighted_losses should be "
+        f"identical clean vs dirty, got {italian_dirty['weighted_losses']} "
+        f"vs {italian_clean['weighted_losses']}"
+    )
+    assert italian_dirty["weighted_draws"] == italian_clean["weighted_draws"], (
+        f"opening-results aborted: Italian weighted_draws should be "
+        f"identical clean vs dirty, got {italian_dirty['weighted_draws']} "
+        f"vs {italian_clean['weighted_draws']}"
+    )
+    assert italian_dirty["win_rate"] == italian_clean["win_rate"], (
+        f"opening-results aborted: Italian win_rate should be identical "
+        f"clean vs dirty (the '*' game is excluded from win_rate's "
+        f"denominator AND numerator, so the rate is unchanged), got "
+        f"{italian_dirty['win_rate']} vs {italian_clean['win_rate']}"
+    )
+    print(f"  [PASS] Italian bucket: aborted game added to weighted_count "
+          f"({italian_clean['weighted_count']} -> {italian_dirty['weighted_count']}) "
+          f"but W/L/D and win_rate IDENTICAL (decisive test of the "
+          f"'*' denominator-exclusion contract)")
+
+    # The other two buckets are untouched by the aborted additions.
+    for fam in ("Sicilian Defense", "Scotch Game"):
+        assert by_opening[fam] == result_clean["by_opening"][fam], (
+            f"opening-results aborted: {fam} should be identical clean vs "
+            f"dirty (no aborted game added to it), got "
+            f"{by_opening[fam]} vs {result_clean['by_opening'][fam]}"
+        )
+    print(f"  [PASS] Sicilian and Scotch buckets identical clean vs dirty")
+
+
 def main():
     print("opponent_style live test harness")
     print(f"NOW (unix) = {NOW}")
@@ -937,6 +1640,60 @@ def main():
     _print("E. SIGNALS + 2 BAD PGNs (8 rows, 6 parseable, neutral weighting)",
            sig_dirty, pool_e)
     _assert_unparseable_excluded(sig, sig_dirty)
+
+    # F. TIME-CONTROL DISTRIBUTION — synthetic games across 3 time-control
+    # buckets under neutral weighting, verifying both the percentage
+    # breakdown and the most-common pick (the spec for the new
+    # preferred/most-common time control signal).
+    print("\n=== F. TIME-CONTROL DISTRIBUTION (6 games across 3 buckets, neutral) ===")
+    tc_games = _fixture_time_controls()
+    tc_result = style_mod.compute_time_control_distribution(tc_games)
+    print(json.dumps(tc_result, indent=2, default=str))
+    _assert_time_controls(tc_result)
+
+    # G. TIME-CONTROL RECENCY TILT — same buckets, but the bucket with FEWER
+    # raw games is RECENT and the bucket with MORE raw games is OLD. With
+    # the recency decay applied (reuse of STYLE_RECENCY_DECAY_LAMBDA_PER
+    # _YEAR), the recent bucket must win "most_common" despite losing on
+    # raw count — proving this new function inherits the same decay the
+    # other signals use, instead of being a raw-tally shortcut.
+    print("\n=== G. TIME-CONTROL RECENCY TILT (recency overrides raw count) ===")
+    tc_tilt_games = _fixture_time_controls_recency_tilt()
+    tc_tilt_result = style_mod.compute_time_control_distribution(tc_tilt_games)
+    print(json.dumps(tc_tilt_result, indent=2, default=str))
+    _assert_time_control_recency_tilt(tc_tilt_games, tc_tilt_result)
+
+    # H. TIME-CONTROL FLOOR — sub-MIN_STYLE_GAMES game set must report
+    # sufficient=False and None for both the distribution and the most-
+    # common pick, so the sparring page never prefills off a 2-game
+    # opponent (the same fall-through contract compute_opponent_style uses).
+    print("\n=== H. TIME-CONTROL BELOW FLOOR (2 games) ===")
+    tc_thin_games = _fixture_time_controls()[:2]
+    tc_thin_result = style_mod.compute_time_control_distribution(tc_thin_games)
+    print(json.dumps(tc_thin_result, indent=2, default=str))
+    _assert_time_control_floor(tc_thin_result)
+
+    # I. OPENING RESULTS — 7 games across 3 openings, opponent playing both
+    # colors, mix of wins/losses/draws. Verifies the win-rate math against
+    # a closed-form expected value AND the NO-FLOOR contract (a 1-game
+    # Scotch bucket with win_rate=0.0 must appear, not be filtered).
+    print("\n=== I. OPENING RESULTS (7 games, 3 openings, both colors, W/L/D) ===")
+    or_games = _fixture_opening_results()
+    or_result = style_mod.compute_opening_results(or_games)
+    print(json.dumps(or_result, indent=2, default=str))
+    _assert_opening_results(or_result)
+
+    # J. OPENING RESULTS WITH ABORTED GAMES — the 7-game fixture PLUS 2
+    # deliberately-aborted games (Result="*"): one in a NEW single-game
+    # bucket, one added to an EXISTING bucket. Verifies the "*" denominator-
+    # exclusion contract: "*" contributes to weighted_count only, to NONE
+    # of the W/L/D numerators, and is excluded from win_rate's denominator
+    # (an all-"*" bucket has win_rate=None, not 0.0-as-signal).
+    print("\n=== J. OPENING RESULTS WITH ABORTED GAMES (7 clean + 2 aborted) ===")
+    or_dirty_games = _fixture_opening_results_with_aborted()
+    or_dirty_result = style_mod.compute_opening_results(or_dirty_games)
+    print(json.dumps(or_dirty_result, indent=2, default=str))
+    _assert_opening_results_with_aborted(or_dirty_result, or_result)
 
     print("\nAll assertions passed.")
 
