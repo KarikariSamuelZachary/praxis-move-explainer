@@ -684,6 +684,19 @@ def _analyze_game(
                                               #   window (impossible for a
                                               #   real game that reached
                                               #   ply 10+, but defensive).
+        "result": str,                       # OPPONENT-POV result:
+                                              #   "win"|"loss"|"draw"|"*"
+                                              #   translated from the PGN
+                                              #   [Result] header via the
+                                              #   opponent's resolved
+                                              #   color. Feeds
+                                              #   compute_opening_results'
+                                              #   per-opening W/L/D
+                                              #   breakdown; paired with
+                                              #   `family` below so the W/
+                                              #   L/D buckets are the SAME
+                                              #   buckets opening_family_lean
+                                              #   uses (no forked binning).
       }
 
     All non-sacrifice signals here are derived by replaying the mainline
@@ -698,6 +711,35 @@ def _analyze_game(
     opponent_color = _opponent_color(game, normalized_opponent)
     if opponent_color is None:
         return None
+
+    # PGN `[Result]` header: "1-0" (white wins), "0-1" (black wins),
+    # "1/2-1/2" (draw — also seen as "½-½"), or "*" (unfinished/aborted).
+    # Normalized to "win"/"loss"/"draw"/"*" from the OPPONENT's POV — the
+    # game-level result is flipped for the opponent-of-the-opponent. Used by
+    # `compute_opening_results` for the per-opening W/L/D breakdown (the
+    # spec for "Openings He Lost Against"); sharing the same `_analyze_game`
+    # pass the other signals use means opening_family_lean and the new
+    # per-opening W/L/D use the EXACT same bucketing `_opening_family`
+    # produces (no forked/reimplemented binning).
+    raw_result = (game.headers.get("Result") or "").strip()
+    if opponent_color == chess.WHITE:
+        if raw_result == "1-0":
+            result: str = "win"
+        elif raw_result == "0-1":
+            result = "loss"
+        elif raw_result in ("1/2-1/2", "½-½"):
+            result = "draw"
+        else:
+            result = "*"
+    else:
+        if raw_result == "0-1":
+            result = "win"
+        elif raw_result == "1-0":
+            result = "loss"
+        elif raw_result in ("1/2-1/2", "½-½"):
+            result = "draw"
+        else:
+            result = "*"
 
     mainline = list(game.mainline_moves())
     if not mainline:
@@ -773,7 +815,494 @@ def _analyze_game(
         "queens_on_at_end": queens_on_at_end,
         "queens_off_at_end": queens_off_at_end,
         "setup_snapshots": setup_snapshots,
+        # OPPONENT-POV result ("win"/"loss"/"draw"/"*") from the [Result]
+        # header. Surfaced here so `compute_opening_results` reuses the
+        # SAME `_opening_family(game)` call `opening_family_lean` already
+        # makes in this function — no forked binning.
+        "result": result,
     }
+
+
+# --- preferred / most-common time control (sparring-page prefill) ----------
+#
+# Separate signal from the five aggregate style signals above: the
+# opponent's most common `[TimeControl]` over their imported games, used by
+# the Opponent Preparation / Sparring page to prefill the Time Control
+# field when starting a sparring game (the spec: "prefill the Time Control
+# field when starting a sparring game").
+#
+# Unlike the other signals (which are derived by replaying each game's
+# mainline), this one is read straight from the PGN's `[TimeControl]`
+# header (format "base+inc" in seconds, e.g. "180+2"). python-chess is NOT
+# asked to build the full game tree here: we scan the PGN header block with
+# a regex and stop, so the cost is sub-millisecond per game even on a
+# 200-game opponent (no mainline replay). This is what lets us compute it
+# inline in `list_opponent_profiles` (which already aggregates across many
+# opponents) without blowing the sparring-page load budget.
+#
+# Top-N buckets by recency-weighted share are kept as named labels (e.g.
+# "3+2", "10+0", "1+0"); anything outside the top few folds into "Other"
+# so the sparring-page dropdown isn't polluted with one-off tournament
+# controls. Recency weighting reuses the SAME decay as the other signals
+# (STYLE_RECENCY_DECAY_LAMBDA_PER_YEAR via _game_recency_weight) so all
+# signals in this module age on the same timescale — do NOT redefine a
+# decay rate here.
+_TOP_TIME_CONTROL_BUCKETS = 4
+
+# Match a PGN `[TimeControl "value"]` header line. PGN headers are
+# bracketed and quoted; movetext never starts with `[Key` at column 0 so
+# this anchored-multiline regex is header-section-specific without needing
+# to find the blank-line separator.
+_TC_HEADER_LINE_RE = re.compile(r'^\[TimeControl\s+"([^"]*)"\]', re.MULTILINE)
+
+# `[TimeControl]` body formats we honour (per the PGN spec):
+#   * "base+inc"  — base seconds + increment seconds (e.g. "180+2").
+#   * "base"      — base seconds only (increment defaults to 0). Some
+#                   exports emit this for increment-less time controls.
+# Any other form (the spec also permits "*", "-", or hourglass forms) we
+# treat as "no time control" rather than a malformed bucket — these are
+# vanishingly rare in the providers we import from, and folding them into
+# "Other" would conflate "different control" with "no signal".
+_TC_BASE_INC_RE = re.compile(r"^\s*(\d+)\+(\d+)\s*$")
+_TC_BASE_ONLY_RE = re.compile(r"^\s*(\d+)\s*$")
+
+
+def _time_control_header(pgn: str) -> str:
+    """Return the raw `[TimeControl]` body string from a PGN, or "".
+
+    Reads ONLY the header block via a regex (no python-chess parsing) so
+    this is cheap enough to run inline on every game in a per-opponent
+    listing endpoint. Empty/missing header -> "" (caller treats as None).
+    """
+    if not pgn:
+        return ""
+    m = _TC_HEADER_LINE_RE.search(pgn)
+    return m.group(1) if m else ""
+
+
+def _time_control_label(tc_header: str) -> Optional[str]:
+    """Map a PGN `[TimeControl]` body to a human-readable label, or None.
+
+    Honoured formats (per the PGN spec): "base+inc" (seconds + increment)
+    and the base-only form. Returns a "M+I" label where M is the base in
+    whole minutes when the base divides cleanly by 60 (the overwhelmingly
+    common case — every standard chess time control is minute-aligned),
+    e.g. "180+2" -> "3+2", "600+0" -> "10+0", "60+0" -> "1+0". For a
+    non-minute-aligned base (rare tournament controls like 90+30: back-to-
+    back 45-minute halves) we keep a "Ns+I" label (seconds explicit) so the
+    bucket is unambiguous rather than collapsing into Other silently.
+
+    Returns None for empty / unparseable headers so the caller excludes
+    the game from the denominator — same denominator-consistency contract
+    the other signals use: a row without a parseable time control is a
+    data-quality gap, not evidence that the opponent prefers "no time
+    control".
+    """
+    if not tc_header:
+        return None
+    m = _TC_BASE_INC_RE.match(tc_header)
+    if m:
+        base_sec = int(m.group(1))
+        inc = int(m.group(2))
+    else:
+        m = _TC_BASE_ONLY_RE.match(tc_header)
+        if not m:
+            return None
+        base_sec = int(m.group(1))
+        inc = 0
+    if base_sec < 0 or inc < 0:
+        return None
+    if base_sec % 60 == 0:
+        return f"{base_sec // 60}+{inc}"
+    return f"{base_sec}s+{inc}"
+
+
+def compute_time_control_distribution(games) -> Dict[str, Any]:
+    """Recency-weighted distribution of an opponent's `[TimeControl]` headers.
+
+    `games` is an iterable of dicts each with keys {"pgn", "end_time"} —
+    the same row shape `compute_opponent_style` reads from
+    `opponent_games`. Each game's PGN header is scanned (regex; NO mainline
+    replay) for `[TimeControl]`, normalized to a human-readable "M+I" label
+    via `_time_control_label`, and accumulated into a per-bucket weight
+    using the SAME recency decay as the other signals
+    (`STYLE_RECENCY_DECAY_LAMBDA_PER_YEAR`, half-life ~1.39 yr) via
+    `_game_recency_weight`. Games with a missing or unparseable
+    `[TimeControl]` header contribute to NEITHER numerator nor denominator
+    (denominator consistency — a row without a time control is a data-
+    quality gap, not a player-style signal).
+
+    Gated by the existing `MIN_STYLE_GAMES` floor constant: below it,
+    distribution and most_common are both None so the caller never
+    prefills a Time Control field off a 1- or 2-game opponent's history
+    (same fall-through contract compute_opponent_style uses).
+
+    Top-N buckets by recency-weighted share are reported individually;
+    everything else is folded into a single "Other" bucket so the sparring
+    dropdown only surfaces the controls the opponent actually plays (the
+    spec: "grouping anything outside the top few buckets into 'Other'").
+    N is `_TOP_TIME_CONTROL_BUCKETS`.
+
+    Returns a dict shaped:
+        {
+          "sufficient": bool,            # game_count >= MIN_STYLE_GAMES
+          "game_count": int,            # raw count, for transparency
+          "weighted_game_count": float, # sum of ALL per-game weights
+                                         #   (incl. games w/o a TC header)
+          "weighted_with_tc": float,    # sum of weights for games that
+                                         #   had a parseable [TimeControl];
+                                         #   denominator for the fractions
+          "distribution": dict | None,   # {bucket: fraction} summing to
+                                         #   ~1.0; top-N buckets by weight
+                                         #   kept, rest folded into the
+                                         #   "Other" bucket (Other always
+                                         #   last regardless of weight, to
+                                         #   keep the named buckets in
+                                         #   descending rank). None iff
+                                         #   below floor OR no game had a
+                                         #   parseable TC header.
+          "most_common": str | None,     # the top-ranked individual bucket
+                                         #   (never "Other"); None iff
+                                         #   distribution is None.
+        }
+    """
+    rows = list(games)
+    game_count = len(rows)
+    if game_count < MIN_STYLE_GAMES:
+        return {
+            "sufficient": False,
+            "game_count": game_count,
+            "weighted_game_count": 0.0,
+            "weighted_with_tc": 0.0,
+            "distribution": None,
+            "most_common": None,
+        }
+
+    import time as _time
+
+    now_unix = _time.time()
+    weighted_game_count = 0.0
+    weighted_with_tc = 0.0
+    bucket_weight: Dict[str, float] = {}
+
+    for row in rows:
+        end_time = int(row.get("end_time") or 0)
+        pgn = row.get("pgn") or ""
+        weight = _game_recency_weight(end_time, now_unix)
+        weighted_game_count += weight
+
+        tc_header = _time_control_header(pgn)
+        tc_label = _time_control_label(tc_header)
+        if tc_label is None:
+            continue
+
+        weighted_with_tc += weight
+        bucket_weight[tc_label] = bucket_weight.get(tc_label, 0.0) + weight
+
+    if weighted_with_tc <= 0.0 or not bucket_weight:
+        return {
+            "sufficient": True,
+            "game_count": game_count,
+            "weighted_game_count": round(weighted_game_count, 4),
+            "weighted_with_tc": 0.0,
+            "distribution": None,
+            "most_common": None,
+        }
+
+    # Normalize to fractions (sum ~1.0) over the games that had a TC header.
+    distribution_full: Dict[str, float] = {
+        bucket: w / weighted_with_tc for bucket, w in bucket_weight.items()
+    }
+    # Keep the top-N individual buckets by weight; fold the rest into
+    # "Other". The single most common INDIVIDUAL bucket is, by definition,
+    # the top-ranked of these N — so we can read most_common off `top`
+    # before "Other" is added, and "Other" can never win that rank.
+    ranked = sorted(
+        distribution_full.items(), key=lambda kv: kv[1], reverse=True
+    )
+    top = ranked[:_TOP_TIME_CONTROL_BUCKETS]
+    rest = ranked[_TOP_TIME_CONTROL_BUCKETS:]
+    most_common = top[0][0]
+    distribution: Dict[str, float] = {
+        bucket: round(frac, 4) for bucket, frac in top
+    }
+    # Re-sort the named (non-"Other") buckets by descending weight for
+    # caller convenience + readability, matching the sort the existing
+    # opening_family_lean / castling_side_distribution use.
+    distribution = dict(
+        sorted(distribution.items(), key=lambda kv: kv[1], reverse=True)
+    )
+    other_frac = sum(frac for _, frac in rest)
+    if other_frac > 0.0:
+        # "Other" always last, regardless of its summed weight, so the
+        # named buckets stay in their ranked order and a caller scanning
+        # the dict sees the real preferred controls first.
+        distribution["Other"] = round(other_frac, 4)
+
+    return {
+        "sufficient": True,
+        "game_count": game_count,
+        "weighted_game_count": round(weighted_game_count, 4),
+        "weighted_with_tc": round(weighted_with_tc, 4),
+        "distribution": distribution,
+        "most_common": most_common,
+    }
+
+
+# --- per-opening win/loss/draw breakdown (Opponent Prep "Openings He Lost") -
+#
+# The Train page's "Most Played Openings" view already shows opening
+# FREQUENCY via `opening_family_lean`. The Opponent Preparation page needs
+# a SECOND view of the SAME buckets: the opponent's actual result in each
+# one — for the "Openings He Lost Against" panel. The contract (the spec):
+#
+#   * Reuse the EXACT same opening-bucketing logic as opening_family_lean
+#     — same `_opening_family` extractor, same bins. Do NOT reimplement or
+#     fork the binning. We achieve this by parsing each PGN through the
+#     existing `_analyze_game` and reading its already-computed `family`
+#     + the new `result` field — the same single python-chess parse the
+#     other signals use, no second parse, no second extractor call path.
+#
+#   * For each bucket: win/loss/draw WEIGHTED counts and a win-rate % for
+#     the OPPONENT in that opening, weighted by the SAME recency decay
+#     already used everywhere else in this module
+#     (`STYLE_RECENCY_DECAY_LAMBDA_PER_YEAR` via `_game_recency_weight`).
+#
+#   * NO minimum-sample floor (the spec: "show every bucket with at least
+#     one game, however small. This is deliberate, don't add filtering").
+#     A 1-game opponent with a lone loss in the Sicilian WILL show a
+#     Sicilian bucket with win_rate 0.0 — this is signal, not noise, for
+#     a preparation page whose explicit purpose is "Openings He Lost
+#     Against". This intentionally diverges from compute_opponent_style /
+#     compute_time_control_distribution, which both gate on
+#     MIN_STYLE_GAMES.
+#
+# DENOMINATOR / COUNT CONTRACT:
+#   * `weighted_count` of each bucket = sum of that bucket's per-game
+#     recency weights (same unit as `weighted_game_count` elsewhere).
+#   * `win_rate` = weighted_wins / (weighted_wins + weighted_losses +
+#     weighted_draws). Drawn games are in the DENOMINATOR (a draw is a
+#     game played, not a win) but not the numerator (a draw is not a win).
+#   * Games with result "*" (unfinished/aborted) contribute to NONE of
+#     the three W/L/D weighted counts AND are excluded from the win_rate
+#     denominator — an unfinished game tells us nothing about whether
+#     the opponent tends to win or lose in that opening. They DO still
+#     count toward the bucket's weighted_count (the game WAS played, we
+#     have it on file), so weighted_count is the honest "how many of
+#     this opponent's games were in this opening" while the W/L/D counts
+#     sum to <= weighted_count by exactly the weighted "*" mass.
+#   * Unparseable PGNs (and games where the opponent's color can't be
+#     resolved) are excluded from every count here, matching the
+#     denominator-consistency contract the other signals use.
+def compute_opening_results(games) -> Dict[str, Any]:
+    """Per-opening W/L/D breakdown for one opponent, weighted by recency.
+
+    `games` is an iterable of dicts each with keys {"pgn", "end_time"} —
+    the same row shape `compute_opponent_style` and
+    `compute_time_control_distribution` read. Each PGN is parsed through
+    the existing `_analyze_game` (the one `compute_opponent_style` uses
+    for every other signal), so the `family` label assigned here is the
+    EXACT label `opening_family_lean` assigns — no forked/reimplemented
+    binning. The new `result` field `_analyze_game` now returns is
+    consumed here; nothing else in `_analyze_game` was changed to serve
+    this signal.
+
+    NO minimum-sample floor: EVERY bucket with at least one parseable
+    game is reported, however small (the spec is explicit — do not add
+    filtering). A 1-game single-loss bucket shows `win_rate=0.0`; that's
+    signal, not noise, for a "Lost Against" panel.
+
+    Returns a dict shaped:
+        {
+          "game_count": int,                # raw count of input rows
+          "weighted_game_count": float,     # sum of ALL per-game weights
+                                             #   (incl. unparseable PGNs)
+          "weighted_parseable_game_count": float,  # sum of weights for
+                                                    #   parseable games;
+                                                    #   denominator of
+                                                    #   weighted_count
+                                                    #   across buckets
+          # Cross-game sacrifice frequency (recency-weighted). Sourced
+          # from the same per-game loop that builds by_opening — no
+          # second PGN parse, no second `_analyze_game` call. None iff
+          # the corpus had zero opponent moves (empty corpus / every
+          # game unparseable). The frontend uses this to derive a
+          # playing-style pill on the Opponent Preparation page.
+          "weighted_sacrifice_frequency": float | None,
+          "by_opening": dict,                # {family: {
+                                             #   "weighted_count": float,
+                                             #   "weighted_wins":   float,
+                                             #   "weighted_losses": float,
+                                             #   "weighted_draws":  float,
+                                             #   "win_rate":        float|None,
+                                             # }} — win_rate is None iff
+                                             # the bucket has zero
+                                             # decided/drawn games (every
+                                             # game in it was "*" aborted
+                                             # OR the bucket is empty).
+                                             # Sorted by descending
+                                             # weighted_count so the
+                                             # "Openings He Lost Against"
+                                             # panel's most-played-first
+                                             # ordering matches the
+                                             # frequency panel's.
+        }
+
+    `by_opening` keys are the SAME family labels `opening_family_lean`
+    returns — so the Opponent Preparation page's frequency and results
+    views of the same opponent come back from one endpoint call
+    (list_opponent_profiles) and zip together by key without a remap.
+    """
+    rows = list(games)
+    game_count = len(rows)
+
+    import time as _time
+
+    now_unix = _time.time()
+    weighted_game_count = 0.0
+    weighted_parseable_game_count = 0.0
+    # Cross-game style aggregates surfaced as top-level keys on the
+    # response (separate from the per-bucket by_opening shape). Free
+    # piggyback on the existing game loop — `_analyze_game` already
+    # returns `sacrifices` and `opponent_moves` per game, so we sum the
+    # weighted counts here without a second pass. The frontend reads
+    # `weighted_sacrifice_frequency` to derive a "playing style" pill
+    # (Passive / Balanced / Aggressive).
+    weighted_sacrifices = 0.0
+    weighted_opponent_moves = 0.0
+
+    # Per-bucket accumulators. The shape mirrors the by_opening entry shape
+    # (without win_rate, which is derived at the end) so the final assembly
+    # is a 1:1 copy-out, not a transform.
+    bucket_weight: Dict[str, float] = {}
+    bucket_wins: Dict[str, float] = {}
+    bucket_losses: Dict[str, float] = {}
+    bucket_draws: Dict[str, float] = {}
+
+    for row in rows:
+        end_time = int(row.get("end_time") or 0)
+        pgn = row.get("pgn") or ""
+        weight = _game_recency_weight(end_time, now_unix)
+
+        analyzed = _analyze_game(pgn, _normalize_username_for_result(row, pgn))
+        if analyzed is None:
+            weighted_game_count += weight
+            continue
+
+        weighted_game_count += weight
+        weighted_parseable_game_count += weight
+        # Piggyback: each game contributes its weighted sac count and
+        # weighted opponent-move count. Denominator-guarded below (avoid
+        # ZeroDivision when the corpus is empty / all unparseable).
+        weighted_sacrifices += weight * float(analyzed.get("sacrifices", 0))
+        weighted_opponent_moves += weight * float(
+            analyzed.get("opponent_moves", 0)
+        )
+
+        family = analyzed["family"]
+        result = analyzed["result"]
+
+        bucket_weight[family] = bucket_weight.get(family, 0.0) + weight
+        # "*" (unfinished/aborted) contributes to the bucket's
+        # weighted_count only — it's in none of the W/L/D numerators and
+        # excluded from win_rate's denominator. See the DENOMINATOR /
+        # COUNT CONTRACT above.
+        if result == "win":
+            bucket_wins[family] = bucket_wins.get(family, 0.0) + weight
+        elif result == "loss":
+            bucket_losses[family] = bucket_losses.get(family, 0.0) + weight
+        elif result == "draw":
+            bucket_draws[family] = bucket_draws.get(family, 0.0) + weight
+        # result == "*" -> no W/L/D accumulator touch.
+
+    by_opening: Dict[str, Dict[str, Any]] = {}
+    for family in bucket_weight:
+        w_count = bucket_weight[family]
+        w_wins = bucket_wins.get(family, 0.0)
+        w_losses = bucket_losses.get(family, 0.0)
+        w_draws = bucket_draws.get(family, 0.0)
+        decided_or_drawn = w_wins + w_losses + w_draws
+        if decided_or_drawn > 0.0:
+            win_rate = w_wins / decided_or_drawn
+        else:
+            # Every game in this bucket was "*" (unfinished/aborted). The
+            # bucket is real (weighted_count > 0) but we have no result
+            # signal — None is the honest "absent", not 0.0-as-signal
+            # (0.0 would imply "the opponent loses every game here" when
+            # the truth is "we don't know"). Distinct from the
+            # sufficient-floor None of compute_opponent_style per the
+            # denominator-consistency docstring contract.
+            win_rate = None
+        by_opening[family] = {
+            "weighted_count": round(w_count, 4),
+            "weighted_wins": round(w_wins, 4),
+            "weighted_losses": round(w_losses, 4),
+            "weighted_draws": round(w_draws, 4),
+            "win_rate": (round(win_rate, 4) if win_rate is not None else None),
+        }
+
+    # Sort by descending weighted_count so the "Openings He Lost Against"
+    # panel's most-played-first ordering matches the frequency panel's
+    # (opening_family_lean also sorts by descending weight). Stable sort
+    # preserves insertion order for ties, which on equal-weight buckets
+    # means most-recent-game-first (rows iterate in the SQL's end_time
+    # DESC order for the live caller; our test fixtures insert in a
+    # stable order too).
+    by_opening = dict(
+        sorted(
+            by_opening.items(),
+            key=lambda kv: kv[1]["weighted_count"],
+            reverse=True,
+        )
+    )
+
+    # Cross-game sacrifice frequency. None when there were no opponent
+    # moves at all (defensive — the existing games-loop never increments
+    # the denominator for an opponent's non-moves, so this only triggers
+    # for an empty corpus or one where every parseable game had zero
+    # opponent plies, both impossible in real data but cheap to guard).
+    if weighted_opponent_moves > 0.0:
+        weighted_sacrifice_frequency = round(
+            weighted_sacrifices / weighted_opponent_moves, 4
+        )
+    else:
+        weighted_sacrifice_frequency = None
+
+    return {
+        "game_count": game_count,
+        "weighted_game_count": round(weighted_game_count, 4),
+        "weighted_parseable_game_count": round(weighted_parseable_game_count, 4),
+        "by_opening": by_opening,
+        "weighted_sacrifice_frequency": weighted_sacrifice_frequency,
+    }
+
+
+def _normalize_username_for_result(row: Dict[str, Any], pgn: str) -> str:
+    """Whose-result-is-this resolver for compute_opening_results.
+
+    `compute_opening_results` takes raw {pgn, end_time, ...} rows (the
+    shape `list_opponent_profiles` already aggregates), so it doesn't
+    have a pre-resolved `opponent_username` to hand `_analyze_game` the
+    way `compute_opponent_style` does. The opponent's username is encoded
+    in the PGN's `[White]`/`[Black]` headers, and `_opponent_color` (which
+    `_analyze_game` calls) compares the casefolded name against them.
+
+    We surface the name from the row if the caller put it there (the live
+    endpoint path through `list_opponent_profiles` does); the name is
+    normalized via `_normalize_username` to match the contract
+    `_opponent_color` expects (a casefolded name, the same
+    `compute_opponent_style` produces via `_normalize_username` before
+    calling `_analyze_game`). Without this normalization the comparison
+    against the already-casefolded PGN header values would silently
+    mismatch on any mixed-case username. Returns "" if the caller didn't
+    set it, so `_opponent_color`'s existing ambiguity handling drops the
+    game. The live path always sets it, so this is a pure plumbing
+    helper, not a heuristic.
+    """
+    name = row.get("opponent_username")
+    if not name:
+        return ""
+    return _normalize_username(str(name))
 
 
 def compute_opponent_style(
