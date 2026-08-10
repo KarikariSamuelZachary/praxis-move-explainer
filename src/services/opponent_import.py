@@ -6,6 +6,10 @@ from psycopg2.extras import Json, RealDictCursor
 from core import database
 from integrations.chess_com import fetch_recent_chesscom_games
 from integrations.lichess import fetch_recent_lichess_games
+from services.opponent_game_analysis import (
+    run_opponent_game_analysis,
+    try_start_opponent_analysis,
+)
 from services.opponent_repertoire import index_opponent_game
 
 log = logging.getLogger(__name__)
@@ -95,6 +99,8 @@ def run_opponent_import_job(job_id: str) -> None:
         raise RuntimeError("Database connection pool is not initialized")
 
     conn = database.connection_pool.getconn()
+    job: Optional[Dict[str, Any]] = None
+    providers_to_analyze: list[tuple[str, str]] = []
     try:
         job = _load_job_for_update(conn, job_id)
         if not job:
@@ -134,12 +140,55 @@ def run_opponent_import_job(job_id: str) -> None:
         else:
             _mark_job_completed(conn, job_id, imported_count)
         conn.commit()
+
+        # Build the list of (provider, username) pairs to chain the
+        # Stockfish analysis after. Only on a clean import (no errors).
+        if not errors:
+            if job.get("lichess_username"):
+                providers_to_analyze.append(
+                    ("lichess", job["lichess_username"])
+                )
+            if job.get("chesscom_username"):
+                providers_to_analyze.append(
+                    ("chesscom", job["chesscom_username"])
+                )
     except Exception as exc:  # noqa: BLE001
         conn.rollback()
         log.exception("Opponent import job failed: %s", job_id)
         _mark_job_failed_after_rollback(job_id, str(exc))
     finally:
         database.connection_pool.putconn(conn)
+
+    # --- Chain the Stockfish analysis AFTER releasing the import conn ---
+    # The import is committed and the conn is back in the pool. The
+    # analysis trigger does its own single-transaction state check + flip
+    # (try_start_opponent_analysis), then the worker processes unanalyzed
+    # games one at a time. Both get their own conns from the pool.
+    #
+    # This runs synchronously in the same background thread as the import
+    # — the HTTP response was already sent (the endpoint returns 202
+    # immediately). The frontend polls the import job's status (which is
+    # already "completed"), navigates to the sparring page, and then
+    # polls the analysis status endpoint for "Analyzing… 47/124".
+    if job and providers_to_analyze:
+        for provider, username in providers_to_analyze:
+            try:
+                trigger = try_start_opponent_analysis(
+                    requested_by_user_id=job["requested_by_user_id"],
+                    provider=provider,
+                    opponent_username=username,
+                )
+                if trigger["should_run"]:
+                    run_opponent_game_analysis(
+                        requested_by_user_id=job["requested_by_user_id"],
+                        provider=provider,
+                        opponent_username=username,
+                    )
+            except Exception:  # noqa: BLE001
+                log.exception(
+                    "Failed to trigger opponent analysis for %s/%s",
+                    provider, username,
+                )
 
 
 def _load_job_for_update(conn, job_id: str) -> Optional[Dict[str, Any]]:
