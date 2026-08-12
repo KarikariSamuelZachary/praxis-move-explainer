@@ -1,6 +1,6 @@
 'use client';
 
-import { KnightMark } from './LandingNav';
+import { KnightMark } from '@/components/layout/KnightMark';
 
 type CtaSectionProps = {
   onSignUp: () => void;
