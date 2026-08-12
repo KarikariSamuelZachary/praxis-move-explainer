@@ -52,7 +52,7 @@ export default function LandingNav({ onSignIn, onSignUp, onNavigate }: LandingNa
           : 'border-b border-transparent bg-transparent'
       }`}
     >
-      <div className="mx-auto flex h-[72px] w-full max-w-[1400px] items-center justify-between px-5 sm:px-8">
+      <div className="mx-auto flex h-14 w-full max-w-[1400px] items-center justify-between px-5 sm:px-8">
         <button
           type="button"
           onClick={() => onNavigate('#home')}
