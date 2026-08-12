@@ -1,9 +1,10 @@
 'use client';
 
-import Image from 'next/image';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { useState } from 'react';
+
+import { KnightMark } from '@/components/layout/KnightMark';
 
 type NavItem = {
   href: string;
@@ -73,7 +74,7 @@ export default function TopNav() {
       {/* Desktop top nav */}
       <nav className="fixed inset-x-0 top-0 z-40 flex h-11 items-center justify-between border-b border-black/40 px-10 text-white shadow-[0_4px_20px_rgba(0,0,0,0.45)] [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] xl:px-12 2xl:px-16">
         <Link href="/puzzles" className="flex items-center gap-3 transition hover:opacity-80">
-          <Image src="/praxis-logo.png" alt="Praxis" width={28} height={28} className="h-7 w-7 object-contain" />
+          <KnightMark className="h-7 w-6" />
           <span className="text-xl font-bold tracking-[0.16em]">PRAXIS</span>
         </Link>
 
@@ -113,7 +114,7 @@ export default function TopNav() {
           <div className="border-b border-black/40 px-5 py-4 text-white [background-image:linear-gradient(rgba(0,0,0,0.7),rgba(0,0,0,0.7)),url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
             <div className="flex items-center justify-between">
               <Link href="/puzzles" onClick={() => setIsOpen(false)} className="flex items-center gap-2 transition hover:opacity-80">
-                <Image src="/praxis-logo.png" alt="Praxis" width={28} height={28} className="h-7 w-7 object-contain" />
+                <KnightMark className="h-7 w-6" />
                 <span className="text-xl font-bold tracking-[0.16em]">PRAXIS</span>
               </Link>
               <button
