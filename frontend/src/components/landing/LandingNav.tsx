@@ -1,6 +1,6 @@
 'use client';
 
-import { useLayoutEffect, useRef } from 'react';
+import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import gsap from 'gsap';
 
 import { KnightMark } from '@/components/layout/KnightMark';
@@ -21,7 +21,15 @@ type LandingNavProps = {
 };
 
 export default function LandingNav({ onSignIn, onSignUp, onNavigate }: LandingNavProps) {
+  const [scrolled, setScrolled] = useState(false);
   const navRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    const onScroll = () => setScrolled(window.scrollY > 40);
+    onScroll();
+    window.addEventListener('scroll', onScroll, { passive: true });
+    return () => window.removeEventListener('scroll', onScroll);
+  }, []);
 
   useLayoutEffect(() => {
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
@@ -38,7 +46,11 @@ export default function LandingNav({ onSignIn, onSignUp, onNavigate }: LandingNa
   return (
     <header
       ref={navRef}
-      className="fixed inset-x-0 top-0 z-50 border-b border-transparent bg-transparent transition-colors duration-500"
+      className={`fixed inset-x-0 top-0 z-50 transition-colors duration-500 ${
+        scrolled
+          ? 'border-b border-black/40 backdrop-blur-md [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.png)] [background-size:cover] [background-position:center]'
+          : 'border-b border-transparent bg-transparent'
+      }`}
     >
       <div className="mx-auto flex h-[72px] w-full max-w-[1400px] items-center justify-between px-5 sm:px-8">
         <button
