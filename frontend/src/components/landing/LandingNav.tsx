@@ -52,15 +52,15 @@ export default function LandingNav({ onSignIn, onSignUp, onNavigate }: LandingNa
           : 'border-b border-transparent bg-transparent'
       }`}
     >
-      <div className="mx-auto flex h-14 w-full max-w-[1400px] items-center justify-between px-5 sm:px-8">
+      <div className="mx-auto flex h-12 w-full max-w-[1400px] items-center justify-between px-5 sm:px-8">
         <button
           type="button"
           onClick={() => onNavigate('#home')}
           className="group flex items-center gap-3"
           aria-label="Praxis home"
         >
-          <KnightMark className="h-9 w-7 transition-transform duration-500 group-hover:scale-105" />
-          <span className="font-display text-lg font-semibold tracking-[0.28em] text-gold">
+          <KnightMark className="h-7 w-6 transition-transform duration-500 group-hover:scale-105" />
+          <span className="font-display text-xl font-bold tracking-[0.16em] text-gold">
             PRAXIS
           </span>
         </button>
@@ -71,7 +71,7 @@ export default function LandingNav({ onSignIn, onSignUp, onNavigate }: LandingNa
               key={link.label}
               type="button"
               onClick={() => onNavigate(link.hash)}
-              className="text-[13px] font-medium tracking-wide text-wood-mute transition-colors duration-300 hover:text-gold-bright"
+              className="text-sm font-semibold text-wood-mute transition-colors duration-300 hover:text-gold-bright"
             >
               {link.label}
             </button>
