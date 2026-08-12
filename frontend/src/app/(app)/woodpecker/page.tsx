@@ -293,7 +293,7 @@ export default function WoodpeckerPage() {
   const puzzleUnavailable = hasQueueRemaining && !currentPuzzle;
 
   return (
-    <div className="relative -mt-2 h-[calc(100vh-2.25rem)] w-full overflow-hidden px-6 pb-[10px] pt-6 text-white lg:px-10 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+    <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-hidden px-6 pb-[10px] pt-6 text-white lg:px-10 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
       <div className="mx-auto h-full w-full max-w-[1760px]">
         {isLoading ? (
           <div className="flex h-[70vh] items-center justify-center">

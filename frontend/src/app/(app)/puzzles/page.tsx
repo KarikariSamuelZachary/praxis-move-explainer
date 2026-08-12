@@ -355,7 +355,7 @@ export default function PuzzlesPage() {
     currentPuzzle && getSideToMove(currentPuzzle) === 'black' ? 'Black' : 'White';
 
   return (
-    <div className="min-h-[calc(100vh-2.25rem)] -mt-2 text-white [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+    <div className="min-h-[calc(100vh-2.5rem)] -mt-2 text-white [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
       <div className="mx-auto max-w-[1760px] pb-1 px-6 lg:px-10">
         {/* Main content */}
         {isLoading ? (
