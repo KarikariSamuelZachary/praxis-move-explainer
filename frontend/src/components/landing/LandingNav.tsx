@@ -48,7 +48,7 @@ export default function LandingNav({ onSignIn, onSignUp, onNavigate }: LandingNa
       ref={navRef}
       className={`fixed inset-x-0 top-0 z-50 transition-colors duration-500 ${
         scrolled
-          ? 'border-b border-black/40 backdrop-blur-md [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.png)] [background-size:cover] [background-position:center]'
+          ? 'border-b border-white/5 bg-walnut-950/85 backdrop-blur-md'
           : 'border-b border-transparent bg-transparent'
       }`}
     >
