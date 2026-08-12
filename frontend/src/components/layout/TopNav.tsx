@@ -37,7 +37,7 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
             className={`relative inline-flex h-12 items-center px-2 text-sm font-semibold transition ${
               isActive
                 ? 'text-white after:absolute after:bottom-0 after:left-2 after:right-2 after:h-0.5 after:bg-[#10b981]'
-                : 'text-white/80 hover:text-white'
+                : 'text-wood-mute hover:text-gold-bright'
             }`}
           >
             <span>{item.label}</span>
@@ -75,7 +75,7 @@ export default function TopNav() {
       <nav className="fixed inset-x-0 top-0 z-40 flex h-12 items-center justify-between border-b border-black/40 px-10 text-white shadow-[0_4px_20px_rgba(0,0,0,0.45)] [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] xl:px-12 2xl:px-16">
         <Link href="/puzzles" className="flex items-center gap-3 transition hover:opacity-80">
           <KnightMark className="h-7 w-6" />
-          <span className="font-display text-xl font-bold tracking-[0.16em]">PRAXIS</span>
+          <span className="font-display text-xl font-bold tracking-[0.16em] text-gold">PRAXIS</span>
         </Link>
 
         <div className="hidden items-center gap-8 lg:flex">
@@ -115,7 +115,7 @@ export default function TopNav() {
             <div className="flex items-center justify-between">
               <Link href="/puzzles" onClick={() => setIsOpen(false)} className="flex items-center gap-2 transition hover:opacity-80">
                 <KnightMark className="h-7 w-6" />
-                <span className="font-display text-xl font-bold tracking-[0.16em]">PRAXIS</span>
+                <span className="font-display text-xl font-bold tracking-[0.16em] text-gold">PRAXIS</span>
               </Link>
               <button
                 type="button"
