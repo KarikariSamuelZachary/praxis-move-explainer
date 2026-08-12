@@ -1,27 +1,9 @@
 'use client';
 
-import { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { useLayoutEffect, useRef } from 'react';
 import gsap from 'gsap';
 
-export function KnightMark({ className = '' }: { className?: string }) {
-  return (
-    <div
-      aria-hidden
-      className={className}
-      style={{
-        WebkitMaskImage: 'url(/knight-mask.png)',
-        maskImage: 'url(/knight-mask.png)',
-        WebkitMaskSize: 'contain',
-        maskSize: 'contain',
-        WebkitMaskRepeat: 'no-repeat',
-        maskRepeat: 'no-repeat',
-        WebkitMaskPosition: 'center',
-        maskPosition: 'center',
-        background: 'linear-gradient(160deg, #efd9a7 10%, #d9b87c 55%, #a37f45 100%)',
-      }}
-    />
-  );
-}
+import { KnightMark } from '@/components/layout/KnightMark';
 
 const LINKS = [
   { label: 'Puzzles', hash: '#puzzles' },
@@ -39,15 +21,7 @@ type LandingNavProps = {
 };
 
 export default function LandingNav({ onSignIn, onSignUp, onNavigate }: LandingNavProps) {
-  const [scrolled, setScrolled] = useState(false);
   const navRef = useRef<HTMLElement>(null);
-
-  useEffect(() => {
-    const onScroll = () => setScrolled(window.scrollY > 40);
-    onScroll();
-    window.addEventListener('scroll', onScroll, { passive: true });
-    return () => window.removeEventListener('scroll', onScroll);
-  }, []);
 
   useLayoutEffect(() => {
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
@@ -64,11 +38,7 @@ export default function LandingNav({ onSignIn, onSignUp, onNavigate }: LandingNa
   return (
     <header
       ref={navRef}
-      className={`fixed inset-x-0 top-0 z-50 transition-colors duration-500 ${
-        scrolled
-          ? 'border-b border-white/5 bg-walnut-950/85 backdrop-blur-md'
-          : 'border-b border-transparent bg-transparent'
-      }`}
+      className="fixed inset-x-0 top-0 z-50 border-b border-transparent bg-transparent transition-colors duration-500"
     >
       <div className="mx-auto flex h-[72px] w-full max-w-[1400px] items-center justify-between px-5 sm:px-8">
         <button
