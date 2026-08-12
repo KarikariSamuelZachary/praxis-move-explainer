@@ -540,7 +540,7 @@ export default function TrainPage() {
   );
 
   return (
-    <div className="relative h-[calc(100vh-2.75rem)] w-full overflow-hidden px-6 py-6 text-white lg:px-12 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+    <div className="relative h-[calc(100vh-3rem)] w-full overflow-hidden px-6 py-6 text-white lg:px-12 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
       <div className="mx-auto flex h-full max-w-[1600px] flex-col justify-center gap-5">
         <RecommendedPanel />
 
