@@ -4,8 +4,8 @@ import DustCanvas from './DustCanvas';
 
 const PILLARS = [
   {
-    title: 'Lessons',
-    copy: 'Structured lessons to guide your journey from beginner to advanced player.',
+    title: 'Repertoire',
+    copy: 'Build and drill your own opening repertoire with spaced-repetition scheduling that keeps every line fresh.',
     icon: (
       <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" strokeWidth="1.4" className="h-12 w-12">
         <path d="M24 10c-4-3-10-4-16-3v30c6-1 12 0 16 3 4-3 10-4 16-3V7c-6-1-12 0-16 3z" />
