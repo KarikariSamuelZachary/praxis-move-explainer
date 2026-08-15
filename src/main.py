@@ -14,7 +14,7 @@ from core.database import init_db
 from core.migrations import run_migrations
 from engines.maia_engine import close_maia3, start_maia3
 from engines.stockfish_engine import STOCKFISH_CANDIDATE_PATHS
-from routers import import_games, maia_debug, onboarding, puzzles, review, train, user, webhooks, woodpecker
+from routers import import_games, maia_debug, onboarding, puzzles, repertoire, review, train, user, webhooks, woodpecker
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT_DIR / ".env")
@@ -128,6 +128,7 @@ app.include_router(train.router, prefix="/api")
 app.include_router(user.router, prefix="/api/user")
 app.include_router(webhooks.router, prefix="/webhooks")
 app.include_router(woodpecker.router, prefix="/api/woodpecker")
+app.include_router(repertoire.router, prefix="/api/repertoires")
 app.include_router(maia_debug.router, prefix="/api")
 
 # --- App Running? ---
