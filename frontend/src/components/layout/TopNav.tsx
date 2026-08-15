@@ -16,7 +16,7 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/train', label: 'Train' },
   { href: '/review', label: 'Game Review' },
   { href: '/woodpecker', label: 'Woodpecker' },
-  { href: '/lessons', label: 'Lessons' },
+  { href: '/repertoire', label: 'Repertoire' },
   { href: '/openings', label: 'Openings' },
   { href: '/community', label: 'Community' },
 ];
