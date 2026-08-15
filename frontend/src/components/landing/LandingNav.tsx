@@ -9,7 +9,7 @@ const LINKS = [
   { label: 'Puzzles', hash: '#puzzles' },
   { label: 'Game Review', hash: '#review' },
   { label: 'Woodpecker', hash: '#woodpecker' },
-  { label: 'Lessons', hash: '#more' },
+  { label: 'Repertoire', hash: '#more' },
   { label: 'Openings', hash: '#more' },
   { label: 'Community', hash: '#more' },
 ];
