@@ -166,10 +166,148 @@ def run_migrations():
                     ON woodpecker_entries(user_id, is_mastered)
                 """
             )
+
+            # --- repertoires ------------------------------------------------
+            # User-owned opening repertoires. Each repertoire is a named
+            # collection of positions for one color, and owns N
+            # repertoire_positions rows which carry per-position FSRS
+            # scheduling state — the same FSRS column shape as
+            # woodpecker_entries, but with a TEXT `state` (default 'Learning')
+            # instead of an INTEGER FSRS State enum to keep raw trainer state
+            # human-readable here.
+            #
+            # user_id tracks users(clerk_id) as TEXT — same convention as
+            # woodpecker_entries / opponent_games / every other user FK in
+            # this schema. ON DELETE CASCADE so deleting a Clerk user removes
+            # their repertoires and (via the secondary CASCADE) all positions.
             cur.execute(
                 """
-                CREATE INDEX IF NOT EXISTS idx_tactical_rating_history_user_id
-                    ON tactical_rating_history(user_id)
+                CREATE TABLE IF NOT EXISTS repertoires (
+                    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    user_id     TEXT NOT NULL REFERENCES users(clerk_id) ON DELETE CASCADE,
+                    name        TEXT NOT NULL,
+                    color       TEXT NOT NULL CHECK (color IN ('white', 'black')),
+                    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS repertoire_positions (
+                    id             UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    repertoire_id  UUID NOT NULL REFERENCES repertoires(id) ON DELETE CASCADE,
+                    -- fen is normalized to the first 4 FEN fields only
+                    -- (board, side-to-move, castling rights, en passant
+                    -- square). The halfmove clock and fullmove number MUST
+                    -- be stripped by the writer before INSERT, so two
+                    -- positions that differ only in those counters collapse
+                    -- to the same row and honor UNIQUE(repertoire_id, fen).
+                    fen            TEXT NOT NULL,
+                    -- UCI format (e.g. "e2e4", "e7e8q"); NOT SAN.
+                    move           TEXT NOT NULL,
+                    due            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    stability      DOUBLE PRECISION,
+                    difficulty     DOUBLE PRECISION,
+                    state          TEXT NOT NULL DEFAULT 'Learning',
+                    step           INTEGER,
+                    reps           INTEGER NOT NULL DEFAULT 0,
+                    lapses         INTEGER NOT NULL DEFAULT 0,
+                    last_review    TIMESTAMPTZ,
+                    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (repertoire_id, fen)
+                )
+                """
+            )
+            # Enforce the TEXT `state` vocabulary at the DB layer:
+            # woodpecker_entries.state has CHECK (state IN (1, 2, 3))
+            # for its INTEGER FSRS state; repertoire_positions.state
+            # is TEXT and stores the FSRS State enum NAME, so the
+            # parallel check is on the three legal names. This is the
+            # only thing stopping a bad write from corrupting the
+            # column with an arbitrary string.
+            cur.execute(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM information_schema.check_constraints
+                        WHERE constraint_name = 'repertoire_positions_state_check'
+                    ) THEN
+                        ALTER TABLE repertoire_positions
+                            ADD CONSTRAINT repertoire_positions_state_check
+                            CHECK (state IN ('Learning', 'Review', 'Relearning'));
+                    END IF;
+                END $$;
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_repertoire_positions_repertoire_due
+                    ON repertoire_positions(repertoire_id, due)
+                """
+            )
+
+            # --- repertoire training sessions -------------------------------
+            # Session-level training log: ONE row per training/review
+            # session against a repertoire. `mode` distinguishes a full
+            # re-train pass ('train') from a spaced-review pass ('review').
+            # `completed_at` is NULL for in-progress/abandoned sessions;
+            # non-NULL marks a finished session and is what the list
+            # endpoint ranks by (latest completed session per repertoire).
+            # positions_correct / positions_total carry the raw score so
+            # last_score_percent can be derived without a second join.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS repertoire_training_sessions (
+                    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    repertoire_id     UUID NOT NULL REFERENCES repertoires(id) ON DELETE CASCADE,
+                    mode              TEXT NOT NULL CHECK (mode IN ('review', 'train')),
+                    positions_total   INTEGER NOT NULL,
+                    positions_correct INTEGER NOT NULL DEFAULT 0,
+                    started_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    completed_at      TIMESTAMPTZ
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_repertoire_training_sessions_repertoire_completed
+                    ON repertoire_training_sessions(repertoire_id, completed_at DESC)
+                """
+            )
+            # Enforce positions_total > 0 at the DB layer. A zero-total
+            # session row would make last_score_percent a divide-by-zero
+            # in GET /api/repertoires (positions_correct * 100.0 /
+            # positions_total) and would also be semantically bogus: a
+            # training session against an empty position set is a
+            # client-side no-op, not a server-side row. Writers must
+            # refuse to insert one (the start endpoint returns 400
+            # before INSERT when positions is empty); this CHECK is the
+            # backstop so a buggy writer or future code path can't
+            # land a zero-total row that would later poison the score
+            # computation. Mirrors the DO $$ idempotent guard style
+            # used by woodpecker_entries_state_check and
+            # repertoire_positions_state_check above — the CREATE
+            # TABLE above is IF NOT EXISTS, so an existing install
+            # that predates this constraint needs the ADD CONSTRAINT
+            # path rather than failing on a duplicate CREATE.
+            cur.execute(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM information_schema.check_constraints
+                        WHERE constraint_name = 'repertoire_training_sessions_positions_total_check'
+                    ) THEN
+                        ALTER TABLE repertoire_training_sessions
+                            ADD CONSTRAINT repertoire_training_sessions_positions_total_check
+                            CHECK (positions_total > 0);
+                    END IF;
+                END $$;
                 """
             )
 
