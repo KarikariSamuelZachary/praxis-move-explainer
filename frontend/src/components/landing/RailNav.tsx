@@ -43,7 +43,7 @@ export default function RailNav({ onNavigate }: RailNavProps) {
       aria-label="Section navigation"
       className="fixed left-7 top-1/2 z-40 hidden -translate-y-1/2 xl:block"
     >
-      <div className="relative flex flex-col gap-7">
+      <div className="relative flex w-28 flex-col gap-7">
         <div
           aria-hidden
           className="absolute -left-3 top-1 bottom-1 w-px bg-gradient-to-b from-transparent via-white/10 to-transparent"
@@ -65,7 +65,7 @@ export default function RailNav({ onNavigate }: RailNavProps) {
                 {section.num}
               </span>
               <span
-                className={`text-[10px] font-semibold uppercase tracking-[0.22em] transition-colors duration-500 ${
+                className={`block w-full overflow-hidden text-ellipsis whitespace-nowrap text-[10px] font-semibold uppercase tracking-[0.22em] transition-colors duration-500 ${
                   isActive ? 'text-cream' : 'text-stone-600 group-hover:text-wood-mute'
                 }`}
               >
