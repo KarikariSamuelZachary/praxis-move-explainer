@@ -67,7 +67,7 @@ export default function CtaSection({ onSignUp }: CtaSectionProps) {
       </div>
 
       <footer className="relative border-t border-white/5">
-        <div className="mx-auto flex w-full max-w-[1400px] items-center justify-between px-5 py-8 sm:px-8 xl:pl-28">
+        <div className="mx-auto flex w-full max-w-[1400px] items-center justify-between px-5 py-8 sm:px-8 xl:pl-44">
           <div className="flex items-center gap-3">
             <KnightMark className="h-6 w-5 opacity-80" />
             <span className="font-display text-xs font-semibold tracking-[0.28em] text-gold/80">
