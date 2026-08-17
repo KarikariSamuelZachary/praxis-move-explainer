@@ -157,7 +157,7 @@ export default function Hero({ onStartTraining, onExplore }: HeroProps) {
 
       <DustCanvas />
 
-      <div className="relative z-10 mx-auto grid w-full max-w-[1400px] items-center gap-12 px-5 pb-24 pt-32 sm:px-8 lg:grid-cols-2 lg:gap-6 lg:pb-16 lg:pt-20 xl:pl-28">
+      <div className="relative z-10 mx-auto grid w-full max-w-[1400px] items-center gap-12 px-5 pb-24 pt-32 sm:px-8 lg:grid-cols-2 lg:gap-6 lg:pb-16 lg:pt-20 xl:pl-44">
         <div ref={textRef} className="max-w-2xl">
           <h1 className="font-display text-[2.3rem] font-semibold leading-[1.14] tracking-wide text-gold-bright sm:text-5xl lg:text-[2.9rem] xl:text-[3.35rem]">
             <span data-hero-line className="block">
