@@ -42,7 +42,7 @@ export default function MoreSection() {
   return (
     <section id="more" className="relative">
       <DustCanvas />
-      <div className="relative z-10 mx-auto w-full max-w-[1400px] px-5 py-28 sm:px-8 lg:py-40 xl:pl-28">
+      <div className="relative z-10 mx-auto w-full max-w-[1400px] px-5 py-28 sm:px-8 lg:py-40 xl:pl-44">
         <div className="grid gap-14 sm:grid-cols-3 sm:gap-8 lg:gap-14">
           {PILLARS.map((pillar, index) => (
             <div
