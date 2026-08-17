@@ -64,13 +64,13 @@ export default function LandingPage() {
     };
   }, []);
 
-  // Walnut-themed viewport scrollbar while the landing page is mounted.
-  // App pages use inner scroll containers, so this only visibly affects
-  // the marketing route.
+  // Deep-brown viewport scrollbar (matches the navbar) while the landing
+  // page is mounted. App pages use inner scroll containers, so this only
+  // visibly affects the marketing route.
   useEffect(() => {
-    document.documentElement.classList.add('wood-scrollbar');
+    document.documentElement.classList.add('landing-scrollbar');
     return () => {
-      document.documentElement.classList.remove('wood-scrollbar');
+      document.documentElement.classList.remove('landing-scrollbar');
     };
   }, []);
 
