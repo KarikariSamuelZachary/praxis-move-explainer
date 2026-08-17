@@ -128,7 +128,7 @@ class _FakeCursor:
             # params = (repertoire_id, fen, move) — matches the only
             # INSERT shape the service emits.
             rid, fen, move = params
-            key = (str(rid), fen)
+            key = (str(rid), fen, move)
             existing = self.conn.positions.get(key)
             if existing is None:
                 # Simulate INSERT with migration defaults.
@@ -151,9 +151,8 @@ class _FakeCursor:
                 self.conn.positions[key] = row
                 self.rowcount = 1
             else:
-                # ON CONFLICT (repertoire_id, fen) DO UPDATE
-                #   SET move = EXCLUDED.move, updated_at = NOW()
-                existing["move"] = move
+                # ON CONFLICT (repertoire_id, fen, move) DO UPDATE
+                #   SET updated_at = NOW()
                 existing["updated_at"] = _NOW
                 self.rowcount = 1
                 row = existing
@@ -171,14 +170,14 @@ class _FakeCursor:
 
 class _FakeConn:
     """psycopg2 conn stand-in: holds repertoires (by id) and the
-    repertoire_positions store keyed by (repertoire_id, fen)."""
+    repertoire_positions store keyed by (repertoire_id, fen, move)."""
 
     def __init__(self, repertoires: Dict[str, Dict]) -> None:
         self.repertoires = repertoires
-        # (repertoire_id, fen) -> row dict. This key IS the migration's
-        # UNIQUE (repertoire_id, fen) constraint — making the dedup
-        # observable from tests.
-        self.positions: Dict[Tuple[str, str], Dict] = {}
+        # (repertoire_id, fen, move) -> row dict. This key IS the
+        # migration's UNIQUE (repertoire_id, fen, move) constraint —
+        # making the per-move dedup observable from tests.
+        self.positions: Dict[Tuple[str, str, str], Dict] = {}
         self._seq = 0
 
     def cursor(self, cursor_factory=None) -> _FakeCursor:
@@ -253,83 +252,84 @@ def test_normalize_fen_strips_clock_and_fullmove() -> None:
     _print_pass("6-field FEN -> 4-field normalized (clock + fullmove stripped)")
 
 
-def test_replay_and_plan_skips_opponent_plies_white_owner() -> None:
-    _print_section("TEST 2: _replay_and_plan skips opponent (black) plies for white repertoire")
-    # 1.e4 e5 2.Nf3 Nc6 3.Bc4 — owner plays white, so only plies
-    # 0/2/4 should produce plans. Plies 1/3 (black's replies) are
-    # replayed onto the board so the line keeps going, but emit no
-    # row themselves.
+def test_replay_and_plan_persists_every_ply_white_owner() -> None:
+    _print_section("TEST 2: _replay_and_plan persists EVERY ply (white owner)")
+    # 1.e4 e5 2.Nf3 Nc6 3.Bc4 — every ply is persisted now (both
+    # owner AND opponent rows), so all 5 plies produce plans. The
+    # owner_color argument is accepted for API stability but does not
+    # filter the plan anymore.
     moves = ["e2e4", "e7e5", "g1f3", "b8c6", "f1c4"]
     plans = _replay_and_plan(moves, repertoire_color="white")
-    assert len(plans) == 3, (
-        f"5-ply line for a white repertoire must produce 3 plans "
-        f"(one per white-ply), got {len(plans)}"
+    assert len(plans) == 5, (
+        f"5-ply line must produce 5 plans (one per ply, both sides "
+        f"persisted), got {len(plans)}"
     )
-    # POINT 5: every plan's fen must report white-to-move (field
-    # index 1 of the normalized FEN). If even one plan landed on a
-    # black-to-move fen, the spec was violated.
-    for p in plans:
-        side = p.fen.split()[1]
-        assert side == "w", (
-            f"plan {p!r} has black-to-move fen {p.fen!r}; opponent "
-            f"plies must be skipped, not written"
-        )
     planned_moves = [p.move for p in plans]
-    assert planned_moves == ["e2e4", "g1f3", "f1c4"], (
-        f"planned moves should be the white plies in ply order, "
+    assert planned_moves == ["e2e4", "e7e5", "g1f3", "b8c6", "f1c4"], (
+        f"planned moves should be every ply in ply order, "
         f"got {planned_moves}"
     )
+    # Side-to-move alternates w/b/w/b/w across the plans.
+    sides = [p.fen.split()[1] for p in plans]
+    assert sides == ["w", "b", "w", "b", "w"], (
+        f"plan side-to-move sequence should alternate w/b/w/b/w; "
+        f"got {sides}"
+    )
     _print_pass(
-        "5-ply (e4 e5 Nf3 Nc6 Bc4) -> 3 white-side plans; black plies "
-        "replayed for board state but skipped from the plan"
+        "5-ply -> 5 plans in ply order, side-to-move alternates w/b/w/b/w"
     )
 
 
-def test_replay_and_plan_skips_opponent_plies_black_owner() -> None:
-    _print_section("TEST 3: _replay_and_plan skips opponent (white) plies for black repertoire")
-    # Same line, but owner = BLACK — the rows are emitted for plies
-    # 1 and 3 (the black moves), and plies 0/2/4 (white's moves) are
-    # replayed only. Point 5 must hold symmetrically in both colors.
+def test_replay_and_plan_persists_every_ply_black_owner() -> None:
+    _print_section("TEST 3: _replay_and_plan persists EVERY ply (black owner)")
+    # Same line, owner = BLACK. The new writer persists every ply
+    # regardless of owner color, so all 5 plies still produce plans
+    # (the owner_color arg does not filter).
     moves = ["e2e4", "e7e5", "g1f3", "b8c6", "f1c4"]
     plans = _replay_and_plan(moves, repertoire_color="black")
-    assert len(plans) == 2, (
-        f"5-ply line for a black repertoire must produce 2 plans "
-        f"(one per black-ply), got {len(plans)}"
+    assert len(plans) == 5, (
+        f"5-ply line for a black repertoire must produce 5 plans "
+        f"(every ply persisted regardless of owner color), got "
+        f"{len(plans)}"
     )
-    for p in plans:
-        side = p.fen.split()[1]
-        assert side == "b", (
-            f"plan {p!r} has white-to-move fen {p.fen!r}; opponent "
-            f"plies must be skipped, not written"
-        )
     planned_moves = [p.move for p in plans]
-    assert planned_moves == ["e7e5", "b8c6"], (
-        f"planned moves should be the black plies in ply order, "
+    assert planned_moves == ["e2e4", "e7e5", "g1f3", "b8c6", "f1c4"], (
+        f"planned moves should be every ply in ply order, "
         f"got {planned_moves}"
     )
     _print_pass(
-        "5-ply (e4 e5 Nf3 Nc6 Bc4) -> 2 black-side plans; white plies "
-        "replayed for board state but skipped from the plan"
+        "5-ply -> 5 plans regardless of owner color (every ply persisted)"
     )
 
 
 def test_upsert_transposition_dedupes_to_one_row() -> None:
     """POINT 3 (the headline case): two different move orders that
     transpose into the same position produce ONE repertoire_positions
-    row for that transposition point, not two. The mechanism is the
-    migration's UNIQUE (repertoire_id, fen) + the
-    ON CONFLICT (repertoire_id, fen) DO UPDATE SET move = EXCLUDED.move
-    in the INSERT — verified here end-to-end through the fake conn
-    which simulates both.
+    row for that transposition point's shared move, not two. The
+    mechanism is the migration's UNIQUE (repertoire_id, fen, move) +
+    the ON CONFLICT (repertoire_id, fen, move) DO UPDATE SET
+    updated_at = NOW() in the INSERT — verified here end-to-end
+    through the fake conn which simulates both.
 
     Fixture (Italian Game reached via 1.Nf3 vs 1.e4 orders):
-      Line A: 1.Nf3 Nc6 2.e4 e5 3.Bc4  (white moves: Nf3, e4, Bc4)
-      Line B: 1.e4 e5 2.Nf3 Nc6 3.Bc4  (white moves: e4, Nf3, Bc4)
+      Line A: 1.Nf3 Nc6 2.e4 e5 3.Bc4
+      Line B: 1.e4 e5 2.Nf3 Nc6 3.Bc4
     Both reach the SAME position (1.e4 e5 2.Nf3 Nc6) with white to
-    move, and both continue 3.Bc4. The (T, 'f1c4') row from that
-    transposition point must land as ONE row in the store, not two.
+    move, and both continue 3.Bc4. The (T, transposition_fen, 'f1c4')
+    row from that transposition point must land as ONE row in the
+    store, not two.
+
+    NOTE: with the new save-every-ply writer, the two lines ALSO
+    share rows at intermediate positions (1.e4 e5 is reached both
+    ways → the (after-e4, 'e7e5') row dedupes; 1.Nf3 Nc6 is reached
+    both ways → the (after-Nf3, 'b8c6') row dedupes). And the START
+    position now holds TWO rows ('g1f3' from line A and 'e2e4' from
+    line B) — a fork, which is correct diverging-repertoire behavior
+    under the new model. We assert the headline transposition
+    dedupes; we do NOT assert the old "every FEN appears at most
+    once" invariant because that invariant no longer holds by design.
     """
-    _print_section("TEST 4: transposition -> ONE row at the transposition FEN, not two")
+    _print_section("TEST 4: transposition -> ONE row at the transposition (fen, move), not two")
 
     conn, rid = _make_white_repertoire()
 
@@ -359,9 +359,10 @@ def test_upsert_transposition_dedupes_to_one_row() -> None:
     ]
     assert len(rows_at_transposition) == 1, (
         f"transposition fen {transposition_fen!r} should have exactly "
-        f"ONE row after both lines, got {len(rows_at_transposition)}. "
-        f"Either the FEN normalization is wrong (clock/fullmove leaks "
-        f"back in) OR the ON CONFLICT clause isn't deduping."
+        f"ONE row (for 'f1c4') after both lines, got "
+        f"{len(rows_at_transposition)}. Either the FEN normalization "
+        f"is wrong (clock/fullmove leaks back in) OR the ON CONFLICT "
+        f"clause isn't deduping on (repertoire_id, fen, move)."
     )
     the_row = rows_at_transposition[0]
     assert the_row["move"] == "f1c4", (
@@ -370,39 +371,27 @@ def test_upsert_transposition_dedupes_to_one_row() -> None:
     )
     _print_pass(
         f"transposition FEN -> 1 row move='f1c4', not 2 "
-        f"(deduped via ON CONFLICT (repertoire_id, fen) DO UPDATE)"
+        f"(deduped via ON CONFLICT (repertoire_id, fen, move) DO UPDATE)"
     )
 
-    # Sanity: across BOTH upserts, no (repertoire_id, fen) pair got
-    # duplicated in the store. The migration's UNIQUE constraint and
-    # the fake's dedup share this invariant; we assert it here so a
-    # future regression that bypasses the conflict can't slip through.
-    seen_fens = set()
-    for v in conn.positions_for_repertoire(rid):
-        assert v["fen"] not in seen_fens, (
-            f"duplicate fen in store: {v['fen']!r} — each fen should "
-            f"appear at most ONCE per repertoire (UNIQUE constraint)"
-        )
-        seen_fens.add(v["fen"])
-    print(f"  total distinct positions stored after both lines: {len(seen_fens)}")
-    _print_pass(f"{len(seen_fens)} distinct positions across both calls (no dupes)")
-
-    # Bonus assertion on the move-overwrite clause: at the start FEN,
-    # the two lines DISAGREE (Line A plays Nf3, Line B plays e4). The
-    # second call (Line B) should win, so the start-fen row should
-    # end with move='e2e4'. This proves the conflict path is a true
-    # UPDATE, not a silent DO NOTHING.
+    # Bonus: the start FEN now holds TWO rows ('g1f3' from line A,
+    # 'e2e4' from line B) — a diverging repertoire. Under the new
+    # save-every-ply model this is the correct shape: the user has
+    # prepared two different first moves. Assert it to lock in the
+    # new semantics (the old owner-only writer would have overwritten
+    # the start row's move on the second call).
     start_fen = _normalize_fen(chess.Board().fen())
     start_rows = [v for v in conn.positions_for_repertoire(rid)
                   if v["fen"] == start_fen]
-    assert len(start_rows) == 1 and start_rows[0]["move"] == "e2e4", (
-        f"start-fen row should hold the LATEST write's move ('e2e4' "
-        f"from Line B), proving DO UPDATE (not DO NOTHING); got "
-        f"{start_rows!r}"
+    start_moves = sorted(r["move"] for r in start_rows)
+    assert start_moves == ["e2e4", "g1f3"], (
+        f"start-fen should hold TWO rows ('e2e4' and 'g1f3') after "
+        f"both lines — a diverging repertoire under the new save-"
+        f"every-ply writer. Got {start_moves!r}."
     )
     _print_pass(
-        "start-fen row move = 'e2e4' (Line B's move, latest wins) — "
-        "conflict path is DO UPDATE, not DO NOTHING"
+        "start-fen holds both 'e2e4' and 'g1f3' (diverging repertoire "
+        "preserved, not overwritten)"
     )
 
 
@@ -482,14 +471,14 @@ def test_upsert_unknown_repertoire_raises_not_found() -> None:
         )
 
 
-def test_upsert_black_repertoire_only_emits_black_side_rows() -> None:
-    """End-to-end point-5 check on the BLACK side: feeding the full
-    upsert path the 1.e4 e5 2.Nf3 Nc6 3.Bc4 line for a black
-    repertoire should produce rows ONLY for the black-to-move
-    positions, never at a white-to-move fen (the e4/Nf3/Bc4 plies
-    were the opponent's).
+def test_upsert_black_repertoire_persists_every_ply() -> None:
+    """End-to-end check on the BLACK side: feeding the full upsert
+    path the 1.e4 e5 2.Nf3 Nc6 3.Bc4 line for a black repertoire
+    produces 5 rows — one per ply, both colors persisted. The
+    owner_color arg is accepted but does not filter the plan anymore;
+    read endpoints filter to owner rows where appropriate.
     """
-    _print_section("TEST 8: black repertoire full-upsert path end-to-end (point 5, DB side)")
+    _print_section("TEST 8: black repertoire full-upsert path end-to-end (every ply)")
 
     conn, rid = _make_black_repertoire()
     moves = ["e2e4", "e7e5", "g1f3", "b8c6", "f1c4"]
@@ -497,24 +486,24 @@ def test_upsert_black_repertoire_only_emits_black_side_rows() -> None:
         conn, repertoire_id=rid, uci_moves=moves
     )
 
-    assert len(written) == 2, (
-        f"5-ply line for a black repertoire should write 2 rows, "
+    assert len(written) == 5, (
+        f"5-ply line should write 5 rows (every ply persisted), "
         f"got {len(written)}"
     )
-    for row in written:
-        side = row.fen.split()[1]
-        assert side == "b", (
-            f"row at fen {row.fen!r} has white-to-move side; a black "
-            f"repertoire must only write rows where BLACK is on move"
-        )
     moves_written = [r.move for r in written]
-    assert moves_written == ["e7e5", "b8c6"], (
-        f"written moves should be exactly the black plies in order, "
-        f"got {moves_written}"
+    assert moves_written == ["e2e4", "e7e5", "g1f3", "b8c6", "f1c4"], (
+        f"written moves should be every ply in order, got "
+        f"{moves_written}"
+    )
+    # Side-to-move alternates w/b/w/b/w regardless of owner color.
+    sides = [r.fen.split()[1] for r in written]
+    assert sides == ["w", "b", "w", "b", "w"], (
+        f"written rows' side-to-move should alternate w/b/w/b/w; "
+        f"got {sides}"
     )
     _print_pass(
-        "black-repertoire upsert wrote 2 rows at black-to-move fens; "
-        f"white-to-move positions were skipped from the DB write"
+        "black-repertoire upsert wrote 5 rows (every ply, both "
+        f"sides) in ply order; side-to-move alternates w/b/w/b/w"
     )
 
 
@@ -522,13 +511,13 @@ def main() -> int:
     print("=== Running repertoire_service upsert smoke tests ===")
     try:
         test_normalize_fen_strips_clock_and_fullmove()
-        test_replay_and_plan_skips_opponent_plies_white_owner()
-        test_replay_and_plan_skips_opponent_plies_black_owner()
+        test_replay_and_plan_persists_every_ply_white_owner()
+        test_replay_and_plan_persists_every_ply_black_owner()
         test_upsert_transposition_dedupes_to_one_row()
         test_upsert_illegal_move_raises_and_writes_nothing()
         test_upsert_empty_move_sequence_returns_empty()
         test_upsert_unknown_repertoire_raises_not_found()
-        test_upsert_black_repertoire_only_emits_black_side_rows()
+        test_upsert_black_repertoire_persists_every_ply()
     except AssertionError as exc:
         print(f"\n  [FAIL] {exc}")
         return 1
