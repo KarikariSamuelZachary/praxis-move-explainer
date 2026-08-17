@@ -88,21 +88,27 @@ function cardStyle(tone: WoodTone, selected: boolean): CSSProperties {
 
 export default function OnboardingPage() {
   const router = useRouter();
-  const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<SkillLevel | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
+  // The middleware (proxy.ts) already redirects users who have a skill
+  // level away from /onboarding, so by the time we render here the
+  // form is safe to show immediately. This background check is only a
+  // safety net against a race (e.g. the lookup landed mid-redirect) —
+  // it must never block the UI with a spinner.
   useEffect(() => {
-    fetch('/api/onboarding/skill-level')
+    let cancelled = false;
+    fetch('/api/onboarding/skill-level', { cache: 'no-store' })
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => {
-        if (data?.skill_level) {
-          router.push('/puzzles');
-        } else {
-          setLoading(false);
+        if (!cancelled && data?.skill_level) {
+          router.replace('/puzzles');
         }
       })
-      .catch(() => setLoading(false));
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
   }, [router]);
 
   async function handleSubmit() {
@@ -124,14 +130,6 @@ export default function OnboardingPage() {
     } catch {
       setSubmitting(false);
     }
-  }
-
-  if (loading) {
-    return (
-      <div className="flex min-h-[calc(100vh-4rem)] items-center justify-center [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
-        <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-700 border-t-emerald-500" />
-      </div>
-    );
   }
 
   return (
