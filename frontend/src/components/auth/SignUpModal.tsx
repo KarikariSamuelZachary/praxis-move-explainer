@@ -7,6 +7,7 @@ import { useSignIn } from '@clerk/react/legacy';
 import { useSignUp } from '@clerk/react/legacy';
 
 import Modal from './Modal';
+import { KnightMark } from '@/components/layout/KnightMark';
 
 type SignUpModalProps = {
   onClose: () => void;
@@ -15,7 +16,12 @@ type SignUpModalProps = {
 
 function PraxisLogo() {
   return (
-    <img src="/logo.svg" alt="Praxis" className="mx-auto h-16 w-auto" />
+    <div className="mx-auto flex items-center gap-3">
+      <KnightMark className="h-9 w-7" />
+      <span className="font-display text-2xl font-bold tracking-[0.16em] text-gold">
+        PRAXIS
+      </span>
+    </div>
   );
 }
 
