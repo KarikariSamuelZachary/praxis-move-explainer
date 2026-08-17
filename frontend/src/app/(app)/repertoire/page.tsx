@@ -353,11 +353,11 @@ function RepertoireCard({ repertoire, onDelete }: RepertoireCardProps) {
         aria-label={`Open ${repertoire.name}`}
         className="absolute inset-0 z-0 rounded-2xl focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d9b87c]"
       />
-      <div className="relative z-10 shrink-0">
+      <div className="relative z-10 pointer-events-none shrink-0">
         <BoardThumb />
       </div>
 
-      <div className="relative z-10 flex min-w-0 flex-1 flex-col justify-between py-1 pr-12">
+      <div className="relative z-10 pointer-events-none flex min-w-0 flex-1 flex-col justify-between py-1 pr-12">
         <div className="min-w-0">
           <h3 className="truncate font-display text-xl font-semibold text-[#f7e5c6]">
             {repertoire.name}
