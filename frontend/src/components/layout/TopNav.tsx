@@ -72,40 +72,45 @@ export default function TopNav() {
   return (
     <>
       {/* Desktop top nav */}
-      <nav className="fixed inset-x-0 top-0 z-40 flex h-12 items-center justify-between border-b border-black/40 px-10 text-white shadow-[0_4px_20px_rgba(0,0,0,0.45)] [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] xl:px-12 2xl:px-16">
-        <Link href="/puzzles" className="flex items-center gap-3 transition hover:opacity-80">
-          <KnightMark className="h-7 w-6" />
-          <span className="font-display text-xl font-bold tracking-[0.16em] text-gold">PRAXIS</span>
-        </Link>
+      <nav className="fixed inset-x-0 top-0 z-40 border-b border-black/40 text-white shadow-[0_4px_20px_rgba(0,0,0,0.45)] [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+        {/* Inner container matches LandingNav.tsx:55 — mx-auto max-w-[1400px]
+            px-5 sm:px-8 — so the logo and links sit at the exact same
+            horizontal position on every route and on the marketing page. */}
+        <div className="mx-auto flex h-12 w-full max-w-[1400px] items-center justify-between px-5 sm:px-8">
+          <Link href="/puzzles" className="flex items-center gap-3 transition hover:opacity-80">
+            <KnightMark className="h-7 w-6" />
+            <span className="font-display text-xl font-bold tracking-[0.16em] text-gold">PRAXIS</span>
+          </Link>
 
-        <div className="hidden items-center gap-8 lg:flex">
-          <NavLinks />
+          <div className="hidden items-center gap-8 lg:flex">
+            <NavLinks />
+          </div>
+
+          <div className="hidden items-center gap-5 md:flex">
+            <button type="button" className="text-white/80 transition hover:text-white" aria-label="Search">
+              <SearchIcon />
+            </button>
+            <button type="button" className="relative text-white/80 transition hover:text-white" aria-label="Notifications">
+              <BellIcon />
+              <span className="absolute -right-0.5 top-0 h-2 w-2 rounded-full bg-[#10b981] ring-2 ring-black" />
+            </button>
+            <button type="button" className="flex h-9 w-9 items-center justify-center rounded-full bg-[#c49a7a] text-sm font-bold text-black shadow-inner shadow-white/20" aria-label="User menu">
+              S
+            </button>
+          </div>
+
+          {/* Mobile hamburger */}
+          <button
+            type="button"
+            onClick={() => setIsOpen(true)}
+            className="rounded-md p-2 text-zinc-100 transition hover:bg-zinc-800 md:hidden"
+            aria-label="Open navigation"
+          >
+            <svg className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
+              <path d="M4 6h16M4 12h16M4 18h16" />
+            </svg>
+          </button>
         </div>
-
-        <div className="hidden items-center gap-5 md:flex">
-          <button type="button" className="text-white/80 transition hover:text-white" aria-label="Search">
-            <SearchIcon />
-          </button>
-          <button type="button" className="relative text-white/80 transition hover:text-white" aria-label="Notifications">
-            <BellIcon />
-            <span className="absolute -right-0.5 top-0 h-2 w-2 rounded-full bg-[#10b981] ring-2 ring-black" />
-          </button>
-          <button type="button" className="flex h-9 w-9 items-center justify-center rounded-full bg-[#c49a7a] text-sm font-bold text-black shadow-inner shadow-white/20" aria-label="User menu">
-            S
-          </button>
-        </div>
-
-        {/* Mobile hamburger */}
-        <button
-          type="button"
-          onClick={() => setIsOpen(true)}
-          className="rounded-md p-2 text-zinc-100 transition hover:bg-zinc-800 md:hidden"
-          aria-label="Open navigation"
-        >
-          <svg className="h-6 w-6" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24">
-            <path d="M4 6h16M4 12h16M4 18h16" />
-          </svg>
-        </button>
       </nav>
 
       {/* Mobile dropdown */}
