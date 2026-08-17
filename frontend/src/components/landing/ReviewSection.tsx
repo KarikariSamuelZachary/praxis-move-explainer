@@ -8,7 +8,7 @@ export default function ReviewSection() {
   return (
     <section id="review" className="relative">
       <DustCanvas />
-      <div className="relative z-10 mx-auto grid w-full max-w-[1400px] items-center gap-14 px-5 py-28 sm:px-8 lg:grid-cols-[0.75fr_1.25fr] lg:gap-16 lg:py-40 xl:pl-28">
+      <div className="relative z-10 mx-auto grid w-full max-w-[1400px] items-center gap-14 px-5 py-28 sm:px-8 lg:grid-cols-[0.75fr_1.25fr] lg:gap-16 lg:py-40 xl:pl-44">
         <SectionHeading
           label="Analyze. Understand. Improve."
           title={
