@@ -90,6 +90,7 @@ export default function OnboardingPage() {
   const router = useRouter();
   const [selected, setSelected] = useState<SkillLevel | null>(null);
   const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState('');
 
   // The middleware (proxy.ts) already redirects users who have a skill
   // level away from /onboarding, so by the time we render here the
@@ -113,6 +114,7 @@ export default function OnboardingPage() {
 
   async function handleSubmit() {
     if (!selected || submitting) return;
+    setError('');
     setSubmitting(true);
     try {
       const res = await fetch('/api/onboarding/skill-level', {
@@ -121,13 +123,19 @@ export default function OnboardingPage() {
         body: JSON.stringify({ skill_level: selected }),
       });
       if (res.ok) {
-        setSubmitting(false);
         router.push('/puzzles');
         router.refresh();
-      } else {
-        setSubmitting(false);
+        return;
       }
+      let message = 'Something went wrong. Please try again.';
+      try {
+        const data = await res.json();
+        if (data?.error) message = data.error;
+      } catch {}
+      setError(message);
     } catch {
+      setError('Network error. Please try again.');
+    } finally {
       setSubmitting(false);
     }
   }
@@ -175,6 +183,12 @@ export default function OnboardingPage() {
             );
           })}
         </div>
+
+        {error && (
+          <p className="mb-4 max-w-md rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-4 py-2.5 text-center text-sm text-emerald-100">
+            {error}
+          </p>
+        )}
 
         <button
           onClick={handleSubmit}
