@@ -202,7 +202,10 @@ def run_migrations():
                     -- square). The halfmove clock and fullmove number MUST
                     -- be stripped by the writer before INSERT, so two
                     -- positions that differ only in those counters collapse
-                    -- to the same row and honor UNIQUE(repertoire_id, fen).
+                    -- to the same row. The key includes `move` so a single
+                    -- position can hold SEVERAL saved moves — a repertoire
+                    -- that diverges (e.g. both Nf3 and Be2 prepared from
+                    -- the same position) stores one row per branch.
                     fen            TEXT NOT NULL,
                     -- UCI format (e.g. "e2e4", "e7e8q"); NOT SAN.
                     move           TEXT NOT NULL,
@@ -216,8 +219,66 @@ def run_migrations():
                     last_review    TIMESTAMPTZ,
                     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    UNIQUE (repertoire_id, fen)
+                    UNIQUE (repertoire_id, fen, move)
                 )
+                """
+            )
+            # --- repertoire_positions branch migration (existing DBs) --------
+            # Databases created before diverging-branch support carry
+            # UNIQUE (repertoire_id, fen) (default constraint name
+            # ..._repertoire_id_fen_key), which silently OVERWRITES a
+            # second saved move from the same position via the upsert's
+            # ON CONFLICT DO UPDATE. Replace it with
+            # UNIQUE (repertoire_id, fen, move). Existing data has at
+            # most one row per (repertoire_id, fen), so the new
+            # constraint can never fail to apply; the drop is guarded
+            # by the old constraint's presence so re-runs are no-ops
+            # (fresh DBs never had it — their CREATE TABLE above
+            # already ships the three-column key). A plain
+            # (repertoire_id, fen) index replaces the lookup path the
+            # dropped unique constraint used to cover (delete-guard
+            # child detection, queue reconstruction, etc.).
+            cur.execute(
+                """
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1
+                        FROM information_schema.table_constraints
+                        WHERE constraint_name =
+                              'repertoire_positions_repertoire_id_fen_key'
+                          AND table_name = 'repertoire_positions'
+                    ) THEN
+                        ALTER TABLE repertoire_positions
+                            DROP CONSTRAINT
+                            repertoire_positions_repertoire_id_fen_key;
+                    END IF;
+                END $$;
+                """
+            )
+            cur.execute(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM information_schema.table_constraints
+                        WHERE constraint_name =
+                              'repertoire_positions_repertoire_id_fen_move_key'
+                          AND table_name = 'repertoire_positions'
+                    ) THEN
+                        ALTER TABLE repertoire_positions
+                            ADD CONSTRAINT
+                            repertoire_positions_repertoire_id_fen_move_key
+                            UNIQUE (repertoire_id, fen, move);
+                    END IF;
+                END $$;
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_repertoire_positions_repertoire_fen
+                    ON repertoire_positions(repertoire_id, fen)
                 """
             )
             # Enforce the TEXT `state` vocabulary at the DB layer:
