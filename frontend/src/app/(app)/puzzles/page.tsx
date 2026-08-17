@@ -4,6 +4,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import Image from 'next/image';
 import Link from 'next/link';
+import gsap from 'gsap';
 import { Puzzle } from '@/types';
 import { fetchPuzzleBatch, getPuzzleDifficultyLabel } from '@/lib/lichess';
 import type { BoardApi } from '@/components/board/ChessBoard';
@@ -133,6 +134,49 @@ export default function PuzzlesPage() {
   const hasScoredAttemptRef = useRef(false);
   const fetchingMoreRef = useRef(false);
   const stuckAtEndRef = useRef(false);
+  const birdRef = useRef<HTMLImageElement>(null);
+  const prevReviewsDueRef = useRef<number | null>(null);
+  const peckTlRef = useRef<gsap.core.Timeline | null>(null);
+
+  // Peck the woodpecker whenever the reviews-due count climbs (a puzzle
+  // just entered the Woodpecker queue). Mirrors the landing-page twitch.
+  useEffect(() => {
+    if (reviewsDue === null) {
+      prevReviewsDueRef.current = reviewsDue;
+      return;
+    }
+    const prev = prevReviewsDueRef.current;
+    prevReviewsDueRef.current = reviewsDue;
+    if (prev === null || reviewsDue <= prev) {
+      return;
+    }
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      return;
+    }
+    const bird = birdRef.current;
+    if (!bird) return;
+
+    if (peckTlRef.current) {
+      peckTlRef.current.kill();
+    }
+    const tl = gsap.timeline();
+    tl.to(bird, {
+      rotate: -9,
+      y: 4,
+      duration: 0.16,
+      ease: 'power2.in',
+      transformOrigin: '72% 88%',
+    }).to(bird, {
+      rotate: 0,
+      y: 0,
+      duration: 0.5,
+      ease: 'elastic.out(1, 0.45)',
+    });
+    peckTlRef.current = tl;
+    return () => {
+      tl.kill();
+    };
+  }, [reviewsDue]);
 
   const fetchReviewsDue = useCallback(() => {
     fetch('/api/woodpecker/queue', { cache: 'no-store' })
@@ -370,7 +414,7 @@ export default function PuzzlesPage() {
             {/* ============== LEFT: WOODPECKER CARD + SESSION STATS ============== */}
             <section className="order-2 mt-[24px] flex flex-col space-y-5 xl:order-none">
               <div className={`${CARD_CLASS} mx-auto w-full max-w-[400px] p-5 shadow-2xl shadow-black/25 xl:max-w-none`}>
-                <Image src="/woodpecker-bird-v2.png" alt="" width={160} height={160} className="mx-auto h-[160px] w-[160px] shrink-0 object-contain" />
+                <Image ref={birdRef} src="/woodpecker-bird-v2.png" alt="" width={160} height={160} className="mx-auto h-[160px] w-[160px] shrink-0 object-contain" />
                 <div className="mt-0 text-center">
                   <div className="text-sm font-normal text-[#f7e5c6]/60">Reviews Due</div>
                   <div className="mt-1 text-[50px] font-bold leading-none text-[#f7e5c6]">{reviewsDue ?? '—'}</div>
