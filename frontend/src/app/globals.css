@@ -126,3 +126,51 @@ body {
 .wooden-scroll::-webkit-scrollbar {
   display: none;
 }
+
+/* Visible walnut-styled scrollbar. The track is dark walnut, the
+   thumb light walnut with the same layered bevel the wooden boxes
+   use, so scrolling UI reads as part of the furniture. */
+.wood-scrollbar {
+  scrollbar-width: thin;
+  scrollbar-color: #8a6136 rgba(0, 0, 0, 0.45);
+}
+
+.wood-scrollbar::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+
+.wood-scrollbar::-webkit-scrollbar-track {
+  background:
+    linear-gradient(rgba(0, 0, 0, 0.55), rgba(0, 0, 0, 0.55)),
+    url('/walnut-dark.png');
+  background-size: cover;
+  background-position: center;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 0, 0, 0.55);
+}
+
+.wood-scrollbar::-webkit-scrollbar-thumb {
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.08), rgba(0, 0, 0, 0.28)),
+    url('/walnut-light.png');
+  background-size: cover;
+  background-position: center;
+  border-radius: 999px;
+  border: 1px solid #1a0a02;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 200, 100, 0.2),
+    inset 0 -1px 0 rgba(0, 0, 0, 0.55);
+}
+
+.wood-scrollbar::-webkit-scrollbar-thumb:hover {
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.14), rgba(0, 0, 0, 0.2)),
+    url('/walnut-light.png');
+  background-size: cover;
+  background-position: center;
+}
+
+.wood-scrollbar::-webkit-scrollbar-corner {
+  background: transparent;
+}
