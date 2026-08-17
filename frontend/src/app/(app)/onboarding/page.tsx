@@ -133,62 +133,61 @@ export default function OnboardingPage() {
   }
 
   return (
-    <div className="relative flex min-h-[calc(100vh-4rem)] flex-col items-center justify-center px-4 py-10 text-white [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
-      {/* Praxis logo — the same KnightMark + gold wordmark the app nav
-          and landing page use (TopNav.tsx:77-78, LandingNav.tsx:62-65). */}
-      <div className="mb-8 flex items-center gap-3">
-        <KnightMark className="h-10 w-8" />
-        <span className="font-display text-2xl font-bold tracking-[0.16em] text-gold">
-          PRAXIS
-        </span>
-      </div>
+    <div className="h-[calc(100vh-3rem)] overflow-y-auto text-white [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+      <div className="flex min-h-full flex-col items-center justify-center px-4 py-8">
+        {/* Praxis logo — the same KnightMark + gold wordmark the app nav
+            and landing page use (TopNav.tsx:77-78, LandingNav.tsx:62-65). */}
+        <div className="mb-6 flex items-center gap-3">
+          <KnightMark className="h-10 w-8" />
+          <span className="font-display text-2xl font-bold tracking-[0.16em] text-gold">
+            PRAXIS
+          </span>
+        </div>
 
-      <h1 className="text-2xl font-semibold text-gold-bright mb-2">
-        What&apos;s your chess level?
-      </h1>
-      <p className="text-sm text-wood-mute mb-8 text-center max-w-md">
-        We&apos;ll use this to find puzzles that match your current strength.
-      </p>
+        <h1 className="text-2xl font-semibold text-gold-bright mb-6 text-center">
+          What&apos;s your chess level?
+        </h1>
 
-      <div className="grid grid-cols-2 gap-4 w-full max-w-lg mb-8">
-        {levels.map((level) => {
-          const isSelected = selected === level.value;
-          const colors = TEXT[level.tone];
-          return (
-            <button
-              key={level.value}
-              onClick={() => setSelected(level.value)}
-              style={cardStyle(level.tone, isSelected)}
-              className="text-left rounded-2xl p-5 cursor-pointer transition-transform duration-200 hover:-translate-y-0.5"
-            >
-              <div
-                className="font-display text-base font-semibold mb-1"
-                style={{ color: colors.label }}
+        <div className="grid grid-cols-2 gap-4 w-full max-w-lg mb-6">
+          {levels.map((level) => {
+            const isSelected = selected === level.value;
+            const colors = TEXT[level.tone];
+            return (
+              <button
+                key={level.value}
+                onClick={() => setSelected(level.value)}
+                style={cardStyle(level.tone, isSelected)}
+                className="text-left rounded-2xl p-4 cursor-pointer transition-transform duration-200 hover:-translate-y-0.5"
               >
-                {level.label}
-              </div>
-              <div className="text-sm mb-2" style={{ color: colors.description }}>
-                {level.description}
-              </div>
-              <div className="text-xs font-medium" style={{ color: colors.rating }}>
-                {level.rating}
-              </div>
-            </button>
-          );
-        })}
-      </div>
+                <div
+                  className="font-display text-base font-semibold mb-1"
+                  style={{ color: colors.label }}
+                >
+                  {level.label}
+                </div>
+                <div className="text-sm mb-2" style={{ color: colors.description }}>
+                  {level.description}
+                </div>
+                <div className="text-xs font-medium" style={{ color: colors.rating }}>
+                  {level.rating}
+                </div>
+              </button>
+            );
+          })}
+        </div>
 
-      <button
-        onClick={handleSubmit}
-        disabled={!selected || submitting}
-        className={`px-8 py-2.5 rounded-lg font-medium text-sm transition-colors ${
-          selected && !submitting
-            ? 'bg-emerald-500 text-zinc-950 hover:bg-emerald-400 cursor-pointer'
-            : 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
-        }`}
-      >
-        {submitting ? 'Saving…' : 'Start Training'}
-      </button>
+        <button
+          onClick={handleSubmit}
+          disabled={!selected || submitting}
+          className={`px-8 py-2.5 rounded-lg font-medium text-sm transition-colors ${
+            selected && !submitting
+              ? 'bg-emerald-500 text-zinc-950 hover:bg-emerald-400 cursor-pointer'
+              : 'bg-zinc-800 text-zinc-500 cursor-not-allowed'
+          }`}
+        >
+          {submitting ? 'Saving…' : 'Start Training'}
+        </button>
+      </div>
     </div>
   );
 }
