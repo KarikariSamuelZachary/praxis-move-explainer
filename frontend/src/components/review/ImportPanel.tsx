@@ -244,7 +244,7 @@ function UsernameImport({
 
     try {
       const res = await fetch(
-        `/api/import/${apiPath}/${encodeURIComponent(trimmed)}?limit=10`
+        `/api/import/${apiPath}/${encodeURIComponent(trimmed)}?limit=50`
       );
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -322,7 +322,7 @@ function UsernameImport({
 
       {games.length > 0 && (
         <div className="flex flex-col gap-1.5">
-          <div className="wooden-scroll flex max-h-[318px] flex-col gap-1.5 overflow-y-auto">
+          <div className="wood-scrollbar flex max-h-[318px] flex-col gap-1.5 overflow-y-auto pr-1">
             {games.map((game) => {
               const isSelected = hasPgn && game.pgn === pgn;
               return (
