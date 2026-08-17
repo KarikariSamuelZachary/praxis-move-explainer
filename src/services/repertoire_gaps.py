@@ -340,6 +340,7 @@ def find_repertoire_gaps(
     conn,
     *,
     repertoire_id,
+    owner_color: str,
 ) -> RepertoireGapReport:
     """Compute the gap report for a single repertoire.
 
@@ -352,10 +353,23 @@ def find_repertoire_gaps(
     `repertoire_id` is already known to belong to the authenticated
     user.
 
+    `owner_color` is the repertoire's color ('white' or 'black'). The
+    outer loop iterates ONLY owner-side rows: a gap is "the opponent
+    has a common reply I haven't prepared a response to," which is a
+    per-owner-row computation. If opponent-side rows (the new
+    persistence model saves both sides) were iterated, the gap-finder
+    would push an opponent-row's move onto an opponent FEN, get an
+    owner-turn FEN, query Explorer for OWNER-side moves there, and
+    emit spurious "the owner's moves are unprepared opponent replies"
+    gaps. Filtering to owner rows by `split_part(fen, ' ', 2)` keeps
+    the gap semantics the spec describes.
+
     Args:
         conn: open psycopg2 conn. No commit is issued by this function.
         repertoire_id: id of a `repertoires` row (already verified by
             the caller for ownership).
+        owner_color: 'white' or 'black' — the repertoire's color, used
+            to filter the outer loop to owner-side rows only.
 
     Returns:
         A `RepertoireGapReport` with two lists:
@@ -375,21 +389,28 @@ def find_repertoire_gaps(
         read-only so a rollback drops any unread state harmlessly.
     """
     rid = str(repertoire_id)
+    # The kolor letter as it appears in the FEN's side-to-move field.
+    owner_letter = "w" if owner_color == "white" else "b"
 
-    # Load all of the repertoire's position rows. Storage order (PK
+    # Load only OWNER-side rows of this repertoire. Storage order (PK
     # ascending) is the deterministic output order — no FSRS / due-time
     # ordering is meaningful for a gap report which is about coverage,
     # not scheduling. (We `ORDER BY id ASC` because `created_at` ties
-    # between rows inserted in the same upsert call.)
+    # between rows inserted in the same upsert call.) The
+    # `split_part(fen, ' ', 2) = %s` clause keeps opponent-side rows
+    # out — these exist now that the writer saves both sides, but
+    # iterating them in the outer loop would emit spurious gaps (see
+    # the docstring's owner_color rationale).
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             """
             SELECT id, fen, move
             FROM repertoire_positions
             WHERE repertoire_id = %s
+              AND split_part(fen, ' ', 2) = %s
             ORDER BY id ASC
             """,
-            (rid,),
+            (rid, owner_letter),
         )
         rows = cur.fetchall()
 
@@ -405,6 +426,15 @@ def find_repertoire_gaps(
     # from the snapshot we already loaded. The stored fens are already
     # 4-field normalized by `upsert_repertoire_positions`, so no
     # re-normalization is needed at load time.
+    #
+    # NOTE: covered_fens here is BUILT FROM OWNER ROWS ONLY (filtered
+    # above). An opponent reply's "coverage" means "the user has a
+    # stored owner-row at the resulting position after this reply,"
+    # which is exactly the owner-rows-only check we want. Opponent
+    # rows themselves live at opp-to-move FENs, which never equal an
+    # owner-to-move resulting FEN, so they wouldn't show up as covered
+    # even if we did load them here — but loading only owner rows
+    # ALSO keeps the set small and the semantics crisp.
     covered_fens: Set[str] = {r["fen"] for r in rows}
 
     gaps: List[RepertoireGap] = []
