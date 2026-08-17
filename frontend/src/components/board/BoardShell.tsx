@@ -50,6 +50,7 @@ import { useCallback, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { Chess, type Square } from 'chess.js';
 import type {
+  Arrow,
   PieceDropHandlerArgs,
   PieceHandlerArgs,
   SquareHandlerArgs,
@@ -127,6 +128,8 @@ export type BoardShellProps = {
   onMove: (source: string, target: string, promotion?: string) => boolean;
   /** Optional external square highlights (e.g. last-move from/to). */
   squareStyles?: Record<string, React.CSSProperties>;
+  /** Static overlay arrows (e.g. repertoire continuation arrows). */
+  arrows?: Arrow[];
   /** Hide notation labels under pieces (e.g. for thumbnail boards). */
   showNotation?: boolean;
   className?: string;
@@ -141,6 +144,7 @@ export default function BoardShell({
   canDragPiece,
   onMove,
   squareStyles,
+  arrows,
   showNotation = true,
   className,
 }: BoardShellProps) {
@@ -377,6 +381,7 @@ export default function BoardShell({
             onPieceDrop: handlePieceDrop,
             squareRenderer,
             squareStyles: mergedSquareStyles,
+            arrows,
             darkSquareStyle: {
               backgroundImage: 'url(/walnut-dark.png)',
               backgroundSize: '110% 110%',
