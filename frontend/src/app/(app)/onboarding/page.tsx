@@ -1,41 +1,90 @@
 'use client';
 
 import { useRouter } from 'next/navigation';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
+
+import { KnightMark } from '@/components/layout/KnightMark';
 
 type SkillLevel = 'new' | 'beginner' | 'intermediate' | 'advanced';
+type WoodTone = 'dark' | 'light';
 
-const levels: {
+type Level = {
   value: SkillLevel;
   label: string;
   description: string;
   rating: string;
-}[] = [
+  tone: WoodTone;
+};
+
+// Cards alternate between the same two walnut textures the chess board
+// uses for its dark/light squares (BoardShell.tsx:385-394) so the
+// picker reads as part of the same furniture as the rest of the app.
+const levels: Level[] = [
   {
     value: 'new',
     label: 'New to Chess',
     description: 'Learning how pieces coordinate and basic tactics.',
     rating: '800–1000',
+    tone: 'light',
   },
   {
     value: 'beginner',
     label: 'Beginner',
     description: 'Comfortable spotting forks, pins, and simple combinations.',
     rating: '1000–1300',
+    tone: 'dark',
   },
   {
     value: 'intermediate',
     label: 'Intermediate',
     description: 'Regularly finds multi-move tactics and calculation sequences.',
     rating: '1300–1600',
+    tone: 'light',
   },
   {
     value: 'advanced',
     label: 'Advanced',
     description: 'Strong tactical vision and deeper calculation ability.',
     rating: '1600+',
+    tone: 'dark',
   },
 ];
+
+const DARK_WOOD =
+  'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.png)';
+const LIGHT_WOOD =
+  'linear-gradient(rgba(0,0,0,0.18),rgba(0,0,0,0.18)), url(/walnut-light.png)';
+
+// Label/description/rating colors per tone. Mirrors the chess board's
+// notation contrast: dark squares carry cream/gold labels, light
+// squares carry deep-walnut labels (ChessBoard.tsx:664-669).
+const TEXT: Record<WoodTone, { label: string; description: string; rating: string }> = {
+  dark: {
+    label: '#efd9a7',
+    description: 'rgba(237, 227, 208, 0.82)',
+    rating: 'rgba(237, 227, 208, 0.58)',
+  },
+  light: {
+    label: '#3a2410',
+    description: 'rgba(26, 10, 2, 0.78)',
+    rating: 'rgba(26, 10, 2, 0.6)',
+  },
+};
+
+function cardStyle(tone: WoodTone, selected: boolean): CSSProperties {
+  const backgroundImage = tone === 'dark' ? DARK_WOOD : LIGHT_WOOD;
+  // Selected → emerald ring + soft emerald glow on top of the wood
+  // grain (keeps the existing accent while letting the texture show).
+  const boxShadow = selected
+    ? '0 0 0 2px #10b981, 0 10px 30px rgba(16,185,129,0.25), inset 0 1px 0 rgba(255,255,255,0.06), inset 0 -1px 0 rgba(0,0,0,0.5)'
+    : '0 0 0 1px rgba(0,0,0,0.5), 0 10px 30px rgba(0,0,0,0.55), inset 0 1px 0 rgba(255,255,255,0.06), inset 0 -1px 0 rgba(0,0,0,0.5)';
+  return {
+    backgroundImage,
+    backgroundSize: 'cover',
+    backgroundPosition: 'center',
+    boxShadow,
+  };
+}
 
 export default function OnboardingPage() {
   const router = useRouter();
@@ -79,41 +128,53 @@ export default function OnboardingPage() {
 
   if (loading) {
     return (
-      <div className="flex min-h-[calc(100vh-4rem)] items-center justify-center">
+      <div className="flex min-h-[calc(100vh-4rem)] items-center justify-center [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
         <div className="h-8 w-8 animate-spin rounded-full border-2 border-zinc-700 border-t-emerald-500" />
       </div>
     );
   }
 
   return (
-    <div className="flex min-h-[calc(100vh-4rem)] flex-col items-center justify-center px-4">
-      <img src="/logo.svg" alt="Praxis" className="h-10 w-auto mb-8" />
+    <div className="relative flex min-h-[calc(100vh-4rem)] flex-col items-center justify-center px-4 py-10 text-white [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+      {/* Praxis logo — the same KnightMark + gold wordmark the app nav
+          and landing page use (TopNav.tsx:77-78, LandingNav.tsx:62-65). */}
+      <div className="mb-8 flex items-center gap-3">
+        <KnightMark className="h-10 w-8" />
+        <span className="font-display text-2xl font-bold tracking-[0.16em] text-gold">
+          PRAXIS
+        </span>
+      </div>
 
-      <h1 className="text-2xl font-semibold text-zinc-100 mb-2">
+      <h1 className="text-2xl font-semibold text-gold-bright mb-2">
         What&apos;s your chess level?
       </h1>
-      <p className="text-sm text-zinc-400 mb-8 text-center max-w-md">
+      <p className="text-sm text-wood-mute mb-8 text-center max-w-md">
         We&apos;ll use this to find puzzles that match your current strength.
       </p>
 
       <div className="grid grid-cols-2 gap-4 w-full max-w-lg mb-8">
         {levels.map((level) => {
           const isSelected = selected === level.value;
+          const colors = TEXT[level.tone];
           return (
             <button
               key={level.value}
               onClick={() => setSelected(level.value)}
-              className={`text-left rounded-lg border p-5 transition-colors cursor-pointer ${
-                isSelected
-                  ? 'border-emerald-500 bg-emerald-500/10'
-                  : 'border-zinc-700 bg-zinc-800 hover:border-zinc-600'
-              }`}
+              style={cardStyle(level.tone, isSelected)}
+              className="text-left rounded-2xl p-5 cursor-pointer transition-transform duration-200 hover:-translate-y-0.5"
             >
-              <div className={`font-medium mb-1 ${isSelected ? 'text-emerald-400' : 'text-zinc-100'}`}>
+              <div
+                className="font-display text-base font-semibold mb-1"
+                style={{ color: colors.label }}
+              >
                 {level.label}
               </div>
-              <div className="text-sm text-zinc-400 mb-2">{level.description}</div>
-              <div className="text-xs text-zinc-500">{level.rating}</div>
+              <div className="text-sm mb-2" style={{ color: colors.description }}>
+                {level.description}
+              </div>
+              <div className="text-xs font-medium" style={{ color: colors.rating }}>
+                {level.rating}
+              </div>
             </button>
           );
         })}
