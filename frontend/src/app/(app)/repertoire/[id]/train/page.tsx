@@ -90,6 +90,7 @@ import { useRouter } from 'next/navigation';
 import { Chess, type Square } from 'chess.js';
 
 import BoardShell from '@/components/board/BoardShell';
+import ReviewShell from '@/components/review/ReviewShell';
 
 const CARD_CLASS =
   'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
@@ -306,9 +307,27 @@ export default function RepertoireTrainPage({
   const boardOrientation: 'white' | 'black' =
     color === 'black' ? 'black' : 'white';
 
+  // Quiz items: the session's rows deduped by position (normalized
+  // FEN). A position with SEVERAL saved moves (a diverging repertoire
+  // — e.g. both Nf3 and Be2 prepared) appears ONCE, and ANY of its
+  // saved moves counts as a correct answer (see `handleAttempt`).
+  // `sessionPositions` keeps the FULL row list so the attempt handler
+  // can credit the specific branch the user actually played.
+  const quizItems = useMemo(() => {
+    const seen = new Set<string>();
+    const items: RepertoirePositionRow[] = [];
+    for (const p of sessionPositions) {
+      const key = normalizeFen(p.fen);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push(p);
+    }
+    return items;
+  }, [sessionPositions]);
+
   const currentPosition =
-    currentIdx < sessionPositions.length ? sessionPositions[currentIdx] : null;
-  const total = sessionPositions.length;
+    currentIdx < quizItems.length ? quizItems[currentIdx] : null;
+  const total = quizItems.length;
   const completedCount = currentIdx; // # of positions fully attempted
 
   // --- Header metadata fetch (name + color for the modal title and
@@ -338,14 +357,15 @@ export default function RepertoireTrainPage({
   }, [id]);
 
   // --- Position count fetch (the count the config modal shows).
-  // GET /positions returns EVERY stored row for this repertoire,
-  // unfiltered. We display this number as-is. When main_lines_only
-  // is toggled, we display "up to N" instead of an exact count,
-  // because the filtered count would require the same tree-walk
-  // classifier the backend uses (classify_repertoire_lines) — a
-  // Python-only helper with no client-side equivalent, and the task
-  // explicitly says NOT to build a second implementation.
+  // GET /positions returns EVERY stored row for this repertoire —
+  // BOTH owner and opponent rows now (the writer persists every ply).
+  // Training quizzes only the OWNER's moves, so the count we display
+  // filters to owner-side rows via the FEN's side-to-move field.
+  // Wait for `color` to be known before fetching so we can filter
+  // client-side; until then the count stays null and the modal shows
+  // a loading state.
   useEffect(() => {
+    if (color === null) return;
     let cancelled = false;
     (async () => {
       setCountLoading(true);
@@ -363,7 +383,14 @@ export default function RepertoireTrainPage({
         }
         const rows = (await res.json()) as RepertoirePositionRow[];
         if (!cancelled && Array.isArray(rows)) {
-          setTotalPositionCount(rows.length);
+          // Owner-side filter: training quizzes the user on their
+          // OWN moves. The FEN's second field is the side-to-move;
+          // owner rows have the owner's color letter there.
+          const ownerLetter = color === 'white' ? 'w' : 'b';
+          const ownerRows = rows.filter(
+            (r) => (r.fen.split(/\s+/)[1] ?? '') === ownerLetter
+          );
+          setTotalPositionCount(ownerRows.length);
         }
       } catch (err) {
         if (!cancelled) {
@@ -380,7 +407,7 @@ export default function RepertoireTrainPage({
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [id, color]);
 
   // --- Train button handler: POST /sessions/start, transition on 200.
   // On 400 (no positions to train) we surface the backend's detail
@@ -432,15 +459,24 @@ export default function RepertoireTrainPage({
     }
   }, [id, mainLinesOnly, startPending]);
 
-  // --- Quiz attempt handler. Compare UCI vs the position's stored
-  // `move` (exact string match), fire POST /review, tally counters,
-  // advance. If this was the last position, call /complete and
-  // transition to DONE.
+  // --- Quiz attempt handler. "Accept either move": a position with
+  // several saved branches counts the attempt correct when the played
+  // UCI matches ANY row stored at this position's FEN — the session
+  // quizzed the POSITION, not one specific branch. The /review POST
+  // is fired against the MATCHING row's id (the branch actually
+  // played) so the FSRS scheduling update lands on the right row.
+  // Fire POST /review, tally counters, advance. If this was the last
+  // position, call /complete and transition to DONE.
   const handleAttempt = useCallback(
     async (uci: string) => {
       if (reviewPending) return;
       if (!currentPosition || !sessionId) return;
-      const correct = uci === currentPosition.move;
+      const posKey = normalizeFen(currentPosition.fen);
+      const matchingRow = sessionPositions.find(
+        (p) => normalizeFen(p.fen) === posKey && p.move === uci
+      );
+      const correct = Boolean(matchingRow);
+      const reviewedRowId = matchingRow ? matchingRow.id : currentPosition.id;
       const timeTakenMs = Math.max(
         0,
         Date.now() - shownAtRef.current
@@ -465,7 +501,7 @@ export default function RepertoireTrainPage({
         // route.ts). Calling `/…/{id}/review` directly would 404 on the
         // proxy and (wrongly) trip the recording-honesty banner below.
         const res = await fetch(
-          `/api/repertoires/positions/${encodeURIComponent(currentPosition.id)}`,
+          `/api/repertoires/positions/${encodeURIComponent(reviewedRowId)}`,
           {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -579,7 +615,7 @@ export default function RepertoireTrainPage({
         setReviewPending(false);
       }
     },
-    [currentPosition, currentIdx, correctCount, reviewPending, sessionId, total]
+    [currentPosition, currentIdx, correctCount, reviewPending, sessionId, sessionPositions, total]
   );
 
   // --- Board drag handler. Same pattern as the detail page:
@@ -628,15 +664,31 @@ export default function RepertoireTrainPage({
     [color, currentPosition, handleAttempt, reviewPending]
   );
 
-  // --- Hint button handler. No-op with visible "not yet available"
-  // message — per the task spec, there's no hint source in the
-  // schema and we don't fabricate one. The reference-5 affordance is
-  // preserved visually so the layout matches.
+  // --- Hint button handler. Shows the SAN of one correct move at
+  // the current position. Any saved move at this FEN counts as
+  // correct (the "accept either move" rule), so we pick the current
+  // quiz row's stored move — its SAN is computed from the position's
+  // FEN + UCI via chess.js. Falls back to the raw UCI if chess.js
+  // can't parse the move (stale/corrupt row — shouldn't happen).
   const handleShowHint = useCallback(() => {
-    setHintMessage('Hints aren\u2019t available yet for this flow.');
-    // Auto-clear after 3s so a stale message doesn't linger.
-    window.setTimeout(() => setHintMessage(null), 3000);
-  }, []);
+    if (!currentPosition) {
+      setHintMessage('No position to hint.');
+      window.setTimeout(() => setHintMessage(null), 3000);
+      return;
+    }
+    try {
+      const game = new Chess(`${normalizeFen(currentPosition.fen)} 0 1`);
+      const m = game.move({
+        from: currentPosition.move.slice(0, 2),
+        to: currentPosition.move.slice(2, 4),
+        promotion: currentPosition.move.length > 4 ? currentPosition.move[4] : undefined,
+      });
+      setHintMessage(`Try: ${m.san}`);
+    } catch {
+      setHintMessage(`Try: ${currentPosition.move}`);
+    }
+    window.setTimeout(() => setHintMessage(null), 5000);
+  }, [currentPosition]);
 
   // --- Cancel/back to detail page (config modal Cancel + DONE
   // "Back to repertoire" link both reuse this).
@@ -668,36 +720,22 @@ export default function RepertoireTrainPage({
   if (phase === 'config') {
     return (
       <div className="relative h-[calc(100vh-3rem)] w-full overflow-y-auto px-4 py-4 text-white sm:px-6 sm:py-6 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
-        <div className="mx-auto flex max-w-6xl flex-col gap-5">
-          {/* Header */}
-          <header className="flex items-center justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-3">
-              <button
-                type="button"
-                onClick={handleBackToDetail}
-                aria-label="Back to repertoire"
-                className="flex h-9 w-9 items-center justify-center rounded-lg border border-black/50 bg-black/40 text-[#efd9a7] transition hover:bg-black/60"
-              >
-                <SearchBackIcon />
-              </button>
-              <h1 className="min-w-0 truncate font-display text-2xl font-semibold text-[#f7e5c6] sm:text-3xl">
-                {name ?? 'Repertoire'}
-              </h1>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
-              <span className="flex h-10 items-center gap-2 rounded-xl border border-[#d9b87c]/40 bg-black/40 px-3 text-xs font-bold uppercase tracking-wider text-[#d9b87c]">
-                <TrainIcon />
-                <span>Train</span>
-              </span>
-            </div>
-          </header>
+        {/* Back button — top-left, sits above the centered card so
+            it doesn't drag the card off-center. */}
+        <button
+          type="button"
+          onClick={handleBackToDetail}
+          aria-label="Back to repertoire"
+          className="absolute left-4 top-4 z-10 flex h-9 w-9 items-center justify-center rounded-lg border border-black/50 bg-black/40 text-[#efd9a7] transition hover:bg-black/60 sm:left-6 sm:top-6"
+        >
+          <SearchBackIcon />
+        </button>
 
-          {/* Modal — floating over a dimmed backdrop. The reference
-              shows the modal over a faded board; we render only the
-              backdrop + card here so the modal floats over whatever
-              was below (a placeholder board panel — the user is
-              leaving the detail page behind). */}
-          <div className={`${CARD_CLASS} mx-auto w-full max-w-md p-6 sm:p-8`}>
+        {/* Centered config card — horizontally + vertically centered
+            over the walnut backdrop so the modal reads as the focal
+            point once the page is entered. */}
+        <div className="flex min-h-full items-center justify-center py-12">
+          <div className={`${CARD_CLASS} w-full max-w-md p-6 sm:p-8`}>
             <div className="flex flex-col gap-6">
               {/* Scope title */}
               <div className="flex items-center gap-3">
@@ -815,28 +853,23 @@ export default function RepertoireTrainPage({
   // ----- Phase: DONE ------------------------------------------------
 
   if (phase === 'done') {
-    const total = sessionPositions.length;
+    const total = quizItems.length;
     const pct = total > 0 ? Math.round((correctCount / total) * 100) : 0;
     return (
       <div className="relative h-[calc(100vh-3rem)] w-full overflow-y-auto px-4 py-4 text-white sm:px-6 sm:py-6 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
-        <div className="mx-auto flex max-w-6xl flex-col gap-5">
-          <header className="flex items-center justify-between gap-3">
-            <div className="flex min-w-0 items-center gap-3">
-              <button
-                type="button"
-                onClick={handleBackToDetail}
-                aria-label="Back to repertoire"
-                className="flex h-9 w-9 items-center justify-center rounded-lg border border-black/50 bg-black/40 text-[#efd9a7] transition hover:bg-black/60"
-              >
-                <SearchBackIcon />
-              </button>
-              <h1 className="min-w-0 truncate font-display text-2xl font-semibold text-[#f7e5c6] sm:text-3xl">
-                {name ?? 'Repertoire'}
-              </h1>
-            </div>
-          </header>
+        {/* Back button — top-left, sits above the centered card. */}
+        <button
+          type="button"
+          onClick={handleBackToDetail}
+          aria-label="Back to repertoire"
+          className="absolute left-4 top-4 z-10 flex h-9 w-9 items-center justify-center rounded-lg border border-black/50 bg-black/40 text-[#efd9a7] transition hover:bg-black/60 sm:left-6 sm:top-6"
+        >
+          <SearchBackIcon />
+        </button>
 
-          <div className={`${CARD_CLASS} mx-auto w-full max-w-md p-6 sm:p-8`}>
+        {/* Centered completion card. */}
+        <div className="flex min-h-full items-center justify-center py-12">
+          <div className={`${CARD_CLASS} w-full max-w-md p-6 sm:p-8`}>
             <div className="flex flex-col items-center gap-6 text-center">
               <h2 className="font-display text-2xl font-bold uppercase tracking-wider text-[#efd9a7]">
                 {completeFailure
@@ -906,90 +939,72 @@ export default function RepertoireTrainPage({
   // ----- Phase: SESSION ---------------------------------------------
 
   return (
-    <div className="relative h-[calc(100vh-3rem)] w-full overflow-y-auto px-6 py-4 text-white lg:px-10 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
-      <div className="mx-auto flex min-h-full max-w-[1760px] flex-col gap-4">
-        {/* Header — breadcrumb + back, same shape as the detail page */}
-        <header className="flex items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <button
-              type="button"
-              onClick={handleBackToDetail}
-              aria-label="Leave session"
-              className="flex h-9 w-9 items-center justify-center rounded-lg border border-black/50 bg-black/40 text-[#efd9a7] transition hover:bg-black/60"
-            >
-              <SearchBackIcon />
-            </button>
-            <h1 className="min-w-0 truncate font-display text-2xl font-semibold text-[#f7e5c6] sm:text-3xl">
-              {name ?? 'Repertoire'}
-            </h1>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <span className="flex h-10 items-center gap-2 rounded-xl border border-[#d9b87c]/40 bg-black/40 px-3 text-xs font-bold uppercase tracking-wider text-[#d9b87c]">
-              <TrainIcon />
-              <span>Train</span>
-            </span>
-          </div>
-        </header>
-
-        {/*
-          Main row — board centered, quiz prompt/counters on the right.
-          Same sizing + centering as the build page so a user moving
-          between the two routes sees no board-size jump: the board is
-          capped at `max-w-[calc(100vh-70px)]` (identical to the
-          puzzles page), centered by a symmetric 3-column grid (empty
-          22rem left spacer = 22rem right panel column).
-        */}
-        <div className="grid grid-cols-1 items-start justify-center gap-6 xl:grid-cols-[22rem_minmax(0,calc(100vh-70px))_22rem]">
-          {/* Left spacer — invisible, mirrors the right panel width to
-              keep the board horizontally centered. */}
-          <div className="hidden xl:block" aria-hidden="true" />
-
-          {/* ============== BOARD (centered) ============== */}
-          <section className="mx-auto flex w-full max-w-[calc(100vh-70px)] flex-col gap-2">
+    <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-[10px] pt-6 text-white lg:overflow-hidden lg:px-10 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+      {/*
+        Session layout — mirrored from the build page (ReviewShell) so a
+        user moving between the two routes sees no board-size jump.
+        Import panel (left) carries only the back button (the build
+        page's name + Train button chrome is intentionally omitted
+        here — the train flow has nothing to author or label). Board
+        panel (center) holds the quiz board. Analysis panel (right)
+        holds the "White to move / What's your move?" prompt card with
+        counters + hint.
+      */}
+      <ReviewShell
+        importPanel={
+          <button
+            type="button"
+            onClick={handleBackToDetail}
+            aria-label="Leave session"
+            className="flex h-9 w-9 items-center justify-center rounded-lg border border-black/50 bg-black/40 text-[#efd9a7] transition hover:bg-black/60"
+          >
+            <SearchBackIcon />
+          </button>
+        }
+        boardPanel={
+          <div className="relative mx-auto aspect-square w-full max-w-[calc(100vh-70px)]">
             {/*
               Board — the current position's FEN is 4-field (matches
-              `_normalize_fen` server-side); react-chessboard only reads
-              the first FEN field for piece placement, so the 4-field
-              value renders fine. BoardShell wraps it with the same
-              walnut frame + click-to-move + promotion dialog the
-              puzzles page uses, so the train flow's board is visually
-              + interactionally identical.
+              `_normalize_fen` server-side); react-chessboard only
+              reads the first FEN field for piece placement, so the
+              4-field value renders fine. BoardShell wraps it with
+              the same walnut frame + click-to-move + promotion
+              dialog the puzzles page uses, so the train flow's board
+              is visually + interactionally identical.
             */}
             {currentPosition ? (
-              <div className="aspect-square w-full">
-                <BoardShell
-                  position={currentPosition.fen}
-                  orientation={boardOrientation}
-                  allowDragging={!reviewPending}
-                  canDragPiece={({ piece }) => {
-                    if (reviewPending || !color) return false;
-                    // Train mode owns ONE move per stored row; the
-                    // schema's upsert contract pins every stored row to
-                    // owner-to-move, so we only let the owner's pieces
-                    // drag during a quiz attempt (deliberately MORE
-                    // restrictive than the build page, which lets the
-                    // user play both colors to author lines).
-                    const ownerSide = color === 'white' ? 'w' : 'b';
-                    return piece.pieceType[0] === ownerSide;
-                  }}
-                  onMove={(source, target, promotion) =>
-                    handleDrop(source, target, promotion ?? 'q')
-                      ? true
-                      : false
-                  }
-                />
-              </div>
+              <BoardShell
+                position={currentPosition.fen}
+                orientation={boardOrientation}
+                allowDragging={!reviewPending}
+                canDragPiece={({ piece }) => {
+                  if (reviewPending || !color) return false;
+                  // Train mode owns ONE move per stored row; the
+                  // schema's upsert contract pins every stored row
+                  // to owner-to-move, so we only let the owner's
+                  // pieces drag during a quiz attempt (deliberately
+                  // MORE restrictive than the build page, which lets
+                  // the user play both colors to author lines).
+                  const ownerSide = color === 'white' ? 'w' : 'b';
+                  return piece.pieceType[0] === ownerSide;
+                }}
+                onMove={(source, target, promotion) =>
+                  handleDrop(source, target, promotion ?? 'q')
+                    ? true
+                    : false
+                }
+              />
             ) : (
               <div
-                className={`${CARD_CLASS} p-6 text-center text-sm text-[#a79b8a]`}
+                className={`${CARD_CLASS} flex h-full w-full items-center justify-center p-6 text-center text-sm text-[#a79b8a]`}
               >
                 No positions to train.
               </div>
             )}
-          </section>
-
-          {/* ============== SIDE COLUMN (right) ============== */}
-          <aside className="mx-auto flex w-full max-w-[22rem] flex-col gap-4">
+          </div>
+        }
+        analysisPanel={
+          <aside className="flex h-full flex-col gap-4 overflow-hidden">
             {currentPosition && (
               <div className={`${CARD_CLASS} flex flex-col gap-4 p-5`}>
                 {/* Prompt. Per the task: opponent's prior move is NOT
@@ -1080,8 +1095,8 @@ export default function RepertoireTrainPage({
               </div>
             )}
           </aside>
-        </div>
-      </div>
+        }
+      />
     </div>
   );
 }
