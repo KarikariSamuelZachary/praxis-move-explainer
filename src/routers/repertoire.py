@@ -60,6 +60,7 @@ from core.fsrs import (
     rating_for,
     scheduler,
 )
+from engines.stockfish_engine import StockfishEngine
 from schemas.repertoire_schemas import (
     Repertoire,
     RepertoirePosition,
@@ -396,6 +397,69 @@ def list_repertoires(request: Request, conn=Depends(get_db)):
     return [RepertoireSummary(**r) for r in rows]
 
 
+# ---------------------------------------------------------------------
+# Stockfish move suggestions. Registered BEFORE the "/{repertoire_id}"
+# route so the literal "/suggestions" path wins the match (a UUID parse
+# of "suggestions" would otherwise 422 on the single-repertoire route).
+# ---------------------------------------------------------------------
+
+# Top-N candidate moves surfaced per suggestion request, and the wall-
+# clock time budget passed to Stockfish. 5 moves at ~0.4s keeps the
+# build page's "Other moves" panel responsive without being too shallow.
+_SUGGEST_MOVE_COUNT = 5
+_SUGGEST_TIME_SECONDS = 0.4
+
+
+@router.get("/suggestions")
+def get_suggestions(request: Request, fen: str):
+    """Return Stockfish's top candidate moves for an arbitrary position.
+
+    Position-based (not repertoire-based): the caller passes a FEN and
+    gets back a ranked list of the side-to-move's best legal moves, each
+    as `{"uci", "san", "score_cp"}` (centipawns from the mover's
+    perspective; mate coerced to ±10000). Powers the build page's
+    "Other moves" panel so the user sees engine suggestions instead of
+    the (network-dependent) Lichess Explorer gap feed.
+
+    Auth: same `_get_user_id` gate every other endpoint uses — a caller
+    must present a Clerk user id, though no repertoire ownership is
+    checked here (there is no repertoire in the request).
+
+    Errors:
+      * 400 — `fen` is missing or not a legal chess position.
+      * 502 — Stockfish failed to start/analyse (surfaced, not silent,
+        matching the project's "do not let these fail silently" rule).
+    """
+    _get_user_id(request)
+
+    if not fen or not fen.strip():
+        raise HTTPException(status_code=400, detail="missing fen")
+
+    try:
+        board = chess.Board(fen.strip())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"invalid fen: {exc}") from exc
+
+    try:
+        with StockfishEngine() as sf:
+            suggestions = sf.suggest(
+                board,
+                num_moves=_SUGGEST_MOVE_COUNT,
+                time_limit=_SUGGEST_TIME_SECONDS,
+            )
+    except Exception as exc:  # noqa: BLE001 - surface any engine failure as 502
+        raise HTTPException(
+            status_code=502,
+            detail=f"Stockfish suggestions failed: {exc}",
+        ) from exc
+
+    return {
+        "fen": " ".join(board.fen().split()[:4]),
+        "side_to_move": "w" if board.turn == chess.WHITE else "b",
+        "suggestions": suggestions,
+    }
+
+
 @router.get("/{repertoire_id}")
 def get_repertoire(
     request: Request,
@@ -604,18 +668,28 @@ def get_queue(request: Request, repertoire_id: UUID, conn=Depends(get_db)):
         # Ownership pre-check: 404/403 if the repertoire is missing or
         # not the caller's. Reuses the same helper as the write
         # endpoints so the existence/ownership semantics are
-        # identical across the surface.
-        _load_owned_repertoire(cur, rid, user_id)
+        # identical across the surface. Also returns the row so we can
+        # read the repertoire's color and filter to owner-side rows.
+        rep_row = _load_owned_repertoire(cur, rid, user_id)
+        owner_letter = "w" if rep_row["color"] == "white" else "b"
 
+        # The review queue quizzes the user on THEIR moves only — the
+        # owner's prepared responses. The writer now persists both
+        # owner AND opponent rows, so we filter by the FEN's
+        # side-to-move field (`split_part(fen, ' ', 2)`) to keep
+        # opponent rows out of the queue. A due-gated opponent row
+        # would otherwise surface as "you should review black's e5"
+        # which isn't a position the user is quizzed on.
         cur.execute(
             f"""
             SELECT {_POSITION_COLUMNS}
             FROM repertoire_positions
             WHERE repertoire_id = %s
               AND due <= NOW()
+              AND split_part(fen, ' ', 2) = %s
             ORDER BY due ASC
             """,
-            (rid,),
+            (rid, owner_letter),
         )
         rows = cur.fetchall()
 
@@ -647,14 +721,18 @@ def get_gaps(request: Request, repertoire_id: UUID, conn=Depends(get_db)):
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         # Ownership pre-check raises 404/403 before any external API
         # call goes out — so a 403 deny doesn't leak Lichess Explorer
-        # traffic for repertoires the caller can't read.
-        _load_owned_repertoire(cur, rid, user_id)
+        # traffic for repertoires the caller can't read. Also returns
+        # the repertoire row, whose `color` field the gap-finder needs
+        # to filter its outer loop to owner-side rows only.
+        rep_row = _load_owned_repertoire(cur, rid, user_id)
 
     # find_repertoire_gaps opens its own cursor on `conn`; that's fine
     # — psycopg2 supports multiple concurrent cursors on a single conn,
     # and `get_db()` returns the conn to the pool on generator close
     # (no commit needed; gap analysis reads only).
-    return find_repertoire_gaps(conn, repertoire_id=rid)
+    return find_repertoire_gaps(
+        conn, repertoire_id=rid, owner_color=rep_row["color"]
+    )
 
 
 @router.post("/{repertoire_id}/sessions/start")
@@ -704,39 +782,49 @@ def start_session(
         # Ownership pre-check: 404/403 if the repertoire is missing
         # or not the caller's. Runs before any position fetch so a
         # 403 deny doesn't reveal position counts for someone else's
-        # repertoire.
-        _load_owned_repertoire(cur, rid, user_id)
+        # repertoire. Also returns the row so we can read the color
+        # and filter training/review rows to the owner side only.
+        rep_row = _load_owned_repertoire(cur, rid, user_id)
+        owner_letter = "w" if rep_row["color"] == "white" else "b"
 
+        # Training and review both quiz the user on THEIR moves only
+        # (the owner's prepared responses). The writer now persists
+        # both owner AND opponent rows; `split_part(fen, ' ', 2)`
+        # keeps opponent rows out of the session's position set so
+        # the user isn't quizzed on "what does black play here?"
         if body.mode == "review":
-            # Same query as GET /queue — due <= NOW(), due ASC. The
-            # SELECT column list is shared via _POSITION_COLUMNS so
-            # the row dict lands cleanly into RepertoirePosition.
+            # Same query as GET /queue — due <= NOW(), due ASC, owner
+            # rows only. The SELECT column list is shared via
+            # _POSITION_COLUMNS so the row dict lands cleanly into
+            # RepertoirePosition.
             cur.execute(
                 f"""
                 SELECT {_POSITION_COLUMNS}
                 FROM repertoire_positions
                 WHERE repertoire_id = %s
                   AND due <= NOW()
+                  AND split_part(fen, ' ', 2) = %s
                 ORDER BY due ASC
                 """,
-                (rid,),
+                (rid, owner_letter),
             )
             rows = cur.fetchall()
         else:
-            # mode == 'train': all rows for this repertoire. If the
-            # client also asked for main_lines_only, filter after the
-            # SELECT via the pure tree-walk classifier — same module
-            # already used for read-side classification, imported
-            # here as a pure function so we don't need a second
-            # schema-aware conn cursor.
+            # mode == 'train': all OWNER rows for this repertoire. If
+            # the client also asked for main_lines_only, filter after
+            # the SELECT via the pure tree-walk classifier — same
+            # module already used for read-side classification,
+            # imported here as a pure function so we don't need a
+            # second schema-aware conn cursor.
             cur.execute(
                 f"""
                 SELECT {_POSITION_COLUMNS}
                 FROM repertoire_positions
                 WHERE repertoire_id = %s
+                  AND split_part(fen, ' ', 2) = %s
                 ORDER BY created_at ASC
                 """,
-                (rid,),
+                (rid, owner_letter),
             )
             rows = cur.fetchall()
 
