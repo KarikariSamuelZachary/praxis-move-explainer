@@ -13,19 +13,19 @@
  *   * `path: string[]`  — UCI moves replayed from the starting
  *     position. The board always shows the position at the end of
  *     `path`. Clicking breadcrumb ply N truncates `path` to [:N].
- *   * `clientKnownMoves: Map<normalizedFen, {uci, san, id}>` — moves
- *     the client knows about, keyed by the stored row's position id
- *     is threaded through so the trash icon can DELETE the row.
+ *   * `clientKnownMoves: Map<normalizedFen, KnownMove[]>` — stored
+ *     rows grouped by their row's FEN, with the row id threaded
+ *     through so the trash icon can DELETE the row. A FEN can hold
+ *     SEVERAL rows (one per saved move — a diverging repertoire).
  *     Seeded ONCE on mount from `GET /api/repertoires/{id}/positions`
  *     (every stored row, unfiltered by FSRS due), and merged with
  *     additional entries from in-session POST responses as the user
  *     drags new moves. Used to populate "My saved moves" at the
- *     breadcrumb's current position. Fix for the prior gap where a
- *     position stored in a prior session showed the "+ Drag to add"
- *     empty state.
- *   * `cachedGaps: RepertoireGap[]` — full repertoire gap report
- *     fetched ONCE on mount; filtered client-side by current
- *     `parent_fen` to render "Other moves".
+ *     current position (all saved continuations from here — see
+ *     `savedContinuations`).
+ *   * `suggestions` — Stockfish top-N for the CURRENT position,
+ *     fetched per navigation; filtered against the saved set to
+ *     render "Other moves" (unsaved replies only).
  *
  * Why fetch the full gap report once (rather than per position):
  * the upstream endpoint hits Lichess Explorer server-side per stored
@@ -46,10 +46,12 @@
  *   * The header's name/color now come from GET /api/repertoires/{id}
  *     (the dedicated single-repertoire endpoint) — no list-page
  *     derivation anymore, so a direct link / cold refresh works.
- *   * The reference screenshot's "10 positions" subtree count
- *     under a saved move isn't computed (would require walking the
- *     position tree; out of scope here — see the count comment in
- *     `SavedMoveRow` below).
+ *   * The per-row subtree counts in "My saved moves" are computed
+ *     CLIENT-SIDE by `countSubtreeRows` (a bounded walk over the
+ *     already-fetched /positions map — owner nodes follow their one
+ *     stored row, opponent nodes fan into every prepared reply). No
+ *     server tree logic is duplicated; a 400-node guard caps corrupt
+ *     data.
  *   * The reference screenshot's per-line comment box was removed
  *     entirely — there's no schema field or endpoint for it and it
  *     wasn't part of the original scope (it was cargo-culted from
@@ -74,9 +76,23 @@ import { useRouter } from 'next/navigation';
 import { Chess, type Square } from 'chess.js';
 
 import BoardShell from '@/components/board/BoardShell';
+import ReviewShell from '@/components/review/ReviewShell';
 
 const CARD_CLASS =
   'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
+
+// Wooden-box button style, lifted verbatim from the game-review page's
+// movement controls (components/review/BoardPanel.tsx + AnalysisPanel.tsx)
+// so the relocated navigation strip matches that card exactly.
+const WOOD_BOX_STYLE: React.CSSProperties = {
+  borderRadius: '4px',
+  background:
+    'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.png)',
+  backgroundSize: 'cover',
+  backgroundPosition: 'center',
+  boxShadow:
+    '0 0 0 2px #1a0a02, inset 0 2px 0 rgba(255,200,100,0.12), inset 0 -2px 0 rgba(0,0,0,0.5), 0 4px 12px rgba(0,0,0,0.5)',
+};
 
 const STARTING_FEN =
   'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
@@ -98,18 +114,11 @@ type ApiRepertoire = {
   updated_at: string;
 };
 
-type RepertoireGap = {
-  parent_position_id: string;
-  parent_fen: string;
-  opponent_move_uci: string;
-  opponent_move_san: string;
-  frequency_percent: number;
-  resulting_fen: string;
-};
-
-type RepertoireGapReport = {
-  gaps: RepertoireGap[];
-  unchecked_positions: { position_id: string; fen: string; reason: string }[];
+// Shape returned by GET /api/repertoires/suggestions (Stockfish top-N).
+type Suggestion = {
+  uci: string;
+  san: string;
+  score_cp: number;
 };
 
 type ApiError = { detail?: string; error?: string };
@@ -180,6 +189,79 @@ function isOwnersTurn(fen: string, ownerColor: RepertoireColor): boolean {
   return side === (ownerColor === 'white' ? 'w' : 'b');
 }
 
+// One stored repertoire_positions row as tracked client-side. Keyed by
+// the row's normalized 4-field pre-ply FEN in `clientKnownMoves`
+// (a FEN can hold SEVERAL rows — one per saved move, i.e. one per
+// prepared branch from that position).
+type KnownMove = { uci: string; san: string; id: string; createdAt: string };
+
+// Merge stored rows into a per-FEN KnownMove map (mutates `target`).
+// Same-UCI rows are replaced in place (re-save is idempotent);
+// different UCIs at the same FEN append — that's a diverging
+// repertoire (e.g. both Nf3 and Be2 prepared from one position).
+function mergeKnownRows(
+  target: Map<string, KnownMove[]>,
+  rows: RepertoirePositionRow[]
+) {
+  for (const row of rows) {
+    const key = normalizeFen(row.fen);
+    const entry: KnownMove = {
+      uci: row.move,
+      san: moveSanAtFen(row.fen, row.move),
+      id: row.id,
+      createdAt: row.created_at,
+    };
+    const list = target.get(key) ?? [];
+    const idx = list.findIndex((e) => e.uci === entry.uci);
+    if (idx >= 0) {
+      list[idx] = entry;
+    } else {
+      list.push(entry);
+    }
+    target.set(key, list);
+  }
+}
+
+// Count the stored rows in the branch subtree rooted at `rootFen`.
+// Walk: every stored row at a node contributes 1 and follows its own
+// move (a FEN can hold SEVERAL saved moves — each branch is walked);
+// nodes with no rows are leaves. Bounded by a visited set
+// (transpositions/cycles) and a node guard so a corrupt map can never
+// spin the walk. All data is already client-side (the full /positions
+// fetch), so no server tree logic is duplicated.
+function countSubtreeRows(
+  rootFen: string,
+  known: Map<string, KnownMove[]>
+): number {
+  const visited = new Set<string>();
+  const stack: string[] = [normalizeFen(rootFen)];
+  let count = 0;
+  let guard = 0;
+  while (stack.length > 0 && guard++ < 400) {
+    const key = stack.pop() as string;
+    if (visited.has(key)) continue;
+    visited.add(key);
+    const rows = known.get(key) ?? [];
+    if (rows.length > 0) {
+      count += rows.length;
+      for (const row of rows) {
+        try {
+          const next = new Chess(`${key} 0 1`);
+          next.move({
+            from: row.uci.slice(0, 2),
+            to: row.uci.slice(2, 4),
+            promotion: row.uci.length > 4 ? row.uci[4] : undefined,
+          });
+          stack.push(normalizeFen(next.fen()));
+        } catch {
+          // Stale/corrupt row — this branch is a leaf.
+        }
+      }
+    }
+  }
+  return count;
+}
+
 function SearchBackIcon() {
   return (
     <svg
@@ -241,225 +323,61 @@ function TrainIcon() {
 function TrashIcon() {
   return (
     <svg
-      width="16"
-      height="16"
+      width="14"
+      height="14"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"
-      strokeWidth="1.6"
+      strokeWidth="2"
       strokeLinecap="round"
       strokeLinejoin="round"
       aria-hidden="true"
     >
       <path d="M3 6h18" />
-      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
-      <path d="M19 6 18 20a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <path d="M8 6V4a1 1 0 0 1 1-1h6a1 1 0 0 1 1 1v2" />
+      <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
     </svg>
   );
 }
 
-function StepIcon({ kind }: { kind: 'home' | 'start' | 'prev' | 'next' | 'end' }) {
-  // Square renderings of the reference's < < < > > > jump controls.
-  switch (kind) {
-    case 'home':
-      return (
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M3 12 12 4l9 8" />
-          <path d="M5 10v10h14V10" />
-        </svg>
-      );
-    case 'start':
-      return (
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M19 5 8 12l11 7z" />
-          <path d="M5 5v14" />
-        </svg>
-      );
-    case 'prev':
-      return (
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="m15 18-6-6 6-6" />
-        </svg>
-      );
-    case 'next':
-      return (
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="m9 6 6 6-6 6" />
-        </svg>
-      );
-    case 'end':
-      return (
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-          <path d="M5 5v14" />
-          <path d="M5 5 16 12 5 19z" />
-        </svg>
-      );
-  }
+// Format a Stockfish centipawn score (from the mover's perspective) into
+// a compact human label: "+0.4", "0.0", "-0.3", or "M" for mate.
+function formatScoreCp(cp: number): string {
+  if (cp >= 9000) return 'M';
+  if (cp <= -9000) return '−M';
+  const sign = cp > 0 ? '+' : '';
+  return `${sign}${(cp / 100).toFixed(1)}`;
 }
 
-type BreadcrumbProps = {
-  path: string[];
-  onJump: (index: number) => void;
-};
-
-function Breadcrumb({ path, onJump }: BreadcrumbProps) {
-  // Format the path as SAN history in pairs (number.moves) so it
-  // matches the reference render ("1.e4 e5 2.Nf3 Nc6"). Each rendered
-  // unit is one PLAIN MOVE button that jumps the board to that ply
-  // when clicked (truncating `path` to [0..ply]).
-  const items: { ply: number; san: string; isClickable: boolean }[] = [];
-  const game = new Chess();
-  for (let i = 0; i < path.length; i++) {
-    try {
-      const m = game.move({
-        from: path[i].slice(0, 2),
-        to: path[i].slice(2, 4),
-        promotion: path[i].length > 4 ? path[i][4] : undefined,
-      });
-      items.push({ ply: i + 1, san: m.san, isClickable: true });
-    } catch {
-      // Corrupt UCI in the path — render it as a non-clickable
-      // stub so we never crash the breadcrumb.
-      items.push({ ply: i + 1, san: path[i] ?? '?', isClickable: false });
-    }
-  }
-
-  return (
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1 border-b border-white/5 px-4 py-2 text-sm">
-      {items.length === 0 ? (
-        <span className="text-[#a79b8a]">Starting position — drag a piece to begin</span>
-      ) : (
-        items.map((item, idx) => (
-          <span key={`ply-${item.ply}`} className="flex items-center gap-2">
-            <span
-              className={
-                Math.floor((item.ply - 1) / 2) % 1 === 0
-                  ? 'text-[#a79b8a]'
-                  : 'text-[#a79b8a]/40'
-              }
-            >
-              {Math.floor((item.ply - 1) / 2) + 1}.
-            </span>
-            <button
-              type="button"
-              disabled={!item.isClickable}
-              onClick={() => onJump(item.ply - 1)}
-              className="rounded-md px-1.5 py-0.5 font-mono text-sm font-semibold text-[#efd9a7] transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              {item.san}
-            </button>
-            {idx < items.length - 1 && <span className="text-[#a79b8a]/30">·</span>}
-          </span>
-        ))
-      )}
-    </div>
-  );
-}
-
-type SavedMoveRowProps = {
-  prefix: string;
+type SuggestionRowProps = {
   moveSan: string;
-  count: number | null;
-  onDelete: () => void;
-};
-
-function SavedMoveRow({ prefix, moveSan, count, onDelete }: SavedMoveRowProps) {
-  return (
-    <div className="flex items-center gap-3 rounded-2xl border border-[#d9b87c]/35 bg-black/30 px-3 py-2.5 text-sm shadow-inner shadow-black/40">
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="font-mono text-xs text-[#a79b8a]">{prefix}</span>
-        <span className="font-mono text-base font-bold text-[#efd9a7]">{moveSan}</span>
-      </div>
-      <span className="ml-1 text-xs text-[#a79b8a]">
-        {count === null ? 'In this line' : `${count} position${count === 1 ? '' : 's'}`}
-      </span>
-      <button
-        type="button"
-        onClick={onDelete}
-        aria-label={`Remove ${prefix}${moveSan}`}
-        className="ml-auto flex h-8 w-8 items-center justify-center rounded-lg text-[#d97757] transition hover:bg-[#d97757]/10"
-      >
-        <TrashIcon />
-      </button>
-    </div>
-  );
-}
-
-type OtherMoveRowProps = {
-  prefix: string;
-  moveSan: string;
-  frequencyPercent: number;
-  loading?: boolean;
+  scoreCp: number;
+  isBest: boolean;
   onSelect: () => void;
 };
 
-function OtherMoveRow({
-  prefix,
-  moveSan,
-  frequencyPercent,
-  loading,
-  onSelect,
-}: OtherMoveRowProps) {
+function SuggestionRow({ moveSan, scoreCp, isBest, onSelect }: SuggestionRowProps) {
   return (
     <button
       type="button"
       onClick={onSelect}
       className="group/other flex w-full items-center gap-3 rounded-2xl border border-white/5 bg-black/25 px-3 py-2.5 text-left text-sm transition hover:border-[#d9b87c]/30 hover:bg-black/40"
     >
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="font-mono text-xs text-[#a79b8a]">{prefix}</span>
-        <span className="font-mono text-base font-semibold text-[#efd9a7]/85">
-          {moveSan}
-        </span>
-      </div>
-      <div className="relative ml-1 h-2 min-w-[80px] max-w-[160px] flex-1 overflow-hidden rounded-full bg-black/45">
-        <div
-          className="absolute inset-y-0 left-0 rounded-full bg-[#d9b87c]/80 transition-[width] duration-300 group-hover/other:bg-[#efd9a7]/90"
-          style={{ width: `${Math.max(2, Math.min(100, frequencyPercent))}%` }}
-        />
-      </div>
-      <span className="shrink-0 text-xs tabular-nums text-[#a79b8a]">
-        {frequencyPercent.toFixed(1)}%
+      <span className="font-mono text-base font-semibold text-[#efd9a7]/85">
+        {moveSan}
+      </span>
+      <span
+        className={`ml-auto shrink-0 font-mono text-xs tabular-nums ${
+          scoreCp >= 0 ? 'text-emerald-300/90' : 'text-red-300/90'
+        }`}
+      >
+        {formatScoreCp(scoreCp)}
       </span>
       <span className="shrink-0 text-[10px] uppercase tracking-wider text-[#a79b8a]/55">
-        {loading ? 'Opening book loading…' : 'Suggested'}
+        {isBest ? 'Best' : 'Stockfish'}
       </span>
     </button>
   );
-}
-
-type MovePlaceholderRowProps = {
-  prefix: string;
-  loading?: boolean;
-};
-
-function MovePlaceholderRow({ prefix, loading }: MovePlaceholderRowProps) {
-  return (
-    <div className="flex items-center gap-3 rounded-2xl border border-white/5 bg-black/25 px-3 py-2.5 text-sm text-[#a79b8a]">
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="font-mono text-xs text-[#a79b8a]/70">{prefix}</span>
-        <span className="font-mono text-base font-semibold text-[#a79b8a]/40">
-          —
-        </span>
-      </div>
-      <div className="relative ml-1 h-2 min-w-[80px] max-w-[160px] flex-1 overflow-hidden rounded-full bg-black/45">
-        <div className="absolute inset-y-0 left-0 w-1/2 rounded-full bg-[#a79b8a]/30 animate-pulse" />
-      </div>
-      <span className="shrink-0 text-[10px] uppercase tracking-wider text-[#a79b8a]/55">
-        {loading ? 'Opening book loading…' : 'No suggestion'}
-      </span>
-    </div>
-  );
-}
-
-function breadcrumbPrefix(path: string[]): string {
-  // Returns the "n.m..." short hint shown in My saved / Other rows
-  // so the user can see at a glance which ply these correspond to.
-  if (path.length === 0) return 'start';
-  const lastIdx = path.length - 1;
-  const moveNumber = Math.floor(lastIdx / 2) + 1;
-  const isWhiteMove = lastIdx % 2 === 0;
-  return `${moveNumber}.${isWhiteMove ? '' : '..'}`;
 }
 
 export default function RepertoireDetailPage({
@@ -472,23 +390,32 @@ export default function RepertoireDetailPage({
 
   const [name, setName] = useState<string | null>(null);
   const [color, setColor] = useState<RepertoireColor | null>(null);
-  const [pageError, setPageError] = useState<string | null>(null);
-
   const [path, setPath] = useState<string[]>([]);
-  const [cachedGaps, setCachedGaps] = useState<RepertoireGap[]>([]);
-  const [loadingGaps, setLoadingGaps] = useState(true);
   const [loadingPositions, setLoadingPositions] = useState(true);
   const [positionsError, setPositionsError] = useState<string | null>(null);
   const [clientKnownMoves, setClientKnownMoves] = useState<
-    Map<string, { uci: string; san: string; id: string }>
+    Map<string, KnownMove[]>
   >(new Map());
   const [savePending, setSavePending] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
-  const [deletePending, setDeletePending] = useState(false);
+
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
+  const [loadingSuggestions, setLoadingSuggestions] = useState(false);
+  const [suggestionsError, setSuggestionsError] = useState<string | null>(null);
 
   // Derived: position we're currently viewing (end of `path`).
   const currentFen = useMemo(() => playToFen(STARTING_FEN, path), [path]);
-  const currentFenKey = useMemo(() => normalizeFen(currentFen), [currentFen]);
+
+  // Total stored rows (one per saved move — NOT the FEN count, which
+  // would undercount diverging positions that hold several branches).
+  const totalSavedRows = useMemo(
+    () =>
+      Array.from(clientKnownMoves.values()).reduce(
+        (n, list) => n + list.length,
+        0
+      ),
+    [clientKnownMoves]
+  );
 
   // Load repertoire metadata via GET /api/repertoires/{id}. A dedicated
   // single-repertoire endpoint exists now, so we fetch it directly on
@@ -546,19 +473,14 @@ export default function RepertoireDetailPage({
         const rows = (await res.json()) as RepertoirePositionRow[];
         if (cancelled || !Array.isArray(rows)) return;
         setClientKnownMoves((prev) => {
-          // Merge (rows win over `prev` on collision — the stored row
-          // is the source of truth). POST-response merges happen
-          // immediately on success, so a same-session add can't be
-          // clobbered by an in-flight GET that lands later: both
-          // paths produce identical entries for the same FEN.
+          // Merge into a copy (rows win on same-UCI collision — the
+          // stored row is the source of truth; DIFFERENT UCIs at the
+          // same FEN append as separate branches). POST-response
+          // merges happen immediately on success, so a same-session
+          // add can't be clobbered by an in-flight GET that lands
+          // later: both paths produce identical entries.
           const next = new Map(prev);
-          for (const row of rows) {
-            next.set(normalizeFen(row.fen), {
-              uci: row.move,
-              san: moveSanAtFen(row.fen, row.move),
-              id: row.id,
-            });
-          }
+          mergeKnownRows(next, rows);
           return next;
         });
       } catch (err) {
@@ -578,76 +500,186 @@ export default function RepertoireDetailPage({
     };
   }, [id]);
 
-  // Load gaps ONCE on mount. The upstream endpoint is the heaviest
-  // thing on this page (it walks every stored position and queries
-  // Lichess Explorer per position) — we deliberately don't refetch
-  // on breadcrumb navigation, even though the visible "Other moves"
-  // row set changes. The local filter on `cachedGaps` is O(n) and
-  // trivially fast.
+  // Stockfish move suggestions for the CURRENT position. Fetched on
+  // every position change (a ~0.4s multi-PV analysis), so the "Other
+  // moves" panel always reflects the position on the board. Replaces
+  // the previous Lichess Explorer gap feed, which was network-dependent
+  // and returned nothing when the local machine couldn't reach Explorer.
   useEffect(() => {
+    if (color === null) return;
     let cancelled = false;
+    setLoadingSuggestions(true);
+    setSuggestionsError(null);
     (async () => {
-      setLoadingGaps(true);
       try {
-        const res = await fetch(`/api/repertoires/${encodeURIComponent(id)}/gaps`, {
-          cache: 'no-store',
-        });
+        const res = await fetch(
+          `/api/repertoires/suggestions?fen=${encodeURIComponent(currentFen)}`,
+          { cache: 'no-store' }
+        );
         if (!res.ok) {
           const body = (await res.json().catch(() => ({}))) as ApiError;
-          throw new Error(body.detail ?? body.error ?? `Gaps load failed (${res.status})`);
+          throw new Error(
+            body.detail ?? body.error ?? `Suggestions failed (${res.status})`
+          );
         }
-        const report = (await res.json()) as RepertoireGapReport;
+        const data = (await res.json()) as { suggestions?: Suggestion[] };
         if (!cancelled) {
-          setCachedGaps(Array.isArray(report.gaps) ? report.gaps : []);
+          setSuggestions(Array.isArray(data.suggestions) ? data.suggestions : []);
         }
       } catch (err) {
         if (!cancelled) {
-          setPageError(err instanceof Error ? err.message : 'Failed to load gaps');
+          setSuggestionsError(
+            err instanceof Error ? err.message : 'Failed to load suggestions'
+          );
         }
       } finally {
         if (!cancelled) {
-          setLoadingGaps(false);
+          setLoadingSuggestions(false);
         }
       }
     })();
     return () => {
       cancelled = true;
     };
-  }, [id]);
+  }, [currentFen, color]);
 
-  // Filter gaps at the current position. `parent_fen` is the normalized
-  // FEN of the user's stored position (see RepertoireGap schema).
-  const otherMovesAtCurrent = useMemo(() => {
-    return cachedGaps
-      .filter((gap) => gap.parent_fen === currentFenKey)
-      .sort((a, b) => b.frequency_percent - a.frequency_percent);
-  }, [cachedGaps, currentFenKey]);
+  // The primary saved line — the ordered UCI move sequence reconstructed
+  // by walking the stored rows from the start position. At EVERY node
+  // (owner AND opponent alike) it follows the EARLIEST-CREATED saved
+  // row at that FEN (the same main-line tiebreak the backend tree
+  // classifier uses). Used by the step-controls' "Last" button.
+  const savedLine = useMemo(() => {
+    if (!color) return [];
+    const game = new Chess(STARTING_FEN);
+    const line: string[] = [];
+    let guard = 0;
+    while (guard++ < 400) {
+      const fenKey = normalizeFen(game.fen());
+      const rows = clientKnownMoves.get(fenKey) ?? [];
+      if (rows.length === 0) break;
+      const saved = [...rows].sort((a, b) =>
+        a.createdAt < b.createdAt
+          ? -1
+          : a.createdAt > b.createdAt
+            ? 1
+            : a.id < b.id
+              ? -1
+              : 1
+      )[0];
+      try {
+        game.move({
+          from: saved.uci.slice(0, 2),
+          to: saved.uci.slice(2, 4),
+          promotion: saved.uci.length > 4 ? saved.uci[4] : undefined,
+        });
+      } catch {
+        break;
+      }
+      line.push(saved.uci);
+    }
+    return line;
+  }, [clientKnownMoves, color]);
 
-  // Saved move at the current position: pulled from the client-known
-  // map (seeded by GET /positions on mount, merged with same-session
-  // POST responses). The "10 positions" deeper count from the
-  // reference isn't computed here — it would need a tree-walk over
-  // all stored positions to measure subtree size, which is real work
-  // deferred to a follow-up task per scope.
-  const savedMoveAtCurrent = clientKnownMoves.get(currentFenKey) ?? null;
+  // "My saved moves" AT THE CURRENT POSITION — every saved
+  // continuation from here. Under the save-every-ply model, the
+  // current FEN holds rows for BOTH the owner AND the opponent (a
+  // row is stored for every ply, regardless of which side is on
+  // move). So the continuations are simply ALL rows at the current
+  // FEN — no legal-move fan-out at opponent nodes anymore. Each row
+  // carries the stored row's id (for DELETE) plus the subtree's
+  // stored-row count.
+  const savedContinuations = useMemo<
+    {
+      uci: string;
+      san: string;
+      rowId: string;
+      rowFenKey: string;
+      subtreeRows: number;
+    }[]
+  >(() => {
+    if (!color) return [];
+    const key = normalizeFen(currentFen);
+    const results: {
+      uci: string;
+      san: string;
+      rowId: string;
+      rowFenKey: string;
+      subtreeRows: number;
+    }[] = [];
+
+    // Every row at the current FEN is a continuation — owner moves
+    // AND opponent moves. The subtree count is per-branch: the walk
+    // starts AFTER this row's move, so sibling branches' rows don't
+    // inflate the number.
+    for (const row of clientKnownMoves.get(key) ?? []) {
+      let subtreeRows = 0;
+      try {
+        const probe = new Chess(currentFen);
+        probe.move({
+          from: row.uci.slice(0, 2),
+          to: row.uci.slice(2, 4),
+          promotion: row.uci.length > 4 ? row.uci[4] : undefined,
+        });
+        subtreeRows = countSubtreeRows(probe.fen(), clientKnownMoves);
+      } catch {
+        subtreeRows = 0;
+      }
+      results.push({
+        uci: row.uci,
+        san: row.san,
+        rowId: row.id,
+        rowFenKey: key,
+        subtreeRows,
+      });
+    }
+    return results;
+  }, [color, currentFen, clientKnownMoves]);
+
+  // "Other moves" excludes anything already saved at this position —
+  // a move the user built a subtree for belongs in "My saved moves",
+  // never in both panels (the saved set is now potentially multi-row,
+  // so every one of its UCIs must be checked against suggestions).
+  const otherMoves = useMemo(
+    () =>
+      suggestions.filter(
+        (s) => !savedContinuations.some((c) => c.uci === s.uci)
+      ),
+    [suggestions, savedContinuations]
+  );
+
+  // Board arrows — one arrow PER saved continuation from the current
+  // position, so a diverged repertoire shows every branch at once
+  // (e.g. a position with both Nf3 and Be2 saved draws the knight
+  // arrow g1→f3 AND the bishop arrow c1/f1→e2). Owner moves render
+  // gold, opponent replies rust. A single board position has one
+  // side to move, so every continuation arrow starts from that side.
+  const lineArrows = useMemo<
+    { startSquare: string; endSquare: string; color: string }[]
+  >(() => {
+    if (!color) return [];
+    const isOwnerMove = isOwnersTurn(currentFen, color);
+    return savedContinuations.map((c) => ({
+      startSquare: c.uci.slice(0, 2),
+      endSquare: c.uci.slice(2, 4),
+      color: isOwnerMove ? '#d9b87c' : '#a34a2a',
+    }));
+  }, [savedContinuations, currentFen, color]);
 
   // Unified move handler. Both colors play in turn during the build
-  // flow — owner moves persist a repertoire_positions row via POST,
-  // opponent moves just extend the path locally (the backend's upsert
-  // replays opponent plies but writes no row for them, so POSTing an
-  // opponent-only move would be a redundant round-trip; the row gets
-  // persisted on the NEXT owner POST when the user plays their reply).
+  // flow — EVERY move (owner AND opponent) is POSTed so the backend
+  // persists a row for every ply. This is the fix for "the last move
+  // black played is not saved": when the line ends with an opponent
+  // reply (e.g. d4 d5), d5 is POSTed and stored even though no owner
+  // move follows.
   //
-  // The path is updated OPTIMISTICALLY for owner moves too: we extend
-  // `path` synchronously (so the dropped piece lands immediately and
-  // the board re-orients to the resulting position), then POST in the
-  // background. On a failed POST we roll `path` back so the user can
-  // retry from the position they left. This is the fix for the
-  // "dragging my piece snaps it back while the save round-trips"
-  // behaviour — previously the owner move only committed after the
-  // POST resolved, which made every owner move (black in a black
-  // repertoire) appear to bounce back and, on a slow/flaky backend,
-  // look like the drag didn't take.
+  // The path is updated OPTIMISTICALLY: we extend `path` synchronously
+  // (so the dropped piece lands immediately and the board re-orients),
+  // then POST in the background. On a failed POST we roll `path` back
+  // so the user can retry from the position they left. This is the fix
+  // for the "dragging my piece snaps it back while the save round-
+  // trips" behaviour — previously the move only committed after the
+  // POST resolved, which made every move appear to bounce back on a
+  // slow/flaky backend.
   const handleMove = useCallback(
     (sourceSquare: string, targetSquare: string, promotion?: string): boolean => {
       if (!color || savePending) return false;
@@ -663,30 +695,15 @@ export default function RepertoireDetailPage({
       } catch {
         return false;
       }
-      // UCI: source + target + promotion letter (only for actual
-      // pawn promotions; chess.js auto-fills 'q' if the dialog path
-      // wasn't used, but the resulting UCI still carries it so the
-      // backend's replay produces the same position).
       const nextUci = played.promotion
         ? `${sourceSquare}${targetSquare}${played.promotion}`
         : `${sourceSquare}${targetSquare}`;
-      const san = played.san;
 
-      const isOwnerTurn = isOwnersTurn(beforeFen, color);
-
-      if (!isOwnerTurn) {
-        // Opponent reply: just extend `path`. No POST — the backend
-        // replays opponent plies inside its upsert and writes nothing
-        // for them, and we'd be paying a round-trip to learn nothing.
-        // The user's NEXT owner move will POST the whole path
-        // including this opponent ply, which is when the row lands.
-        setPath((prev) => [...prev, nextUci]);
-        return true;
-      }
-
-      // Owner move: extend the path optimistically, then POST the full
-      // path so the backend persists a row for THIS owner-to-move
-      // position (the row's `fen` is the pre-ply normalized FEN).
+      // Owner AND opponent moves both POST the full path. The backend
+      // saves a row for EVERY ply in the path (the new save-every-ply
+      // model), so the opponent's reply is persisted alongside the
+      // owner's move — including terminal opponent moves with no
+      // following owner move (e.g. d4 d5 stops at d5 and d5 IS saved).
       const pathBefore = path; // snapshot for rollback on failure
       setSavePending(true);
       setSaveError(null);
@@ -709,21 +726,18 @@ export default function RepertoireDetailPage({
           }
           const persisted = (await res.json()) as RepertoirePositionRow[];
           // Merge persisted rows into the client-known map. Rows are
-          // keyed by the OWNER-to-move pre-ply FEN (the row's `fen`),
-          // which `clientKnownMoves.get(currentFenKey)` will hit when
-          // the user navigates back to the position they just played
-          // from. The resulting position (after this move) is opponent
-          // turn, so no row gets stored there — and the panel lookup
-          // at opponent-turn FENs returns null, matching the schema.
+          // keyed by the pre-ply normalized FEN (the row's `fen`).
+          // The POST response re-returns EVERY row on the replayed
+          // path (the backend upserts the whole line, not just the
+          // new ply), so mergeKnownRows handles all of them.
+          //
+          // IMPORTANT: the SAN is computed PER ROW (`moveSanAtFen`),
+          // not reused from the just-played move. Reusing one SAN
+          // would stamp every saved move in the line with the latest
+          // move's name (e.g. "e4" would read "Bxd5").
           setClientKnownMoves((prev) => {
             const next = new Map(prev);
-            for (const row of persisted) {
-              next.set(normalizeFen(row.fen), {
-                uci: row.move,
-                san,
-                id: row.id,
-              });
-            }
+            mergeKnownRows(next, persisted);
             return next;
           });
         } catch (err) {
@@ -742,38 +756,93 @@ export default function RepertoireDetailPage({
     [color, path, id, savePending]
   );
 
-  // Breadcrumb jump: truncate `path` to the given ply index.
-  const handleJump = useCallback((idx: number) => {
-    setPath((prev) => prev.slice(0, idx + 1));
-  }, []);
+  // Navigation strip (first / prev / next / last) — relocated under the
+  // "Other moves" panel and restyled to match the game-review movement
+  // buttons. "Next" steps into the UNIQUE saved continuation from the
+  // current position (the same move the board arrow points at) and is
+  // disabled at branch points/leaves — that's what keeps arrow, Next
+  // and the saved-moves list consistent with each other. "Last" jumps
+  // to the end of the primary reconstructed line.
+  const atStart = path.length === 0;
+  const atEnd = path.length >= savedLine.length;
+  const hasUniqueContinuation = savedContinuations.length === 1;
 
-  // Step controls (home/start/prev/next/end). "Next" beyond the
-  // current path isn't meaningful without a tree view of the full
-  // repertoire — it's disabled when there's nothing to advance to.
-  const handleHome = useCallback(() => setPath([]), []);
   const handleStart = useCallback(() => setPath([]), []);
   const handlePrev = useCallback(
     () => setPath((prev) => prev.slice(0, -1)),
     []
   );
-  const lastPly = path.length - 1;
+  const handleNext = useCallback(() => {
+    if (savedContinuations.length !== 1) return;
+    setPath((prev) => [...prev, savedContinuations[0].uci]);
+  }, [savedContinuations]);
+  const handleEnd = useCallback(() => setPath(savedLine), [savedLine]);
 
-  // Clicking an "Other move" suggestion navigates INTO the line the
-  // gap describes — the gap's `parent_fen` is the OWNER-to-move row
-  // the user has stored, the owner's stored UCI for that row is in the
-  // client-known map (keyed by parent_fen), and the gap's
-  // `opponent_move_uci` is the opponent reply we want to drive in.
-  // Extending the path by [owner_uci, opponent_uci] lands the board
-  // at the gap's `resulting_fen` (owner-to-move), where the user can
-  // immediately drag their next prepared move.
-  const handleOtherMoveClick = useCallback(
-    (gap: RepertoireGap) => {
-      if (savePending) return;
-      const ownerRow = clientKnownMoves.get(normalizeFen(gap.parent_fen));
-      if (!ownerRow) return;
-      setPath((prev) => [...prev, ownerRow.uci, gap.opponent_move_uci]);
+  // Clicking a "My saved moves" row navigates the board forward into
+  // that continuation by appending the row's move to `path` — the same
+  // local path-append the opponent-reply branch of `handleMove` uses
+  // (no POST: the move is already stored, this is pure navigation).
+  const handleContinuationClick = useCallback((uci: string) => {
+    setPath((prev) => [...prev, uci]);
+  }, []);
+
+  // Trash icon on a saved-moves row: DELETE the anchoring stored row
+  // via the existing per-position endpoint (the backend 409s if the
+  // row still has prepared responses beneath it — that detail is
+  // surfaced verbatim through the board's save-error toast). On
+  // success ONLY that row is dropped from the per-FEN list (a sibling
+  // branch at the same position stays) so the panels and arrows
+  // recompute immediately.
+  const handleDeleteRow = useCallback(
+    async (rowId: string, rowFenKey: string) => {
+      try {
+        const res = await fetch(
+          `/api/repertoires/positions/${encodeURIComponent(rowId)}`,
+          { method: 'DELETE' }
+        );
+        if (!res.ok) {
+          const body = (await res.json().catch(() => ({}))) as ApiError;
+          throw new Error(
+            body.detail ??
+              body.error ??
+              `Delete failed (${res.status})`
+          );
+        }
+        setClientKnownMoves((prev) => {
+          const list = prev.get(rowFenKey);
+          if (!list || !list.some((e) => e.id === rowId)) return prev;
+          const next = new Map(prev);
+          const filtered = list.filter((e) => e.id !== rowId);
+          if (filtered.length === 0) {
+            next.delete(rowFenKey);
+          } else {
+            next.set(rowFenKey, filtered);
+          }
+          return next;
+        });
+      } catch (err) {
+        setSaveError(
+          err instanceof Error ? err.message : 'Failed to delete move'
+        );
+      }
     },
-    [clientKnownMoves, savePending]
+    []
+  );
+
+  // Clicking a Stockfish suggestion plays that move on the board via
+  // the same `handleMove` path a drag/click uses (owner moves are
+  // saved + POSTed, opponent moves just extend the path). The move's
+  // from/to/promotion are parsed out of its UCI.
+  const handleSuggestionClick = useCallback(
+    (uci: string) => {
+      if (savePending) return;
+      void handleMove(
+        uci.slice(0, 2),
+        uci.slice(2, 4),
+        uci.length > 4 ? uci[4] : undefined
+      );
+    },
+    [handleMove, savePending]
   );
 
   const boardOrientation: 'white' | 'black' = color === 'black' ? 'black' : 'white';
@@ -786,309 +855,278 @@ export default function RepertoireDetailPage({
   const currentSide = currentFen.split(/\s+/)[1] ?? 'w';
 
   return (
-    <div className="relative h-[calc(100vh-3rem)] w-full overflow-y-auto px-6 py-4 text-white lg:px-10 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
-      <div className="mx-auto flex min-h-full max-w-[1760px] flex-col gap-4">
-        {/* Header — name top-left, Train top-right. The board below is
-            horizontally centered between these two anchors. */}
-        <header className="flex items-center justify-between gap-3">
-          <div className="flex min-w-0 items-center gap-3">
-            <Link
-              href="/repertoire"
-              aria-label="Back to repertoires"
-              className="flex h-9 w-9 items-center justify-center rounded-lg border border-black/50 bg-black/40 text-[#efd9a7] transition hover:bg-black/60"
-            >
-              <SearchBackIcon />
-            </Link>
-            <h1 className="min-w-0 truncate font-display text-2xl font-semibold text-[#f7e5c6] sm:text-3xl">
-              {name ?? 'Repertoire'}
-            </h1>
-            {color && (
+    <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-[10px] pt-6 text-white lg:overflow-hidden lg:px-10 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+      <ReviewShell
+        importPanel={
+          <aside className={`${CARD_CLASS} flex w-full flex-col p-5`}>
+            <div className="flex items-center justify-between gap-2">
+              <Link
+                href="/repertoire"
+                aria-label="Back to repertoires"
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-black/50 bg-black/40 text-[#efd9a7] transition hover:bg-black/60"
+              >
+                <SearchBackIcon />
+              </Link>
+              <button
+                type="button"
+                aria-label="About this repertoire"
+                className="flex h-9 w-9 items-center justify-center rounded-lg border border-black/50 bg-black/40 text-[#efd9a7]/70 transition hover:bg-black/60 hover:text-[#efd9a7]"
+              >
+                <InfoIcon />
+              </button>
+            </div>
+
+            {/* Identity row — king glyph tile in the repertoire's
+                color beside the name. Fit-content height: the card
+                ends after the hint instead of stretching the rail. */}
+            <div className="mt-4 flex items-center gap-3">
               <span
-                className={`inline-flex shrink-0 items-center gap-1.5 rounded-full px-2.5 py-1 text-[11px] font-bold uppercase tracking-wider ${
-                  color === 'white'
-                    ? 'border border-[#d9b87c]/40 bg-[#ede3d0]/10 text-[#ede3d0]'
-                    : 'border border-[#3a2410]/60 bg-[#120c08]/70 text-[#a79b8a]'
+                aria-hidden="true"
+                className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border text-[26px] leading-none ${
+                  color === 'black'
+                    ? 'border-[#3a2410]/60 bg-[#120c08]/80 text-[#a79b8a]'
+                    : 'border-[#d9b87c]/40 bg-[#ede3d0]/10 text-[#ede3d0]'
                 }`}
               >
-                <span
-                  aria-hidden="true"
-                  className={`inline-block h-2.5 w-2.5 rounded-full ${
-                    color === 'white' ? 'bg-[#ede3d0]' : 'bg-[#3a2410]'
-                  }`}
-                />
-                {color}
+                {color === 'black' ? '♚' : '♔'}
               </span>
-            )}
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            <button
-              type="button"
-              aria-label="About this repertoire"
-              className="flex h-9 w-9 items-center justify-center rounded-lg border border-black/50 bg-black/40 text-[#efd9a7]/70 transition hover:bg-black/60 hover:text-[#efd9a7]"
-            >
-              <InfoIcon />
-            </button>
+              <div className="min-w-0 flex-1">
+                <h1 className="truncate font-display text-xl font-semibold text-[#f7e5c6]">
+                  {name ?? 'Repertoire'}
+                </h1>
+                <p className="mt-0.5 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#a79b8a]">
+                  {color ? `${color} repertoire` : 'Loading…'}
+                </p>
+              </div>
+            </div>
+
+            {/* Saved-move counter — owner rows stored for this line. */}
+            <div className="mt-4 flex items-center justify-between rounded-xl border border-black/40 bg-black/30 px-3 py-2">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#a79b8a]/80">
+                Saved moves
+              </span>
+              <span className="font-mono text-sm font-semibold tabular-nums text-[#efd9a7]">
+                {totalSavedRows}
+              </span>
+            </div>
+
             <button
               type="button"
               onClick={() => router.push(`/repertoire/${id}/train`)}
-              className="group flex h-10 items-center gap-2 rounded-xl bg-[#d9b87c] px-4 text-sm font-bold uppercase tracking-wider text-[#241206] shadow-lg shadow-orange-950/40 transition hover:bg-[#efd9a7]"
+              className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-[#d9b87c] text-sm font-bold uppercase tracking-wider text-[#241206] shadow-lg shadow-orange-950/40 transition hover:bg-[#efd9a7]"
             >
               <TrainIcon />
               <span>Train</span>
             </button>
+
+            <p className="mt-3 text-center text-[11px] leading-4 text-[#a79b8a]/70">
+              Drag a piece or tap a suggestion to extend the line.
+            </p>
+          </aside>
+        }
+        boardPanel={
+          <div className="relative mx-auto aspect-square w-full max-w-[calc(100vh-70px)]">
+            {color === null ? (
+              <div
+                className="h-full w-full animate-pulse rounded-md bg-black/35"
+                aria-label="Loading board"
+              />
+            ) : (
+              <BoardShell
+                position={currentFen}
+                orientation={boardOrientation}
+                allowDragging
+                arrows={lineArrows}
+                canDragPiece={({ piece }) => piece.pieceType[0] === currentSide}
+                onMove={(source, target, promotion) =>
+                  handleMove(source, target, promotion)
+                }
+              />
+            )}
+            {saveError && (
+              <div className="pointer-events-none absolute inset-x-0 top-3 z-20 flex justify-center px-4">
+                <p
+                  role="alert"
+                  className="rounded-lg border border-red-400/20 bg-red-950/85 px-4 py-2 text-xs text-red-200 shadow-lg"
+                >
+                  {saveError}
+                </p>
+              </div>
+            )}
           </div>
-        </header>
-
-        {(pageError || positionsError) && (
-          <div className={`${CARD_CLASS} p-3 text-sm text-red-300`} role="alert">
-            {[pageError, positionsError].filter(Boolean).join(' · ')}
-          </div>
-        )}
-
-        {/*
-          Main row — board centered, panels on the right.
-
-          The chessboard is the SAME size as the puzzles page: that
-          page mounts its board inside `max-w-[calc(100vh-70px)]`
-          (puzzles/page.tsx), so we reuse the exact same cap here. The
-          70px accounts for the 3rem TopNav + ~24px top margin, i.e.
-          the board is sized so its square fills the viewport height
-          on the puzzles page — and it renders identically here.
-
-          Centering: a symmetric 3-column grid. The left column is an
-          empty spacer with the same width (22rem) as the right panel
-          column, so the board track sits dead-center under the header
-          (equidistant from the name on the left and the Train button
-          on the right). On narrower-than-xl viewports the grid
-          collapses to one column and the spacer hides; the board is
-          centered and the panels stack beneath it.
-        */}
-        <div className="grid grid-cols-1 items-start justify-center gap-6 xl:grid-cols-[22rem_minmax(0,calc(100vh-70px))_22rem]">
-          {/* Left spacer — invisible, mirrors the right panel width to
-              keep the board horizontally centered. */}
-          <div className="hidden xl:block" aria-hidden="true" />
-
-          {/* ============== BOARD (centered) ============== */}
-          <section className="mx-auto flex w-full max-w-[calc(100vh-70px)] flex-col gap-2">
-            {/* Breadcrumb bar */}
-            <div className="rounded-lg border border-black/50 bg-black/40 backdrop-blur-sm">
-              <Breadcrumb path={path} onJump={handleJump} />
-            </div>
-
-            {/* Board — aspect-square so it stays square; width is the
-                section width (capped at calc(100vh-70px), matching
-                the puzzles page board size). The board is gated on
-                `color` so a black repertoire renders directly in the
-                owner's (black) orientation instead of flashing the
-                white orientation for a frame before the metadata
-                fetch resolves. */}
-            <div className="aspect-square w-full">
-              {color === null ? (
-                <div
-                  className="h-full w-full animate-pulse rounded-md bg-black/35"
-                  aria-label="Loading board"
-                />
-              ) : (
-                <BoardShell
-                  position={currentFen}
-                  orientation={boardOrientation}
-                  allowDragging
-                  canDragPiece={({ piece }) => {
-                    // Whichever side is on move is draggable — the
-                    // schema persists owner rows only, but the user
-                    // drives both colors during the build flow to walk
-                    // into lines they want to prepare. (`savePending`
-                    // is intentionally NOT checked here: the drag is
-                    // brief-gated inside handleMove instead, so the
-                    // click-to-move hint dots never get suppressed
-                    // during an in-flight save.)
-                    return piece.pieceType[0] === currentSide;
-                  }}
-                  onMove={(source, target, promotion) =>
-                    handleMove(source, target, promotion)
-                  }
-                />
+        }
+        analysisPanel={
+          <aside className="flex h-full flex-col gap-4 overflow-hidden">
+            <div className="wood-scrollbar flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto pr-1">
+              {positionsError && (
+                <div className={`${CARD_CLASS} p-3 text-sm text-red-300`} role="alert">
+                  {positionsError}
+                </div>
               )}
+
+              {/* My saved moves — every saved continuation FROM THE
+                  CURRENT POSITION (there can be several at opponent
+                  nodes). Rows are clickable to descend into their
+                  branch; the trash icon deletes the anchoring row. */}
+              <div className={`${CARD_CLASS} flex flex-col gap-2 p-4`}>
+                <header className="flex items-center justify-between">
+                  <h3 className="font-display text-sm font-semibold uppercase tracking-wider text-[#efd9a7]/85">
+                    My saved moves
+                  </h3>
+                  {savedContinuations.length > 1 && (
+                    <span className="text-[10px] uppercase tracking-wider text-[#a79b8a]/55">
+                      {savedContinuations.length} branches
+                    </span>
+                  )}
+                </header>
+                {savedContinuations.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-[#efd9a7]/15 bg-black/25 px-3 py-3 text-center text-xs text-[#a79b8a]/85">
+                    {loadingPositions && clientKnownMoves.size === 0
+                      ? 'Loading saved moves…'
+                      : 'Nothing saved from this position yet — drag a piece or tap a suggestion below.'}
+                  </div>
+                ) : (
+                  savedContinuations.map((c) => (
+                    <div
+                      key={c.rowId}
+                      className="flex items-stretch overflow-hidden rounded-2xl border border-white/5 bg-black/25 transition hover:border-[#d9b87c]/30 hover:bg-black/40"
+                    >
+                      <button
+                        type="button"
+                        onClick={() => handleContinuationClick(c.uci)}
+                        title={`Step into ${c.san}`}
+                        className="flex flex-1 items-center gap-3 px-3 py-2.5 text-left"
+                      >
+                        <span className="font-mono text-base font-semibold text-[#efd9a7]/85">
+                          {c.san}
+                        </span>
+                        <span className="ml-auto shrink-0 text-[10px] uppercase tracking-wider text-[#a79b8a]/55">
+                          {c.subtreeRows}{' '}
+                          {c.subtreeRows === 1 ? 'position' : 'positions'}
+                        </span>
+                      </button>
+                      <button
+                        type="button"
+                        aria-label={`Delete saved move ${c.san}`}
+                        title={`Delete ${c.san}`}
+                        onClick={() => void handleDeleteRow(c.rowId, c.rowFenKey)}
+                        className="flex w-9 shrink-0 items-center justify-center border-l border-white/5 text-[#a79b8a]/60 transition hover:bg-red-500/15 hover:text-red-300"
+                      >
+                        <TrashIcon />
+                      </button>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              {/* Other moves — suggestions for the current position
+                  that are NOT already saved here, clickable to play
+                  the move on the board. */}
+              <div className={`${CARD_CLASS} flex flex-col gap-2 p-4`}>
+                <header className="flex items-center justify-between">
+                  <h3 className="font-display text-sm font-semibold uppercase tracking-wider text-[#efd9a7]/85">
+                    Other moves
+                  </h3>
+                </header>
+                {loadingSuggestions && otherMoves.length === 0 ? (
+                  <div className="flex items-center justify-center gap-2 rounded-2xl border border-white/5 bg-black/25 px-3 py-3 text-xs text-[#a79b8a]">
+                    <span className="h-3 w-3 animate-spin rounded-full border-2 border-[#a79b8a]/40 border-t-transparent" />
+                    <span>Analysing position…</span>
+                  </div>
+                ) : suggestionsError ? (
+                  <div className="rounded-2xl border border-red-400/20 bg-red-400/10 px-3 py-2 text-xs text-red-300">
+                    {suggestionsError}
+                  </div>
+                ) : otherMoves.length === 0 ? (
+                  <div className="rounded-2xl border border-dashed border-[#efd9a7]/15 bg-black/25 px-3 py-3 text-center text-xs text-[#a79b8a]/85">
+                    No unsaved moves to suggest here.
+                  </div>
+                ) : (
+                  otherMoves.map((s, i) => (
+                    <SuggestionRow
+                      key={s.uci}
+                      moveSan={s.san}
+                      scoreCp={s.score_cp}
+                      isBest={i === 0}
+                      onSelect={() => handleSuggestionClick(s.uci)}
+                    />
+                  ))
+                )}
+              </div>
             </div>
 
-            {/* Step controls bar */}
-            <div className="flex items-center justify-center gap-3 rounded-lg border border-black/50 bg-black/40 px-3 py-2 backdrop-blur-sm">
-              <button
-                type="button"
-                onClick={handleHome}
-                aria-label="Jump to start position"
-                className="rounded-md p-2 text-[#a79b8a] transition hover:bg-white/10 hover:text-[#efd9a7]"
-              >
-                <StepIcon kind="home" />
-              </button>
+            {/* Navigation strip — first / prev / next / last. Styled as
+                four wooden boxes to match the game-review movement
+                controls, pinned to the bottom of the right panel. */}
+            <div className="grid grid-cols-4 gap-1.5">
               <button
                 type="button"
                 onClick={handleStart}
-                disabled={path.length === 0}
+                disabled={atStart}
                 aria-label="First move"
-                className="rounded-md p-2 text-[#a79b8a] transition hover:bg-white/10 hover:text-[#efd9a7] disabled:opacity-30"
+                className="flex h-8 items-center justify-center transition-transform hover:scale-105 active:scale-95 disabled:pointer-events-none disabled:opacity-40"
+                style={{
+                  cursor: atStart ? 'default' : 'pointer',
+                  ...WOOD_BOX_STYLE,
+                  borderRadius: '4px 4px 4px 24px',
+                }}
               >
-                <StepIcon kind="start" />
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="#f0e0c0">
+                  <rect x="3" y="4" width="2.5" height="16" rx="1" />
+                  <path d="M21 4 L9 12 L21 20 Z" />
+                </svg>
               </button>
               <button
                 type="button"
                 onClick={handlePrev}
-                disabled={path.length === 0}
+                disabled={atStart}
                 aria-label="Previous move"
-                className="rounded-md p-2 text-[#a79b8a] transition hover:bg-white/10 hover:text-[#efd9a7] disabled:opacity-30"
+                className="flex h-8 items-center justify-center transition-transform hover:scale-105 active:scale-95 disabled:pointer-events-none disabled:opacity-40"
+                style={{
+                  cursor: atStart ? 'default' : 'pointer',
+                  ...WOOD_BOX_STYLE,
+                }}
               >
-                <StepIcon kind="prev" />
-              </button>
-              <span className="rounded-md p-1.5 text-[#d9b87c]">
-                <span className="block h-0.5 w-5 rounded-full bg-[#d9b87c]" />
-              </span>
-              <button
-                type="button"
-                disabled={lastPly < 0}
-                aria-label="Next move (no tree data — use breadcrumb)"
-                className="rounded-md p-2 text-[#a79b8a] transition hover:bg-white/10 hover:text-[#efd9a7] disabled:opacity-30"
-              >
-                <StepIcon kind="next" />
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="#f0e0c0">
+                  <path d="M18 4 L6 12 L18 20 Z" />
+                </svg>
               </button>
               <button
                 type="button"
-                disabled={lastPly < 0}
-                aria-label="End of line"
-                className="rounded-md p-2 text-[#a79b8a] transition hover:bg-white/10 hover:text-[#efd9a7] disabled:opacity-30"
+                onClick={handleNext}
+                disabled={!hasUniqueContinuation}
+                aria-label="Next move"
+                className="flex h-8 items-center justify-center transition-transform hover:scale-105 active:scale-95 disabled:pointer-events-none disabled:opacity-40"
+                style={{
+                  cursor: hasUniqueContinuation ? 'pointer' : 'default',
+                  ...WOOD_BOX_STYLE,
+                }}
               >
-                <StepIcon kind="end" />
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="#f0e0c0">
+                  <path d="M6 4 L18 12 L6 20 Z" />
+                </svg>
               </button>
               <button
                 type="button"
-                onClick={() =>
-                  // No-op today: rotates to the next "view configuration"
-                  // when one is selected. The reference shows the icon
-                  // as a future affordance; we surface it disabled in
-                  // the meantime so the layout matches. Wired up to a
-                  // no-op handler to avoid an ever-disabled puzzle.
-                  void 0
-                }
-                aria-label="View options"
-                className="rounded-md border border-[#d9b87c]/30 p-2 text-[#d9b87c] transition hover:bg-[#d9b87c]/10"
+                onClick={handleEnd}
+                disabled={atEnd}
+                aria-label="Last move"
+                className="flex h-8 items-center justify-center transition-transform hover:scale-105 active:scale-95 disabled:pointer-events-none disabled:opacity-40"
+                style={{
+                  cursor: atEnd ? 'default' : 'pointer',
+                  ...WOOD_BOX_STYLE,
+                  borderRadius: '4px 4px 24px 4px',
+                }}
               >
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                  <circle cx="12" cy="12" r="3" />
-                  <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33h.01a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="#f0e0c0">
+                  <path d="M3 4 L15 12 L3 20 Z" />
+                  <rect x="18.5" y="4" width="2.5" height="16" rx="1" />
                 </svg>
               </button>
             </div>
-
-            {saveError && (
-              <p
-                role="alert"
-                className="rounded-lg border border-red-400/20 bg-red-400/10 px-4 py-2 text-xs text-red-300"
-              >
-                {saveError}
-              </p>
-            )}
-          </section>
-
-          {/* ============== PANELS (right) ============== */}
-          <aside className="mx-auto flex w-full max-w-[22rem] flex-col gap-4">
-            {/* My saved moves — compact card sized to its content */}
-            <div className={`${CARD_CLASS} flex flex-col gap-2 p-4`}>
-              <header className="flex items-center justify-between">
-                <h3 className="font-display text-sm font-semibold uppercase tracking-wider text-[#efd9a7]/85">
-                  My saved moves
-                </h3>
-              </header>
-              {savedMoveAtCurrent ? (
-                <SavedMoveRow
-                  prefix={breadcrumbPrefix(path)}
-                  moveSan={savedMoveAtCurrent.san}
-                  count={null}
-                  onDelete={() => {
-                    if (deletePending) return;
-                    const targetId = savedMoveAtCurrent.id;
-                    setDeletePending(true);
-                    setSaveError(null);
-                    (async () => {
-                      try {
-                        const res = await fetch(
-                          `/api/repertoires/positions/${encodeURIComponent(targetId)}`,
-                          { method: 'DELETE' }
-                        );
-                        if (!res.ok) {
-                          const body = (await res.json().catch(() => ({}))) as ApiError;
-                          throw new Error(
-                            body.detail ?? body.error ?? `Delete failed (${res.status})`
-                          );
-                        }
-                        setClientKnownMoves((prev) => {
-                          const next = new Map(prev);
-                          next.delete(currentFenKey);
-                          return next;
-                        });
-                        setPath([]);
-                      } catch (err) {
-                        setSaveError(
-                          err instanceof Error ? err.message : 'Failed to delete move'
-                        );
-                      } finally {
-                        setDeletePending(false);
-                      }
-                    })();
-                  }}
-                />
-              ) : loadingPositions && clientKnownMoves.size === 0 ? (
-                <MovePlaceholderRow
-                  prefix={breadcrumbPrefix(path)}
-                  loading
-                />
-              ) : otherMovesAtCurrent.length > 0 || path.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-[#efd9a7]/15 bg-black/25 px-3 py-3 text-center text-xs text-[#a79b8a]/85">
-                  {path.length === 0
-                    ? 'Drag a piece on the board to add your first move.'
-                    : 'No saved move at this position yet — drag a piece to add one.'}
-                </div>
-              ) : (
-                <MovePlaceholderRow prefix={breadcrumbPrefix(path)} />
-              )}
-            </div>
-
-            {/* Other moves — lists the Lichess-sourced opponent replies
-                for the current position. */}
-            <div className={`${CARD_CLASS} flex flex-col gap-2 p-4`}>
-              <header className="flex items-center justify-between">
-                <h3 className="font-display text-sm font-semibold uppercase tracking-wider text-[#efd9a7]/85">
-                  Other moves
-                </h3>
-              </header>
-              {loadingGaps && cachedGaps.length === 0 ? (
-                <>
-                  {Array.from({ length: 3 }).map((_, i) => (
-                    <MovePlaceholderRow
-                      key={`ph-${i}`}
-                      prefix={breadcrumbPrefix(path)}
-                      loading
-                    />
-                  ))}
-                </>
-              ) : otherMovesAtCurrent.length === 0 ? (
-                <div className="rounded-2xl border border-dashed border-[#efd9a7]/15 bg-black/25 px-3 py-3 text-center text-xs text-[#a79b8a]/85">
-                  No opponent replies catalogued here yet.
-                </div>
-              ) : (
-                otherMovesAtCurrent.map((gap) => (
-                  <OtherMoveRow
-                    key={`${gap.resulting_fen}-${gap.opponent_move_uci}`}
-                    prefix={breadcrumbPrefix(path)}
-                    moveSan={gap.opponent_move_san}
-                    frequencyPercent={gap.frequency_percent}
-                    loading={loadingGaps}
-                    onSelect={() => handleOtherMoveClick(gap)}
-                  />
-                ))
-              )}
-            </div>
           </aside>
-        </div>
-      </div>
+        }
+      />
     </div>
   );
 }
