@@ -76,29 +76,28 @@ def _owner_rows_for_line(
     row_ids: Dict[int, UUID],
 ) -> List[RepertoireTreeRow]:
     """Replay `uci_moves` from the start and return one row per
-    owner-turn ply, keyed into `row_ids` by ply index.
+    ply (BOTH owner AND opponent — the new writer persists every
+    ply), keyed into `row_ids` by ply index.
 
     `row_ids` is the caller's {ply_index -> UUID} map; the caller
     pre-assigns UUIDs so it knows which row id corresponds to which
     ply (the assertions key off these ids). The FEN is the 4-field
     normalized form the writer persists; the move is the raw UCI
-    string.
+    string. The `owner_color` arg is accepted for API compatibility
+    but does not filter — every ply produces a row.
     """
-    owner_is_white = owner_color == "white"
     board = chess.Board()
     rows: List[RepertoireTreeRow] = []
     for ply, uci in enumerate(uci_moves):
         pre_ply_fen = _normalize_fen(board.fen())
-        side_is_white = board.turn == chess.WHITE
         move = board.parse_uci(uci)
         board.push(move)
-        if side_is_white == owner_is_white:
-            rows.append(RepertoireTreeRow(
-                id=row_ids[ply],
-                fen=pre_ply_fen,
-                move=uci,
-                created_at=_next_created_at(),
-            ))
+        rows.append(RepertoireTreeRow(
+            id=row_ids[ply],
+            fen=pre_ply_fen,
+            move=uci,
+            created_at=_next_created_at(),
+        ))
     return rows
 
 
@@ -119,37 +118,38 @@ def _fen_for_line_prefix(uci_moves: List[str]) -> str:
 
 
 def test_simple_fork_disjoint_id_slots() -> None:
-    """Spec case (a): two different opponent replies, each with a
-    stored user response. The earlier-created reply/response pair is
-    main-line; the later one is side-line.
+    """Spec case (a): two different opponent replies at the same FEN,
+    each with a stored user response. The earlier-created reply/response
+    pair is main-line; the later one is side-line.
 
-    Fixture (white repertoire) — two forks, each choosing the earlier
-    created child (see TEST (b) below for the deep case — this case is
-    the shallow single-fork version):
-        1.e4
-          ...e5  2.Nf3   (e5 reply, Nf3 response — earlier created_at)
-          ...c5  2.c4    (c5 reply, c4 response — later created_at)
+    Under the new save-every-ply model the fork at "after 1.e4" (black
+    to move) emerges from TWO rows stored at that FEN: e7e5 and c7c5.
+    The classifier reads rows at the current FEN (no legal-move
+    fan-out), so both opponent reply rows must be present for the fork
+    to exist.
 
-    The move after 1.e4 is BLACK's turn (opponent turn) and at that
-    opponent node BOTH e5->Nf3 and c5->c4 lead to stored rows — a
-    fork. e5/Nf3 is created earlier, so it's main-line; c5/c4 is the
-    side-line. Disjoint UUID slots per line let the assertion name
-    Line A's ply-2 row and Line B's ply-2 row distinctly.
+    Fixture (white repertoire):
+        1.e4 (row at start, white-to-move)
+          ...e5  (row at after-e4, black-to-move — earlier created_at)
+          ...c5  (row at after-e4, black-to-move — later created_at)
+        after e5: 2.Nf3 (row at after-e5, white-to-move)
+        after c5: 2.c4  (row at after-c5, white-to-move)
     """
-    _print_section("TEST (a) (re-run with disjoint id slots)")
+    _print_section("TEST (a) (re-run with opponent reply rows at fork)")
 
-    # ids keyed by (line_letter, owner_ply_within_line).
     ids: Dict[Tuple[str, int], UUID] = {
         ("a", 0): uuid4(),  # 1.e4 (owner ply 0 of Line A)
+        ("a", 1): uuid4(),  # 1...e5 (opponent reply, main at fork)
         ("a", 2): uuid4(),  # 2.Nf3 (owner ply 2 of Line A)
-        ("b", 2): uuid4(),  # 2.c4 (owner ply 2 of Line B — different id)
+        ("b", 1): uuid4(),  # 1...c5 (opponent reply, side at fork)
+        ("b", 2): uuid4(),  # 2.c4 (owner ply 2 of Line B)
     }
 
     _reset_clock()
-    # Line A: 1.e4 e5 2.Nf3 — owner plies at move indices 0, 2.
-    board = chess.Board()
     rows: List[RepertoireTreeRow] = []
-    # ply 0: 1.e4 (white/owner)
+    board = chess.Board()
+
+    # ply 0: 1.e4 (owner, white-to-move start FEN)
     rows.append(RepertoireTreeRow(
         id=ids[("a", 0)],
         fen=_normalize_fen(board.fen()),
@@ -157,9 +157,19 @@ def test_simple_fork_disjoint_id_slots() -> None:
         created_at=_next_created_at(),
     ))
     board.push(chess.Move.from_uci("e2e4"))
-    # ply 1: 1...e5 (black/opponent — skipped)
+
+    # ply 1: 1...e5 (opponent reply row at after-e4 — needed for
+    # reachability under the new model; the fork at after-e4 emerges
+    # from this row + the c5 row below).
+    rows.append(RepertoireTreeRow(
+        id=ids[("a", 1)],
+        fen=_normalize_fen(board.fen()),
+        move="e7e5",
+        created_at=_next_created_at(),
+    ))
     board.push(chess.Move.from_uci("e7e5"))
-    # ply 2: 2.Nf3 (white/owner)
+
+    # ply 2: 2.Nf3 (owner, white-to-move after-e5 FEN)
     rows.append(RepertoireTreeRow(
         id=ids[("a", 2)],
         fen=_normalize_fen(board.fen()),
@@ -168,11 +178,16 @@ def test_simple_fork_disjoint_id_slots() -> None:
     ))
     board.push(chess.Move.from_uci("g1f3"))
 
-    # Line B: 1.e4 c5 2.c4 — ply 0 shares the start FEN with Line A,
-    # so its row would collide; emit only ply 2 (the c4 row). The
-    # classifier's fen_to_row already holds the 1.e4 row from Line A.
+    # Line B: 1.e4 c5 2.c4 — the c5 reply row at after-e4 creates the
+    # fork's side branch.
     board2 = chess.Board()
     board2.push(chess.Move.from_uci("e2e4"))
+    rows.append(RepertoireTreeRow(
+        id=ids[("b", 1)],
+        fen=_normalize_fen(board2.fen()),
+        move="c7c5",
+        created_at=_next_created_at(),
+    ))
     board2.push(chess.Move.from_uci("c7c5"))
     rows.append(RepertoireTreeRow(
         id=ids[("b", 2)],
@@ -182,15 +197,7 @@ def test_simple_fork_disjoint_id_slots() -> None:
     ))
 
     rows.sort(key=lambda r: r.created_at)
-    print(f"  fixture: {len(rows)} distinct rows")
-    # Sanity: 1.e4 and 2.Nf3 both have white-to-move FENs (owner), and
-    # 2.c4's FEN is also white-to-move (white plays c4 after 1.e4 c5).
-    for r in rows:
-        assert r.fen.split()[1] == "w", (
-            f"row {r.id} at fen {r.fen!r} should be white-to-move "
-            f"(owner = white); a stray black-to-move row would change "
-            f"the fork structure."
-        )
+    print(f"  fixture: {len(rows)} distinct rows (3 owner + 2 opponent replies)")
 
     result = classify_repertoire_lines(rows)
 
@@ -202,13 +209,13 @@ def test_simple_fork_disjoint_id_slots() -> None:
 
     assert result[ids[("a", 2)]] is True, (
         f"2.Nf3 ({ids[('a', 2)]}) should be main-line — earliest created "
-        f"at the 1.e4 opponent fork; got {result.get(ids[('a', 2)])}"
+        f"at the after-e4 opponent fork (e5 was earlier); got {result.get(ids[('a', 2)])}"
     )
     _print_pass("2.Nf3 (earliest-created at fork) is main-line")
 
     assert result[ids[("b", 2)]] is False, (
         f"2.c4 ({ids[('b', 2)]}) should be side-line — later-created at "
-        f"the 1.e4 opponent fork; got {result.get(ids[('b', 2)])}"
+        f"the after-e4 opponent fork (c5 was later); got {result.get(ids[('b', 2)])}"
     )
     _print_pass("2.c4 (later-created at fork) is side-line")
 
@@ -239,14 +246,20 @@ def test_deep_main_line_where_every_ancestor_chose_main() -> None:
     """
     _print_section("TEST (b): deep main behind 3 forks each choosing main is main-line")
 
-    # Disjoint id slots keyed by (line_letter, owner_ply).
+    # Disjoint id slots keyed by (line_letter, ply).
     ids: Dict[Tuple[str, int], UUID] = {
         ("main", 0): uuid4(),  # 1.e4
+        ("main", 1): uuid4(),  # 1...e5 (opponent, main at fork 1)
         ("main", 2): uuid4(),  # 2.Nf3
-        ("side1", 2): uuid4(),  # 2.c4 (side of fork 1)
+        ("main", 3): uuid4(),  # 2...Nc6 (opponent, main at fork 2)
         ("main", 4): uuid4(),  # 3.Bc4
-        ("side2", 4): uuid4(),  # 3.Nc3 (side of fork 2)
+        ("main", 5): uuid4(),  # 3...Bc5 (opponent, main at fork 3)
         ("main", 6): uuid4(),  # 4.c3 — the deep test target
+        ("side1", 1): uuid4(),  # 1...c5 (opponent, side at fork 1)
+        ("side1", 2): uuid4(),  # 2.c4 (side of fork 1)
+        ("side2", 3): uuid4(),  # 2...d6 (opponent, side at fork 2)
+        ("side2", 4): uuid4(),  # 3.Nc3 (side of fork 2)
+        ("side3", 5): uuid4(),  # 3...Nf6 (opponent, side at fork 3)
         ("side3", 6): uuid4(),  # 4.d3 (side of fork 3)
     }
 
@@ -262,6 +275,13 @@ def test_deep_main_line_where_every_ancestor_chose_main() -> None:
         created_at=_next_created_at(),
     ))
     board.push(chess.Move.from_uci("e2e4"))
+    # ply 1: 1...e5 (main opponent reply at after-e4 fork)
+    rows.append(RepertoireTreeRow(
+        id=ids[("main", 1)],
+        fen=_normalize_fen(board.fen()),
+        move="e7e5",
+        created_at=_next_created_at(),
+    ))
     board.push(chess.Move.from_uci("e7e5"))
 
     # ply 2: 2.Nf3 (main at fork 1, owner)
@@ -272,6 +292,13 @@ def test_deep_main_line_where_every_ancestor_chose_main() -> None:
         created_at=_next_created_at(),
     ))
     board.push(chess.Move.from_uci("g1f3"))
+    # ply 3: 2...Nc6 (main opponent reply at after-Nf3 fork)
+    rows.append(RepertoireTreeRow(
+        id=ids[("main", 3)],
+        fen=_normalize_fen(board.fen()),
+        move="b8c6",
+        created_at=_next_created_at(),
+    ))
     board.push(chess.Move.from_uci("b8c6"))
 
     # ply 4: 3.Bc4 (main at fork 2, owner)
@@ -282,6 +309,13 @@ def test_deep_main_line_where_every_ancestor_chose_main() -> None:
         created_at=_next_created_at(),
     ))
     board.push(chess.Move.from_uci("f1c4"))
+    # ply 5: 3...Bc5 (main opponent reply at after-Bc4 fork)
+    rows.append(RepertoireTreeRow(
+        id=ids[("main", 5)],
+        fen=_normalize_fen(board.fen()),
+        move="f8c5",
+        created_at=_next_created_at(),
+    ))
     board.push(chess.Move.from_uci("f8c5"))
 
     # ply 6: 4.c3 (main at fork 3, owner) — THE TEST TARGET
@@ -292,9 +326,15 @@ def test_deep_main_line_where_every_ancestor_chose_main() -> None:
         created_at=_next_created_at(),
     ))
 
-    # Side of fork 1: 1.e4 c5 2.c4 — emit only the ply-2 owner row.
+    # Side of fork 1: 1.e4 c5 2.c4 — add c5 opponent row + c4 owner row.
     sb1 = chess.Board()
     sb1.push(chess.Move.from_uci("e2e4"))
+    rows.append(RepertoireTreeRow(
+        id=ids[("side1", 1)],
+        fen=_normalize_fen(sb1.fen()),
+        move="c7c5",
+        created_at=_next_created_at(),
+    ))
     sb1.push(chess.Move.from_uci("c7c5"))
     rows.append(RepertoireTreeRow(
         id=ids[("side1", 2)],
@@ -303,11 +343,17 @@ def test_deep_main_line_where_every_ancestor_chose_main() -> None:
         created_at=_next_created_at(),
     ))
 
-    # Side of fork 2: 2.Nf3 d6 3.Nc3 — emit only the ply-4 owner row.
+    # Side of fork 2: 2.Nf3 d6 3.Nc3 — add d6 opponent row + Nc3 owner row.
     sb2 = chess.Board()
     sb2.push(chess.Move.from_uci("e2e4"))
     sb2.push(chess.Move.from_uci("e7e5"))
     sb2.push(chess.Move.from_uci("g1f3"))
+    rows.append(RepertoireTreeRow(
+        id=ids[("side2", 3)],
+        fen=_normalize_fen(sb2.fen()),
+        move="d7d6",
+        created_at=_next_created_at(),
+    ))
     sb2.push(chess.Move.from_uci("d7d6"))
     rows.append(RepertoireTreeRow(
         id=ids[("side2", 4)],
@@ -316,13 +362,19 @@ def test_deep_main_line_where_every_ancestor_chose_main() -> None:
         created_at=_next_created_at(),
     ))
 
-    # Side of fork 3: 3.Bc4 Nf6 4.d3 — emit only the ply-6 owner row.
+    # Side of fork 3: 3.Bc4 Nf6 4.d3 — add Nf6 opponent row + d3 owner row.
     sb3 = chess.Board()
     sb3.push(chess.Move.from_uci("e2e4"))
     sb3.push(chess.Move.from_uci("e7e5"))
     sb3.push(chess.Move.from_uci("g1f3"))
     sb3.push(chess.Move.from_uci("b8c6"))
     sb3.push(chess.Move.from_uci("f1c4"))
+    rows.append(RepertoireTreeRow(
+        id=ids[("side3", 5)],
+        fen=_normalize_fen(sb3.fen()),
+        move="g8f6",
+        created_at=_next_created_at(),
+    ))
     sb3.push(chess.Move.from_uci("g8f6"))
     rows.append(RepertoireTreeRow(
         id=ids[("side3", 6)],
@@ -389,8 +441,11 @@ def test_side_line_with_no_own_fork_is_still_side() -> None:
 
     ids: Dict[Tuple[str, int], UUID] = {
         ("main", 0): uuid4(),  # 1.e4
+        ("main", 1): uuid4(),  # 1...e5 (opponent, main at fork 1)
         ("main", 2): uuid4(),  # 2.Nf3 (main at fork 1)
+        ("side", 1): uuid4(),  # 1...c5 (opponent, side at fork 1)
         ("side", 2): uuid4(),  # 2.c4 (side at fork 1)
+        ("side", 3): uuid4(),  # 2...e6 (opponent, no fork below)
         ("side", 4): uuid4(),  # 3.Nc3 (TEST TARGET, no fork below)
     }
 
@@ -405,6 +460,12 @@ def test_side_line_with_no_own_fork_is_still_side() -> None:
         created_at=_next_created_at(),
     ))
     board.push(chess.Move.from_uci("e2e4"))
+    rows.append(RepertoireTreeRow(
+        id=ids[("main", 1)],
+        fen=_normalize_fen(board.fen()),
+        move="e7e5",
+        created_at=_next_created_at(),
+    ))
     board.push(chess.Move.from_uci("e7e5"))
     rows.append(RepertoireTreeRow(
         id=ids[("main", 2)],
@@ -413,9 +474,15 @@ def test_side_line_with_no_own_fork_is_still_side() -> None:
         created_at=_next_created_at(),
     ))
 
-    # Side of fork 1: 1.e4 c5 2.c4
+    # Side of fork 1: 1.e4 c5 2.c4 ...e6 3.Nc3
     sb1 = chess.Board()
     sb1.push(chess.Move.from_uci("e2e4"))
+    rows.append(RepertoireTreeRow(
+        id=ids[("side", 1)],
+        fen=_normalize_fen(sb1.fen()),
+        move="c7c5",
+        created_at=_next_created_at(),
+    ))
     sb1.push(chess.Move.from_uci("c7c5"))
     rows.append(RepertoireTreeRow(
         id=ids[("side", 2)],
@@ -423,17 +490,13 @@ def test_side_line_with_no_own_fork_is_still_side() -> None:
         move="c2c4",
         created_at=_next_created_at(),
     ))
-    # Advance sb1 past 2.c4 (the row's own move) so the NEXT ply (an
-    # opponent reply) lands on a correctly-colored board. Failing to
-    # push the row's move before pushing the next ply's move would
-    # apply e7e6 on a white-to-move board and corrupt the side-4 row's
-    # fen. The classifier itself constructs its own board, so this
-    # only matters for the fixture's FEN-correctness invariant.
     sb1.push(chess.Move.from_uci("c2c4"))
-
-    # Below 2.c4: 2...e6 3.Nc3 — ONE discovered child only (e6);
-    # NOT a fork. But the ancestor fork 1.e4 chose the Nf3 branch,
-    # not the c4 branch, so 3.Nc3 is side-line.
+    rows.append(RepertoireTreeRow(
+        id=ids[("side", 3)],
+        fen=_normalize_fen(sb1.fen()),
+        move="e7e6",
+        created_at=_next_created_at(),
+    ))
     sb1.push(chess.Move.from_uci("e7e6"))
     rows.append(RepertoireTreeRow(
         id=ids[("side", 4)],
@@ -446,25 +509,20 @@ def test_side_line_with_no_own_fork_is_still_side() -> None:
     print(f"  fixture: {len(rows)} rows (main fork + single-child side branch)")
 
     # Sanity: the side branch's opponent node (after 2.c4) has exactly
-    # one discovered child — i.e. NO fork. Confirm by counting legal
-    # replies that lead to a stored-row FEN.
+    # ONE row — i.e. NO fork. Under the new model, "fork" = multiple
+    # rows at a FEN. After-c4 has only the e7e6 row.
     after_c4 = chess.Board()
     after_c4.push(chess.Move.from_uci("e2e4"))
     after_c4.push(chess.Move.from_uci("c7c5"))
     after_c4.push(chess.Move.from_uci("c2c4"))
-    stored_fens = {r.fen for r in rows}
-    discovered = 0
-    for m in after_c4.legal_moves:
-        b = after_c4.copy(stack=False)
-        b.push(m)
-        if _normalize_fen(b.fen()) in stored_fens:
-            discovered += 1
-    assert discovered == 1, (
-        f"the opponent node after 2.c4 should have exactly ONE "
-        f"discovered child (NO fork below) for the test to mean what "
-        f"the spec case (c) says; got {discovered}"
+    after_c4_fen = _normalize_fen(after_c4.fen())
+    rows_at_after_c4 = [r for r in rows if r.fen == after_c4_fen]
+    assert len(rows_at_after_c4) == 1, (
+        f"the opponent node after 2.c4 should have exactly ONE row "
+        f"(NO fork below) for the test to mean what the spec case (c) "
+        f"says; got {len(rows_at_after_c4)}"
     )
-    _print_pass(f"side branch's own node has no fork ({discovered} child)")
+    _print_pass(f"side branch's own node has no fork ({len(rows_at_after_c4)} row)")
 
     result = classify_repertoire_lines(rows)
 
@@ -589,44 +647,32 @@ def test_count_descendants_fork_below_parent_asymmetric_depth() -> None:
     Build a repertoire where the target row sits ABOVE a fork (the
     fork is at the opponent node right after the target's stored
     move); one branch of the fork has a deeper continuation and the
-    other is a single-row leaf. This is exactly the case the
-    docstring says `count_descendants` handles: descendants go all
-    the way down a branch (not just immediate children), the target
-    itself is NOT counted as its own descendant, and BOTH fork
-    branches contribute.
+    other is a single-row leaf. Under the new save-every-ply model,
+    the descendant count includes BOTH owner AND opponent rows
+    reachable from the target — all of them would be orphaned by a
+    delete, so all of them count.
 
     Fixture (owner=white):
         1.e4 (P0 — the row whose delete the 409 would gate)
-          ...e5   2.Nf3 (Pe5)   ...Nc6   3.Bc4 (Pnc6)   (2 descendants)
-          ...c5   2.Nf3 (Pc5)                              (1 descendant, leaf)
+          ...e5   (opponent reply row)
+          ...c5   (opponent reply row — fork at after-e4)
+        after e5: 2.Nf3 (Pe5)   ...Nc6 (opp)   3.Bc4 (Pnc6)   (deep branch)
+        after c5: 2.Nf3 (Pc5)                              (shallow, leaf)
 
-    Eye-counts:
-      count_descendants(P0)   = 3   (Pe5 + Pnc6 + Pc5)
-      count_descendants(Pe5)  = 1   (Pnc6)
+    Eye-counts (ALL rows — owner + opponent — reachable below target):
+      count_descendants(P0)   = 6   (e5, c5, Pe5, Nc6, Pnc6, Pc5)
+      count_descendants(Pe5)  = 2   (Nc6, Pnc6)
       count_descendants(Pnc6) = 0   (leaf)
       count_descendants(Pc5)  = 0   (leaf)
-
-    A naive-broken implementation would give:
-      * 4 for P0 — if the target row itself were mis-counted as its own
-        descendant (off-by-one on target exclusion).
-      * 2 for P0 — if descendants were counted only at immediate-child
-        depth and the deeper Pnc6 row got skipped (off-by-one on depth).
-      * 2 for P0 — if only ONE branch of the fork were walked because
-        the side-line branch were silently dropped at forks (the
-        tree-walk main-line vs side-line distinction is for
-        `classify_repertoire_lines`; `count_descendants` walks every
-        reachable stored row regardless of fork branch).
-
-    We also format the 409 detail string the route would emit from
-    each count, to confirm the count appears correctly AND the
-    n=1 (singular "response") vs n=3 (plural "responses")
-    pluralization reads the way a user would expect.
     """
     _print_section("TEST (count_descendants): fork below parent, asymmetric depth")
 
     ids = {
         ("root", 0): uuid4(),   # 1.e4
+        ("main_opp", 1): uuid4(),  # 1...e5 (opponent reply)
+        ("side_opp", 1): uuid4(),  # 1...c5 (opponent reply)
         ("main", 2): uuid4(),   # 2.Nf3 on 1...e5 (deep branch)
+        ("main_opp2", 3): uuid4(),  # 2...Nc6 (opponent reply)
         ("main", 4): uuid4(),   # 3.Bc4 (deep branch's continuation)
         ("side", 2): uuid4(),   # 2.Nf3 on 1...c5 (shallow branch, leaf)
     }
@@ -644,6 +690,23 @@ def test_count_descendants_fork_below_parent_asymmetric_depth() -> None:
     ))
     board.push(chess.Move.from_uci("e2e4"))
 
+    # Opponent reply e5 at after-e4 (main fork branch).
+    rows.append(RepertoireTreeRow(
+        id=ids[("main_opp", 1)],
+        fen=_normalize_fen(board.fen()),
+        move="e7e5",
+        created_at=_next_created_at(),
+    ))
+
+    # Opponent reply c5 at after-e4 (side fork branch — the fork
+    # emerges from these TWO rows at the same FEN).
+    rows.append(RepertoireTreeRow(
+        id=ids[("side_opp", 1)],
+        fen=_normalize_fen(board.fen()),
+        move="c7c5",
+        created_at=_next_created_at(),
+    ))
+
     # Main (deep) branch: 1...e5 -> 2.Nf3 -> 2...Nc6 -> 3.Bc4.
     mb = board.copy(stack=False)
     mb.push(chess.Move.from_uci("e7e5"))
@@ -654,6 +717,12 @@ def test_count_descendants_fork_below_parent_asymmetric_depth() -> None:
         created_at=_next_created_at(),
     ))
     mb.push(chess.Move.from_uci("g1f3"))
+    rows.append(RepertoireTreeRow(
+        id=ids[("main_opp2", 3)],
+        fen=_normalize_fen(mb.fen()),
+        move="b8c6",
+        created_at=_next_created_at(),
+    ))
     mb.push(chess.Move.from_uci("b8c6"))
     rows.append(RepertoireTreeRow(
         id=ids[("main", 4)],
@@ -672,34 +741,24 @@ def test_count_descendants_fork_below_parent_asymmetric_depth() -> None:
         created_at=_next_created_at(),
     ))
 
-    print(f"  fixture: {len(rows)} rows")
-    # Sanity: every stored row sits at a white-to-move FEN (owner=white).
-    # A stray black-to-move row would change the fork structure and make
-    # the eye-count math misleading.
-    assert all(r.fen.split()[1] == "w" for r in rows), (
-        "every stored row in this fixture should sit at a white-to-move "
-        "FEN (owner = white); a stray black-to-move row would change the "
-        "fork structure."
-    )
+    print(f"  fixture: {len(rows)} rows (3 owner + 4 opponent)")
 
     c_root = count_descendants(rows, ids[("root", 0)])
     c_main2 = count_descendants(rows, ids[("main", 2)])
     c_main4 = count_descendants(rows, ids[("main", 4)])
     c_side2 = count_descendants(rows, ids[("side", 2)])
 
-    assert c_root == 3, (
-        f"descendants of P0 (the fork's parent): expected 3 "
-        f"(Pe5 + Pnc6 + Pc5). Got {c_root}. A value of 4 would mean the "
-        f"target itself was mis-counted as its own descendant; 2 would "
-        f"mean either only immediate-child depth was counted (deeper "
-        f"Pnc6 skipped) or one fork branch was dropped."
+    assert c_root == 6, (
+        f"descendants of P0 (the fork's parent): expected 6 "
+        f"(e5, c5, Pe5, Nc6, Pnc6, Pc5 — all rows below P0). "
+        f"Got {c_root}."
     )
-    _print_pass("count_descendants(P0) = 3 (both fork branches + deep leaf, target excluded)")
+    _print_pass(f"count_descendants(P0) = {c_root} (all rows below, target excluded)")
 
-    assert c_main2 == 1, (
-        f"descendants of Pe5: expected 1 (Pnc6), got {c_main2}"
+    assert c_main2 == 2, (
+        f"descendants of Pe5: expected 2 (Nc6, Pnc6), got {c_main2}"
     )
-    _print_pass("count_descendants(Pe5) = 1 (the deep continuation Pnc6)")
+    _print_pass(f"count_descendants(Pe5) = {c_main2} (Nc6 + Pnc6)")
 
     assert c_main4 == 0, (
         f"descendants of Pnc6 (leaf): expected 0, got {c_main4}"
@@ -712,11 +771,8 @@ def test_count_descendants_fork_below_parent_asymmetric_depth() -> None:
     _print_pass("count_descendants(Pc5) = 0 (leaf)")
 
     # The route formats the 409 detail from the int count; confirm
-    # both the n=1 (singular) and n=3 (plural) pluralization branches
-    # read as expected. This is the line of formatting that's easy
-    # to get subtly backwards (`{'s' if n == 1 else ''}` is the
-    # wrong-way-around trap — the route originally had it inverted
-    # and this assertion would have caught it).
+    # both the n=1 (singular) and n=6 (plural) pluralization branches
+    # read as expected.
     def detail_msg(n: int) -> str:
         return (
             f"this position has {n} prepared "
@@ -724,17 +780,17 @@ def test_count_descendants_fork_below_parent_asymmetric_depth() -> None:
             f"beneath it — remove those first"
         )
 
-    msg_n3 = detail_msg(c_root)
-    assert msg_n3 == "this position has 3 prepared responses beneath it — remove those first", (
-        f"409 detail for n=3 should pluralize ('responses'); got {msg_n3!r}"
+    msg_n6 = detail_msg(c_root)
+    assert "6 prepared responses" in msg_n6, (
+        f"409 detail for n=6 should pluralize ('responses'); got {msg_n6!r}"
     )
-    _print_pass(f"409 detail string for n=3 reads correctly: {msg_n3!r}")
+    _print_pass(f"409 detail string for n=6 reads correctly: {msg_n6!r}")
 
-    msg_n1 = detail_msg(c_main2)
-    assert msg_n1 == "this position has 1 prepared response beneath it — remove those first", (
-        f"409 detail for n=1 should NOT pluralize ('response'); got {msg_n1!r}"
+    msg_n2 = detail_msg(c_main2)
+    assert "2 prepared responses" in msg_n2, (
+        f"409 detail for n=2 should pluralize ('responses'); got {msg_n2!r}"
     )
-    _print_pass(f"409 detail string for n=1 reads correctly: {msg_n1!r}")
+    _print_pass(f"409 detail string for n=2 reads correctly: {msg_n2!r}")
 
 
 def test_count_descendants_transposition_dedup_shared_row() -> None:
@@ -776,9 +832,14 @@ def test_count_descendants_transposition_dedup_shared_row() -> None:
 
     ids = {
         ("root", 0): uuid4(),
+        ("root_opp_a", 1): uuid4(),  # 1...e5 (opponent reply, path A)
+        ("root_opp_b", 1): uuid4(),  # 1...Nc6 (opponent reply, path B)
         ("e5_branch", 2): uuid4(),
         ("Nc6_branch", 2): uuid4(),
+        ("pathA_opp", 3): uuid4(),  # 2...Nc6 (path A opponent, after Nf3)
+        ("pathB_opp", 3): uuid4(),  # 2...e5 (path B opponent, after Nf3)
         ("shared", 4): uuid4(),
+        ("shared_opp", 5): uuid4(),  # 3...Bc5 (opponent, after Bc4)
         ("shared", 6): uuid4(),
     }
 
@@ -794,6 +855,20 @@ def test_count_descendants_transposition_dedup_shared_row() -> None:
         created_at=_next_created_at(),
     ))
     board.push(chess.Move.from_uci("e2e4"))
+
+    # Opponent reply rows at after-e4 (the fork): e5 AND Nc6.
+    rows.append(RepertoireTreeRow(
+        id=ids[("root_opp_a", 1)],
+        fen=_normalize_fen(board.fen()),
+        move="e7e5",
+        created_at=_next_created_at(),
+    ))
+    rows.append(RepertoireTreeRow(
+        id=ids[("root_opp_b", 1)],
+        fen=_normalize_fen(board.fen()),
+        move="b8c6",
+        created_at=_next_created_at(),
+    ))
 
     # Path A branch: 1...e5 -> 2.Nf3 row.
     pa = board.copy(stack=False)
@@ -819,8 +894,22 @@ def test_count_descendants_transposition_dedup_shared_row() -> None:
 
     # Shared row 1: 3.Bc4 — both paths converge on this FEN.
     pa.push(chess.Move.from_uci("g1f3"))
+    # Path A opponent ply: 2...Nc6 (row needed for reachability)
+    rows.append(RepertoireTreeRow(
+        id=ids[("pathA_opp", 3)],
+        fen=_normalize_fen(pa.fen()),
+        move="b8c6",
+        created_at=_next_created_at(),
+    ))
     pa.push(chess.Move.from_uci("b8c6"))  # path A continues: 2...Nc6
     pb.push(chess.Move.from_uci("g1f3"))
+    # Path B opponent ply: 2...e5 (row needed for reachability)
+    rows.append(RepertoireTreeRow(
+        id=ids[("pathB_opp", 3)],
+        fen=_normalize_fen(pb.fen()),
+        move="e7e5",
+        created_at=_next_created_at(),
+    ))
     pb.push(chess.Move.from_uci("e7e5"))  # path B continues: 2...e5
     fen_after_e5_nc6 = _normalize_fen(pa.fen())
     fen_after_nc6_e5 = _normalize_fen(pb.fen())
@@ -839,6 +928,13 @@ def test_count_descendants_transposition_dedup_shared_row() -> None:
 
     # Shared row 2: 3...Bc5 -> 4.c3 — both paths converge AGAIN.
     pa.push(chess.Move.from_uci("f1c4"))
+    # Opponent ply: 3...Bc5 (row needed for reachability)
+    rows.append(RepertoireTreeRow(
+        id=ids[("shared_opp", 5)],
+        fen=_normalize_fen(pa.fen()),
+        move="f8c5",
+        created_at=_next_created_at(),
+    ))
     pa.push(chess.Move.from_uci("f8c5"))
     pb.push(chess.Move.from_uci("f1c4"))
     pb.push(chess.Move.from_uci("f8c5"))
@@ -856,10 +952,7 @@ def test_count_descendants_transposition_dedup_shared_row() -> None:
         created_at=_next_created_at(),
     ))
 
-    print(f"  fixture: {len(rows)} rows (5 distinct ids; 2 of them shard onto the transposed position)")
-    assert all(r.fen.split()[1] == "w" for r in rows), (
-        "every stored row sits at a white-to-move FEN (owner = white)"
-    )
+    print(f"  fixture: {len(rows)} rows (includes owner + opponent rows)")
 
     c_root = count_descendants(rows, ids[("root", 0)])
     c_e5 = count_descendants(rows, ids[("e5_branch", 2)])
@@ -867,36 +960,43 @@ def test_count_descendants_transposition_dedup_shared_row() -> None:
     c_shared4 = count_descendants(rows, ids[("shared", 4)])
     c_shared6 = count_descendants(rows, ids[("shared", 6)])
 
-    # Without dedup (broken): P0 would be 6 (each shared row counted
-    # once per incoming path — 2 once each via Pe5->Pital and PNc6->Pital,
-    # 2 once each via Pe5->Pital->Pital5 and PNc6->Pital->Pital5, plus
-    # Pe5 and PNc6 themselves = 6). With dedup: P0 = 4. Asserting == 4
-    # directly catches the regression if `visited_fens` is dropped or
-    # mis-ordered in `_walk_descendants`.
-    assert c_root == 4, (
-        f"descendants of P0 with transposition dedup: expected 4 (Pe5, "
-        f"PNc6, Pital, Pital5 — Pital and Pital5 each counted ONCE "
-        f"despite being reachable via two opponent-reply paths). "
-        f"Got {c_root}. A value of 6 would mean the visited_fens "
-        f"dedup is broken: each shared row was counted twice."
+    # Under the new save-every-ply model, descendant count includes
+    # ALL rows (owner + opponent) reachable from the target. With
+    # transposition dedup: the shared rows (Bc4, Bc5, c3) are counted
+    # ONCE despite being reachable via two paths. The two opponent
+    # reply rows at the fork (e5, Nc6) + the two path-specific
+    # opponent rows (Nc6-after-Nf3, e5-after-Nf3) are at DIFFERENT
+    # FENs so they each count once.
+    #
+    # P0 descendants: e5(opp) + Nc6(opp) + Pe5 + Nc6-after-Nf3(opp) +
+    #   Pital + Bc5(opp) + Pital5 + PNc6 + e5-after-Nf3(opp) = 9
+    #   (Pital/Bc5/Pital5 counted once via dedup)
+    assert c_root == 9, (
+        f"descendants of P0 with transposition dedup: expected 9 "
+        f"(all rows below P0, shared rows counted once). "
+        f"Got {c_root}. A higher value would mean the visited_fens "
+        f"dedup is broken: shared rows were counted twice."
     )
-    _print_pass("count_descendants(P0) = 4 (transposed rows counted once via dedup, not 6)")
+    _print_pass(f"count_descendants(P0) = {c_root} (transposed rows counted once via dedup)")
 
-    assert c_e5 == 2, (
-        f"descendants of Pe5: expected 2 (Pital, Pital5), got {c_e5}"
+    # Pe5 descendants (from after-Nf3): Nc6(opp) + Pital + Bc5(opp) + Pital5 = 4
+    assert c_e5 == 4, (
+        f"descendants of Pe5: expected 4 (Nc6, Pital, Bc5, Pital5), got {c_e5}"
     )
-    _print_pass("count_descendants(Pe5) = 2")
+    _print_pass(f"count_descendants(Pe5) = {c_e5}")
 
-    assert c_nc6 == 2, (
-        f"descendants of PNc6: expected 2 (Pital, Pital5), got {c_nc6}"
+    # PNc6 descendants (from after-Nf3): e5(opp) + Pital + Bc5(opp) + Pital5 = 4
+    assert c_nc6 == 4, (
+        f"descendants of PNc6: expected 4 (e5, Pital, Bc5, Pital5), got {c_nc6}"
     )
-    _print_pass("count_descendants(PNc6) = 2")
+    _print_pass(f"count_descendants(PNc6) = {c_nc6}")
 
-    assert c_shared4 == 1, (
-        f"descendants of Pital (3.Bc4 transposed row): expected 1 (Pital5), "
-        f"got {c_shared4}"
+    # Pital descendants (from after-Bc4): Bc5(opp) + Pital5 = 2
+    assert c_shared4 == 2, (
+        f"descendants of Pital (3.Bc4 transposed row): expected 2 "
+        f"(Bc5, Pital5), got {c_shared4}"
     )
-    _print_pass("count_descendants(Pital) = 1")
+    _print_pass(f"count_descendants(Pital) = {c_shared4}")
 
     assert c_shared6 == 0, (
         f"descendants of Pital5 (leaf): expected 0, got {c_shared6}"
@@ -914,13 +1014,14 @@ def test_count_descendants_leaf_missing_empty() -> None:
     """
     _print_section("TEST (count_descendants): leaf, missing target, empty rows")
 
-    # Linear 1.e4 e5 2.Nf3 — owner rows at plies 0 and 2 only.
-    ids = {0: uuid4(), 2: uuid4()}
+    # Linear 1.e4 e5 2.Nf3 — all 3 plies produce rows under the new
+    # save-every-ply model (owner + opponent).
+    ids = {ply: uuid4() for ply in range(3)}
     _reset_clock()
     rows = _owner_rows_for_line(["e2e4", "e7e5", "g1f3"], "white", ids)
     print(f"  fixture: {len(rows)} rows on a single linear line")
 
-    # 2.Nf3 row is a leaf — no stored positions beneath it.
+    # 2.Nf3 row (ply 2) is a leaf — no stored positions beneath it.
     c_leaf = count_descendants(rows, ids[2])
     assert c_leaf == 0, (
         f"descendants of a leaf: expected 0, got {c_leaf}"
