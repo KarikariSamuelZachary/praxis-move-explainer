@@ -105,6 +105,60 @@ class StockfishEngine:
             best_move_san=best_move_san
         )
 
+    def suggest(
+        self,
+        board: chess.Board,
+        num_moves: int = 5,
+        time_limit: Optional[float] = None,
+    ) -> list:
+        """Return Stockfish's top `num_moves` legal moves for `board`.
+
+        Uses a multi-PV analysis (`multipv=N`) so the caller gets a ranked
+        list of candidate moves rather than just the single best move that
+        `evaluate()` surfaces. Each entry is a plain dict:
+
+            {"uci": "e2e4", "san": "e4", "score_cp": 36}
+
+        `score_cp` is centipawns from the SIDE-TO-MOVE's perspective
+        (positive = good for the mover). Mate scores are coerced to
+        ±10000 by `_score_to_centipawns` (same convention `evaluate`
+        uses), so a "mate in 3" reads as a large positive score.
+
+        `num_moves` is clamped to the number of legal moves so a terminal
+        or near-terminal position can't make Stockfish error on an
+        out-of-range multipv.
+        """
+        if not self.engine:
+            raise RuntimeError("Engine not started. Use context manager or call start()")
+
+        legal_count = board.legal_moves.count()
+        if legal_count == 0:
+            return []
+
+        requested = max(1, min(num_moves, legal_count))
+        analysis_time = time_limit if time_limit is not None else self.FAST_ANALYSIS_TIME
+
+        infos = self.engine.analyse(
+            board,
+            chess.engine.Limit(time=analysis_time),
+            multipv=requested,
+        )
+
+        suggestions = []
+        for info in infos:
+            pv = info.get("pv", [])
+            if not pv:
+                continue
+            move = pv[0]
+            score = info.get("score")
+            cp = self._score_to_centipawns(score, board.turn) if score else 0
+            suggestions.append({
+                "uci": move.uci(),
+                "san": board.san(move),
+                "score_cp": int(cp),
+            })
+        return suggestions
+
     def _score_to_centipawns(self, score: chess.engine.Score, turn: chess.Color) -> float:
         normalized_score = score.pov(turn)
         if normalized_score.is_mate():
