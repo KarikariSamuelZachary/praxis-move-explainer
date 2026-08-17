@@ -3,16 +3,31 @@
 This module owns the write side of `repertoire_positions`: given a
 repertoire (which fixes the owner's color) and a linear UCI move
 sequence, replay the moves on a python-chess board, normalize the
-pre-ply FEN to its 4 canonical fields, and upsert one row per ply
-where it was the repertoire owner's turn to move.
+pre-ply FEN to its 4 canonical fields, and upsert one row PER PLY —
+BOTH owner and opponent moves are persisted. Storing opponent reply
+rows lets the UI render a diverging tree of prepared opponent replies
+(e.g. d4 d5 stops at d5 — d5 needs to be a row so it appears on the
+board as a saved branch and survives as a terminal leaf even when no
+owner move follows), and it makes the tree-walk symmetric — every
+node's outgoing edges are simply the rows at that FEN, no "look one
+ply deeper for the next owner row" inference.
 
-The upsert uses (repertoire_id, fen) as the unique conflict target
-(see migration in src/core/migrations.py) with
-`ON CONFLICT (repertoire_id, fen) DO UPDATE SET move = EXCLUDED.move,
-updated_at = NOW()` — so re-adding a transposing line updates the
-move choice at that position rather than erroring or silently
-no-opping. That is what makes "two different move orders reaching the
-same normalized FEN produce ONE row, not two" actually hold.
+The upsert uses (repertoire_id, fen, move) as the unique conflict
+target (see migration in src/core/migrations.py) with
+`ON CONFLICT (repertoire_id, fen, move) DO UPDATE SET
+updated_at = NOW()` — so re-adding a line the user already prepared
+is an idempotent touch that preserves FSRS state, while two
+DIFFERENT moves saved from the same position (a diverging
+repertoire, e.g. both Nf3 and Be2) land as separate rows.
+
+Read-side filtering by side-to-move: training sessions and the
+review queue MUST filter to OWNER rows only (the side the user is
+quizzed on). See `split_part(fen, ' ', 2)` clauses in
+`routers/repertoire.py`'s `/sessions/{id}/start` and `/queue`. The
+gap-finder's outer loop likewise iterates OWNER rows only — pushing
+an owner-row's move produces an opponent-to-move FEN to query Lichess
+Explorer about; iterating opp rows would feed owner-to-move FENs to
+Explorer and emit spurious gaps.
 
 Pattern note (vs the rest of the codebase):
   * Raw psycopg2, no SQLAlchemy — same as `opponent_repertoire.py`
@@ -98,11 +113,24 @@ def _replay_and_plan(
     start_fen: str = chess.STARTING_FEN,
 ) -> List[_PlannedPosition]:
     """Replay a linear UCI move sequence on a fresh board, emitting one
-    `_PlannedPosition` per ply whose pre-ply position has the
-    repertoire owner's color to move. Opponent-turn plies are *still
-    pushed* onto the board so the replay can continue (this is what
-    lets transpositions through opponent replies resolve), but no
-    plan is emitted for them.
+    `_PlannedPosition` per ply — BOTH owner AND opponent moves are
+    planned for persistence. Every ply is pushed onto the board so the
+    replay advances (transpositions through opponent replies still
+    resolve correctly), and EVERY ply produces a row.
+
+    Storing opponent reply rows is what lets the UI render a diverging
+    tree of prepared opponent replies and survive terminal opponent
+    moves as visible branches (e.g. d4 d5 stops at d5 — d5 must be a
+    row so the board shows the arrow and the saved-moves panel lists
+    it, even when no owner move follows). Read endpoints filter to
+    owner rows where appropriate (training sessions, review queue,
+    gap-finder) via `split_part(fen, ' ', 2)`.
+
+    `repertoire_color` is currently unused by the planner itself (every
+    ply is persisted regardless of color) but is kept in the signature
+    for API stability — callers pass it, and the router uses it for
+    the owner-side filter when constructing training sessions /
+    review queues.
 
     Raises `IllegalRepertoireMoveError` on the first illegal move,
     identifying the offending ply index. No DB state is touched by
@@ -118,14 +146,12 @@ def _replay_and_plan(
     # clock/fullmove info needed for legal push validation, so we do
     # NOT normalize the start_fen — only the per-ply snapshot below.
     board = chess.Board(start_fen)
-    owner_is_white = repertoire_color == "white"
     plans: List[_PlannedPosition] = []
 
     for ply_index, uci_move in enumerate(uci_moves):
         # Snapshot the position BEFORE the ply is pushed. This is the
         # row we'd write: (repertoire_id, fen=pre_ply, move=uci_move).
         pre_ply_fen = _normalize_fen(board.fen())
-        side_to_move_is_white = board.turn == chess.WHITE
 
         # `board.parse_uci` parses the UCI string AND validates the
         # move against the current position in one call, raising a
@@ -147,12 +173,9 @@ def _replay_and_plan(
         # parse_uci has validated legality; push cannot raise here.
         board.push(move)
 
-        # Side-to-move consistency: only write a row when it was the
-        # repertoire owner's turn at the pre-ply position. The
-        # opponent's reply plies are replayed (so the board keeps
-        # advancing) but skipped from the plan.
-        if side_to_move_is_white == owner_is_white:
-            plans.append(_PlannedPosition(fen=pre_ply_fen, move=uci_move))
+        # Persist EVERY ply — owner AND opponent. Read endpoints
+        # filter by side-to-move when only owner rows are wanted.
+        plans.append(_PlannedPosition(fen=pre_ply_fen, move=uci_move))
 
     return plans
 
@@ -165,20 +188,20 @@ def upsert_repertoire_positions(
     start_fen: str = chess.STARTING_FEN,
 ) -> List[RepertoirePosition]:
     """Replay `uci_moves` from `start_fen`, then upsert a
-    `repertoire_positions` row for each ply where it was the
-    repertoire owner's turn to move.
-
-    Opponent-turn plies are replayed (so a position reachable only
-    through a specific opponent reply can still be transposed into),
-    but no row is written from them.
+    `repertoire_positions` row for EVERY ply — both owner AND
+    opponent moves are persisted. Storing opponent reply rows lets
+    the UI render prepared opponent replies and survive terminal
+    opponent moves as visible tree branches; read endpoints filter
+    to owner rows where appropriate (training sessions, review
+    queue, gap-finder).
 
     The conflict target is the migration's
-    `UNIQUE (repertoire_id, fen)` constraint. `DO UPDATE SET
-    move = EXCLUDED.move, updated_at = NOW()` means a later write
-    that transposes into the same position overrides the prior move
-    choice instead of raising or silently no-opping — which is what
-    guarantees two different move orders reaching the same normalized
-    FEN land as ONE row, not two.
+    `UNIQUE (repertoire_id, fen, move)` constraint. `DO UPDATE SET
+    updated_at = NOW()` means re-saving a line the user already
+    prepared is an idempotent no-op write that keeps the FSRS state —
+    while two DIFFERENT moves from the same position (e.g. Nf3 and
+    Be2 both prepared) land as two separate rows, which is what lets
+    a repertoire diverge into multiple branches.
 
     Args:
         conn: open psycopg2 connection. The caller owns the
@@ -257,8 +280,8 @@ def upsert_repertoire_positions(
             # Only the (repertoire_id, fen, move) trio is supplied;
             # every FSRS-shaped column defaults to its migration
             # default (due=NOW(), state='Learning', reps=0, lapses=0,
-            # stability/difficulty/step/last_review NULL). Updating
-            # move + updated_at on conflict keeps the FSRS scheduling
+            # stability/difficulty/step/last_review NULL). Touching
+            # only updated_at on conflict keeps the FSRS scheduling
             # state from a prior learning session intact — that's a
             # feature, not a bug: re-importing a line shouldn't reset
             # the user's progress at that position.
@@ -270,9 +293,8 @@ def upsert_repertoire_positions(
                     move
                 )
                 VALUES (%s, %s, %s)
-                ON CONFLICT (repertoire_id, fen) DO UPDATE
-                    SET move       = EXCLUDED.move,
-                        updated_at = NOW()
+                ON CONFLICT (repertoire_id, fen, move) DO UPDATE
+                    SET updated_at = NOW()
                 RETURNING
                     id,
                     repertoire_id,
