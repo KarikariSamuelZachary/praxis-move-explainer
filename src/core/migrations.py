@@ -47,6 +47,15 @@ def run_migrations():
             )
             cur.execute("ALTER TABLE users DROP CONSTRAINT IF EXISTS users_username_key")
 
+            # email is no longer required at insert time — Clerk's
+            # currentUser() can briefly return null right after an SSO
+            # sign-up, and the onboarding POST can land before the email
+            # is available. clerk_id is the real primary key; email is a
+            # best-effort reconciliation field. Dropping the NOT NULL
+            # lets the onboarding upsert succeed without it, and a
+            # later request (or the auth webhook) can backfill it.
+            cur.execute("ALTER TABLE users ALTER COLUMN email DROP NOT NULL")
+
             # --- woodpecker_entries -----------------------------------------
             # Per-puzzle FSRS scheduling schema. The legacy cycle-based
             # woodpecker_sets table has been dropped; entries are now linked
