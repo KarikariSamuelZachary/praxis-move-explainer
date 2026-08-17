@@ -2,11 +2,13 @@ import { AuthenticateWithRedirectCallback } from '@clerk/nextjs';
 
 export default function SSOCallbackPage() {
   return (
-    <AuthenticateWithRedirectCallback
-      signInForceRedirectUrl="/puzzles"
-      signUpForceRedirectUrl="/onboarding"
-      signInFallbackRedirectUrl="/puzzles"
-      signUpFallbackRedirectUrl="/onboarding"
-    />
+    <div className="flex min-h-screen items-center justify-center [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+      <AuthenticateWithRedirectCallback
+        signInForceRedirectUrl="/puzzles"
+        signUpForceRedirectUrl="/onboarding"
+        signInFallbackRedirectUrl="/puzzles"
+        signUpFallbackRedirectUrl="/onboarding"
+      />
+    </div>
   );
 }
