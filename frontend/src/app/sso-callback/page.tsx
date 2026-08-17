@@ -4,9 +4,9 @@ export default function SSOCallbackPage() {
   return (
     <AuthenticateWithRedirectCallback
       signInForceRedirectUrl="/puzzles"
-      signUpForceRedirectUrl="/puzzles"
+      signUpForceRedirectUrl="/onboarding"
       signInFallbackRedirectUrl="/puzzles"
-      signUpFallbackRedirectUrl="/puzzles"
+      signUpFallbackRedirectUrl="/onboarding"
     />
   );
 }
