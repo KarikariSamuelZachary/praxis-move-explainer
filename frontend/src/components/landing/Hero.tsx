@@ -100,38 +100,44 @@ export default function Hero({ onStartTraining, onExplore }: HeroProps) {
         });
 
         lift
-          .to(
+          .fromTo(
             reliefRef.current,
-            { scale: 1.14, opacity: 0, filter: 'blur(8px)', ease: 'none', duration: 0.6 },
+            { opacity: 1, scale: 1, filter: 'blur(0px)' },
+            { opacity: 0, scale: 1.14, filter: 'blur(8px)', ease: 'none', duration: 0.7, immediateRender: false },
             0
           )
           .fromTo(
             cutoutRef.current,
             { opacity: 0, y: 70, scale: 0.9 },
-            { opacity: 1, y: -16, scale: 1.05, ease: 'none', duration: 0.75 },
-            0.1
+            { opacity: 1, y: -16, scale: 1.05, ease: 'none', duration: 0.7 },
+            0.15
           )
           .to(
             shadowRef.current,
-            { scaleX: 1.35, opacity: 0.25, ease: 'none', duration: 0.75 },
-            0.1
+            { scaleX: 1.35, opacity: 0.25, ease: 'none', duration: 0.7 },
+            0.15
           )
           .to(textRef.current, { y: -60, opacity: 0.2, ease: 'none', duration: 0.55 }, 0)
           .to(hintRef.current, { opacity: 0, duration: 0.12 }, 0);
       });
 
       mm.add('(max-width: 1023px)', () => {
-        gsap.to(reliefRef.current, {
-          scale: 1.08,
-          opacity: 0.35,
-          ease: 'none',
-          scrollTrigger: {
-            trigger: sectionRef.current,
-            start: 'top top',
-            end: 'bottom top',
-            scrub: 0.6,
-          },
-        });
+        gsap.fromTo(
+          reliefRef.current,
+          { scale: 1, opacity: 1 },
+          {
+            scale: 1.08,
+            opacity: 0.35,
+            ease: 'none',
+            immediateRender: false,
+            scrollTrigger: {
+              trigger: sectionRef.current,
+              start: 'top top',
+              end: 'bottom top',
+              scrub: 0.6,
+            },
+          }
+        );
       });
     }, sectionRef);
 
@@ -157,7 +163,7 @@ export default function Hero({ onStartTraining, onExplore }: HeroProps) {
 
       <DustCanvas />
 
-      <div className="relative z-10 mx-auto grid w-full max-w-[1400px] items-center gap-12 px-5 pb-24 pt-32 sm:px-8 lg:grid-cols-2 lg:gap-6 lg:pb-16 lg:pt-20 xl:pl-44">
+      <div className="relative z-10 mx-auto grid w-full max-w-[1400px] items-center gap-12 px-5 pb-24 pt-32 sm:px-8 lg:grid-cols-2 lg:gap-6 lg:pb-16 lg:pt-20 xl:pl-40">
         <div ref={textRef} className="max-w-2xl">
           <h1 className="font-display text-[2.3rem] font-semibold leading-[1.14] tracking-wide text-gold-bright sm:text-5xl lg:text-[2.9rem] xl:text-[3.35rem]">
             <span data-hero-line className="block">
