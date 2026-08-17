@@ -24,6 +24,9 @@ export default function TacticBoard() {
   const [fen, setFen] = useState(PUZZLES[0].fen);
   const [showArrow, setShowArrow] = useState(false);
   const [solved, setSolved] = useState(false);
+  // Bumped each cycle so react-chessboard remounts and renders the new
+  // position instantly instead of sliding pieces from the previous one.
+  const [cycleKey, setCycleKey] = useState(0);
 
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
@@ -43,9 +46,17 @@ export default function TacticBoard() {
       setPuzzle(current);
       setFen(current.fen);
       setSolved(false);
-      setShowArrow(true);
+      setShowArrow(false);
+      setCycleKey((k) => k + 1);
 
-      // Play the winning move after the arrow has telegraphed it
+      // Show the arrow only once the new position has appeared, then
+      // play the winning move after it has telegraphed the solution.
+      timersRef.current.push(
+        setTimeout(() => {
+          setShowArrow(true);
+        }, 150)
+      );
+
       timersRef.current.push(
         setTimeout(() => {
           const game = new Chess(current.fen);
@@ -53,7 +64,7 @@ export default function TacticBoard() {
           setShowArrow(false);
           setFen(game.fen());
           setSolved(true);
-        }, 2100)
+        }, 2400)
       );
 
       // Reset with the next puzzle and loop
@@ -101,7 +112,9 @@ export default function TacticBoard() {
           }}
         >
           <Chessboard
+            key={cycleKey}
             options={{
+              id: 'tactic-board',
               position: fen,
               allowDragging: false,
               arrows: showArrow
