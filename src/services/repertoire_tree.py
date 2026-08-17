@@ -2,40 +2,38 @@
 side-line.
 
 The repertoire_positions table stores rows as (repertoire_id, fen, move)
-with a UNIQUE (repertoire_id, fen) constraint but NO parent/child edges
-— the tree is derived on read via a python-chess FEN-walk. This module
-replays the whole repertoire from `chess.STARTING_FEN`, discovering
-children by either:
-  * the single stored move at an owner-turn position (deterministic —
-    exactly one move per stored row by the UNIQUE constraint), or
-  * every legal opponent reply at an opponent-turn position, checking
-    each resulting normalized FEN against the stored-row set.
+with a UNIQUE (repertoire_id, fen, move) constraint but NO parent/child
+edges — the tree is derived on read via a python-chess FEN-walk. This
+module replays the whole repertoire from `chess.STARTING_FEN`,
+discovering children by reading the stored rows AT the current FEN —
+one outgoing edge per row. Owner and opponent rows are treated
+symmetrically: the writer stores a row for EVERY ply (both colors), so
+the tree at any FEN is simply ALL rows stored there, regardless of
+which side is on move.
 
-A "fork" is an opponent-turn position where MORE THAN ONE legal reply
-leads to a distinct stored row. Among a fork's children, the one with
-the EARLIEST created_at is the main-line continuation; every other
-child at that fork is side-line. (created_at ties are broken by the
-row id's string form, deterministic but stable — ties essentially
-never happen under gen_random_uuid() + real wall-clock writes, and the
-tiebreak exists only so a never-committed-deterministic test stays
-deterministic.)
+A "fork" is ANY position where MORE THAN ONE outgoing edge exists —
+several prepared opponent replies, several saved owner moves from the
+same position, or any mix. Among a fork's children, the one with the
+EARLIEST created_at is the main-line continuation; every other child
+at that fork is side-line. (created_at ties are broken by the row id's
+string form, deterministic but stable — ties essentially never happen
+under gen_random_uuid() + real wall-clock writes, and the tiebreak
+exists only so a never-committed-deterministic test stays deterministic.)
 
-A position is main-line IFF every fork on its path from the start
-chose it (or one of its ancestors) as the main-line branch — i.e.
-the stored row sits on the single root-to-leaf path produced by
-"follow the stored move at owner nodes; at opponent nodes take the
-earliest-created child at forks, the sole child otherwise." A position
-reachable only via a side-line branch is side-line even if its own
-immediate neighborhood has no fork.
+A position is main-line IFF every fork on its path from the start chose
+it (or one of its ancestors) as the main-line branch — i.e. the stored
+row sits on the single root-to-leaf path produced by "follow the
+earliest-created saved move at every node." A position reachable only
+via a side-line branch is side-line even if its own immediate
+neighborhood has no fork.
 
 Transposition handling: the main-line subtree of any fork is fully
 recursed BEFORE that fork's side-line children (sorted by created_at).
 The walk uses first-visit-wins via a `visited_fens` set, so a stored
 row reachable from BOTH a main branch and a side branch keeps the
-main-line assignment it received on its first (main-line) visit —
-
-the side-line subtree's re-entry into that FEN is a no-op. This is
-what gives the spec its "every fork on its path chose it" single-path
+main-line assignment it received on its first (main-line) visit — the
+side-line subtree's re-entry into that FEN is a no-op. This is what
+gives the spec its "every fork on its path chose it" single-path
 semantics across transpositions.
 
 Pattern parity with the rest of this feature:
@@ -48,13 +46,11 @@ Pattern parity with the rest of this feature:
     already imports (precedent in this exact codebase now, two files
     deep), so the 4-field canonicalization stays a single source of
     truth shared by the write path, the gap-finder, and this walker.
-  * Owner color is INFERRED from the input rows (every stored row's
-    FEN has the owner on move per the upsert contract), so the function
-    needs no color argument and stays pure over its row inputs.
 
 Out of scope (separate task):
   * Wiring this into the GET queue endpoint's "train main lines only"
-    filter.
+    filter (the router applies the classifier's row-id classification,
+    then filters by side-to-move for owner-only training rows).
   * Repertoires with a non-chess.STARTING_FEN root (those aren't a v1
     concern per the original schema decision; upsert still anchors on
     the standard start).
@@ -63,7 +59,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from typing import Dict, Sequence
+from typing import Dict, List, Sequence
 from uuid import UUID
 
 import chess
@@ -92,6 +88,19 @@ class RepertoireTreeRow:
     created_at: object  # datetime; typed loosely so tests can use
                         # any orderable stand-in (e.g. ints) without
                         # importing datetime just for the dataclass.
+
+
+# Rows indexed by their stored (already-4-field-normalized) FEN. The
+# UNIQUE (repertoire_id, fen, move) constraint allows SEVERAL rows per
+# FEN — one per saved move — so every lookup yields a LIST (possibly
+# empty). Sort order for "earliest row at a FEN" is
+# (created_at, str(id)), the module-wide fork tiebreak.
+FenRowMap = Dict[str, List[RepertoireTreeRow]]
+
+
+def _rows_sorted(rows: List[RepertoireTreeRow]) -> List[RepertoireTreeRow]:
+    """Rows ordered by the module-wide (created_at, str(id)) tiebreak."""
+    return sorted(rows, key=lambda r: (r.created_at, str(r.id)))
 
 
 def classify_repertoire_lines(
@@ -130,19 +139,11 @@ def classify_repertoire_lines(
         return result
 
     # Index rows by their stored (already-4-field-normalized) FEN.
-    # The UNIQUE (repertoire_id, fen) constraint guarantees at most one
-    # row per FEN, so this dict's value is a single row, not a list.
-    fen_to_row: Dict[str, RepertoireTreeRow] = {}
+    # Several rows may share a FEN (one per saved move — a diverging
+    # repertoire), so the value is a LIST.
+    fen_to_rows: FenRowMap = {}
     for r in rows:
-        fen_to_row[r.fen] = r
-
-    # Owner color: every stored row's FEN has the owner on move (the
-    # upsert contract — only owner-turn plies produce rows). Infer the
-    # owner's color from any row; use the start FEN's side-to-move
-    # alone if no rows exist yet (the `if not rows: return` above
-    # guarantees at least one row here, but the fallback keeps the
-    # inference robust).
-    owner_color = _infer_owner_color(fen_to_row)
+        fen_to_rows.setdefault(r.fen, []).append(r)
 
     # FENs already visited by the walk. First-visit-wins: a transposed
     # position keeps the assignment its FIRST visit got. Since the
@@ -151,10 +152,11 @@ def classify_repertoire_lines(
     # when both are reachable — so a position reachable from both keeps
     # main-line. `chess.Board` cycles (threefold repetition etc.) are
     # also covered: a re-entry into a visited FEN is a no-op rather
-    # than infinite recursion.
+    # than infinite recursion. Visiting a FEN classifies ALL rows at
+    # it in one shot, so a later re-entry can never miss a row.
     visited_fens: set = set()
 
-    _walk_from_start(fen_to_row, owner_color, visited_fens, result)
+    _walk_from_start(fen_to_rows, visited_fens, result)
 
     # Any row not in `result` is unreachable from the start via the
     # legal-move walk. Spec: log a warning and default to main-line.
@@ -173,64 +175,40 @@ def classify_repertoire_lines(
     return result
 
 
-def _infer_owner_color(fen_to_row: Dict[str, RepertoireTreeRow]) -> chess.Color:
-    """Return the repertoire owner's color as a python-chess Color
-    (True=white, False=black), inferred from any stored row's FEN.
-
-    Every stored row's FEN has the owner on move (the upsert contract:
-    only owner-turn plies produce rows), so the side-to-move field of
-    any row's normalized FEN IS the owner's color. We pick an
-    arbitrary row — which one doesn't matter, the contract says they
-    all agree. Falls back to white (the start-side-to-move) if the
-    dict is somehow empty.
-    """
-    if not fen_to_row:
-        return chess.WHITE
-    any_fen = next(iter(fen_to_row))
-    side = any_fen.split()[1]
-    return side == "w"
-
-
 def _walk_from_start(
-    fen_to_row: Dict[str, RepertoireTreeRow],
-    owner_color: chess.Color,
+    fen_to_rows: FenRowMap,
     visited_fens: set,
     result: Dict[UUID, bool],
 ) -> None:
     """Kick off the DFS from `chess.STARTING_FEN` with is_main=True.
 
-    The start FEN itself is NOT a stored row (per the schema, the
-    stored row at the start FEN — if one exists — represents the
-    owner's FIRST move, which is an owner-turn node). So the root
-    board is passed to `_walk_node` as-is; that helper decides owner
-    vs opponent turn from `board.turn`.
+    The start FEN itself can be a stored row (the row represents the
+    owner's FIRST move, which is the first ply to push from the start
+    board). The root board is passed to `_walk_node` as-is; that
+    helper reads stored rows at the current FEN and dispatches forks
+    vs single-edge nodes.
     """
     board = chess.Board()  # standard start FEN
-    _walk_node(board, fen_to_row, owner_color, is_main=True, visited_fens=visited_fens, result=result)
+    _walk_node(board, fen_to_rows, is_main=True, visited_fens=visited_fens, result=result)
 
 
 def _walk_node(
     board: chess.Board,
-    fen_to_row: Dict[str, RepertoireTreeRow],
-    owner_color: chess.Color,
+    fen_to_rows: FenRowMap,
     is_main: bool,
     visited_fens: set,
     result: Dict[UUID, bool],
 ) -> None:
     """Visit the current board position and recurse into children.
 
-    Dispatch on whose turn it is:
-      * owner to move -> owner-turn node: there is at most one stored
-        row at this FEN (UNIQUE constraint). If present, mark the row
-        with `is_main` and recurse into the single child position
-        produced by pushing the row's stored UCI move (carrying the
-        same `is_main`). If absent (gap) -> dead end.
-      * opponent to move -> opponent-turn node: enumerate every legal
-        reply; keep those whose resulting FEN matches a stored row
-        (discovered children). 0 children -> dead end. 1 -> not a
-        fork, recurse with the same `is_main`. >1 -> FORK: recurse
-        into the earliest-created child FIRST (carrying `is_main`),
-        then every other child (carrying is_main=False).
+    The outgoing edges from this position are simply the stored rows
+    AT this FEN — owner rows + opponent rows alike (the writer stores
+    a row for EVERY ply). 0 rows (gap) -> dead end. 1 row -> not a
+    fork, carry the same `is_main`. >1 rows -> FORK (a diverging
+    position — multiple prepared moves from here, whether by the
+    owner OR by the opponent as prepared replies): the earliest-
+    created row's subtree carries `is_main`, every other row is a
+    side-line branch (classified False and recursed with is_main=False).
 
     A stored row's UCI move push is guarded by try/except: if a row
     is somehow stale/corrupt (illegal move on its FEN — shouldn't
@@ -249,54 +227,35 @@ def _walk_node(
         return
     visited_fens.add(fen)
 
-    is_owner_turn = board.turn == owner_color
+    rows_here = _rows_sorted(fen_to_rows.get(fen, []))
+    if not rows_here:
+        # Gap: no prepared moves here. Dead end.
+        return
 
-    if is_owner_turn:
-        row = fen_to_row.get(fen)
-        if row is None:
-            # Gap: the owner has no prepared move here. Dead end.
-            return
+    if len(rows_here) == 1:
+        # Not a fork: single saved move, carry the same flag.
+        row = rows_here[0]
         result[row.id] = is_main
         child = _push_stored_move(board, row)
         if child is None:
-            # Stale/corrupt stored move — warn and stop this branch.
-            # The row's own classification was already recorded above.
             return
-        _walk_node(child, fen_to_row, owner_color, is_main, visited_fens, result)
+        _walk_node(child, fen_to_rows, is_main, visited_fens, result)
         return
 
-    # Opponent turn: discover children among legal replies.
-    children: list = []  # list of (child_board, child_row)
-    for legal in board.legal_moves:
-        child_board = board.copy(stack=False)
-        child_board.push(legal)
-        child_fen = _normalize_fen(child_board.fen())
-        child_row = fen_to_row.get(child_fen)
-        if child_row is not None:
-            children.append((child_board, child_row))
-
-    if not children:
-        # No prepared response to any opponent reply here: dead end.
-        return
-
-    if len(children) == 1:
-        # Not a fork: single discovered child, carry the same flag.
-        child_board, _child_row = children[0]
-        _walk_node(child_board, fen_to_row, owner_color, is_main, visited_fens, result)
-        return
-
-    # FORK: >1 discovered children. Earliest created_at is the
-    # main-line continuation; ties broken by string-form row id.
-    children.sort(key=lambda pair: (pair[1].created_at, str(pair[1].id)))
-
-    # Recurse the main-line child FIRST (carries the parent's
-    # is_main), so a transposed FEN reachable from both branches
-    # takes its main-line assignment on first visit. Then recurse
-    # the side-line children with is_main=False.
-    main_board, _main_row = children[0]
-    _walk_node(main_board, fen_to_row, owner_color, is_main, visited_fens, result)
-    for side_board, _side_row in children[1:]:
-        _walk_node(side_board, fen_to_row, owner_color, False, visited_fens, result)
+    # FORK: >1 saved moves from this position. The earliest-created
+    # row continues the line the user built first; the rest are
+    # side-line branches.
+    main_row = rows_here[0]
+    result[main_row.id] = is_main
+    main_child = _push_stored_move(board, main_row)
+    if main_child is not None:
+        _walk_node(main_child, fen_to_rows, is_main, visited_fens, result)
+    for side_row in rows_here[1:]:
+        result[side_row.id] = False
+        side_child = _push_stored_move(board, side_row)
+        if side_child is None:
+            continue
+        _walk_node(side_child, fen_to_rows, False, visited_fens, result)
 
 
 def _push_stored_move(board: chess.Board, row: RepertoireTreeRow):
@@ -333,11 +292,11 @@ def count_descendants(
     """Count the stored rows that descend from `target_row_id`.
 
     A "descendant" of a stored row R is any OTHER stored row R' such
-    that R' is reachable from R by the same walk semantics the rest of
-    this module uses: push R's stored UCI move at owner-turn nodes
-    (deterministic single child, since (repertoire_id, fen) is UNIQUE),
-    enumerate legal opponent replies at opponent-turn nodes and follow
-    every reply whose resulting FEN matches a stored row.
+    that R' is reachable from R by walking the tree forward: push
+    each saved UCI move at every node (one edge per stored row — a
+    diverging repertoire contributes every branch). The walk treats
+    owner and opponent rows symmetrically (the writer stores both).
+    The target row itself is NOT counted as its own descendant.
 
     Purpose: the per-position DELETE endpoint in `routers/repertoire.py`
     needs to refuse the delete (with 409 Conflict) when the target
@@ -356,10 +315,7 @@ def count_descendants(
     row's board state. The target's board state is reconstructed
     directly from the target's own data — `chess.Board(target.fen)`
     with `target.move` pushed — so the walk doesn't depend on knowing
-    how the start-position replay reached the target. We then mirror
-    `_walk_node`'s dispatch (owner turn: single stored move -> push
-    and recurse; opponent turn: enumerate legal moves, follow each
-    one whose resulting FEN matches a stored row). The target row
+    how the start-position replay reached the target. The target row
     itself is NOT counted as its own descendant. First-visit-wins
     via a visited set (matches `_walk_node`) — a row reachable from
     the target via multiple paths (transpositions inside the
@@ -445,85 +401,57 @@ def count_descendants(
     target_board.push(move)
 
     # Index rows by their stored (already-4-field-normalized) FEN.
-    # The UNIQUE (repertoire_id, fen) constraint guarantees at most one
-    # row per FEN — same assumption `_walk_node` relies on.
-    fen_to_row: Dict[str, RepertoireTreeRow] = {}
+    # Several rows may share a FEN (one per saved move) — same
+    # assumption `_walk_node` relies on.
+    fen_to_rows: FenRowMap = {}
     for r in rows:
-        fen_to_row[r.fen] = r
-
-    owner_color = _infer_owner_color(fen_to_row)
+        fen_to_rows.setdefault(r.fen, []).append(r)
 
     # Walk descendants from the reconstructed target board. The target
     # row itself is excluded from the count because its stored FEN
     # (which is a different FEN from target_board.fen() — the latter
-    # is the post-move position) sits behind the walk: the walk
-    # starts at `target_board.fen()` and only moves FORWARD, so it
-    # can't loop back to the target's stored FEN through legal moves
-    # alone. First-visit-wins in `_walk_descendants` handles cycles
+    # is the post-move position) sits behind the walk: the walk starts
+    # at `target_board.fen()` and only moves FORWARD, so it can't loop
+    # back to the target's stored FEN through legal moves alone.
+    # First-visit-wins in `_walk_descendants` handles cycles
     # (transpositions) inside the descendant subtree correctly.
-    #
-    # We deliberately do NOT pre-seed `target_board.fen()` into
-    # `visited_fens` — that would make the walk's first call bail out
-    # immediately. The walk processes the start position like any
-    # other position; it just doesn't happen to have a stored row
-    # there (the stored row IS the parent of this position by
-    # construction).
     visited_fens: set = set()
     descendants: Dict[UUID, bool] = {}
-    _walk_descendants(
-        target_board,
-        fen_to_row,
-        owner_color,
-        visited_fens,
-        descendants,
-    )
+    _walk_descendants(target_board, fen_to_rows, visited_fens, descendants)
 
     return len(descendants)
 
 
 def _walk_descendants(
     board: chess.Board,
-    fen_to_row: Dict[str, RepertoireTreeRow],
-    owner_color: chess.Color,
+    fen_to_rows: FenRowMap,
     visited_fens: set,
     descendants: Dict[UUID, bool],
 ) -> None:
     """Forward walk from `board` (which sits AT the target's board
     state, already excluded from `visited_fens`) collecting every
-    stored row reachable from here. Mirrors `_walk_node`'s dispatch
-    exactly so reachability here matches reachability in
-    `classify_repertoire_lines` and in the gap-finder.
+    stored row reachable from here. Mirrors `_walk_node`'s simplified
+    dispatch: the outgoing edges from any position are simply the
+    stored rows at that FEN (owner and opponent alike).
 
-    A stored row encountered is added to `descendants` and the walk
-    continues from it. First-visit-wins via `visited_fens` keeps the
-    count well-defined under transpositions inside the descendant
-    subtree.
+    Every stored row ENCOUNTERED at a visited FEN is added to
+    `descendants` (all of them — a FEN can hold several saved moves)
+    and the walk continues down each row's child position.
+    First-visit-wins via `visited_fens` keeps the count well-defined
+    under transpositions inside the descendant subtree.
     """
     fen = _normalize_fen(board.fen())
     if fen in visited_fens:
         return
     visited_fens.add(fen)
 
-    is_owner_turn = board.turn == owner_color
-    if is_owner_turn:
-        row = fen_to_row.get(fen)
-        if row is None:
-            return
+    rows_here = fen_to_rows.get(fen, [])
+    if not rows_here:
+        return
+
+    for row in rows_here:
         descendants[row.id] = True
         child = _push_stored_move(board, row)
         if child is None:
-            return
-        _walk_descendants(child, fen_to_row, owner_color, visited_fens, descendants)
-        return
-
-    # Opponent turn: enumerate stored children among legal replies.
-    for legal in board.legal_moves:
-        child = board.copy(stack=False)
-        child.push(legal)
-        child_fen = _normalize_fen(child.fen())
-        if child_fen in visited_fens:
             continue
-        child_row = fen_to_row.get(child_fen)
-        if child_row is None:
-            continue
-        _walk_descendants(child, fen_to_row, owner_color, visited_fens, descendants)
+        _walk_descendants(child, fen_to_rows, visited_fens, descendants)
