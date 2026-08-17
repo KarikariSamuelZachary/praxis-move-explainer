@@ -90,7 +90,7 @@ export default function WoodpeckerSection({ onStartReview }: WoodpeckerSectionPr
   return (
     <section id="woodpecker" className="relative">
       <DustCanvas />
-      <div className="relative z-10 mx-auto grid w-full max-w-[1400px] items-center gap-14 px-5 py-28 sm:px-8 lg:grid-cols-2 lg:gap-20 lg:py-40 xl:pl-28">
+      <div className="relative z-10 mx-auto grid w-full max-w-[1400px] items-center gap-14 px-5 py-28 sm:px-8 lg:grid-cols-2 lg:gap-20 lg:py-40 xl:pl-44">
         <SectionHeading
           label="Repeat. Remember. Master."
           title={
