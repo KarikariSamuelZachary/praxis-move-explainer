@@ -120,7 +120,7 @@ export default function WoodpeckerSection({ onStartReview }: WoodpeckerSectionPr
             className="relative mx-auto max-w-xl overflow-hidden rounded-2xl border border-white/10 shadow-[0_30px_80px_rgba(0,0,0,0.55)]"
             style={{
               background:
-                'linear-gradient(rgba(18,11,7,0.72), rgba(18,11,7,0.86)), url(/wood-panel-dark.png)',
+                'linear-gradient(rgba(18,11,7,0.72), rgba(18,11,7,0.86)), url(/wood-panel-dark.webp)',
               backgroundSize: 'cover',
               backgroundPosition: 'center',
             }}

@@ -72,7 +72,7 @@ export default function TopNav() {
   return (
     <>
       {/* Desktop top nav */}
-      <nav className="fixed inset-x-0 top-0 z-40 border-b border-black/40 text-white shadow-[0_4px_20px_rgba(0,0,0,0.45)] [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+      <nav className="fixed inset-x-0 top-0 z-40 border-b border-black/40 text-white shadow-[0_4px_20px_rgba(0,0,0,0.45)] [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
         {/* Inner container matches LandingNav.tsx:55 — mx-auto max-w-[1400px]
             px-5 sm:px-8 — so the logo and links sit at the exact same
             horizontal position on every route and on the marketing page. */}
@@ -116,7 +116,7 @@ export default function TopNav() {
       {/* Mobile dropdown */}
       {isOpen && (
         <div className="fixed inset-x-0 top-0 z-50 md:hidden">
-          <div className="border-b border-black/40 px-5 py-4 text-white [background-image:linear-gradient(rgba(0,0,0,0.7),rgba(0,0,0,0.7)),url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+          <div className="border-b border-black/40 px-5 py-4 text-white [background-image:linear-gradient(rgba(0,0,0,0.7),rgba(0,0,0,0.7)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
             <div className="flex items-center justify-between">
               <Link href="/puzzles" onClick={() => setIsOpen(false)} className="flex items-center gap-2 transition hover:opacity-80">
                 <KnightMark className="h-7 w-6" />

@@ -4,8 +4,8 @@ export function KnightMark({ className = '' }: { className?: string }) {
       aria-hidden
       className={className}
       style={{
-        WebkitMaskImage: 'url(/knight-mask.png)',
-        maskImage: 'url(/knight-mask.png)',
+        WebkitMaskImage: 'url(/knight-mask.webp)',
+        maskImage: 'url(/knight-mask.webp)',
         WebkitMaskSize: 'contain',
         maskSize: 'contain',
         WebkitMaskRepeat: 'no-repeat',

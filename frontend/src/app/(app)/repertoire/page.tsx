@@ -65,7 +65,7 @@ const Chessboard = dynamic(
 // module yet, and inventing one for a single page is out of scope).
 // Keep in sync if any of those pages change.
 const CARD_CLASS =
-  'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
+  'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
 
 // Lighter card variant for list cards — the page background already
 // carries the dark wood grain, so a card-on-card overlay reads as a
@@ -245,12 +245,12 @@ function BoardThumb() {
           allowDragging: false,
           showNotation: false,
           darkSquareStyle: {
-            backgroundImage: 'url(/walnut-dark.png)',
+            backgroundImage: 'url(/walnut-dark.webp)',
             backgroundSize: '140% 140%',
             backgroundPosition: 'center',
           },
           lightSquareStyle: {
-            backgroundImage: 'url(/walnut-light.png)',
+            backgroundImage: 'url(/walnut-light.webp)',
             backgroundSize: '140% 140%',
             backgroundPosition: 'center',
           },
@@ -824,7 +824,7 @@ export default function RepertoireListPage() {
   }
 
   return (
-    <div className="relative h-[calc(100vh-3rem)] w-full overflow-y-auto px-6 py-6 text-white lg:px-10 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+    <div className="relative h-[calc(100vh-3rem)] w-full overflow-y-auto px-6 py-6 text-white lg:px-10 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
       <div className="mx-auto flex max-w-3xl flex-col gap-5">
         <header
           className="flex items-center justify-between pt-2"

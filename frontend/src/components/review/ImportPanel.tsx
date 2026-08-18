@@ -41,7 +41,7 @@ const MAX_CLIENT_PGN_BYTES = 2 * 1024 * 1024;
 const woodBoxStyle: React.CSSProperties = {
   borderRadius: '4px',
   background:
-    'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.png)',
+    'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.webp)',
   backgroundSize: 'cover',
   backgroundPosition: 'center',
   boxShadow:
@@ -88,7 +88,7 @@ export default function ImportPanel({
   }
 
   return (
-    <aside className="flex h-full flex-col gap-4 overflow-hidden rounded-[24px] border border-black/50 p-4 [background-image:linear-gradient(rgba(0,0,0,0.55),rgba(0,0,0,0.55)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]">
+    <aside className="flex h-full flex-col gap-4 overflow-hidden rounded-[24px] border border-black/50 p-4 [background-image:linear-gradient(rgba(0,0,0,0.55),rgba(0,0,0,0.55)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]">
       <div role="tablist" aria-label="PGN import source" className="flex flex-wrap gap-1 rounded-xl border border-black/40 bg-black/40 p-1">
         {SOURCE_TABS.map((tab) => {
           const isActive = tab.key === source;

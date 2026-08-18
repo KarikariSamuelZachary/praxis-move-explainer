@@ -85,7 +85,7 @@ const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 const woodBoxStyle: React.CSSProperties = {
   borderRadius: '4px',
   background:
-    'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.png)',
+    'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.webp)',
   backgroundSize: 'cover',
   backgroundPosition: 'center',
   boxShadow:
@@ -93,10 +93,10 @@ const woodBoxStyle: React.CSSProperties = {
 };
 
 const panelClass =
-  'flex h-full flex-col gap-4 overflow-hidden rounded-[24px] border border-black/50 p-4 [background-image:linear-gradient(rgba(0,0,0,0.55),rgba(0,0,0,0.55)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
+  'flex h-full flex-col gap-4 overflow-hidden rounded-[24px] border border-black/50 p-4 [background-image:linear-gradient(rgba(0,0,0,0.55),rgba(0,0,0,0.55)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
 
 const rightPanelClass =
-  'flex h-full min-h-0 flex-col gap-4 overflow-hidden rounded-[24px] border border-black/50 [background-image:linear-gradient(rgba(0,0,0,0.55),rgba(0,0,0,0.55)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
+  'flex h-full min-h-0 flex-col gap-4 overflow-hidden rounded-[24px] border border-black/50 [background-image:linear-gradient(rgba(0,0,0,0.55),rgba(0,0,0,0.55)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
 
 const STYLE_PILL: Record<
   'Passive' | 'Balanced' | 'Aggressive',
@@ -521,7 +521,7 @@ const gameOver = game.isGameOver();
   }, [selectedProfile]);
 
   return (
-    <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-[10px] pt-6 text-white lg:overflow-hidden lg:px-10 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+    <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-[10px] pt-6 text-white lg:overflow-hidden lg:px-10 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
       <ReviewShell
         importPanel={
           <aside className={panelClass}>
@@ -578,7 +578,7 @@ const gameOver = game.isGameOver();
                   style={{
                     position: 'absolute',
                     inset: 0,
-                    backgroundImage: 'url("/wood-texture.png")',
+                    backgroundImage: 'url("/wood-texture.webp")',
                     backgroundSize: 'cover',
                     opacity: 0.08,
                     pointerEvents: 'none',
@@ -606,12 +606,12 @@ const gameOver = game.isGameOver();
                       boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
                     },
                     darkSquareStyle: {
-                      backgroundImage: 'url(/walnut-dark.png)',
+                      backgroundImage: 'url(/walnut-dark.webp)',
                       backgroundSize: '110% 110%',
                       backgroundPosition: 'center',
                     },
                     lightSquareStyle: {
-                      backgroundImage: 'url(/walnut-light.png)',
+                      backgroundImage: 'url(/walnut-light.webp)',
                       backgroundSize: '110% 110%',
                       backgroundPosition: 'center',
                     },

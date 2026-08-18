@@ -97,7 +97,7 @@ export default function LandingPage() {
       <div
         aria-hidden
         className="pointer-events-none fixed inset-0 z-0 bg-cover bg-center"
-        style={{ backgroundImage: 'url(/walnut-dark.png)' }}
+        style={{ backgroundImage: 'url(/walnut-dark.webp)' }}
       />
       {/* Page-wide warm vignette — light enough to let the walnut grain show */}
       <div

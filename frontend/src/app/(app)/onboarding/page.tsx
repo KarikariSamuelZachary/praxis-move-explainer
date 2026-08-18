@@ -51,9 +51,9 @@ const levels: Level[] = [
 ];
 
 const DARK_WOOD =
-  'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.png)';
+  'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.webp)';
 const LIGHT_WOOD =
-  'linear-gradient(rgba(0,0,0,0.18),rgba(0,0,0,0.18)), url(/walnut-light.png)';
+  'linear-gradient(rgba(0,0,0,0.18),rgba(0,0,0,0.18)), url(/walnut-light.webp)';
 
 // Label/description/rating colors per tone. Mirrors the chess board's
 // notation contrast: dark squares carry cream/gold labels, light
@@ -141,7 +141,7 @@ export default function OnboardingPage() {
   }
 
   return (
-    <div className="h-[calc(100vh-3rem)] overflow-y-auto text-white [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+    <div className="h-[calc(100vh-3rem)] overflow-y-auto text-white [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
       <div className="flex min-h-full flex-col items-center justify-center px-4 py-8">
         {/* Praxis logo — the same KnightMark + gold wordmark the app nav
             and landing page use (TopNav.tsx:77-78, LandingNav.tsx:62-65). */}

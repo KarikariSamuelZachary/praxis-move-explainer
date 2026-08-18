@@ -79,7 +79,7 @@ import BoardShell from '@/components/board/BoardShell';
 import ReviewShell from '@/components/review/ReviewShell';
 
 const CARD_CLASS =
-  'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
+  'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
 
 // Wooden-box button style, lifted verbatim from the game-review page's
 // movement controls (components/review/BoardPanel.tsx + AnalysisPanel.tsx)
@@ -87,7 +87,7 @@ const CARD_CLASS =
 const WOOD_BOX_STYLE: React.CSSProperties = {
   borderRadius: '4px',
   background:
-    'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.png)',
+    'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.webp)',
   backgroundSize: 'cover',
   backgroundPosition: 'center',
   boxShadow:
@@ -855,7 +855,7 @@ export default function RepertoireDetailPage({
   const currentSide = currentFen.split(/\s+/)[1] ?? 'w';
 
   return (
-    <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-[10px] pt-6 text-white lg:overflow-hidden lg:px-10 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+    <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-[10px] pt-6 text-white lg:overflow-hidden lg:px-10 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
       <ReviewShell
         importPanel={
           <aside className={`${CARD_CLASS} flex w-full flex-col p-5`}>

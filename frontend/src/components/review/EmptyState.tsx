@@ -6,7 +6,7 @@ type EmptyStateProps = {
 
 export default function EmptyState({ title, description, icon }: EmptyStateProps) {
   return (
-    <div className="flex h-full w-full items-center justify-center rounded-[24px] border border-dashed border-white/10 [background-image:linear-gradient(rgba(0,0,0,0.55),rgba(0,0,0,0.55)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] p-8">
+    <div className="flex h-full w-full items-center justify-center rounded-[24px] border border-dashed border-white/10 [background-image:linear-gradient(rgba(0,0,0,0.55),rgba(0,0,0,0.55)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] p-8">
       <div className="flex max-w-xs flex-col items-center text-center">
         <div className="mb-4 flex h-14 w-14 items-center justify-center rounded-full border border-[#f7e5c6]/30 bg-black/40 text-[#10b981]">
           {icon ?? (

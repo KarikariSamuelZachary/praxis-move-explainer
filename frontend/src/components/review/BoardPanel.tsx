@@ -17,7 +17,7 @@ type BoardPanelProps = {
 const woodBoxStyle: React.CSSProperties = {
   borderRadius: '4px',
   background:
-    'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.png)',
+    'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.webp)',
   backgroundSize: 'cover',
   backgroundPosition: 'center',
   boxShadow:
@@ -82,7 +82,7 @@ export default function BoardPanel({
             style={{
               position: 'absolute',
               inset: 0,
-              backgroundImage: 'url("/wood-texture.png")',
+              backgroundImage: 'url("/wood-texture.webp")',
               backgroundSize: 'cover',
               opacity: 0.08,
               pointerEvents: 'none',
@@ -101,12 +101,12 @@ export default function BoardPanel({
                 boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
               },
               darkSquareStyle: {
-                backgroundImage: 'url(/walnut-dark.png)',
+                backgroundImage: 'url(/walnut-dark.webp)',
                 backgroundSize: '110% 110%',
                 backgroundPosition: 'center',
               },
               lightSquareStyle: {
-                backgroundImage: 'url(/walnut-light.png)',
+                backgroundImage: 'url(/walnut-light.webp)',
                 backgroundSize: '110% 110%',
                 backgroundPosition: 'center',
               },

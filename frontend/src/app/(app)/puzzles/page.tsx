@@ -25,7 +25,7 @@ const SLOW_THRESHOLD_CAP_SECONDS = 180;
 
 const BATCH_SIZE = 10;
 const CARD_CLASS =
-  'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
+  'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
 const WEEK_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const RATING_DATA = [1814, 1828, 1851, 1840, 1860, 1854, 1876];
 
@@ -399,7 +399,7 @@ export default function PuzzlesPage() {
     currentPuzzle && getSideToMove(currentPuzzle) === 'black' ? 'Black' : 'White';
 
   return (
-    <div className="min-h-[calc(100vh-2.5rem)] -mt-2 text-white [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+    <div className="min-h-[calc(100vh-2.5rem)] -mt-2 text-white [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
       <div className="mx-auto max-w-[1760px] pb-1 px-6 lg:px-10">
         {/* Main content */}
         {isLoading ? (
@@ -414,7 +414,7 @@ export default function PuzzlesPage() {
             {/* ============== LEFT: WOODPECKER CARD + SESSION STATS ============== */}
             <section className="order-2 mt-[24px] flex flex-col space-y-5 xl:order-none">
               <div className={`${CARD_CLASS} mx-auto w-full max-w-[400px] p-5 shadow-2xl shadow-black/25 xl:max-w-none`}>
-                <Image ref={birdRef} src="/woodpecker-bird-v2.png" alt="" width={160} height={160} className="mx-auto h-[160px] w-[160px] shrink-0 object-contain" />
+                <Image ref={birdRef} src="/woodpecker-bird-v2.webp" alt="" width={160} height={160} className="mx-auto h-[160px] w-[160px] shrink-0 object-contain" />
                 <div className="mt-0 text-center">
                   <div className="text-sm font-normal text-[#f7e5c6]/60">Reviews Due</div>
                   <div className="mt-1 text-[50px] font-bold leading-none text-[#f7e5c6]">{reviewsDue ?? '—'}</div>

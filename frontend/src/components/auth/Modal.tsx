@@ -20,7 +20,7 @@ export default function Modal({ children, onClose }: ModalProps) {
         onClick={onClose}
         className="absolute inset-0 cursor-default"
       />
-      <div className="relative max-h-[calc(100vh-4rem)] w-full max-w-[430px] overflow-y-auto rounded-2xl border border-black/50 p-6 text-zinc-50 [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)] sm:p-8">
+      <div className="relative max-h-[calc(100vh-4rem)] w-full max-w-[430px] overflow-y-auto rounded-2xl border border-black/50 p-6 text-zinc-50 [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)] sm:p-8">
         <button
           type="button"
           aria-label="Close modal"

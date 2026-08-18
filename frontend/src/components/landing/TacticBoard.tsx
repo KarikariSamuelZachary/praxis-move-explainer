@@ -103,7 +103,7 @@ export default function TacticBoard() {
         <div
           style={{
             padding: '14px',
-            background: 'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.png)',
+            background: 'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.webp)',
             backgroundSize: 'cover',
             backgroundPosition: 'center',
             borderRadius: '6px',
@@ -124,12 +124,12 @@ export default function TacticBoard() {
                 ? { [puzzle.move.to]: { backgroundColor: 'rgba(55, 190, 126, 0.45)' } }
                 : {},
               darkSquareStyle: {
-                backgroundImage: 'url(/walnut-dark.png)',
+                backgroundImage: 'url(/walnut-dark.webp)',
                 backgroundSize: '110% 110%',
                 backgroundPosition: 'center',
               },
               lightSquareStyle: {
-                backgroundImage: 'url(/walnut-light.png)',
+                backgroundImage: 'url(/walnut-light.webp)',
                 backgroundSize: '110% 110%',
                 backgroundPosition: 'center',
               },

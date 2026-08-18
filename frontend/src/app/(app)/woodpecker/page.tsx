@@ -17,7 +17,7 @@ const ChessBoard = dynamic(() => import('@/components/board/ChessBoard'), {
 });
 
 const CARD_CLASS =
-  'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
+  'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
 
 type WoodpeckerEntry = {
   id: string;
@@ -293,7 +293,7 @@ export default function WoodpeckerPage() {
   const puzzleUnavailable = hasQueueRemaining && !currentPuzzle;
 
   return (
-    <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-hidden px-6 pb-[10px] pt-6 text-white lg:px-10 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+    <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-hidden px-6 pb-[10px] pt-6 text-white lg:px-10 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
       <div className="mx-auto h-full w-full max-w-[1760px]">
         {isLoading ? (
           <div className="flex h-[70vh] items-center justify-center">
@@ -318,7 +318,7 @@ export default function WoodpeckerPage() {
           <div className="flex h-[70vh] items-center justify-center">
             <div className={`${CARD_CLASS} w-full max-w-md p-8 text-center shadow-2xl shadow-black/30`}>
               <Image
-                src="/woodpecker-bird-v2.png"
+                src="/woodpecker-bird-v2.webp"
                 alt=""
                 width={80}
                 height={80}
@@ -376,7 +376,7 @@ export default function WoodpeckerPage() {
                 {/* Top: identity & progress */}
                 <div className="flex flex-col items-center">
                   <Image
-                    src="/woodpecker-bird-v2.png"
+                    src="/woodpecker-bird-v2.webp"
                     alt=""
                     width={112}
                     height={112}

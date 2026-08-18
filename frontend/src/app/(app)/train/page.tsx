@@ -17,7 +17,7 @@ const MiniBoard = dynamic(
 );
 
 const CARD_CLASS =
-  'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
+  'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
 
 const RECOMMENDED_FEN = '1K1k4/1P6/8/8/8/8/r7/2R5 w - - 0 1';
 
@@ -501,12 +501,12 @@ function RecommendedPanel() {
               allowDragging: false,
               showNotation: false,
               darkSquareStyle: {
-                backgroundImage: 'url(/walnut-dark.png)',
+                backgroundImage: 'url(/walnut-dark.webp)',
                 backgroundSize: '140% 140%',
                 backgroundPosition: 'center',
               },
               lightSquareStyle: {
-                backgroundImage: 'url(/walnut-light.png)',
+                backgroundImage: 'url(/walnut-light.webp)',
                 backgroundSize: '140% 140%',
                 backgroundPosition: 'center',
               },
@@ -540,7 +540,7 @@ export default function TrainPage() {
   );
 
   return (
-    <div className="relative h-[calc(100vh-3rem)] w-full overflow-hidden px-6 py-6 text-white lg:px-12 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+    <div className="relative h-[calc(100vh-3rem)] w-full overflow-hidden px-6 py-6 text-white lg:px-12 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
       <div className="mx-auto flex h-full max-w-[1600px] flex-col justify-center gap-5">
         <RecommendedPanel />
 

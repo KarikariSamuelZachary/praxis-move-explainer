@@ -93,7 +93,7 @@ import BoardShell from '@/components/board/BoardShell';
 import ReviewShell from '@/components/review/ReviewShell';
 
 const CARD_CLASS =
-  'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.png)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
+  'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
 
 type TrainParams = Promise<{ id: string }>;
 
@@ -719,7 +719,7 @@ export default function RepertoireTrainPage({
 
   if (phase === 'config') {
     return (
-      <div className="relative h-[calc(100vh-3rem)] w-full overflow-y-auto px-4 py-4 text-white sm:px-6 sm:py-6 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+      <div className="relative h-[calc(100vh-3rem)] w-full overflow-y-auto px-4 py-4 text-white sm:px-6 sm:py-6 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
         {/* Back button — top-left, sits above the centered card so
             it doesn't drag the card off-center. */}
         <button
@@ -856,7 +856,7 @@ export default function RepertoireTrainPage({
     const total = quizItems.length;
     const pct = total > 0 ? Math.round((correctCount / total) * 100) : 0;
     return (
-      <div className="relative h-[calc(100vh-3rem)] w-full overflow-y-auto px-4 py-4 text-white sm:px-6 sm:py-6 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+      <div className="relative h-[calc(100vh-3rem)] w-full overflow-y-auto px-4 py-4 text-white sm:px-6 sm:py-6 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
         {/* Back button — top-left, sits above the centered card. */}
         <button
           type="button"
@@ -939,7 +939,7 @@ export default function RepertoireTrainPage({
   // ----- Phase: SESSION ---------------------------------------------
 
   return (
-    <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-[10px] pt-6 text-white lg:overflow-hidden lg:px-10 [background-image:url(/walnut-dark.png)] [background-size:cover] [background-position:center]">
+    <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-[10px] pt-6 text-white lg:overflow-hidden lg:px-10 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
       {/*
         Session layout — mirrored from the build page (ReviewShell) so a
         user moving between the two routes sees no board-size jump.

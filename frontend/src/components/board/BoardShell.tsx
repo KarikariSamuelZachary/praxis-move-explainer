@@ -92,7 +92,7 @@ function normalizeFenForChess(fen: string): string {
 const FRAME_STYLE: React.CSSProperties = {
   padding: '14px',
   background:
-    'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.png)',
+    'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.webp)',
   backgroundSize: 'cover',
   backgroundPosition: 'center',
   borderRadius: '6px',
@@ -106,7 +106,7 @@ const FRAME_STYLE: React.CSSProperties = {
 const WOOD_OVERLAY_STYLE: React.CSSProperties = {
   position: 'absolute',
   inset: 0,
-  backgroundImage: 'url("/wood-texture.png")',
+  backgroundImage: 'url("/wood-texture.webp")',
   backgroundSize: 'cover',
   opacity: 0.08,
   pointerEvents: 'none',
@@ -383,12 +383,12 @@ export default function BoardShell({
             squareStyles: mergedSquareStyles,
             arrows,
             darkSquareStyle: {
-              backgroundImage: 'url(/walnut-dark.png)',
+              backgroundImage: 'url(/walnut-dark.webp)',
               backgroundSize: '110% 110%',
               backgroundPosition: 'center',
             },
             lightSquareStyle: {
-              backgroundImage: 'url(/walnut-light.png)',
+              backgroundImage: 'url(/walnut-light.webp)',
               backgroundSize: '110% 110%',
               backgroundPosition: 'center',
             },
