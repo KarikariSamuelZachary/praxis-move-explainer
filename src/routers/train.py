@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Literal, Optional
 
 import chess
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Query, Request
@@ -9,6 +9,7 @@ from engines.maia_engine import MaiaUnavailableError, get_maia3, is_maia_availab
 from engines.stockfish_engine import StockfishEngine
 from schemas.train_schemas import (
     OpponentAnalysisStatusResponse,
+    OpponentDataClearResponse,
     OpponentImportJobResponse,
     OpponentImportRequest,
     OpponentImportStartResponse,
@@ -23,6 +24,7 @@ from schemas.train_schemas import (
 )
 from services.opponent_game_analysis import get_opponent_analysis_status
 from services.opponent_import import (
+    clear_opponent_data,
     create_opponent_import_job,
     get_opponent_import_job,
     run_opponent_import_job,
@@ -101,6 +103,49 @@ def get_opponent_import_status(
         raise HTTPException(status_code=404, detail="Opponent import job not found")
 
     return OpponentImportJobResponse(**job)
+
+
+@router.delete(
+    "/train/opponent-data",
+    response_model=OpponentDataClearResponse,
+)
+def clear_opponent_sparring_data(
+    request: Request,
+    provider: Optional[Literal["lichess", "chesscom"]] = Query(
+        None,
+        description="If set with opponent_username, clear only that opponent. "
+                    "If omitted (with opponent_username also omitted), clear "
+                    "ALL opponent sparring data for the user.",
+    ),
+    opponent_username: Optional[str] = Query(
+        None,
+        min_length=1,
+        max_length=100,
+        description="If set with provider, clear only that opponent. If "
+                    "omitted (with provider also omitted), clear ALL "
+                    "opponent sparring data for the user.",
+    ),
+    _: None = Depends(limit_by_clerk_user_id(limit=5, window=60)),
+):
+    clerk_id = request.headers.get("X-Clerk-User-Id")
+    if not clerk_id:
+        raise HTTPException(status_code=400, detail="Missing X-Clerk-User-Id header")
+
+    # Per-opponent clear requires BOTH identifiers; a partial pair is a
+    # client bug. Full clear requires NEITHER. Anything else is ambiguous.
+    if (provider is None) != (opponent_username is None):
+        raise HTTPException(
+            status_code=400,
+            detail="Pass both provider and opponent_username for a "
+                   "per-opponent clear, or neither for a full clear.",
+        )
+
+    result = clear_opponent_data(
+        requested_by_user_id=clerk_id,
+        provider=provider,
+        opponent_username=opponent_username,
+    )
+    return OpponentDataClearResponse(**result)
 
 
 @router.post(

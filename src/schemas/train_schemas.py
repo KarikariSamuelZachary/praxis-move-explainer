@@ -246,3 +246,26 @@ class SparringMoveResponse(BaseModel):
     cp_loss: int = 0
     best_move_uci: Optional[str] = None
     best_move_san: Optional[str] = None
+
+
+class OpponentDataClearResponse(BaseModel):
+    # Result of DELETE /api/train/opponent-data — wipes the sparring
+    # feature's persisted state so the user isn't paying DB storage for
+    # opponent PGNs / analysis they're done with.  Two scopes:
+    #   * scope="all": cleared every opponent_* row for the user
+    #   * scope="opponent": cleared one (provider, opponent_username)
+    # provider / opponent_username are populated only when scope="opponent".
+    #
+    # Counts are DIRECT deletes issued by the single transaction.  Child
+    # rows removed by ON DELETE CASCADE are NOT counted here — the parent
+    # count is the user-facing signal.  Cascade-removed children of
+    # opponent_games: opponent_repertoire_moves, opponent_game_analysis,
+    # opponent_game_blunders.  Cascade-removed children of
+    # weakness_profile_jobs: weakness_profile_moves.
+    scope: Literal["all", "opponent"]
+    provider: Optional[Literal["lichess", "chesscom"]] = None
+    opponent_username: Optional[str] = None
+    opponent_games_deleted: int
+    opponent_analysis_jobs_deleted: int
+    opponent_import_jobs_deleted: int
+    weakness_profile_jobs_deleted: int

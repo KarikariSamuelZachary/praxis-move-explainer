@@ -311,6 +311,16 @@ def _store_opponent_games(
             if not game.get("url") or not game.get("pgn"):
                 continue
 
+            # NOTE: raw_summary is intentionally stored as '{}'::jsonb, not
+            # the full upstream game payload (`Json(game)`).  Every reader
+            # of opponent_games selects pgn / white_player / black_player /
+            # end_time / time_class / ids — none read raw_summary.  Storing
+            # the full API response was ~5-30KB of dead ballast per game
+            # (several MB for a 700-game opponent) with zero functional
+            # value.  The column is kept NOT NULL DEFAULT '{}'::jsonb for
+            # schema compatibility; we just never populate it.  If a future
+            # feature needs the raw payload, re-fetch from the provider on
+            # demand rather than restoring the write here.
             cur.execute(
                 """
                 INSERT INTO opponent_games (
@@ -353,7 +363,7 @@ def _store_opponent_games(
                     game.get("result") or "",
                     int(game.get("end_time") or 0),
                     game.get("time_class") or "",
-                    Json(game),
+                    Json({}),
                 ),
             )
             game_id = cur.fetchone()[0]
@@ -370,3 +380,172 @@ def _store_opponent_games(
             inserted_or_updated += 1
 
     return inserted_or_updated
+
+
+# ---------------------------------------------------------------------------
+# Opponent data cleanup
+# ---------------------------------------------------------------------------
+#
+# The sparring feature imports an opponent's recent games into opponent_games
+# and runs Stockfish blunder classification + repertoire indexing + (optional)
+# weakness profile analysis on them.  The imported PGN corpus is the source of
+# truth that opponent_style / opponent_repertoire / weakness_profile re-read on
+# every page load to recompute style / time-control / opening distributions, so
+# the bulky `pgn` column CANNOT be trimmed without breaking the sparring page
+# (see ADR note in _store_opponent_games for the raw_summary trim, which IS
+# safe because no reader selects it).
+#
+# When the user is done sparring, this function wipes all opponent-related
+# state for the (user, optional provider+opponent_username) scope in a single
+# transaction.  Re-sparring the same opponent later requires re-importing.
+#
+# FK ON DELETE CASCADE handles the child tables:
+#   * opponent_games            -> opponent_repertoire_moves
+#   *                            -> opponent_game_analysis
+#   *                            -> opponent_game_blunders (via game_id AND
+#                               via analysis_id -> opponent_game_analysis)
+#   * weakness_profile_jobs     -> weakness_profile_moves
+# The returned counts only include direct DELETEs; cascade-removed child rows
+# are not counted individually (would require RETURNING + a second pass per
+# child table for no functional benefit — the parent count is the user-facing
+# signal).
+
+
+def clear_opponent_data(
+    *,
+    requested_by_user_id: str,
+    provider: Optional[str] = None,
+    opponent_username: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Delete all opponent sparring data for a user, or for one opponent.
+
+    Two scopes:
+      * Full clear (provider=None, opponent_username=None): wipes every
+        opponent_* row owned by the user — opponent_games (CASCADE removes
+        repertoire_moves / game_analysis / game_blunders),
+        opponent_analysis_jobs, opponent_import_jobs, and
+        weakness_profile_jobs where source_type='opponent' (CASCADE removes
+        weakness_profile_moves).
+      * Per-opponent clear (both provider and opponent_username supplied):
+        wipes only that opponent's rows. opponent_import_jobs is excluded
+        from the per-opponent scope because its schema has separate
+        lichess_username / chesscom_username columns (a single import job
+        can fetch from both providers at once) so a clean per-opponent
+        match is ambiguous; the import job row is tiny (status + counts
+        only) and kept as an audit trail until a full clear.
+
+    All deletes run in one transaction.  Returns a dict with the scope and
+    per-table direct-delete counts (cascade-removed child rows are not
+    counted).
+    """
+    if database.connection_pool is None:
+        raise RuntimeError("Database connection pool is not initialized")
+
+    per_opponent = provider is not None and opponent_username is not None
+    if provider is not None and opponent_username is None:
+        raise ValueError(
+            "provider without opponent_username is ambiguous — pass both "
+            "for per-opponent clear, or neither for full clear"
+        )
+    if opponent_username is not None and provider is None:
+        raise ValueError(
+            "opponent_username without provider is ambiguous — pass both "
+            "for per-opponent clear, or neither for full clear"
+        )
+    if provider is not None and provider not in ("lichess", "chesscom"):
+        raise ValueError("provider must be 'lichess' or 'chesscom'")
+
+    scope = "opponent" if per_opponent else "all"
+
+    conn = database.connection_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            if per_opponent:
+                cur.execute(
+                    """
+                    DELETE FROM opponent_games
+                    WHERE requested_by_user_id = %s
+                      AND provider = %s
+                      AND LOWER(opponent_username) = LOWER(%s)
+                    """,
+                    (requested_by_user_id, provider, opponent_username),
+                )
+                games_deleted = cur.rowcount
+
+                cur.execute(
+                    """
+                    DELETE FROM opponent_analysis_jobs
+                    WHERE requested_by_user_id = %s
+                      AND provider = %s
+                      AND LOWER(opponent_username) = LOWER(%s)
+                    """,
+                    (requested_by_user_id, provider, opponent_username),
+                )
+                analysis_jobs_deleted = cur.rowcount
+
+                cur.execute(
+                    """
+                    DELETE FROM weakness_profile_jobs
+                    WHERE requested_by_user_id = %s
+                      AND source_type = 'opponent'
+                      AND provider = %s
+                      AND LOWER(opponent_username) = LOWER(%s)
+                    """,
+                    (requested_by_user_id, provider, opponent_username),
+                )
+                weakness_jobs_deleted = cur.rowcount
+
+                import_jobs_deleted = 0
+            else:
+                cur.execute(
+                    """
+                    DELETE FROM opponent_games
+                    WHERE requested_by_user_id = %s
+                    """,
+                    (requested_by_user_id,),
+                )
+                games_deleted = cur.rowcount
+
+                cur.execute(
+                    """
+                    DELETE FROM opponent_analysis_jobs
+                    WHERE requested_by_user_id = %s
+                    """,
+                    (requested_by_user_id,),
+                )
+                analysis_jobs_deleted = cur.rowcount
+
+                cur.execute(
+                    """
+                    DELETE FROM opponent_import_jobs
+                    WHERE requested_by_user_id = %s
+                    """,
+                    (requested_by_user_id,),
+                )
+                import_jobs_deleted = cur.rowcount
+
+                cur.execute(
+                    """
+                    DELETE FROM weakness_profile_jobs
+                    WHERE requested_by_user_id = %s
+                      AND source_type = 'opponent'
+                    """,
+                    (requested_by_user_id,),
+                )
+                weakness_jobs_deleted = cur.rowcount
+
+        conn.commit()
+        return {
+            "scope": scope,
+            "provider": provider if per_opponent else None,
+            "opponent_username": opponent_username if per_opponent else None,
+            "opponent_games_deleted": int(games_deleted or 0),
+            "opponent_analysis_jobs_deleted": int(analysis_jobs_deleted or 0),
+            "opponent_import_jobs_deleted": int(import_jobs_deleted or 0),
+            "weakness_profile_jobs_deleted": int(weakness_jobs_deleted or 0),
+        }
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        database.connection_pool.putconn(conn)
