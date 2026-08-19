@@ -14,6 +14,9 @@ type AnalysisPanelProps = {
   activePly: number;
   lastPly: number;
   onPlySelect: (ply: number) => void;
+  bestMoveSan: string | null;
+  showBestMove: boolean;
+  onToggleBestMove: () => void;
 };
 
 const CLASSIFICATION_ROW: Record<
@@ -49,6 +52,9 @@ export default function AnalysisPanel({
   activePly,
   lastPly,
   onPlySelect,
+  bestMoveSan,
+  showBestMove,
+  onToggleBestMove,
 }: AnalysisPanelProps) {
   const classificationStyle = currentMove
     ? CLASSIFICATION_ROW[currentMove.classification]
@@ -85,6 +91,20 @@ export default function AnalysisPanel({
               <p className="mt-2 text-[11px] text-white/50">
                 {currentMove.color} to move
               </p>
+
+              {bestMoveSan && (
+                <button
+                  type="button"
+                  onClick={onToggleBestMove}
+                  className={`mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl px-3 py-2 text-xs font-semibold ring-1 transition-colors ${
+                    showBestMove
+                      ? 'bg-[#10b981]/30 text-[#10b981] ring-[#10b981]/50 hover:bg-[#10b981]/20'
+                      : 'bg-[#10b981]/20 text-[#10b981] ring-[#10b981]/30 hover:bg-[#10b981]/30 hover:ring-[#10b981]/50'
+                  }`}
+                >
+                  {showBestMove ? 'Hide best move' : `Best move: ${bestMoveSan}`}
+                </button>
+              )}
             </section>
 
             {explanation ? (

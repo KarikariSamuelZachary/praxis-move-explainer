@@ -56,6 +56,9 @@ export interface GameReviewMove {
   color: 'white' | 'black';
   classification: MoveClassification;
   cp_loss: number;
+  eval_cp: number;
+  best_move_san?: string | null;
+  best_move_uci?: string | null;
   explanation?: {
     explanation: string;
     concept?: string;

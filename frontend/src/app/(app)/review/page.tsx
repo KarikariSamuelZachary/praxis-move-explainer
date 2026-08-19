@@ -28,9 +28,11 @@ export default function ReviewPage() {
   const [activePly, setActivePly] = useState(0);
   const [coachExplanation, setCoachExplanation] = useState<ReviewExplanation | null>(null);
   const [isAskingCoach, setIsAskingCoach] = useState(false);
+  const [showBestMove, setShowBestMove] = useState(false);
 
   useEffect(() => {
     setCoachExplanation(null);
+    setShowBestMove(false);
   }, [activePly]);
 
   useEffect(() => {
@@ -39,6 +41,7 @@ export default function ReviewPage() {
     }
     setActivePly(0);
     setCoachExplanation(null);
+    setShowBestMove(false);
   }, [analysisState, gameData]);
 
   const canAnalyze = pgnInput.trim().length > 0 && analysisState !== 'analyzing';
@@ -122,6 +125,14 @@ export default function ReviewPage() {
   const currentMove = hasGame && gameData ? gameData[Math.min(activePly, gameData.length - 1)] : null;
   const displayedExplanation = currentMove?.explanation ?? coachExplanation;
   const moveNumberLabel = formatMoveNumber(activePly);
+  const bestMoveSan =
+    currentMove &&
+    currentMove.best_move_san &&
+    currentMove.san !== 'Start' &&
+    currentMove.classification !== 'book' &&
+    currentMove.classification !== 'best'
+      ? currentMove.best_move_san
+      : null;
 
   return (
     <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-[10px] pt-6 text-white lg:overflow-hidden lg:px-10 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
@@ -144,6 +155,7 @@ export default function ReviewPage() {
             activePly={activePly}
             isAnalyzing={analysisState === 'analyzing'}
             hasGame={hasGame}
+            showBestMove={showBestMove}
           />
         }
         analysisPanel={
@@ -157,6 +169,9 @@ export default function ReviewPage() {
             activePly={activePly}
             lastPly={Math.max(0, (gameData?.length ?? 0) - 1)}
             onPlySelect={setActivePly}
+            bestMoveSan={bestMoveSan}
+            showBestMove={showBestMove}
+            onToggleBestMove={() => setShowBestMove((value) => !value)}
           />
         }
       />
