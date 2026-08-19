@@ -81,6 +81,29 @@ Tests:
      reports "policy" when all candidates have usable policy values,
      "rank_decay" when none do, and "mixed" when the list has both.
      Verifies the patch-health operator-audit signal.
+
+  18-26. TRAP-MODE / MIRROR-MODE BRANCH (decision (6) in the module
+      docstring). Sparring is drill-with-fallback: when the opponent has
+      a known, statistically real blunder pattern reachable this move,
+      the bot steers toward it (trap-mode); when it doesn't, the bot
+      plays like the opponent would (mirror-mode = today's reranker).
+      Tests 18-20 isolate the three exploitability-floor gates
+      (hit-count, existence, game-count) on `compute_exploitable_traps`.
+      Tests 21-26 exercise the reranker's trap-mode branch: head-to-head
+      (21), composition with sac (22), soundness bound (23), mirror-mode
+      fallthrough (24), mixed-mode no-residual-state (25), and the
+      insufficient-data regression with trap data present (26).
+
+ 27-30. AVERAGE-GAME-LENGTH CALIBRATION (decision (7) in the module
+      docstring). The opponent's average_game_length (recency-weighted
+      mean plies per game) is converted into a gentle per-candidate
+      multiplier that tilts the bot's candidate selection toward the
+      tempo profile of the opponent's games: short-game opponents boost
+      forcing candidates (captures/checks), long-game opponents suppress
+      them. Tests 27 (head-to-head short vs long), 28 (composition with
+      sac -- a candidate that is BOTH sac-looking AND forcing receives
+      the full product), 29 (insufficient/None data regression), and
+      30 (transparency fields).
 """
 import os
 import sys
@@ -94,6 +117,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import chess
 import services.opponent_style_reranker as reranker_mod
 from services.opponent_style_reranker import rerank_candidates
+import services.opponent_traps as traps_mod
 
 
 # ---------------------------------------------------------------------------
@@ -145,13 +169,18 @@ def _make_style(
     game_count=12,
     queens_stay_on_rate=0.5,
     queen_trade_move_number=None,
+    castling_side_distribution=None,
+    average_game_length=None,
 ):
     """Construct a minimal style dict with the fields rerank consumes.
 
-    Defaults: queens_stay_on_rate=0.5 (neutral, no queen-trade tilt) and
-    queen_trade_move_number=None (no timing gate). With these defaults
-    the queen-trade bias is dormant and the existing sac tests exercise
-    the sac path in isolation -- no regression from the new signal.
+    Defaults: queens_stay_on_rate=0.5 (neutral, no queen-trade tilt),
+    queen_trade_move_number=None (no timing gate),
+    castling_side_distribution=None (no castle-side bias), and
+    average_game_length=None (no game-length bias; length_centered=0.0).
+    With these defaults the queen-trade, castle, and length biases are
+    dormant and the existing sac/setup tests exercise their paths in
+    isolation -- no regression from the new signals.
     """
     return {
         "sufficient": sufficient,
@@ -160,6 +189,8 @@ def _make_style(
         "opening_family_lean": {"Sicilian Defense": 1.0} if sufficient else None,
         "queens_stay_on_rate": queens_stay_on_rate,
         "queen_trade_move_number": queen_trade_move_number,
+        "castling_side_distribution": castling_side_distribution,
+        "average_game_length": average_game_length,
     }
 
 
@@ -169,14 +200,15 @@ def _make_style(
 # the base rate; we measure the RELATIVE tilt vs low-sac, not absolute
 # majority). See the module-level commentary on the design trade.
 # ---------------------------------------------------------------------------
-def _run_distribution(style, n_trials, seed):
+def _run_distribution(style, n_trials, seed, board=None, candidates=None):
     """Sample the re-ranker n_trials times, return Counter(chosen_index)."""
-    board = chess.Board(BOARD_FEN)
+    board = chess.Board(BOARD_FEN) if board is None else board
+    candidates = CANDIDATES if candidates is None else candidates
     rng = random.Random(seed)
     picks = Counter()
     for _ in range(n_trials):
         result = rerank_candidates(
-            candidates=CANDIDATES, style=style, board=board, rng=rng,
+            candidates=candidates, style=style, board=board, rng=rng,
         )
         picks[result["chosen_index"]] += 1
     return picks
@@ -1449,6 +1481,1397 @@ def test_setup_snapshot_window_boundary():
 
 
 # ---------------------------------------------------------------------------
+# Test 15: CASTLE PREFERENCE extraction (unit test for _castle_preference)
+# ---------------------------------------------------------------------------
+def test_castle_preference_unit():
+    print("\n=== Test 15: CASTLE PREFERENCE extraction (unit) ===")
+
+    def _check(dist, expected_side, expected_strength, label):
+        side, strength = reranker_mod._castle_preference(dist)
+        ok_side = side == expected_side
+        ok_str = (
+            expected_strength is None
+            or abs(strength - expected_strength) < 1e-9
+        )
+        if ok_side and ok_str:
+            print(f"  [PASS] {label}: side={side}, strength={strength:.4f}")
+        else:
+            raise AssertionError(
+                f"{label}: expected side={expected_side} "
+                f"strength={expected_strength}, got side={side} "
+                f"strength={strength}"
+            )
+
+    _check(None, None, 0.0, "None input")
+    _check({}, None, 0.0, "empty dict")
+    _check({"never": 0.7, "kingside": 0.2, "queenside": 0.1}, None, 0.0,
+           "never-dominant (signal too noisy)")
+    _check({"kingside": 0.8, "queenside": 0.1, "never": 0.1},
+           "kingside", 0.7, "strong kingside pref")
+    _check({"kingside": 0.1, "queenside": 0.8, "never": 0.1},
+           "queenside", 0.7, "strong queenside pref")
+    _check({"kingside": 0.5, "queenside": 0.5, "never": 0.0},
+           None, 0.0, "exact tie (no preference)")
+    _check({"kingside": 0.6, "queenside": 0.3, "never": 0.1},
+           "kingside", 0.3, "moderate kingside pref (at threshold edge)")
+
+
+# ---------------------------------------------------------------------------
+# Test 16: CASTLE INDICATOR classification (unit test for _castle_indicator)
+# ---------------------------------------------------------------------------
+def test_castle_indicator_unit():
+    print("\n=== Test 16: CASTLE INDICATOR classification (unit) ===")
+
+    def _check(fen, uci, pref_side, expected, label):
+        board = chess.Board(fen)
+        actual = reranker_mod._castle_indicator(board, uci, pref_side)
+        if actual == expected:
+            print(f"  [PASS] {label}: indicator={actual:+d}")
+        else:
+            raise AssertionError(
+                f"{label}: expected {expected:+d}, got {actual:+d}"
+            )
+
+    # Position with White king e1, bishop f1, rook h1, pawn h2, Black king e8.
+    # White has kingside rights. Bishop on f1 blocks the path but can move out.
+    KSIDE_BLOCKED = "4k3/8/8/8/8/8/7P/4KB1R w K - 0 1"
+
+    # Position with White king e1, rook a1, bishop d1, Black king e8.
+    # White has queenside rights. Bishop on d1 blocks the path but can move.
+    QSIDE_BLOCKED = "4k3/8/8/8/8/8/8/R2BK3 w Q - 0 1"
+
+    # Position where White can legally O-O (f1, g1 empty).
+    KSIDE_OPEN = "4k3/8/8/8/8/6N1/8/4K2R w K - 0 1"
+
+    # Position where White can legally O-O-O (b1, c1, d1 empty).
+    QSIDE_OPEN = "4k3/8/8/8/8/8/8/R3K3 w Q - 0 1"
+
+    # --- castle move itself ---
+    _check(KSIDE_OPEN, "e1g1", "kingside", +1, "O-O with pref=kingside")
+    _check(KSIDE_OPEN, "e1g1", "queenside", -1, "O-O with pref=queenside (wrong side)")
+    _check(QSIDE_OPEN, "e1c1", "queenside", +1, "O-O-O with pref=queenside")
+    _check(QSIDE_OPEN, "e1c1", "kingside", -1, "O-O-O with pref=kingside (wrong side)")
+
+    # --- non-castle king move (loses all rights) ---
+    _check(KSIDE_OPEN, "e1e2", "kingside", -1, "Ke2 with pref=kingside")
+    _check(KSIDE_OPEN, "e1e2", "queenside", -1, "Ke2 with pref=queenside")
+    _check(QSIDE_OPEN, "e1e2", "kingside", -1, "Ke2 with pref=kingside (Q-rights board)")
+    _check(QSIDE_OPEN, "e1e2", "queenside", -1, "Ke2 with pref=queenside (Q-rights board)")
+
+    # --- preferred-side rook move (loses preferred-side rights) ---
+    _check(KSIDE_OPEN, "h1h2", "kingside", -1, "Rh2 (kingside rook) with pref=kingside")
+    _check(KSIDE_OPEN, "h1h2", "queenside", 0, "Rh2 (kingside rook) with pref=queenside (neutral)")
+    _check(QSIDE_OPEN, "a1a2", "queenside", -1, "Ra2 (queenside rook) with pref=queenside")
+    _check(QSIDE_OPEN, "a1a2", "kingside", 0, "Ra2 (queenside rook) with pref=kingside (neutral)")
+
+    # --- piece clears preferred-side path square (f1 or g1 for kingside) ---
+    _check(KSIDE_BLOCKED, "f1c4", "kingside", +1, "Bf1-c4 clears f1 with pref=kingside")
+    _check(KSIDE_BLOCKED, "f1c4", "queenside", 0, "Bf1-c4 clears f1 with pref=queenside (neutral)")
+
+    # --- piece clears preferred-side path square (d1 for queenside) ---
+    _check(QSIDE_BLOCKED, "d1e2", "queenside", +1, "Bd1-e2 clears d1 with pref=queenside")
+    _check(QSIDE_BLOCKED, "d1e2", "kingside", 0, "Bd1-e2 clears d1 with pref=kingside (neutral)")
+
+    # --- piece moves TO a preferred-side path square (blocks it) ---
+    # Knight on g3 can move to f1 (kingside path square).
+    _check(KSIDE_OPEN, "g3f1", "kingside", -1, "Ng3-f1 blocks f1 with pref=kingside")
+    _check(KSIDE_OPEN, "g3f1", "queenside", 0, "Ng3-f1 blocks f1 with pref=queenside (neutral)")
+
+    # --- pawn move (neutral for castling) ---
+    _check(KSIDE_BLOCKED, "h2h3", "kingside", 0, "h2h3 pawn push with pref=kingside (neutral)")
+    _check(KSIDE_BLOCKED, "h2h3", "queenside", 0, "h2h3 pawn push with pref=queenside (neutral)")
+
+
+# ---------------------------------------------------------------------------
+# Test 17: CASTLE BIAS head-to-head (kingside-pref vs queenside-pref)
+# ---------------------------------------------------------------------------
+def test_castle_bias_head_to_head():
+    print("\n=== Test 17: CASTLE BIAS head-to-head (kingside-pref vs queenside-pref) ===")
+
+    # Board after 1.e4 e5 2.Nf3 Nc6 3.Bc4 Bc5 — White can legally O-O
+    # (f1 and g1 are empty, king on e1, h-rook on h1). White also has
+    # quiet pawn moves like d3 that are neutral for castling.
+    board = chess.Board("r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 4 4")
+
+    # Verify pre-flight: O-O is legal and d2d3 is legal.
+    assert chess.Move.from_uci("e1g1") in board.legal_moves, "O-O must be legal in test board"
+    assert chess.Move.from_uci("d2d3") in board.legal_moves, "d2d3 must be legal in test board"
+    assert board.is_kingside_castling(chess.Move.from_uci("e1g1")), "e1g1 must be recognized as kingside castling"
+
+    # Candidates: rank 1 = quiet pawn move (castle indicator=0), rank 2 = O-O.
+    # Under rank-decay base (no policy field): rank 1 base=1.0, rank 2 base=0.5.
+    candidates = [
+        {"move": "d2d3", "score": 10, "wdl": {"win": 0.50, "draw": 0.04, "loss": 0.46}},
+        {"move": "e1g1", "score": 15, "wdl": {"win": 0.51, "draw": 0.04, "loss": 0.45}},
+    ]
+
+    # Style A: strong kingside preference (strength = 0.8 - 0.1 = 0.7).
+    style_kside = _make_style(
+        sufficient=True, sacrifice_frequency=0.0,
+        queens_stay_on_rate=0.5, queen_trade_move_number=None,
+        castling_side_distribution={"kingside": 0.8, "queenside": 0.1, "never": 0.1},
+    )
+
+    # Style B: strong queenside preference (strength = 0.8 - 0.1 = 0.7).
+    style_qside = _make_style(
+        sufficient=True, sacrifice_frequency=0.0,
+        queens_stay_on_rate=0.5, queen_trade_move_number=None,
+        castling_side_distribution={"kingside": 0.1, "queenside": 0.8, "never": 0.1},
+    )
+
+    # Style C: no castling signal (None) — regression check.
+    style_none = _make_style(
+        sufficient=True, sacrifice_frequency=0.0,
+        queens_stay_on_rate=0.5, queen_trade_move_number=None,
+        castling_side_distribution=None,
+    )
+
+    n_trials = 5000
+    kside_picks = _run_distribution(style_kside, n_trials, seed=42, board=board, candidates=candidates)
+    qside_picks = _run_distribution(style_qside, n_trials, seed=42, board=board, candidates=candidates)
+    none_picks = _run_distribution(style_none, n_trials, seed=42, board=board, candidates=candidates)
+
+    kside_oo_pct = kside_picks.get(1, 0) / n_trials * 100
+    qside_oo_pct = qside_picks.get(1, 0) / n_trials * 100
+    none_oo_pct = none_picks.get(1, 0) / n_trials * 100
+
+    print(f"  kingside-pref style: O-O picked {kside_oo_pct:.1f}% of trials")
+    print(f"  queenside-pref style: O-O picked {qside_oo_pct:.1f}% of trials")
+    print(f"  no-castle-signal style: O-O picked {none_oo_pct:.1f}% of trials (baseline)")
+    print(f"  kside-vs-qside gap: {kside_oo_pct - qside_oo_pct:.1f}pp")
+
+    # The kingside-pref style should pick O-O dramatically more than the
+    # queenside-pref style. The queenside-pref style penalizes O-O as a
+    # "wrong-side castle" (indicator=-1), clamping castle_mult to the
+    # 0.05 floor, while the kingside-pref style boosts it (indicator=+1,
+    # castle_mult = 1 + 1.5 * 0.7 * 1 = 2.05).
+    assert kside_oo_pct > qside_oo_pct + 30, (
+        f"castle bias head-to-head: kingside-pref should pick O-O >>30pp "
+        f"more than queenside-pref, got {kside_oo_pct:.1f}% vs "
+        f"{qside_oo_pct:.1f}% (gap={kside_oo_pct - qside_oo_pct:.1f}pp)"
+    )
+    print(f"  [PASS] kingside-pref picks O-O >>30pp more than queenside-pref")
+
+    # The no-castle-signal baseline has ALL signals dormant (sac=0, qt
+    # neutral, no setup, no castle), so the reranker takes the
+    # deterministic "default_top_candidate" path and returns d2d3 every
+    # time (0% O-O). The biased styles activate the castle signal, which
+    # switches to random sampling -- so even the penalized O-O gets a
+    # small non-zero pick rate under queenside-pref. Verify the baseline
+    # is deterministic and the kingside boost is well above the base rate.
+    assert none_oo_pct == 0.0, (
+        f"baseline with all signals dormant should be deterministic "
+        f"(0% O-O), got {none_oo_pct:.1f}%"
+    )
+    assert kside_oo_pct > 40, (
+        f"kingside-pref should pick O-O >40% (boost above base 33%), "
+        f"got {kside_oo_pct:.1f}%"
+    )
+    assert qside_oo_pct < 10, (
+        f"queenside-pref should pick O-O <10% (penalized), got "
+        f"{qside_oo_pct:.1f}%"
+    )
+    print(f"  [PASS] baseline=0% (deterministic), kside>40%, qside<10%")
+
+    # Return-shape: verify transparency fields are populated.
+    result = rerank_candidates(candidates=candidates, style=style_kside, board=board)
+    assert result["castle_preference_side"] == "kingside", (
+        f"castle_preference_side should be 'kingside', got "
+        f"{result['castle_preference_side']}"
+    )
+    assert abs(result["castle_preference_strength"] - 0.7) < 1e-3, (
+        f"castle_preference_strength should be 0.7, got "
+        f"{result['castle_preference_strength']}"
+    )
+    assert "castle" in result["bias_breakdown"]["signals_applied"], (
+        f"signals_applied should include 'castle', got "
+        f"{result['bias_breakdown']['signals_applied']}"
+    )
+    # Verify per-candidate breakdown has castle fields.
+    for row in result["bias_breakdown"]["weights"]:
+        assert "castle_indicator" in row, "breakdown row missing castle_indicator"
+        assert "castle_multiplier" in row, "breakdown row missing castle_multiplier"
+    print(f"  [PASS] return-shape: castle_preference_side, strength, signals_applied, per-row breakdown all populated")
+
+
+# ===========================================================================
+# TRAP-MODE / MIRROR-MODE BRANCH (decision (6)) -- Tests 18-26
+# ===========================================================================
+#
+# Tests 18-20 isolate the three exploitability-floor gates on
+# `compute_exploitable_traps` (in opponent_traps.py): hit-count (18),
+# existence (19), game-count (20). They use a minimal fake DB conn/cursor
+# (modeled on opponent_traps_test.py's pattern) so the gating logic is
+# exercised against scripted blunder + game-count rows without a real
+# database.
+#
+# Tests 21-26 exercise the reranker's trap-mode branch directly:
+#   21 -- head-to-head (WITH vs WITHOUT exploitable_trap_keys).
+#   22 -- composition with sac (full product, not max/short-circuit).
+#   23 -- soundness bound (chosen move always in the candidate list).
+#   24 -- mirror-mode fallthrough (omitting/empty keys = today's behavior).
+#   25 -- mixed-mode game, no residual state across moves.
+#   26 -- insufficient-data regression with trap data present.
+# ===========================================================================
+
+
+# --- fake DB infrastructure for Tests 18-20 -------------------------------
+# Handles the two queries compute_exploitable_traps issues:
+#   (1) SELECT COUNT(DISTINCT id) AS total_games FROM opponent_games ...
+#   (2) SELECT position_key, game_id FROM opponent_game_blunders ...
+# Distinguishes by the FROM clause. Note "FROM opponent_games" is NOT a
+# substring of "FROM opponent_game_blunders" (the char after "opponent_game"
+# is "_" in the blunders table, "s" in the games table), so the two checks
+# are unambiguous regardless of order.
+class _FakeTrapCursor:
+    def __init__(self, state):
+        self._state = state
+        self._fetchall = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+    def execute(self, sql, params=None):
+        self._state["executed"].append((sql, params))
+        if "FROM opponent_game_blunders" in sql:
+            self._fetchall = [dict(r) for r in self._state["blunders"]]
+        elif "FROM opponent_games" in sql:
+            self._fetchall = [{"total_games": self._state["total_games"]}]
+        else:
+            self._fetchall = []
+
+    def fetchall(self):
+        return list(self._fetchall)
+
+    @property
+    def rowcount(self):
+        return len(self._fetchall)
+
+
+class _FakeTrapConn:
+    def __init__(self, state):
+        self._state = state
+
+    def cursor(self, cursor_factory=None):
+        return _FakeTrapCursor(self._state)
+
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
+
+def _make_trap_key_for(board_fen, uci):
+    """Compute the position_key (first 4 FEN fields) of the board AFTER
+    pushing `uci` on a board constructed from `board_fen`. Used to build
+    an exploitable_trap_keys set whose entry matches a specific candidate's
+    resulting position, so the reranker's _is_trap_triggering check fires
+    on exactly that candidate."""
+    board = chess.Board(board_fen)
+    rb = board.copy(stack=False)
+    rb.push(chess.Move.from_uci(uci))
+    return " ".join(rb.fen().split()[:4])
+
+
+# ---------------------------------------------------------------------------
+# Test 18: EXPLOITABILITY FLOOR -- COUNT GATE (TRAP_MIN_HITS).
+#
+# A position_key with exactly 1 hit (below TRAP_MIN_HITS=2) against an
+# opponent with plenty of total games (>= TRAP_MIN_GAMES=5) must NOT be
+# treated as exploitable. Isolates the hit-count gate specifically.
+# ---------------------------------------------------------------------------
+def test_trap_floor_count_gate():
+    print("\n=== Test 18: EXPLOITABILITY FLOOR -- COUNT GATE (TRAP_MIN_HITS) ===")
+    # Opponent has 10 total games (passes game-count gate) but posX has
+    # only 1 distinct game blunder (fails hit-count gate).
+    state = {
+        "executed": [],
+        "total_games": 10,
+        "blunders": [
+            {"position_key": "posX", "game_id": "g1"},
+        ],
+    }
+    conn = _FakeTrapConn(state)
+    result = traps_mod.compute_exploitable_traps(
+        conn, requested_by_user_id="user-1",
+        provider="lichess", opponent_username="TestOpp",
+    )
+    print(f"  total_games=10 (>= {traps_mod.TRAP_MIN_GAMES}), "
+          f"posX hits=1 (< {traps_mod.TRAP_MIN_HITS})")
+    print(f"  exploitable set: {result}")
+    assert "posX" not in result, (
+        f"posX (1 hit, below TRAP_MIN_HITS={traps_mod.TRAP_MIN_HITS}) must NOT "
+        f"be treated as exploitable; got {result}"
+    )
+    print(f"  [PASS] posX (1 hit) excluded -- count gate works")
+    # Also verify the game-count query ran (gate 2 passed, so gate 1 was
+    # actually consulted -- if gate 2 had failed, gate 1 wouldn't have
+    # been reached and this test wouldn't isolate the count gate).
+    blunders_queries = [
+        q for q in state["executed"]
+        if "FROM opponent_game_blunders" in q[0]
+    ]
+    assert len(blunders_queries) >= 1, (
+        f"game-count gate passed (10>=5) so the blunders query should have "
+        f"run to check per-position hit count; executed: {state['executed']}"
+    )
+    print(f"  [PASS] blunders query ran (game-count gate passed -> count "
+          f"gate was actually consulted)")
+
+
+# ---------------------------------------------------------------------------
+# Test 19: EXPLOITABILITY FLOOR -- EXISTENCE GATE.
+#
+# A position_key with 0 hits (i.e. not present in the opponent's blunder
+# table at all) must not be treated as exploitable, independent of game
+# count. Distinct failure mode from Test 18 (absence vs insufficient
+# presence): a bug that only checks "count >= 2" without first checking
+# "key exists" would pass Test 18 by accident (1 < 2 correctly fails) but
+# could still misbehave on a genuinely-absent key if the lookup logic has
+# an off-by-something on missing dict entries.
+# ---------------------------------------------------------------------------
+def test_trap_floor_existence_gate():
+    print("\n=== Test 19: EXPLOITABILITY FLOOR -- EXISTENCE GATE ===")
+    # posA qualifies (2 distinct games, >= TRAP_MIN_HITS). posZ is NOT in
+    # the blunder rows at all -- a correct implementation must not include
+    # it and must not raise on the missing key.
+    state = {
+        "executed": [],
+        "total_games": 10,
+        "blunders": [
+            {"position_key": "posA", "game_id": "g1"},
+            {"position_key": "posA", "game_id": "g2"},
+        ],
+    }
+    conn = _FakeTrapConn(state)
+    result = traps_mod.compute_exploitable_traps(
+        conn, requested_by_user_id="user-1",
+        provider="lichess", opponent_username="TestOpp",
+    )
+    print(f"  total_games=10, posA hits=2 (>= {traps_mod.TRAP_MIN_HITS}), "
+          f"posZ absent from blunders")
+    print(f"  exploitable set: {result}")
+    assert "posA" in result, (
+        f"posA (2 distinct-game hits) should qualify; got {result}"
+    )
+    # posZ was never in the blunder rows -- it must not appear in the
+    # result, and the lookup must not have raised on the missing key.
+    assert "posZ" not in result, (
+        f"posZ (absent from blunders) must NOT be treated as exploitable; "
+        f"got {result}"
+    )
+    print(f"  [PASS] posA (2 hits) included; posZ (absent) excluded -- "
+          f"existence gate handles missing keys without error")
+
+
+# ---------------------------------------------------------------------------
+# Test 20: EXPLOITABILITY FLOOR -- GAME-COUNT GATE (TRAP_MIN_GAMES).
+#
+# A position_key with 3+ hits but the opponent has only 3 total games
+# (below TRAP_MIN_GAMES=5) must NOT be treated as exploitable. Mirrors
+# Test 18 but isolates the game-count gate instead of the hit-count gate.
+# ---------------------------------------------------------------------------
+def test_trap_floor_game_count_gate():
+    print("\n=== Test 20: EXPLOITABILITY FLOOR -- GAME-COUNT GATE (TRAP_MIN_GAMES) ===")
+    # Opponent has only 3 total games (below TRAP_MIN_GAMES=5). posA has
+    # 3 distinct-game blunders (would pass hit-count gate, but the
+    # global game-count gate fails first).
+    state = {
+        "executed": [],
+        "total_games": 3,
+        "blunders": [
+            {"position_key": "posA", "game_id": "g1"},
+            {"position_key": "posA", "game_id": "g2"},
+            {"position_key": "posA", "game_id": "g3"},
+        ],
+    }
+    conn = _FakeTrapConn(state)
+    result = traps_mod.compute_exploitable_traps(
+        conn, requested_by_user_id="user-1",
+        provider="lichess", opponent_username="TestOpp",
+    )
+    print(f"  total_games=3 (< {traps_mod.TRAP_MIN_GAMES}), "
+          f"posA hits=3 (>= {traps_mod.TRAP_MIN_HITS})")
+    print(f"  exploitable set: {result}")
+    assert result == set(), (
+        f"opponent has only 3 total games (below TRAP_MIN_GAMES="
+        f"{traps_mod.TRAP_MIN_GAMES}); no key should be exploitable even "
+        f"though posA has 3 hits. Got {result}"
+    )
+    # The game-count gate should short-circuit BEFORE the blunders query
+    # runs -- verify the blunders query was NOT issued.
+    blunders_queries = [
+        q for q in state["executed"]
+        if "FROM opponent_game_blunders" in q[0]
+    ]
+    assert len(blunders_queries) == 0, (
+        f"game-count gate failed (3 < {traps_mod.TRAP_MIN_GAMES}) so the "
+        f"blunders query should NOT have run (early return). Executed: "
+        f"{state['executed']}"
+    )
+    print(f"  [PASS] empty set returned; blunders query NOT run (game-count "
+          f"gate short-circuited before per-position check)")
+
+
+# ---------------------------------------------------------------------------
+# Test 21: TRAP-MODE HEAD-TO-HEAD (WITH vs WITHOUT exploitable_trap_keys).
+#
+# Same candidate list + board, differing only in whether
+# exploitable_trap_keys includes c3b5's (rank 3) resulting position_key.
+# Style: sac_freq=0, qt neutral, no setup, no castle -> trap is the
+# ONLY signal, so the head-to-head isolates trap-mode's effect.
+#
+# Closed-form (rank-decay base, no policy field, TRAP_WEIGHT=6.0):
+#   WITH trap (c3b5 is trap-triggering):
+#     rank1 c3a4: base 1.0,  trap_mult 1.0 -> weight 1.0
+#     rank2 c3e4: base 0.5,  trap_mult 1.0 -> weight 0.5
+#     rank3 c3b5: base 0.25, trap_mult 7.0 -> weight 1.75  <-- trap
+#     rank4 c3d5: base 0.125,trap_mult 1.0 -> weight 0.125
+#     total = 3.375; c3b5 share = 51.85%
+#   WITHOUT trap (exploitable_trap_keys=None):
+#     All trap_mult=1.0 -> all signals dormant -> deterministic top pick
+#     (c3a4). c3b5 share = 0%.
+#
+# Delta = ~51.85pp. Assert >= 25pp. Also assert WITH c3b5_pct > base_rate
+# (0.25/1.875 = 13.33%) + 5pp.
+# ---------------------------------------------------------------------------
+def test_trap_mode_head_to_head():
+    print("\n=== Test 21: TRAP-MODE HEAD-TO-HEAD (WITH vs WITHOUT) ===")
+    board = chess.Board(BOARD_FEN)
+    n_trials = 5000
+
+    # Compute c3b5's resulting position_key so the exploitable set
+    # includes exactly that key -> c3b5 is the trap-triggering candidate.
+    trap_key = _make_trap_key_for(BOARD_FEN, "c3b5")
+    exploitable = {trap_key}
+    print(f"  board: {BOARD_FEN}")
+    print(f"  c3b5 resulting position_key: {trap_key}")
+    print(f"  exploitable_trap_keys: {exploitable}")
+
+    # Pre-flight: verify which candidates are trap-triggering.
+    print(f"  pre-flight: _is_trap_triggering per candidate:")
+    for i, c in enumerate(CANDIDATES):
+        is_trap = reranker_mod._is_trap_triggering(board, c["move"], exploitable)
+        print(f"    [{i}] {c['move']:8}  trap = {is_trap}")
+
+    # Style with ALL other signals dormant so trap is isolated.
+    style = _make_style(
+        sufficient=True, sacrifice_frequency=0.0,
+        queens_stay_on_rate=0.5, queen_trade_move_number=None,
+    )
+
+    # WITH trap: exploitable_trap_keys set -> trap-mode fires on c3b5.
+    with_picks = Counter()
+    rng_with = random.Random(7777)
+    for _ in range(n_trials):
+        with_picks[rerank_candidates(
+            candidates=CANDIDATES, style=style, board=board, rng=rng_with,
+            exploitable_trap_keys=exploitable,
+        )["chosen_index"]] += 1
+
+    # WITHOUT trap: omit exploitable_trap_keys -> mirror-mode (today's
+    # behavior). All signals dormant -> deterministic top pick (c3a4).
+    without_picks = Counter()
+    rng_without = random.Random(7777)
+    for _ in range(n_trials):
+        without_picks[rerank_candidates(
+            candidates=CANDIDATES, style=style, board=board, rng=rng_without,
+        )["chosen_index"]] += 1
+
+    print(f"\n  Empirical distribution over {n_trials} trials each:")
+    print(f"    {'idx':>3}  {'move':>6}  {'with_pct':>10}  "
+          f"{'without_pct':>12}  {'delta_pp':>10}")
+    for idx in range(len(CANDIDATES)):
+        c = CANDIDATES[idx]
+        w_pct = with_picks.get(idx, 0) / n_trials * 100
+        wo_pct = without_picks.get(idx, 0) / n_trials * 100
+        delta = w_pct - wo_pct
+        marker = " <-- trap-triggering" if reranker_mod._is_trap_triggering(
+            board, c["move"], exploitable
+        ) else ""
+        print(f"    {idx:>3}  {c['move']:>6}  {w_pct:>9.2f}%  "
+              f"{wo_pct:>11.2f}%  {delta:>+9.2f}pp{marker}")
+
+    b5_with_pct = with_picks.get(2, 0) / n_trials * 100
+    b5_without_pct = without_picks.get(2, 0) / n_trials * 100
+    delta_pp = b5_with_pct - b5_without_pct
+
+    # (b) WITH vs WITHOUT: clear pp gap.
+    assert delta_pp >= 25.0, (
+        f"trap head-to-head: c3b5 should be picked >= 25pp more WITH trap "
+        f"than WITHOUT; got with={b5_with_pct:.2f}% without={b5_without_pct:.2f}% "
+        f"(delta={delta_pp:+.2f}pp)"
+    )
+    print(f"\n  [PASS] with c3b5_pct ({b5_with_pct:.2f}%) - without c3b5_pct "
+          f"({b5_without_pct:.2f}%) = {delta_pp:+.2f}pp  (>= 25pp required)")
+
+    # (a) WITH must push c3b5 above its unbiased base-rate share (13.33%).
+    base_rate_b5 = 0.25 / (1.0 + 0.5 + 0.25 + 0.125)
+    assert b5_with_pct > base_rate_b5 * 100 + 5.0, (
+        f"with-trap: c3b5 should be >5pp above base rate "
+        f"({base_rate_b5*100:.2f}%); got {b5_with_pct:.2f}%"
+    )
+    print(f"  [PASS] with-trap c3b5_pct ({b5_with_pct:.2f}%) > base+5pp "
+          f"({base_rate_b5*100 + 5.0:.2f}%)")
+
+    # Return-shape: trap_mode_active, trap_candidate_count, signals_applied.
+    sample = rerank_candidates(
+        candidates=CANDIDATES, style=style, board=board,
+        rng=random.Random(0), exploitable_trap_keys=exploitable,
+    )
+    assert sample["applied_bias"] is True
+    assert sample["trap_mode_active"] is True, (
+        f"with a trap-triggering candidate, trap_mode_active should be True; "
+        f"got {sample['trap_mode_active']}"
+    )
+    assert sample["trap_candidate_count"] == 1, (
+        f"exactly 1 candidate (c3b5) is trap-triggering; got "
+        f"trap_candidate_count={sample['trap_candidate_count']}"
+    )
+    assert "trap" in sample["bias_breakdown"]["signals_applied"], (
+        f"signals_applied should include 'trap'; got "
+        f"{sample['bias_breakdown']['signals_applied']}"
+    )
+    # Per-row: trap_indicator True ONLY for c3b5, trap_multiplier=7.0.
+    for row in sample["bias_breakdown"]["weights"]:
+        if row["move"] == "c3b5":
+            assert row["trap_indicator"] is True, (
+                f"c3b5 row should have trap_indicator=True; got {row}"
+            )
+            assert abs(row["trap_multiplier"] - 7.0) < 1e-6, (
+                f"c3b5 trap_multiplier should be 1+6.0=7.0; got "
+                f"{row['trap_multiplier']}"
+            )
+        else:
+            assert row["trap_indicator"] is False, (
+                f"{row['move']} row should have trap_indicator=False; got {row}"
+            )
+            assert abs(row["trap_multiplier"] - 1.0) < 1e-6, (
+                f"{row['move']} trap_multiplier should be 1.0; got "
+                f"{row['trap_multiplier']}"
+            )
+    print(f"  [PASS] sample: trap_mode_active=True, trap_candidate_count=1, "
+          f"signals_applied includes 'trap', per-row trap fields correct")
+
+
+# ---------------------------------------------------------------------------
+# Test 22: TRAP-MODE COMPOSES WITH SAC (multiplicative composition).
+#
+# A candidate that is BOTH trap-triggering AND sac-looking receives the
+# full product sac_mult * trap_mult (no max, no short-circuit), mirroring
+# Test 12's setup-composition check.
+#
+# Closed-form (sac_freq=0.15, TRAP_WEIGHT=6.0):
+#   c3e4: sac_mult = 1 + 4.0 * 0.15 * 1 = 1.6
+#         trap_mult = 1 + 6.0 * 1 = 7.0
+#         qt_mult = 1.0 (centered=0)
+#         combo = 1.6 * 1.0 * 7.0 = 11.2
+# Assert each component equals the closed-form value, and combo > either
+# alone.
+# ---------------------------------------------------------------------------
+def test_trap_composition_with_sac():
+    print("\n=== Test 22: TRAP COMPOSES WITH SAC (multiplicative) ===")
+    board = chess.Board(BOARD_FEN)
+    # c3e4 is sac-looking AND we make it trap-triggering by including its
+    # resulting position_key in the exploitable set.
+    trap_key = _make_trap_key_for(BOARD_FEN, "c3e4")
+    exploitable = {trap_key}
+    print(f"  c3e4 resulting position_key: {trap_key}")
+
+    style = _make_style(
+        sufficient=True, sacrifice_frequency=0.15,
+        queens_stay_on_rate=0.5, queen_trade_move_number=None,
+    )
+
+    result = rerank_candidates(
+        candidates=CANDIDATES, style=style, board=board,
+        rng=random.Random(0), exploitable_trap_keys=exploitable,
+    )
+    print(f"  chosen: {result['chosen_move_uci']}; "
+          f"signals_applied: {result['bias_breakdown']['signals_applied']}")
+    assert "sacrifice" in result["bias_breakdown"]["signals_applied"]
+    assert "trap" in result["bias_breakdown"]["signals_applied"]
+
+    for row in result["bias_breakdown"]["weights"]:
+        if row["move"] == "c3e4":
+            sac_m = row["sac_multiplier"]
+            qt_m = row["qt_multiplier"]
+            trap_m = row["trap_multiplier"]
+            combo = row["bias_multiplier"]
+            print(f"    c3e4: sac_mult={sac_m} qt_mult={qt_m} "
+                  f"trap_mult={trap_m} combo={combo}")
+            assert abs(sac_m - 1.6) < 1e-3, (
+                f"c3e4 sac_mult should be 1.6 (sac_freq=0.15, "
+                f"STYLE_BIAS_STRENGTH=4); got {sac_m}"
+            )
+            assert abs(qt_m - 1.0) < 1e-6, (
+                f"c3e4 qt_mult should be 1.0 (centered=0); got {qt_m}"
+            )
+            assert abs(trap_m - 7.0) < 1e-6, (
+                f"c3e4 trap_mult should be 1+6.0=7.0; got {trap_m}"
+            )
+            expected_combo = sac_m * qt_m * trap_m
+            assert abs(combo - expected_combo) < 1e-3, (
+                f"c3e4 combo should equal sac*qt*trap = {expected_combo}; "
+                f"got {combo}"
+            )
+            # Combo must exceed EITHER signal alone (multiplicative).
+            assert combo > sac_m and combo > trap_m, (
+                f"composition should exceed either signal alone; got "
+                f"combo={combo} sac={sac_m} trap={trap_m}"
+            )
+            print(f"  [PASS] c3e4: composition sac*qt*trap = "
+                  f"{sac_m}*{qt_m}*{trap_m} = {combo} (exceeds either alone)")
+            break
+    else:
+        raise AssertionError("c3e4 not found in breakdown weights")
+
+
+# ---------------------------------------------------------------------------
+# Test 23: SOUNDNESS BOUND (regression guard).
+#
+# A trap-triggering candidate that is NOT in Maia's candidate list cannot
+# appear as chosen_move_uci. Trivially true by construction (the sampler
+# only selects from `candidates`), but written explicitly as a regression
+# guard: it's the test that encodes the single most important invariant
+# in decision (6). It's the tripwire for a future refactor that
+# accidentally breaks the invariant.
+# ---------------------------------------------------------------------------
+def test_trap_soundness_bound():
+    print("\n=== Test 23: SOUNDNESS BOUND (chosen move in candidate list) ===")
+    board = chess.Board(BOARD_FEN)
+    trap_key = _make_trap_key_for(BOARD_FEN, "c3b5")
+    exploitable = {trap_key}
+    style = _make_style(
+        sufficient=True, sacrifice_frequency=0.0,
+        queens_stay_on_rate=0.5, queen_trade_move_number=None,
+    )
+    candidate_moves = {c["move"] for c in CANDIDATES}
+
+    # Run many trials -- the chosen move must ALWAYS be in the candidate
+    # set, never a fabricated trap move outside it.
+    rng = random.Random(424242)
+    violations = 0
+    for _ in range(2000):
+        result = rerank_candidates(
+            candidates=CANDIDATES, style=style, board=board, rng=rng,
+            exploitable_trap_keys=exploitable,
+        )
+        if result["chosen_move_uci"] not in candidate_moves:
+            violations += 1
+    print(f"  trap_mode_active={result['trap_mode_active']}, "
+          f"trap_candidate_count={result['trap_candidate_count']}")
+    print(f"  2000 trials, violations (chosen not in candidate set): {violations}")
+    assert violations == 0, (
+        f"soundness bound: chosen_move_uci must always be in the candidate "
+        f"list; got {violations} violations out of 2000 trials"
+    )
+    assert result["trap_mode_active"] is True, (
+        f"trap-mode should be active on this fixture; got "
+        f"trap_mode_active={result['trap_mode_active']}"
+    )
+    print(f"  [PASS] 0 violations -- chosen move always in candidate list "
+          f"(soundness bound holds)")
+
+
+# ---------------------------------------------------------------------------
+# Test 24: MIRROR-MODE FALLTHROUGH.
+#
+# No candidate is trap-triggering (empty exploitable_trap_keys, or
+# non-empty but none match this position) -> trap_mode_active=False,
+# trap_candidate_count=0, every trap_multiplier==1.0, and behavior is
+# byte-for-byte identical to calling rerank_candidates WITHOUT the new
+# argument at all (the existing Tests 1-17 must still pass unmodified).
+# ---------------------------------------------------------------------------
+def test_mirror_mode_fallthrough():
+    print("\n=== Test 24: MIRROR-MODE FALLTHROUGH ===")
+    board = chess.Board(BOARD_FEN)
+    # Neutral style: all signals dormant so the ONLY thing that could
+    # differ is trap. If trap is also dormant, we get the deterministic
+    # default_top_candidate path.
+    neutral_style = _make_style(
+        sufficient=True, sacrifice_frequency=0.0,
+        queens_stay_on_rate=0.5, queen_trade_move_number=None,
+    )
+    # A style with sac active so applied_bias=True and bias_breakdown is
+    # populated (so we can inspect per-row trap_multiplier fields).
+    sac_style = _make_style(
+        sufficient=True, sacrifice_frequency=0.15,
+        queens_stay_on_rate=0.5, queen_trade_move_number=None,
+    )
+
+    # Case 1: empty set -> mirror-mode.
+    r_empty = rerank_candidates(
+        candidates=CANDIDATES, style=sac_style, board=board,
+        rng=random.Random(0), exploitable_trap_keys=set(),
+    )
+    assert r_empty["trap_mode_active"] is False
+    assert r_empty["trap_candidate_count"] == 0
+    for row in r_empty["bias_breakdown"]["weights"]:
+        assert row["trap_indicator"] is False
+        assert abs(row["trap_multiplier"] - 1.0) < 1e-9
+    print(f"  [PASS] empty set: trap_mode_active=False, "
+          f"trap_candidate_count=0, all trap_multiplier=1.0")
+
+    # Case 2: non-empty set but NO candidate matches (the key is for a
+    # position none of the candidates produce).
+    r_nomatch = rerank_candidates(
+        candidates=CANDIDATES, style=sac_style, board=board,
+        rng=random.Random(0),
+        exploitable_trap_keys={"some_nonexistent_position_key_xxxx"},
+    )
+    assert r_nomatch["trap_mode_active"] is False
+    assert r_nomatch["trap_candidate_count"] == 0
+    for row in r_nomatch["bias_breakdown"]["weights"]:
+        assert row["trap_indicator"] is False
+        assert abs(row["trap_multiplier"] - 1.0) < 1e-9
+    print(f"  [PASS] non-matching set: trap_mode_active=False, "
+          f"trap_candidate_count=0, all trap_multiplier=1.0")
+
+    # Case 3: byte-for-byte identical to omitting the argument entirely.
+    # Same seed, same inputs -> same chosen_index and identical result
+    # (modulo the new trap fields which are False/0 when omitted).
+    for style in (neutral_style, sac_style):
+        r_with_arg = rerank_candidates(
+            candidates=CANDIDATES, style=style, board=board,
+            rng=random.Random(0), exploitable_trap_keys=set(),
+        )
+        r_without_arg = rerank_candidates(
+            candidates=CANDIDATES, style=style, board=board,
+            rng=random.Random(0),
+        )
+        assert r_with_arg["chosen_index"] == r_without_arg["chosen_index"], (
+            f"empty exploitable_trap_keys should produce the same "
+            f"chosen_index as omitting the arg; got "
+            f"with={r_with_arg['chosen_index']} without={r_without_arg['chosen_index']}"
+        )
+        assert r_with_arg["applied_bias"] == r_without_arg["applied_bias"]
+        assert r_with_arg["source"] == r_without_arg["source"]
+    print(f"  [PASS] empty set == omitting arg: identical chosen_index, "
+          f"applied_bias, source (byte-for-byte backward compat)")
+
+
+# ---------------------------------------------------------------------------
+# Test 25: MIXED-MODE GAME, NO RESIDUAL STATE (explicit reviewer ask).
+#
+# Simulate a short sequence of rerank_candidates calls across different
+# boards standing in for consecutive moves in one game: move A (mirror-
+# mode, no trap match), move B (trap-mode, a trap match fires), move C
+# (mirror-mode again, no trap match). Assert move C's result is identical
+# in shape/behavior to move A's -- i.e. nothing about move B's trap-mode
+# activation leaks into move C's computation.
+#
+# Since rerank_candidates takes no session object and holds no module-
+# level mutable state related to trap-mode, this passes by construction,
+# but -- same reasoning as Test 23 -- written explicitly since it encodes
+# the reviewer's stated requirement and guards against a future refactor
+# introducing accidental state.
+# ---------------------------------------------------------------------------
+def test_mixed_mode_no_residual_state():
+    print("\n=== Test 25: MIXED-MODE GAME, NO RESIDUAL STATE ===")
+    board = chess.Board(BOARD_FEN)
+    trap_key = _make_trap_key_for(BOARD_FEN, "c3b5")
+    exploitable = {trap_key}
+    style = _make_style(
+        sufficient=True, sacrifice_frequency=0.0,
+        queens_stay_on_rate=0.5, queen_trade_move_number=None,
+    )
+
+    # Move A: mirror-mode (no trap data -> all signals dormant ->
+    # deterministic top pick).
+    r_a = rerank_candidates(
+        candidates=CANDIDATES, style=style, board=board,
+        rng=random.Random(0),
+    )
+    print(f"  Move A (mirror): trap_mode_active={r_a['trap_mode_active']}, "
+          f"trap_candidate_count={r_a['trap_candidate_count']}, "
+          f"source={r_a['source']}")
+    assert r_a["trap_mode_active"] is False
+    assert r_a["trap_candidate_count"] == 0
+
+    # Move B: trap-mode (c3b5 matches -> trap fires).
+    r_b = rerank_candidates(
+        candidates=CANDIDATES, style=style, board=board,
+        rng=random.Random(0), exploitable_trap_keys=exploitable,
+    )
+    print(f"  Move B (trap):   trap_mode_active={r_b['trap_mode_active']}, "
+          f"trap_candidate_count={r_b['trap_candidate_count']}, "
+          f"source={r_b['source']}")
+    assert r_b["trap_mode_active"] is True, (
+        f"move B should activate trap-mode; got trap_mode_active="
+        f"{r_b['trap_mode_active']}"
+    )
+    assert r_b["trap_candidate_count"] == 1
+
+    # Move C: mirror-mode again (no trap data). Must have the SAME shape
+    # as move A -- nothing from move B's trap activation leaked in.
+    r_c = rerank_candidates(
+        candidates=CANDIDATES, style=style, board=board,
+        rng=random.Random(0),
+    )
+    print(f"  Move C (mirror): trap_mode_active={r_c['trap_mode_active']}, "
+          f"trap_candidate_count={r_c['trap_candidate_count']}, "
+          f"source={r_c['source']}")
+    assert r_c["trap_mode_active"] is False, (
+        f"move C (after move B's trap-mode) should be back in mirror-mode; "
+        f"got trap_mode_active={r_c['trap_mode_active']}"
+    )
+    assert r_c["trap_candidate_count"] == 0
+    # C must be identical to A in the trap-specific shape AND in the
+    # chosen move (same inputs, same rng -> stateless function).
+    assert r_c["chosen_index"] == r_a["chosen_index"], (
+        f"move C should produce the same chosen_index as move A (same "
+        f"inputs, same rng, no residual state); got A={r_a['chosen_index']} "
+        f"C={r_c['chosen_index']}"
+    )
+    assert r_c["source"] == r_a["source"]
+    assert r_c["applied_bias"] == r_a["applied_bias"]
+    print(f"  [PASS] move C identical to move A (trap_mode_active=False, "
+          f"trap_candidate_count=0, same chosen_index) -- no residual state "
+          f"from move B's trap activation")
+
+
+# ---------------------------------------------------------------------------
+# Test 26: INSUFFICIENT-DATA REGRESSION, TRAP-SPECIFIC.
+#
+# Same pattern as Test 3, but with exploitable_trap_keys non-empty AND
+# style["sufficient"]=False. Must still return candidates[0]
+# deterministically via insufficient_data, proving the outer `sufficient`
+# gate short-circuits BEFORE trap-mode is ever evaluated. Confirms
+# decision (6)'s "DATA-FLOOR INTERACTION" point: the trap floor is
+# nested INSIDE, not parallel to, the sufficient gate.
+# ---------------------------------------------------------------------------
+def test_insufficient_data_with_trap_data():
+    print("\n=== Test 26: INSUFFICIENT-DATA REGRESSION (trap data present) ===")
+    board = chess.Board(BOARD_FEN)
+    trap_key = _make_trap_key_for(BOARD_FEN, "c3b5")
+    exploitable = {trap_key}
+    style = _make_style(sufficient=False, sacrifice_frequency=0.20)
+    print(f"  style: sufficient=False (sac_freq irrelevant = "
+          f"{style['sacrifice_frequency']})")
+    print(f"  exploitable_trap_keys: {exploitable} (non-empty, but trap-mode "
+          f"must NOT be evaluated)")
+
+    for trial in range(5):
+        result = rerank_candidates(
+            candidates=CANDIDATES, style=style, board=board,
+            rng=random.Random(trial),
+            exploitable_trap_keys=exploitable,
+        )
+        assert result["chosen_index"] == 0, (
+            f"trial {trial}: insufficient -> chosen_index=0; got "
+            f"{result['chosen_index']}"
+        )
+        assert result["chosen_move_uci"] == "c3a4"
+        assert result["applied_bias"] is False
+        assert result["source"] == "insufficient_data", (
+            f"trial {trial}: source should be 'insufficient_data'; got "
+            f"{result['source']!r}"
+        )
+        assert result["bias_breakdown"] is None
+        # Trap-mode must NOT have been evaluated: the outer sufficient gate
+        # short-circuits before exploitable_trap_keys is consulted.
+        assert result["trap_mode_active"] is False, (
+            f"trial {trial}: trap_mode_active should be False (sufficient "
+            f"gate short-circuits before trap evaluation); got "
+            f"{result['trap_mode_active']}"
+        )
+        assert result["trap_candidate_count"] == 0
+    print(f"  [PASS] 5 trials all returned candidates[0] deterministically; "
+          f"trap_mode_active=False (never evaluated)")
+    print(f"  [PASS] outer sufficient gate short-circuits before trap-mode "
+          f"-- trap floor is nested inside, not parallel to, sufficient gate")
+
+
+# ===========================================================================
+# AVERAGE-GAME-LENGTH CALIBRATION (decision (7)) -- Tests 27-30
+# ===========================================================================
+#
+# Tests 27-30 exercise the reranker's game-length calibration bias:
+#   27 -- head-to-head (short-game vs long-game opponent).
+#   28 -- composition with sac (full product, not max/short-circuit).
+#   29 -- insufficient/None data regression (length dormant).
+#   30 -- transparency fields (average_game_length, length_centered,
+#         per-row length_indicator/length_multiplier).
+# ===========================================================================
+
+
+# ---------------------------------------------------------------------------
+# Test 27: GAME-LENGTH head-to-head (short-game vs long-game opponent).
+#
+# Same candidate list + board, differing only in average_game_length:
+#   * SHORT-game: average_game_length=30 -> centered=+1.0 (boost forcing)
+#   * LONG-game:  average_game_length=70 -> centered=-1.0 (suppress forcing)
+#   * BASELINE:   average_game_length=50 -> centered= 0.0 (no bias)
+#
+# Board: BOARD_FEN (knight c3, black pawn d5, black king h8). c3d5 (Nxd5)
+# is the ONLY forcing candidate (captures the d5 pawn). The other three
+# are quiet (not captures, not checks -- verified by _is_forcing_move).
+# sac_freq=0, qt neutral, no setup, no castle, no trap -> length is the
+# ONLY active signal, so the head-to-head isolates the length bias.
+#
+# Uses policy fields so c3d5 (rank 4) has a reasonable base weight (0.30)
+# rather than the rank-decay 0.125 -- otherwise the boost on a rank-4
+# candidate would be nearly invisible in the distribution.
+#
+# Closed-form (GAME_LENGTH_BIAS_STRENGTH=0.8, centered=+1.0):
+#   c3d5 (forcing): 0.30 * (1 + 0.8*1.0*1) = 0.30 * 1.8 = 0.54
+#   others:         0.30, 0.20, 0.20      (length_mult=1.0)
+#   total = 1.24, c3d5 share = 43.55%
+#
+# Closed-form (centered=-1.0):
+#   c3d5: 0.30 * (1 + 0.8*-1.0*1) = 0.30 * 0.2 = 0.06
+#   total = 0.76, c3d5 share = 7.89%
+#
+# Baseline (centered=0.0): all length_mult=1.0 -> all signals dormant ->
+# deterministic top pick (c3a4). c3d5 = 0%.
+#
+# Delta short vs long = ~35.66pp. Assert >= 20pp.
+# ---------------------------------------------------------------------------
+def test_game_length_head_to_head():
+    print("\n=== Test 27: GAME-LENGTH head-to-head (short vs long) ===")
+    board = chess.Board(BOARD_FEN)
+    n_trials = 5000
+
+    # Candidates with policy fields so c3d5 has a reasonable base weight.
+    length_cands = [
+        {"move": "c3a4", "score": 12, "wdl": {"win": 0.50, "draw": 0.04, "loss": 0.46}, "policy": 0.30},
+        {"move": "c3e4", "score": -8, "wdl": {"win": 0.43, "draw": 0.04, "loss": 0.53}, "policy": 0.20},
+        {"move": "c3b5", "score": 8,  "wdl": {"win": 0.49, "draw": 0.045, "loss": 0.465}, "policy": 0.20},
+        {"move": "c3d5", "score": 30, "wdl": {"win": 0.52, "draw": 0.04, "loss": 0.44}, "policy": 0.30},
+    ]
+
+    # Pre-flight: verify which candidates are forcing.
+    print(f"  pre-flight: _is_forcing_move per candidate:")
+    for i, c in enumerate(length_cands):
+        is_forcing = reranker_mod._is_forcing_move(board, c["move"])
+        marker = " <-- forcing" if is_forcing else ""
+        print(f"    [{i}] {c['move']:8}  forcing = {is_forcing}{marker}")
+
+    # Styles: sac/qt/setup/castle/trap all dormant -> length is isolated.
+    short_style = _make_style(
+        sufficient=True, sacrifice_frequency=0.0,
+        queens_stay_on_rate=0.5, queen_trade_move_number=None,
+        average_game_length=30.0,
+    )
+    long_style = _make_style(
+        sufficient=True, sacrifice_frequency=0.0,
+        queens_stay_on_rate=0.5, queen_trade_move_number=None,
+        average_game_length=70.0,
+    )
+    baseline_style = _make_style(
+        sufficient=True, sacrifice_frequency=0.0,
+        queens_stay_on_rate=0.5, queen_trade_move_number=None,
+        average_game_length=50.0,
+    )
+
+    short_centered = (reranker_mod.GAME_LENGTH_REFERENCE_PLY - 30.0) / reranker_mod.GAME_LENGTH_SCALE_PLY
+    long_centered = (reranker_mod.GAME_LENGTH_REFERENCE_PLY - 70.0) / reranker_mod.GAME_LENGTH_SCALE_PLY
+    print(f"  short-game: avg=30, centered={short_centered:+.2f}")
+    print(f"  long-game:  avg=70, centered={long_centered:+.2f}")
+    print(f"  baseline:   avg=50, centered= 0.00")
+
+    short_picks = Counter()
+    long_picks = Counter()
+    baseline_picks = Counter()
+    rng_short = random.Random(8128)
+    rng_long = random.Random(8128)
+    rng_base = random.Random(8128)
+    for _ in range(n_trials):
+        short_picks[rerank_candidates(
+            candidates=length_cands, style=short_style, board=board, rng=rng_short,
+        )["chosen_index"]] += 1
+        long_picks[rerank_candidates(
+            candidates=length_cands, style=long_style, board=board, rng=rng_long,
+        )["chosen_index"]] += 1
+        baseline_picks[rerank_candidates(
+            candidates=length_cands, style=baseline_style, board=board, rng=rng_base,
+        )["chosen_index"]] += 1
+
+    print(f"\n  Empirical distribution over {n_trials} trials each:")
+    print(f"    {'idx':>3}  {'move':>6}  {'short_pct':>10}  {'long_pct':>10}  "
+          f"{'base_pct':>10}  {'delta_pp':>10}")
+    for idx in range(len(length_cands)):
+        c = length_cands[idx]
+        s_pct = short_picks.get(idx, 0) / n_trials * 100
+        l_pct = long_picks.get(idx, 0) / n_trials * 100
+        b_pct = baseline_picks.get(idx, 0) / n_trials * 100
+        delta = s_pct - l_pct
+        marker = " <-- forcing" if reranker_mod._is_forcing_move(
+            board, c["move"]
+        ) else ""
+        print(f"    {idx:>3}  {c['move']:>6}  {s_pct:>9.2f}%  {l_pct:>9.2f}%  "
+              f"{b_pct:>9.2f}%  {delta:>+9.2f}pp{marker}")
+
+    d5_short_pct = short_picks.get(3, 0) / n_trials * 100
+    d5_long_pct = long_picks.get(3, 0) / n_trials * 100
+    d5_base_pct = baseline_picks.get(3, 0) / n_trials * 100
+    delta_pp = d5_short_pct - d5_long_pct
+
+    # Short-game should pick c3d5 substantially more than long-game.
+    assert delta_pp >= 20.0, (
+        f"game-length head-to-head: c3d5 (forcing) should be picked "
+        f">= 20pp more under short-game than long-game; got "
+        f"short={d5_short_pct:.2f}% long={d5_long_pct:.2f}% "
+        f"(delta={delta_pp:+.2f}pp)"
+    )
+    print(f"\n  [PASS] short c3d5_pct ({d5_short_pct:.2f}%) - long c3d5_pct "
+          f"({d5_long_pct:.2f}%) = {delta_pp:+.2f}pp  (>= 20pp required)")
+
+    # Short-game must push c3d5 above its base rate (30%).
+    base_rate_d5 = 0.30 / (0.30 + 0.20 + 0.20 + 0.30) * 100
+    assert d5_short_pct > base_rate_d5 + 5.0, (
+        f"short-game: c3d5 should be >5pp above base rate "
+        f"({base_rate_d5:.2f}%); got {d5_short_pct:.2f}%"
+    )
+    print(f"  [PASS] short-game c3d5_pct ({d5_short_pct:.2f}%) > base+5pp "
+          f"({base_rate_d5 + 5.0:.2f}%)")
+
+    # Long-game must suppress c3d5 below its base rate.
+    assert d5_long_pct < base_rate_d5 - 5.0, (
+        f"long-game: c3d5 should be >5pp BELOW base rate "
+        f"({base_rate_d5:.2f}%); got {d5_long_pct:.2f}%"
+    )
+    print(f"  [PASS] long-game c3d5_pct ({d5_long_pct:.2f}%) < base-5pp "
+          f"({base_rate_d5 - 5.0:.2f}%) -- suppression works")
+
+    # Baseline (centered=0.0): all signals dormant -> deterministic top.
+    assert d5_base_pct == 0.0, (
+        f"baseline (centered=0.0): all signals dormant -> deterministic "
+        f"top pick (c3a4), c3d5=0%; got {d5_base_pct:.2f}%"
+    )
+    print(f"  [PASS] baseline c3d5_pct = {d5_base_pct:.2f}% (deterministic "
+          f"top, no bias)")
+
+    # Return-shape: length_centered, average_game_length, signals_applied.
+    sample = rerank_candidates(
+        candidates=length_cands, style=short_style, board=board,
+        rng=random.Random(0),
+    )
+    assert sample["applied_bias"] is True
+    assert sample["source"] == "style_biased"
+    assert sample["average_game_length"] == 30.0
+    assert abs(sample["length_centered"] - 1.0) < 1e-6, (
+        f"short-game length_centered should be +1.0; got "
+        f"{sample['length_centered']}"
+    )
+    assert "game_length" in sample["bias_breakdown"]["signals_applied"], (
+        f"signals_applied should include 'game_length'; got "
+        f"{sample['bias_breakdown']['signals_applied']}"
+    )
+    # Per-row: length_indicator True ONLY for c3d5, length_multiplier=1.8.
+    for row in sample["bias_breakdown"]["weights"]:
+        if row["move"] == "c3d5":
+            assert row["length_indicator"] is True, (
+                f"c3d5 row should have length_indicator=True; got {row}"
+            )
+            assert abs(row["length_multiplier"] - 1.8) < 1e-3, (
+                f"c3d5 length_multiplier should be 1+0.8*1.0=1.8; got "
+                f"{row['length_multiplier']}"
+            )
+        else:
+            assert row["length_indicator"] is False, (
+                f"{row['move']} row should have length_indicator=False; got {row}"
+            )
+            assert abs(row["length_multiplier"] - 1.0) < 1e-6
+    print(f"  [PASS] sample: average_game_length=30.0, length_centered=+1.0, "
+          f"signals_applied includes 'game_length', per-row length fields "
+          f"correct")
+    print(f"\n  Sample return:")
+    print(f"  {json.dumps(sample, indent=2)}")
+
+
+# ---------------------------------------------------------------------------
+# Test 28: GAME-LENGTH COMPOSES WITH SAC (multiplicative composition).
+#
+# A candidate that is BOTH sac-looking AND forcing receives the full
+# product sac_mult * length_mult (no max, no short-circuit), mirroring
+# Test 12's setup-composition and Test 22's trap-composition checks.
+#
+# Custom board: '7k/8/1p6/p7/8/8/8/R3K3 w - - 0 1'
+#   White: King e1, Rook a1 (value 5)
+#   Black: King h8, Pawn a5 (value 1), Pawn b6 (attacks a5)
+#
+# a1a5 (Rxa5): captures the pawn on a5. net_loss = 5 - 1 = 4 >= 3.
+#   After the capture, the rook on a5 is attacked by the b6 pawn (value
+#   1 < 5). NOT a check (rook on a5 doesn't attack h8). So this is BOTH
+#   sac-looking AND forcing (capture) -- the composition target. (Note:
+#   _is_live_sac_move explicitly skips check-giving moves, so a check+
+#   sac candidate can't exist by construction; the capture path is the
+#   only way to get both signals on one candidate.)
+#
+# Closed-form (sac_freq=0.15, short-game avg=30 -> centered=+1.0):
+#   a1a5: sac_mult  = 1 + 4.0*0.15*1 = 1.6
+#         length_mult = 1 + 0.8*1.0*1 = 1.8
+#         qt/setup/castle/trap all 1.0
+#         combo = 1.6 * 1.8 = 2.88
+# Assert each component equals the closed-form value, and combo > either
+# alone.
+# ---------------------------------------------------------------------------
+def test_game_length_composition_with_sac():
+    print("\n=== Test 28: GAME-LENGTH COMPOSES WITH SAC (multiplicative) ===")
+    comp_fen = "7k/8/1p6/p7/8/8/8/R3K3 w - - 0 1"
+    board = chess.Board(comp_fen)
+    print(f"  board: {comp_fen}")
+    print(f"  White: K e1, R a1; Black: K h8, p a5, p b6 (attacks a5)")
+
+    # Pre-flight: verify a1a5 is both sac-looking AND forcing.
+    is_sac_a5 = reranker_mod._is_live_sac_move(board, "a1a5")
+    is_forcing_a5 = reranker_mod._is_forcing_move(board, "a1a5")
+    print(f"  a1a5 (Rxa5): sac-looking={is_sac_a5}, forcing={is_forcing_a5}")
+    assert is_sac_a5, (
+        f"a1a5 should be sac-looking (net_loss=5-1=4, attacked by b6 pawn); "
+        f"got {is_sac_a5}"
+    )
+    assert is_forcing_a5, (
+        f"a1a5 should be forcing (captures the a5 pawn); got {is_forcing_a5}"
+    )
+
+    # Verify the other candidates are NOT sac / NOT forcing (clean isolation).
+    for uci in ("a1a2", "e1e2"):
+        is_s = reranker_mod._is_live_sac_move(board, uci)
+        is_f = reranker_mod._is_forcing_move(board, uci)
+        print(f"  {uci}: sac-looking={is_s}, forcing={is_f}")
+        assert not is_s, f"{uci} should not be sac-looking; got {is_s}"
+        assert not is_f, f"{uci} should not be forcing; got {is_f}"
+
+    candidates = [
+        {"move": "a1a2", "score": 12, "wdl": {"win": 0.50, "draw": 0.04, "loss": 0.46}, "policy": 0.30},
+        {"move": "a1a5", "score": -5, "wdl": {"win": 0.45, "draw": 0.04, "loss": 0.51}, "policy": 0.25},
+        {"move": "e1e2", "score": 8,  "wdl": {"win": 0.49, "draw": 0.045, "loss": 0.465}, "policy": 0.20},
+    ]
+
+    style = _make_style(
+        sufficient=True, sacrifice_frequency=0.15,
+        queens_stay_on_rate=0.5, queen_trade_move_number=None,
+        average_game_length=30.0,
+    )
+
+    result = rerank_candidates(
+        candidates=candidates, style=style, board=board,
+        rng=random.Random(0),
+    )
+    print(f"  chosen: {result['chosen_move_uci']}; "
+          f"signals_applied: {result['bias_breakdown']['signals_applied']}")
+    assert "sacrifice" in result["bias_breakdown"]["signals_applied"]
+    assert "game_length" in result["bias_breakdown"]["signals_applied"]
+
+    for row in result["bias_breakdown"]["weights"]:
+        if row["move"] == "a1a5":
+            sac_m = row["sac_multiplier"]
+            qt_m = row["qt_multiplier"]
+            length_m = row["length_multiplier"]
+            combo = row["bias_multiplier"]
+            print(f"    a1a5: sac_mult={sac_m} qt_mult={qt_m} "
+                  f"length_mult={length_m} combo={combo}")
+            assert abs(sac_m - 1.6) < 1e-3, (
+                f"a1a5 sac_mult should be 1.6 (sac_freq=0.15, "
+                f"STYLE_BIAS_STRENGTH=4); got {sac_m}"
+            )
+            assert abs(qt_m - 1.0) < 1e-6, (
+                f"a1a5 qt_mult should be 1.0 (centered=0); got {qt_m}"
+            )
+            assert abs(length_m - 1.8) < 1e-3, (
+                f"a1a5 length_mult should be 1+0.8*1.0=1.8 (short-game, "
+                f"forcing); got {length_m}"
+            )
+            expected_combo = sac_m * qt_m * length_m
+            assert abs(combo - expected_combo) < 1e-3, (
+                f"a1a5 combo should equal sac*qt*length = {expected_combo}; "
+                f"got {combo}"
+            )
+            # Combo must exceed EITHER signal alone (multiplicative).
+            assert combo > sac_m and combo > length_m, (
+                f"composition should exceed either signal alone; got "
+                f"combo={combo} sac={sac_m} length={length_m}"
+            )
+            print(f"  [PASS] a1a5: composition sac*qt*length = "
+                  f"{sac_m}*{qt_m}*{length_m} = {combo} (exceeds either alone)")
+            break
+    else:
+        raise AssertionError("a1a5 not found in breakdown weights")
+
+
+# ---------------------------------------------------------------------------
+# Test 29: GAME-LENGTH INSUFFICIENT / None DATA REGRESSION.
+#
+# average_game_length=None (defensive -- compute_opponent_style always
+# returns a float when sufficient=True, but a hand-constructed style dict
+# might omit it) -> length_centered=0.0 -> length_mult=1.0 for every
+# candidate, signals_applied must NOT include 'game_length'. Also tests
+# average_game_length=50.0 (the reference) -> centered=0.0 -> same no-op.
+#
+# Uses sac_freq=0.15 so applied_bias=True via the sac signal alone, and
+# we can verify game_length does NOT contribute even when other signals
+# are active -- i.e. length=None is genuinely no-op, not silent noise.
+# ---------------------------------------------------------------------------
+def test_game_length_insufficient_data():
+    print("\n=== Test 29: GAME-LENGTH INSUFFICIENT / None DATA ===")
+    board = chess.Board(BOARD_FEN)
+    cands = [
+        {"move": "c3a4", "score": 12, "policy": 0.40},
+        {"move": "c3e4", "score": -8, "policy": 0.20},
+        {"move": "c3d5", "score": 30, "policy": 0.20},
+    ]
+
+    for label, avg in [("None", None), ("reference=50.0", 50.0)]:
+        print(f"  average_game_length={label}")
+        style = _make_style(
+            sufficient=True, sacrifice_frequency=0.15,
+            average_game_length=avg,
+        )
+        result = rerank_candidates(
+            candidates=cands, style=style, board=board,
+            rng=random.Random(0),
+        )
+        assert result["applied_bias"] is True, (
+            f"sac_freq=0.15 + c3e4 sac-looking -> applied_bias should be "
+            f"True via sac signal alone; got {result}"
+        )
+        assert result["average_game_length"] == avg, (
+            f"average_game_length should be surfaced as-is ({avg}); "
+            f"got {result['average_game_length']}"
+        )
+        assert abs(result["length_centered"] - 0.0) < 1e-9, (
+            f"length_centered should be 0.0 (no length bias); got "
+            f"{result['length_centered']}"
+        )
+        assert "game_length" not in result["bias_breakdown"]["signals_applied"], (
+            f"average_game_length={label}: signals_applied should not "
+            f"include 'game_length'; got "
+            f"{result['bias_breakdown']['signals_applied']}"
+        )
+        for row in result["bias_breakdown"]["weights"]:
+            assert abs(row["length_multiplier"] - 1.0) < 1e-9, (
+                f"average_game_length={label}: length_multiplier should be "
+                f"1.0; got {row['length_multiplier']}"
+            )
+        print(f"    [PASS] applied_bias=True (via sac), length_centered=0.0, "
+              f"signals_applied={result['bias_breakdown']['signals_applied']}, "
+              f"all length_multiplier=1.0")
+
+
+# ---------------------------------------------------------------------------
+# Test 30: GAME-LENGTH TRANSPARENCY FIELDS.
+#
+# Verifies the full transparency contract: average_game_length and
+# length_centered on the top-level return, per-row length_indicator +
+# length_multiplier, and "game_length" in signals_applied. Tests both
+# the short-game (centered > 0) and long-game (centered < 0) directions
+# to confirm the sign is correct (short = boost, long = suppress).
+# ---------------------------------------------------------------------------
+def test_game_length_transparency():
+    print("\n=== Test 30: GAME-LENGTH TRANSPARENCY FIELDS ===")
+    board = chess.Board(BOARD_FEN)
+    cands = [
+        {"move": "c3a4", "score": 12, "policy": 0.30},
+        {"move": "c3d5", "score": 30, "policy": 0.30},
+    ]
+
+    # --- short-game direction (centered > 0, boost forcing) ---
+    short_style = _make_style(
+        sufficient=True, sacrifice_frequency=0.0,
+        average_game_length=30.0,
+    )
+    r_short = rerank_candidates(
+        candidates=cands, style=short_style, board=board,
+        rng=random.Random(0),
+    )
+    print(f"  short-game (avg=30): length_centered={r_short['length_centered']}, "
+          f"average_game_length={r_short['average_game_length']}")
+    assert r_short["average_game_length"] == 30.0
+    assert r_short["length_centered"] > 0.0, (
+        f"short-game: length_centered should be > 0; got "
+        f"{r_short['length_centered']}"
+    )
+    assert abs(r_short["length_centered"] - 1.0) < 1e-6, (
+        f"short-game: length_centered should be +1.0; got "
+        f"{r_short['length_centered']}"
+    )
+    assert "game_length" in r_short["bias_breakdown"]["signals_applied"]
+    # c3d5 is forcing (Nxd5), c3a4 is quiet. length_mult > 1.0 on c3d5.
+    for row in r_short["bias_breakdown"]["weights"]:
+        if row["move"] == "c3d5":
+            assert row["length_indicator"] is True
+            assert row["length_multiplier"] > 1.0, (
+                f"short-game: c3d5 (forcing) length_multiplier should be "
+                f"> 1.0; got {row['length_multiplier']}"
+            )
+        else:
+            assert row["length_indicator"] is False
+            assert abs(row["length_multiplier"] - 1.0) < 1e-9
+    print(f"  [PASS] short-game: length_centered=+1.0, forcing candidate "
+          f"boosted (length_mult > 1.0)")
+
+    # --- long-game direction (centered < 0, suppress forcing) ---
+    long_style = _make_style(
+        sufficient=True, sacrifice_frequency=0.0,
+        average_game_length=70.0,
+    )
+    r_long = rerank_candidates(
+        candidates=cands, style=long_style, board=board,
+        rng=random.Random(0),
+    )
+    print(f"  long-game (avg=70): length_centered={r_long['length_centered']}, "
+          f"average_game_length={r_long['average_game_length']}")
+    assert r_long["average_game_length"] == 70.0
+    assert r_long["length_centered"] < 0.0, (
+        f"long-game: length_centered should be < 0; got "
+        f"{r_long['length_centered']}"
+    )
+    assert abs(r_long["length_centered"] - (-1.0)) < 1e-6, (
+        f"long-game: length_centered should be -1.0; got "
+        f"{r_long['length_centered']}"
+    )
+    assert "game_length" in r_long["bias_breakdown"]["signals_applied"]
+    # c3d5 is forcing, length_mult < 1.0 (suppressed) but > floor.
+    for row in r_long["bias_breakdown"]["weights"]:
+        if row["move"] == "c3d5":
+            assert row["length_indicator"] is True
+            assert row["length_multiplier"] < 1.0, (
+                f"long-game: c3d5 (forcing) length_multiplier should be "
+                f"< 1.0 (suppressed); got {row['length_multiplier']}"
+            )
+            assert row["length_multiplier"] >= reranker_mod.GAME_LENGTH_WEIGHT_FLOOR, (
+                f"long-game: length_multiplier should be >= floor "
+                f"({reranker_mod.GAME_LENGTH_WEIGHT_FLOOR}); got "
+                f"{row['length_multiplier']}"
+            )
+        else:
+            assert row["length_indicator"] is False
+            assert abs(row["length_multiplier"] - 1.0) < 1e-9
+    print(f"  [PASS] long-game: length_centered=-1.0, forcing candidate "
+          f"suppressed (length_mult < 1.0, >= floor)")
+
+    # --- insufficient-data regression (sufficient=False) ---
+    insuf_style = _make_style(
+        sufficient=False, sacrifice_frequency=0.20,
+        average_game_length=30.0,
+    )
+    r_insuf = rerank_candidates(
+        candidates=cands, style=insuf_style, board=board,
+        rng=random.Random(0),
+    )
+    print(f"  insufficient (sufficient=False): source={r_insuf['source']}, "
+          f"length_centered={r_insuf['length_centered']}")
+    assert r_insuf["source"] == "insufficient_data"
+    assert r_insuf["applied_bias"] is False
+    # average_game_length is surfaced for transparency even on the
+    # insufficient path (it's read from style, not gated by sufficient).
+    assert r_insuf["average_game_length"] == 30.0
+    # length_centered is computed at the top of the function (before the
+    # sufficient gate), so it IS populated even on the insufficient path.
+    # But the bias is NOT applied (short-circuited by the sufficient gate).
+    assert r_insuf["bias_breakdown"] is None
+    print(f"  [PASS] insufficient-data: source='insufficient_data', "
+          f"average_game_length surfaced for transparency, no bias_breakdown")
+
+
+# ---------------------------------------------------------------------------
 # Helpers for Test 10/12/14: build a signature or PGN from raw inputs.
 # ---------------------------------------------------------------------------
 def _pieces_by_type(board: chess.Board, color: chess.Color) -> Dict:
@@ -1530,6 +2953,24 @@ def main():
     test_setup_composition_with_sac()
     test_setup_color_flip_normalization()
     test_setup_snapshot_window_boundary()
+    test_castle_preference_unit()
+    test_castle_indicator_unit()
+    test_castle_bias_head_to_head()
+    # --- trap-mode / mirror-mode branch (decision 6) ---
+    test_trap_floor_count_gate()
+    test_trap_floor_existence_gate()
+    test_trap_floor_game_count_gate()
+    test_trap_mode_head_to_head()
+    test_trap_composition_with_sac()
+    test_trap_soundness_bound()
+    test_mirror_mode_fallthrough()
+    test_mixed_mode_no_residual_state()
+    test_insufficient_data_with_trap_data()
+    # --- game-length calibration (decision 7) ---
+    test_game_length_head_to_head()
+    test_game_length_composition_with_sac()
+    test_game_length_insufficient_data()
+    test_game_length_transparency()
     print("\nAll assertions passed.")
 
 
