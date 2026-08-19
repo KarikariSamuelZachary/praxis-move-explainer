@@ -1,6 +1,7 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { Chess } from 'chess.js';
 import { Chessboard as BaseChessboard } from 'react-chessboard';
 
 import { GameReviewMove } from '@/types';
@@ -29,6 +30,8 @@ const ICON_SIZE_PERCENT = 5.5;
 const ICON_MARGIN_PERCENT = 0.5;
 const SQUARE_PERCENT = 100 / 8;
 
+const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+
 function getDestinationSquare(san: string, color: 'white' | 'black'): string {
   const s = san.replace(/[!?+#]+$/, '').replace(/=[QRBN]$/, '');
   if (s === 'O-O-O' || s === '0-0-0') return color === 'white' ? 'c1' : 'c8';
@@ -44,12 +47,17 @@ function squareToPercent(square: string, orientation: 'white' | 'black') {
   return { col, row };
 }
 
-function squareCenterPercent(square: string, orientation: 'white' | 'black') {
-  const { col, row } = squareToPercent(square, orientation);
-  return {
-    x: (col + 0.5) * SQUARE_PERCENT,
-    y: (row + 0.5) * SQUARE_PERCENT,
-  };
+function applyUciMove(fen: string, uci: string): string | null {
+  try {
+    const chess = new Chess(fen);
+    const from = uci.slice(0, 2);
+    const to = uci.slice(2, 4);
+    const promotion = uci.length > 4 ? uci[4] : undefined;
+    chess.move({ from, to, promotion });
+    return chess.fen();
+  } catch {
+    return null;
+  }
 }
 
 export default function BoardPanel({
@@ -60,19 +68,51 @@ export default function BoardPanel({
   showBestMove,
 }: BoardPanelProps) {
   const [orientation, setOrientation] = useState<'white' | 'black'>('white');
+  const [bestStep, setBestStep] = useState<'off' | 'undo' | 'best'>('off');
 
   const clampedPly = hasGame ? Math.min(activePly, moves.length - 1) : 0;
   const currentMove = hasGame ? moves[clampedPly] : null;
-  const position =
-    currentMove?.fen ??
-    'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+  const position = currentMove?.fen ?? START_FEN;
 
-  const showIcon = hasGame && activePly > 0 && currentMove;
-  const iconCoords = showIcon
+  const bestMoveUci = currentMove?.best_move_uci ?? null;
+  const fenBefore =
+    hasGame && activePly > 0 ? (moves[activePly - 1]?.fen ?? null) : null;
+  const bestMoveResultFen =
+    fenBefore && bestMoveUci ? applyUciMove(fenBefore, bestMoveUci) : null;
+
+  // Adjust the animation step during render whenever the toggle flips, so the
+  // board immediately shows the played move being taken back (undo) and then
+  // — after a short delay — the best move being played.
+  if (showBestMove && bestStep === 'off') {
+    setBestStep('undo');
+  } else if (!showBestMove && bestStep !== 'off') {
+    setBestStep('off');
+  }
+
+  useEffect(() => {
+    if (bestStep !== 'undo') return;
+    const timer = setTimeout(() => setBestStep('best'), 280);
+    return () => clearTimeout(timer);
+  }, [bestStep]);
+
+  const boardFen =
+    bestStep === 'undo'
+      ? (fenBefore ?? position)
+      : bestStep === 'best'
+        ? (bestMoveResultFen ?? position)
+        : position;
+
+  const showPlayedIcon = hasGame && activePly > 0 && currentMove && !showBestMove;
+  const iconCoords = showPlayedIcon
     ? squareToPercent(
         getDestinationSquare(currentMove!.san, currentMove!.color),
         orientation,
       )
+    : null;
+
+  const showBestIcon = showBestMove && !!bestMoveUci && !!bestMoveResultFen;
+  const bestIconCoords = showBestIcon
+    ? squareToPercent(bestMoveUci.slice(2, 4), orientation)
     : null;
 
   // Evaluation bar: position score from White's perspective (positive =
@@ -89,19 +129,6 @@ export default function BoardPanel({
     Math.abs(evalCp) < 0.05
       ? '0.0'
       : `${evalCp > 0 ? '+' : ''}${Math.abs(evalCp).toFixed(1)}`;
-
-  // Best-move arrow.
-  const bestMoveUci = currentMove?.best_move_uci;
-  const showBestArrow =
-    showBestMove && hasGame && !!bestMoveUci && bestMoveUci.length >= 4;
-  const bestFrom = showBestArrow ? bestMoveUci.slice(0, 2) : '';
-  const bestTo = showBestArrow ? bestMoveUci.slice(2, 4) : '';
-  const bestFromCenter = showBestArrow
-    ? squareCenterPercent(bestFrom, orientation)
-    : null;
-  const bestToCenter = showBestArrow
-    ? squareCenterPercent(bestTo, orientation)
-    : null;
 
   return (
     <div className="mx-auto flex w-full max-w-[calc(100vh-70px)] items-center gap-3">
@@ -152,7 +179,7 @@ export default function BoardPanel({
             />
             <BaseChessboard
               options={{
-                position,
+                position: boardFen,
                 boardOrientation: orientation,
                 allowDragging: false,
                 boardStyle: {
@@ -176,38 +203,22 @@ export default function BoardPanel({
                 animationDurationInMs: 200,
               }}
             />
-            {showBestArrow && bestFromCenter && bestToCenter && (
-              <svg
-                className="pointer-events-none absolute inset-0 z-[6] h-full w-full"
-                viewBox="0 0 100 100"
+            {showBestIcon && bestIconCoords && (
+              <div
+                style={{
+                  position: 'absolute',
+                  left: `${bestIconCoords.col * SQUARE_PERCENT + SQUARE_PERCENT - ICON_SIZE_PERCENT - ICON_MARGIN_PERCENT}%`,
+                  top: `${bestIconCoords.row * SQUARE_PERCENT + ICON_MARGIN_PERCENT}%`,
+                  width: `${ICON_SIZE_PERCENT}%`,
+                  aspectRatio: '1 / 1',
+                  pointerEvents: 'none',
+                  zIndex: 5,
+                }}
               >
-                <defs>
-                  <marker
-                    id="best-move-arrow"
-                    viewBox="0 0 10 10"
-                    refX="8"
-                    refY="5"
-                    markerWidth="3.5"
-                    markerHeight="3.5"
-                    orient="auto-start-reverse"
-                  >
-                    <path d="M0,0 L10,5 L0,10 z" fill="#10b981" />
-                  </marker>
-                </defs>
-                <line
-                  x1={bestFromCenter.x}
-                  y1={bestFromCenter.y}
-                  x2={bestToCenter.x}
-                  y2={bestToCenter.y}
-                  stroke="#10b981"
-                  strokeWidth={3.5}
-                  strokeLinecap="round"
-                  opacity={0.9}
-                  markerEnd="url(#best-move-arrow)"
-                />
-              </svg>
+                <ClassificationIcon classification="best" size="100%" />
+              </div>
             )}
-            {showIcon && iconCoords && (
+            {showPlayedIcon && iconCoords && (
               <div
                 style={{
                   position: 'absolute',
