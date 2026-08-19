@@ -48,15 +48,6 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
   );
 }
 
-function SearchIcon() {
-  return (
-    <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24">
-      <circle cx="11" cy="11" r="7" />
-      <path d="m20 20-3.5-3.5" />
-    </svg>
-  );
-}
-
 function BellIcon() {
   return (
     <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24">
@@ -87,9 +78,6 @@ export default function TopNav() {
           </div>
 
           <div className="hidden items-center gap-5 md:flex">
-            <button type="button" className="text-white/80 transition hover:text-white" aria-label="Search">
-              <SearchIcon />
-            </button>
             <button type="button" className="relative text-white/80 transition hover:text-white" aria-label="Notifications">
               <BellIcon />
               <span className="absolute -right-0.5 top-0 h-2 w-2 rounded-full bg-[#10b981] ring-2 ring-black" />
@@ -139,7 +127,6 @@ export default function TopNav() {
             </div>
 
             <div className="mt-4 flex items-center gap-5 border-t border-white/10 pt-4">
-              <SearchIcon />
               <BellIcon />
               <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#c49a7a] text-sm font-bold text-black">
                 S
