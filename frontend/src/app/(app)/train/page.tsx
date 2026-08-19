@@ -234,7 +234,7 @@ function OpponentPrepDialog({ onClose }: { onClose: () => void }) {
   const [username, setUsername] = useState('');
   const [phase, setPhase] = useState<'idle' | 'importing' | 'error'>('idle');
   const [error, setError] = useState<string | null>(null);
-  const [statusNote, setStatusNote] = useState<string | null>(null);
+  const [progress, setProgress] = useState(0);
 
   const trimmed = username.trim();
   const isImporting = phase === 'importing';
@@ -246,7 +246,7 @@ function OpponentPrepDialog({ onClose }: { onClose: () => void }) {
 
     setPhase('importing');
     setError(null);
-    setStatusNote('Starting import job…');
+    setProgress(0);
 
     try {
       const startRes = await fetch('/api/train/opponent-import', {
@@ -282,7 +282,7 @@ function OpponentPrepDialog({ onClose }: { onClose: () => void }) {
               `No public games found for ${IMPORT_PROVIDERS.find((p) => p.key === provider)?.label} username “${trimmed}”.`
             );
           }
-          setStatusNote(null);
+          setProgress(100);
           router.push('/train/sparring');
           onClose();
           return;
@@ -292,11 +292,8 @@ function OpponentPrepDialog({ onClose }: { onClose: () => void }) {
             pollData.error_message ?? 'Import failed on the server. Try again in a moment.'
           );
         }
-        setStatusNote(
-          pollData.status === 'running'
-            ? `Importing games… (${pollData.imported_count} so far)`
-            : 'Queued for import…'
-        );
+        const total = pollData.requested_limit || IMPORT_LIMIT;
+        setProgress(Math.min(100, Math.round((pollData.imported_count / total) * 100)));
       }
       throw new Error('Import is taking longer than expected. Close this and try again shortly.');
     } catch (err) {
@@ -336,7 +333,7 @@ function OpponentPrepDialog({ onClose }: { onClose: () => void }) {
 
         <h2 className="font-display text-xl font-semibold text-[#f7e5c6]">Import an opponent</h2>
         <p className="mt-1 text-sm text-[#f7e5c6]/60">
-          Fetch a public Lichess or Chess.com player. We&apos;ll train a Maia clone on up to {IMPORT_LIMIT} of their recent games.
+          Fetch a public Lichess or Chess.com player. We&apos;ll train a clone on up to {IMPORT_LIMIT} of their recent games.
         </p>
 
         <div className="mt-4 grid grid-cols-2 overflow-hidden rounded-[8px] border border-black/50 bg-black/50 p-1">
@@ -387,10 +384,18 @@ function OpponentPrepDialog({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
-        {statusNote && isImporting && (
-          <p className="mt-3 rounded-xl border border-emerald-400/25 bg-emerald-400/8 px-3 py-2 text-xs text-emerald-200">
-            {statusNote}
-          </p>
+        {isImporting && (
+          <div className="mt-3 flex items-center gap-3">
+            <div className="h-2 flex-1 overflow-hidden rounded-full bg-black/60">
+              <div
+                className="h-full rounded-full bg-emerald-500 transition-[width] duration-500 ease-out"
+                style={{ width: `${progress}%` }}
+              />
+            </div>
+            <span className="w-10 shrink-0 text-right text-xs font-semibold text-emerald-300">
+              {progress}%
+            </span>
+          </div>
         )}
 
         {error && phase === 'error' && (
