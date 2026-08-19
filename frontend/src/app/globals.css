@@ -222,3 +222,34 @@ body {
 .landing-scrollbar::-webkit-scrollbar-corner {
   background: transparent;
 }
+
+/*
+ * Show the hand cursor on every interactive control app-wide.
+ * Tailwind v4's preflight no longer sets `cursor: pointer` on buttons, so
+ * this restores the expected affordance. Placed in the base layer so any
+ * explicit `cursor-*` utility (e.g. cursor-default, cursor-not-allowed)
+ * still wins.
+ */
+@layer base {
+  button:not(:disabled),
+  [role='button']:not([aria-disabled='true']),
+  a[href],
+  summary,
+  select:not(:disabled),
+  input[type='submit']:not(:disabled),
+  input[type='button']:not(:disabled),
+  input[type='reset']:not(:disabled),
+  input[type='checkbox'],
+  input[type='radio'],
+  input[type='range'],
+  input[type='color'],
+  label {
+    cursor: pointer;
+  }
+
+  button:disabled,
+  button[aria-disabled='true'],
+  [role='button'][aria-disabled='true'] {
+    cursor: not-allowed;
+  }
+}
