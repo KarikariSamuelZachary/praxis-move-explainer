@@ -370,10 +370,12 @@ export default function ReviewDemo() {
           </div>
 
           <div className="mt-3 space-y-1.5">
-            {FEEDBACK_ROWS.slice(0, visibleRows).map((row) => (
+            {FEEDBACK_ROWS.map((row, index) => (
               <div
                 key={row.move}
-                className="flex items-center gap-2 rounded border border-white/5 bg-black/30 px-2.5 py-1.5 text-[11px]"
+                className={`flex items-center gap-2 rounded border border-white/5 bg-black/30 px-2.5 py-1.5 text-[11px] transition-opacity duration-300 ${
+                  index < visibleRows ? 'opacity-100' : 'opacity-0'
+                }`}
               >
                 <ClassificationIcon classification={row.classification} size={18} />
                 <span className="font-mono text-cream/90">{row.move}</span>
