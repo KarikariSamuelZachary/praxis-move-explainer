@@ -401,26 +401,6 @@ function OpponentPrepDialog({ onClose }: { onClose: () => void }) {
             {error}
           </p>
         )}
-
-        <div className="mt-4 flex justify-end gap-2">
-          <button
-            type="button"
-            onClick={handleClose}
-            disabled={isImporting}
-            className="h-9 rounded-lg border border-black/50 bg-black/40 px-4 text-sm font-semibold text-[#f7e5c6]/70 transition hover:bg-black/60 hover:text-[#f7e5c6] disabled:opacity-40 disabled:pointer-events-none"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={handleSubmit}
-            disabled={!trimmed || isImporting}
-            className="group/cta flex h-9 items-center justify-center gap-2 rounded-lg bg-emerald-500/20 px-4 text-sm font-semibold text-emerald-300 ring-1 ring-emerald-500/30 transition hover:bg-emerald-500/30 hover:ring-emerald-500/50 disabled:pointer-events-none disabled:opacity-40"
-          >
-            <span>{isImporting ? 'Importing…' : 'Import & Start'}</span>
-            {!isImporting && <ArrowRightIcon />}
-          </button>
-        </div>
       </div>
     </div>
   );
