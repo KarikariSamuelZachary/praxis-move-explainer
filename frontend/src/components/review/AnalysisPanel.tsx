@@ -83,7 +83,7 @@ export default function AnalysisPanel({
                 )}
               </div>
               <p className="mt-2 text-[11px] text-white/50">
-                {currentMove.cp_loss} cp loss · {currentMove.color} to move
+                {currentMove.color} to move
               </p>
             </section>
 
@@ -138,7 +138,8 @@ export default function AnalysisPanel({
                 <button
                   type="button"
                   onClick={onAskCoach}
-                  disabled={isAskingCoach}
+                  disabled={isAskingCoach || atFirst}
+                  title={atFirst && !isAskingCoach ? 'Advance to a move first' : undefined}
                   className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#10b981]/20 px-3 py-2 text-xs font-semibold text-[#10b981] ring-1 ring-[#10b981]/30 transition-colors hover:bg-[#10b981]/30 hover:ring-[#10b981]/50 disabled:cursor-not-allowed disabled:bg-zinc-700/40 disabled:text-zinc-400 disabled:ring-zinc-600/30"
                 >
                   {isAskingCoach ? (
