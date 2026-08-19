@@ -172,6 +172,297 @@ DESIGN DECISIONS (recorded here because they shape the whole module)
     position with a strong sac-looking non-queen-trade move should
     still be able to play that move at base rate.
 
+(5) CASTLE-SIDE BIAS (multiplicative with sac, qt, setup; gated by
+    castling rights and ply): the opponent's `castling_side_distribution`
+    ({kingside, queenside, never} fractions) is converted into a per-
+    candidate multiplier. The signal was already computed by
+    compute_opponent_style in v1 but never consumed by the reranker;
+    this wires it in.
+
+    Derivation:
+      (pref_side, pref_strength) = _castle_preference(castling_dist)
+        where pref_side is "kingside" or "queenside" (or None if "never"
+        dominates or the signal is too weak), and pref_strength is
+        |kingside_frac - queenside_frac| in [0, 1].
+      indicator_i = _castle_indicator(board, candidate_i, pref_side)
+        in {+1, 0, -1}: +1 if the candidate helps the preferred castle
+        side (clears a path square, or is the castle move itself on the
+        preferred side), -1 if it hurts (king move losing rights,
+        preferred-side rook move, piece moves INTO the preferred path,
+        or the castle move on the non-preferred side), 0 otherwise.
+      castle_mult_i = clamp(1 + CASTLE_BIAS_STRENGTH * pref_strength *
+                              indicator_i,
+                            min=CASTLE_WEIGHT_FLOOR)
+
+    Gating: the bias only fires when ALL of:
+      * pref_strength > CASTLE_PREFERENCE_THRESHOLD (0.3) -- below this
+        the opponent's preference is too weak to tilt Maia's distribution.
+      * current_ply <= CASTLE_BIAS_PLY_MAX (40) -- past move 20, castling
+        decisions are settled and the bias becomes noise.
+      * the bot still has castling rights on the preferred side -- once
+        rights are lost (king moved, preferred-side rook moved, or the
+        bot has already castled), the bias is moot and shouldn't punish
+        the bot for game-state constraints it can't control.
+
+    Why multiplicative with the other signals: castle-side preference is
+    an independent stylistic axis from material aggression (sac), queen-
+    trade structure, or setup-structure similarity. A high-sac opponent
+    who also prefers kingside castling should see both biases compound on
+    a sac-looking move that also clears the kingside path -- the product
+    form preserves each signal's relative strength.
+
+    Why the "wrong-side castle" gets indicator=-1 (not 0): playing O-O
+    when the opponent prefers O-O-O is the clearest "bot is not mimicking
+    the opponent" signal -- it's a binary, irreversible commitment to the
+    opposite castle pattern. Penalizing it steers the bot toward the
+    opponent's actual pattern. The penalty is capped by
+    CASTLE_WEIGHT_FLOOR so the bot can still play O-O if Maia's base
+    weight strongly favors it (the floor prevents the bias from
+    zeroing out a clearly-good move).
+
+(6) TRAP-MODE / MIRROR-MODE BRANCH (multiplicative with all existing
+    signals; gated by an exploitability floor, one-ply reachability, and
+    the existing sufficient-data contract).
+
+    Product decision (explicit, not implicit): sparring is DRILL-WITH-
+    FALLBACK. When the opponent has a known, statistically real blunder
+    pattern reachable this move, the bot steers toward it (drill =
+    trap-mode). When it doesn't, the bot plays like the opponent would
+    (mirror = today's reranker). This is a deliberate product choice,
+    recorded here so it isn't re-litigated in a future session.
+
+    WHAT "EXPLOITABLE" MEANS. A position_key (as already defined by
+    opponent_repertoire.py / the opponent_game_blunders table -- first
+    4 FEN fields) is exploitable for a given opponent iff ALL of:
+
+      (a) The opponent has blundered from this exact position_key >= 2
+          times across their imported games (TRAP_MIN_HITS = 2, in
+          opponent_traps.py).
+      (b) The opponent has >= 5 total games in the imported dataset
+          (TRAP_MIN_GAMES, in opponent_traps.py, reusing the same floor
+          spirit as MIN_STYLE_GAMES / MIN_REPERTOIRE_SAMPLES elsewhere in
+          the codebase -- kept as its own named constant, not imported,
+          matching how STYLE_RECENCY_DECAY_LAMBDA_PER_YEAR is a separate
+          constant from the repertoire sampler's decay rate despite the
+          same value).
+
+    Both gates must pass. A 2-game opponent with 2 identical blunders
+    does NOT count (fails gate b). A 50-game opponent with exactly 1 hit
+    on a position_key does NOT count (fails gate a) -- single-occurrence
+    "blunders" are not a pattern, they're noise; do not treat them as
+    exploitable no matter how large the opponent's overall game count is.
+
+    This is intentionally EXACT position_key matching, not a fuzzy
+    family/motif match. A softer secondary key (same opening + same
+    tactical motif) is a plausible v2 extension but out of scope here --
+    starting with exact matching keeps the signal unambiguous and avoids
+    inheriting the family-detection complexity already built for setup
+    signatures (_filter_signatures_by_family) before there's evidence
+    the trap signal needs it.
+
+    REACHABILITY: STRICTLY ONE-PLY, NO LOOKAHEAD. The trap signal is
+    evaluated per candidate, on the resulting board after that candidate
+    is pushed -- exactly the same shape as _is_live_sac_move,
+    _is_queen_trade_move, and _candidate_setup_mult. A candidate is
+    "trap-triggering" iff its resulting position_key matches an
+    exploitable key from the opponent's blunder table.
+
+    There is NO multi-ply search for "is there a path toward a trap 3
+    moves from now." This is a real, deliberate scope limit, not an
+    oversight: trap-mode is OPPORTUNISTIC, not STRATEGIC. If the
+    exploitable position is reachable only via a sequence of moves,
+    trap-mode stays silent until the position is one candidate-move
+    away. This matches every other signal in the reranker (all are
+    one-ply-forward checks) and keeps the per-move cost O(candidates),
+    not O(candidates x depth).
+
+    SOUNDNESS BOUND (the load-bearing invariant). Trap-mode NEVER
+    introduces a move outside the candidate list Maia already returned,
+    and NEVER overrides Stockfish/Maia's implicit soundness filtering on
+    that list. The mechanism is the same weighted-sample re-weighting
+    used by every other signal -- trap-mode can only up-weight a trap-
+    triggering candidate that Maia's own policy already considered
+    plausible enough to return in the top-N. It cannot fabricate a
+    move, and it cannot force selection of a candidate with near-zero
+    base weight into certainty (same floor/ceiling discipline as the
+    other multipliers -- see TRAP_WEIGHT below).
+
+    This is what keeps trap-mode inside the existing safety envelope: it
+    is structurally incapable of "playing an objectively bad move on
+    purpose" to manufacture a trap. It can only tilt a decision Maia
+    was already willing to make.
+
+    BRANCH DECISION: PER-MOVE, NOT PER-GAME. At the top of
+    rerank_candidates, after the existing setup/castle pre-computation,
+    compute:
+
+      trap_candidates = [i for i, c in enumerate(candidates)
+                         if _is_trap_triggering(board, c["move"],
+                                                 exploitable_keys)]
+      trap_mode_active = bool(trap_candidates)
+
+    where exploitable_keys is the set of position_keys that passed both
+    gates above for this opponent (computed once per sparring session
+    by compute_exploitable_traps in opponent_traps.py, passed in by the
+    caller -- NOT recomputed per-candidate).
+
+    - If trap_mode_active: this move is in trap-mode. Compute trap_mult
+      per candidate (large boost for trap-triggering candidates, 1.0 for
+      all others -- boost-only, same shape as setup). The existing sac /
+      qt / setup / castle multipliers are STILL computed and STILL
+      apply, multiplicatively, exactly as today. Trap-mode is "trap
+      signal added to the stack," not "trap signal replaces the stack."
+    - If not trap_mode_active: this move is in mirror-mode -- i.e.
+      today's reranker, unchanged. No branch-specific code path; this is
+      just the existing function body with trap_mult = 1.0 for every
+      candidate (a no-op term in the product, not a separate code path).
+
+    Because this is evaluated fresh every call to rerank_candidates
+    (i.e. every move), a single sparring game naturally flips between
+    trap-mode and mirror-mode move to move, with NO RESIDUAL STATE
+    carried between moves. There is no "trap-mode session flag" anywhere
+    -- statelessness here is a feature, not a gap: it's what makes the
+    mixed-mode test case (Test 25) a correctness requirement, not an
+    edge case to tolerate.
+
+    DATA-FLOOR INTERACTION WITH THE EXISTING sufficient GATE. Trap-mode
+    sits INSIDE the existing style["sufficient"] contract, unchanged. If
+    style["sufficient"] is False, the function returns via the existing
+    insufficient_data regression path exactly as today -- trap-mode is
+    never evaluated, exploitable_keys is never consulted, full stop.
+    The TRAP_MIN_GAMES / TRAP_MIN_HITS floor in opponent_traps.py is a
+    SECOND, NARROWER GATE that only matters once the broader sufficient-
+    data gate has already passed -- it doesn't replace or duplicate that
+    gate, it adds a trap-specific bar on top of it.
+
+    DERIVATION:
+      trap_indicator_i = 1 if candidate i's resulting position_key is
+                          in exploitable_keys, else 0
+      trap_mult_i       = 1 + TRAP_WEIGHT * trap_indicator_i
+      weight_i          = base_i * sac_mult_i * qt_mult_i * setup_mult_i
+                           * castle_mult_i * trap_mult_i
+
+    Boost-only (never below 1.0), matching setup's shape rather than sac/
+    qt/castle's symmetric-boost-or-suppress shape -- there is no
+    "opponent avoids this trap" signal to suppress toward; the absence
+    of a trap match is simply neutral (1.0), not evidence of anything.
+
+    DATA PLUMBING. rerank_candidates takes a new keyword-only argument
+    `exploitable_trap_keys: Optional[set] = None`. None (the default)
+    means "no trap data available" -- trap_mode_active is always False
+    in that case, i.e. omitting the argument reproduces today's
+    mirror-only behavior exactly. This keeps the function backward-
+    compatible for any caller that hasn't been updated yet.
+
+    TRANSPARENCY FIELDS (extending the existing return shape, same
+    pattern as castle_preference_side / castle_preference_strength):
+      * trap_mode_active: bool -- whether trap-mode fired on this
+        specific move.
+      * trap_candidate_count: int -- how many candidates in the input
+        list were trap-triggering (0 when trap_mode_active is False).
+      * Per-row breakdown: trap_indicator (bool) and trap_multiplier
+        (float), same shape as the other per-row fields.
+      * "trap" added to signals_applied when the trap multiplier
+        actually deviates from 1.0 on at least one candidate (same
+        actually-deviated-not-just-triggered discipline already used for
+        sac/qt/setup/castle).
+
+    EXPLICITLY OUT OF SCOPE: multi-ply trap-seeking / planning toward a
+    trap 2+ moves away; fuzzy/family-based trap matching; a "trap-
+    avoidance" mirror mode (steering AWAY from positions where the
+    opponent plays well); any UI surfacing of trap_mode_active (the
+    existing Opponent Prep page's "Traps He's Fallen For" section stays
+    as-is; this spec only touches move-selection, not display).
+
+(7) AVERAGE-GAME-LENGTH CALIBRATION (multiplicative with all existing
+    signals; gated by the existing sufficient-data contract). The
+    opponent's `average_game_length` (recency-weighted mean plies per
+    game, already computed by compute_opponent_style) is converted into
+    a gentle per-candidate multiplier that tilts the bot's candidate
+    selection toward the tempo profile of the opponent's games.
+
+    INTUITION. Opponents whose games tend to be SHORT (low plies per
+    game) play sharper, more tactical chess -- their games end early in
+    blunders or time forfeits, and a sparring bot mimicking them should
+    lean toward forcing/tactical candidates. Opponents whose games tend
+    to be LONG (high plies per game) play quieter, more positional chess
+    -- their games grind into endgames, and the bot should lean toward
+    solid/quiet candidates. This is the weakest signal in the stack
+    (GAME_LENGTH_BIAS_STRENGTH = 0.8, deliberately below STYLE_BIAS_
+    STRENGTH = 4.0, QUEEN_TRADE_BIAS_STRENGTH = 1.5, CASTLE_BIAS_
+    STRENGTH = 1.5, SETUP_SIGNATURE_BIAS_STRENGTH = 2.5, and
+    TRAP_WEIGHT = 6.0) because game length is a noisy proxy for style:
+    the mean smooths over individual-game variance (a short time-forfeit
+    doesn't mean the opponent plays tactically), so the calibration is
+    soft -- this is a calibration signal, not a dominant one.
+
+    PER-CANDIDATE INDICATOR: _is_forcing_move (see below). A candidate is
+    "forcing" iff it is a capture OR gives check -- the two move
+    categories in chess that constrain the opponent's response. This is
+    a BROADER and CHEAPER proxy for "tactical/aggressive" than
+    _is_live_sac_move (which requires a net material loss >=
+    SAC_MATERIAL_THRESHOLD AND a profitable recapture available); a
+    forcing move here includes even trades, non-sac captures, and checks
+    that don't win material. The two indicators are intentionally
+    different: sac frequency profiles the opponent's tendency to give up
+    material; game length profiles the opponent's overall tempo. A player
+    who sacrifices often but plays long games (e.g. a romantic attacker
+    whose attacks are repulsed) gets the sac boost on sac-looking moves
+    AND the length suppress on forcing moves -- the two compose
+    multiplicatively, each preserving its own axis.
+
+    DERIVATION:
+      game_length  = style["average_game_length"]  (weighted mean plies)
+      centered     = clamp((GAME_LENGTH_REFERENCE_PLY - game_length)
+                           / GAME_LENGTH_SCALE_PLY, -1.0, 1.0)
+      is_forcing_i = _is_forcing_move(board, candidate_i)   (0 or 1)
+      length_mult_i = clamp(1 + GAME_LENGTH_BIAS_STRENGTH
+                            * centered * is_forcing_i,
+                           min=GAME_LENGTH_WEIGHT_FLOOR)
+
+    Centering: GAME_LENGTH_REFERENCE_PLY = 50.0 is the neutral midpoint
+    (opponents at this length get length_mult=1.0 for every candidate).
+    50 plies (~25 fullmoves) is the typical Chess.com blitz/rapid game
+    length in the dev DB's provider mix. GAME_LENGTH_SCALE_PLY = 20.0 is
+    the half-width of the linear ramp: an opponent 20 plies from the
+    reference reaches the full +/-1.0 centered value, and opponents
+    further than 20 plies away are clamped. 20 plies = 10 fullmoves, a
+    meaningful difference in game length (the difference between a
+    15-move blitz and a 25-move rapid).
+
+    BOOST-OR-SUPPRESS SHAPE (not boost-only). Short-game opponents
+    (centered > 0) get length_mult > 1.0 on forcing candidates (boost);
+    long-game opponents (centered < 0) get length_mult < 1.0 on forcing
+    candidates (suppress); quiet candidates always get length_mult = 1.0
+    (the bias only acts on the forcing indicator, like qt only acts on
+    queen-trade moves). This matches the qt/castle symmetric shape rather
+    than the setup/trap boost-only shape, because game length has a
+    natural DIRECTION (shorter = more tactical) -- the absence of a
+    forcing candidate is neutral, not evidence of "long-game style".
+
+    GATING: the bias only fires when ALL of:
+      * style["sufficient"] is True (the outer gate -- insufficient data
+        short-circuits before length is evaluated, same as every other
+        signal).
+      * style["average_game_length"] is not None (defensive --
+        compute_opponent_style always returns a float when sufficient=True,
+        but a hand-constructed style dict might omit it; None means "no
+        length data" -> centered=0.0 -> no-op, matching the
+        unknown-signal-is-neutral pattern used by queens_stay_on_rate).
+
+    TRANSPARENCY FIELDS (extending the existing return shape, same
+    pattern as castle_preference_side / trap_mode_active):
+      * average_game_length: float | None -- surfaced from style for
+        transparency; the raw input to the calibration.
+      * length_centered: float -- the centered value in [-1, 1] used to
+        compute the per-candidate multiplier; 0.0 means "no length bias".
+      * Per-row: length_indicator (bool) and length_multiplier (float),
+        same shape as the other per-row fields.
+      * "game_length" added to signals_applied when the length multiplier
+        actually deviates from 1.0 on at least one candidate (same
+        actually-deviated-not-just-triggered discipline already used for
+        sac/qt/setup/castle/trap).
+
 ================================================================================
 CONSTANTS
 ================================================================================
@@ -333,6 +624,152 @@ SETUP_FAMILY_DETECTION_THRESHOLD = 0.5
 # made an explicit no-bias decision rather than silently dropping the
 # signal. See the module docstring's decision (1).
 FAMILY_LEAN_DISABLED = "disabled_in_v1_no_candidate_family_classifier"
+
+# --- castle-side preference (v1) -------------------------------------------
+#
+# Per-candidate multiplicative bias for moves that help / hurt the
+# opponent's preferred castling side. The signal comes from
+# `style["castling_side_distribution"]` (produced by compute_opponent_style
+# as a {kingside, queenside, never} fraction over the opponent's games).
+# castling_side_distribution was already computed in v1 but never consumed
+# by the reranker; this wires it in.
+#
+# Per-candidate indicator (see _castle_indicator):
+#   +1  -> move helps preferred castle side (clears a path square, or is
+#          the castle move itself on the preferred side)
+#   -1  -> move hurts preferred castle side (king move losing rights,
+#          preferred-side rook move, piece moves INTO preferred-side path,
+#          OR the castle move on the non-preferred side)
+#   0   -> neutral (pawn moves, moves on the other side of the board,
+#          non-preferred-side rook moves, pieces clearing the non-preferred
+#          path)
+#
+# castle_mult = clamp(1 + CASTLE_BIAS_STRENGTH * pref_strength * indicator,
+#                     min=CASTLE_WEIGHT_FLOOR)
+#
+# CASTLE_BIAS_STRENGTH = 1.5: same magnitude as QUEEN_TRADE_BIAS_STRENGTH
+# since castle-side is a similarly binary stylistic preference (kingside
+# vs queenside, like trade-queens vs keep-queens). At strength=1.5:
+#   pref_strength=0.3 (just above threshold), indicator=+1 -> mult = 1.45
+#   pref_strength=0.5 (clear preference),    indicator=+1 -> mult = 1.75
+#   pref_strength=0.8 (strong preference),   indicator=+1 -> mult = 2.20
+#   pref_strength=0.8,                        indicator=-1 -> clamped to 0.05
+# A "wrong-side castle" move gets the strongest penalty (indicator=-1 with
+# the highest typical pref_strength) -- this is the clearest "bot is not
+# mimicking the opponent" signal.
+#
+# CASTLE_PREFERENCE_THRESHOLD = 0.3: minimum |kingside_frac - queenside_frac|
+# to apply the bias. Below this the opponent's preference is too weak to
+# be worth tilting Maia's distribution. The threshold also implicitly
+# handles the "never-dominant" case (where the difference is small because
+# both castle fractions are small).
+#
+# CASTLE_BIAS_PLY_MAX = 40: castling decisions are typically settled by
+# move 20 (ply 40). Past this point the bot has either castled already
+# or committed to not castling, and the bias becomes noise. The outer
+# gate also short-circuits when the bot has lost castling rights on the
+# preferred side (e.g. the king has already moved), so the ply cap is a
+# safety net for the rare "king still on original square at move 30 with
+# both rights intact but midgame is well underway" case.
+#
+# CASTLE_WEIGHT_FLOOR = 0.05: defensive floor matching QUEEN_TRADE_WEIGHT_FLOOR
+# so random.choices never sees a non-positive weight.
+CASTLE_BIAS_STRENGTH = 1.5
+CASTLE_PREFERENCE_THRESHOLD = 0.3
+CASTLE_BIAS_PLY_MAX = 40
+CASTLE_WEIGHT_FLOOR = 0.05
+
+# --- trap-mode / mirror-mode branch (v1) -----------------------------------
+#
+# Per-candidate multiplicative boost for moves whose resulting position_key
+# (first 4 FEN fields, same convention as opponent_repertoire._position_key
+# and opponent_game_analysis._position_key_from_fen) matches an entry in
+# `exploitable_trap_keys` -- the set of position_keys the opponent has
+# blundered in >= TRAP_MIN_HITS times across >= TRAP_MIN_GAMES total games
+# (gates applied by compute_exploitable_traps in opponent_traps.py).
+#
+# See the module docstring's decision (6) for the full branch spec
+# (product decision, reachability, soundness bound, branch decision,
+# data-floor interaction, derivation, transparency fields).
+#
+# TRAP_WEIGHT is picked so a trap-triggering candidate reliably dominates
+# the sample when it fires, since drilling a *specific, already-proven*
+# weakness is a stronger and more specific signal than any of the
+# style-aggregate signals (sac frequency, queen-trade timing) -- this
+# opponent has concretely blundered here before, more than once. At
+# TRAP_WEIGHT = 6.0, notably higher than STYLE_BIAS_STRENGTH = 4.0 and
+# QUEEN_TRADE_BIAS_STRENGTH = 1.5 / CASTLE_BIAS_STRENGTH = 1.5, on the
+# reasoning that trap evidence is categorically stronger (a confirmed
+# >=2x repeated failure) than a continuous style-aggregate.
+#
+# Calibration example (rank-decay base, no policy field, sac/qt/setup/
+# castle all dormant so trap is the only signal):
+#   rank 1 (quiet, no trap): base 1.0, trap_mult 1.0  -> weight 1.0
+#   rank 3 (trap-triggering): base 0.25, trap_mult 7.0 -> weight 1.75
+#   -> rank 3 share = 1.75 / (1.0 + ... + 1.75 + ...) dominant but not
+#   deterministic. At a trap-triggering candidate sitting at rank 3
+#   against a rank-1 quiet candidate, trap_mult = 1 + 6.0*1 = 7.0 gives
+#   the trap candidate an effective weight of 1.75 vs the rank-1's 1.0
+#   -- dominant but not deterministic (matches the "re-weighted sample,
+#   not straight re-rank" philosophy already established in decision (3):
+#   even a strongly-favored trap candidate shouldn't be played with 100%
+#   certainty, or the bot stops looking human and starts looking like a
+#   scripted trap-bot).
+#
+# Boost-only (never below 1.0), matching setup's shape rather than sac/
+# qt/castle's symmetric-boost-or-suppress shape -- there is no "opponent
+# avoids this trap" signal to suppress toward; the absence of a trap
+# match is simply neutral (1.0), not evidence of anything.
+#
+# Tune this empirically against a head-to-head test the same way
+# STYLE_BIAS_STRENGTH was calibrated -- this starting value is a reasoned
+# default, not a measured one.
+TRAP_WEIGHT = 6.0
+
+# --- average-game-length calibration (v1) -----------------------------------
+#
+# Per-candidate multiplicative bias that tilts the bot's candidate
+# selection toward the tempo profile of the opponent's games. The signal
+# comes from `style["average_game_length"]` (already computed by
+# compute_opponent_style as the recency-weighted mean plies per game).
+#
+# See the module docstring's decision (7) for the full spec (intuition,
+# per-candidate indicator, derivation, centering, boost-or-suppress
+# shape, gating, transparency fields).
+#
+# GAME_LENGTH_BIAS_STRENGTH = 0.8: deliberately the WEAKEST signal in
+# the stack (below STYLE_BIAS_STRENGTH=4.0, QUEEN_TRADE_BIAS_STRENGTH=1.5,
+# CASTLE_BIAS_STRENGTH=1.5, SETUP_SIGNATURE_BIAS_STRENGTH=2.5, and
+# TRAP_WEIGHT=6.0). Game length is a noisy proxy for style: the mean
+# smooths over individual-game variance (a short time-forfeit doesn't
+# mean the opponent plays tactically), so the calibration is soft. At
+# strength=0.8:
+#   centered=+1.0 (short games), is_forcing=1 -> mult = 1.8  (max boost)
+#   centered= 0.0 (reference)  , is_forcing=1 -> mult = 1.0  (no effect)
+#   centered=-1.0 (long games) , is_forcing=1 -> mult = 0.2  (suppress)
+#   centered=anything          , is_forcing=0 -> mult = 1.0  (quiet neutral)
+# The suppress direction (0.2) is above the 0.05 floor, so the floor
+# never triggers at this strength -- it's kept for defensive consistency
+# with the other signals' floors.
+#
+# GAME_LENGTH_REFERENCE_PLY = 50.0: the neutral midpoint. Opponents at
+# this weighted-mean length get length_mult=1.0 for every candidate.
+# 50 plies (~25 fullmoves) is the typical Chess.com blitz/rapid game
+# length in the dev DB's provider mix. Revisit when the dev DB has a
+# meaningful classical-games population (which would shift the reference
+# upward toward 60-70 plies).
+#
+# GAME_LENGTH_SCALE_PLY = 20.0: the half-width of the linear centering
+# ramp. An opponent 20 plies from the reference reaches the full +/-1.0
+# centered value; opponents further away are clamped. 20 plies = 10
+# fullmoves, a meaningful game-length difference.
+#
+# GAME_LENGTH_WEIGHT_FLOOR = 0.05: defensive floor matching the other
+# signals' floors so random.choices never sees a non-positive weight.
+GAME_LENGTH_BIAS_STRENGTH = 0.8
+GAME_LENGTH_REFERENCE_PLY = 50.0
+GAME_LENGTH_SCALE_PLY = 20.0
+GAME_LENGTH_WEIGHT_FLOOR = 0.05
 
 
 def _base_weight(rank: int) -> float:
@@ -831,12 +1268,280 @@ def _is_live_sac_move(board_before: chess.Board, candidate_uci: str) -> bool:
     return min_attacker_value < value
 
 
+def _is_trap_triggering(
+    board: chess.Board,
+    candidate_uci: str,
+    exploitable_keys: Optional[set],
+) -> bool:
+    """Return True iff pushing `candidate_uci` produces a position whose
+    `position_key` (first 4 FEN fields) is in `exploitable_keys`.
+
+    This is the per-candidate one-ply reachability check for trap-mode
+    (decision (6)). It has exactly the same shape as `_is_live_sac_move`,
+    `_is_queen_trade_move`, and `_candidate_setup_mult`: push the
+    candidate onto a board copy, inspect the resulting board, and
+    classify. See the module docstring's decision (6) "REACHABILITY:
+    STRICTLY ONE-PLY, NO LOOKAHEAD" paragraph for why this is a
+    deliberate scope limit (trap-mode is opportunistic, not strategic;
+    no multi-ply search toward a trap 2+ moves away).
+
+    `exploitable_keys` is the set of `position_key` strings that passed
+    both exploitability gates (TRAP_MIN_HITS and TRAP_MIN_GAMES) for this
+    opponent, computed once per sparring session by
+    `compute_exploitable_traps` in `opponent_traps.py` and passed in by
+    the caller. None or an empty set means "no trap data available" ->
+    always returns False -> `trap_mode_active` is False -> the reranker
+    stays in mirror-mode (today's behavior, unchanged). This is the
+    backward-compatibility path for callers that haven't been updated to
+    pass the new argument.
+
+    The `position_key` convention matches `opponent_repertoire._position_key`
+    and `opponent_game_analysis._position_key_from_fen` exactly: the first
+    4 FEN fields (piece placement + side to move + castling rights + en
+    passant square). The blunder table records `position_key` from
+    `fen_before` (the position BEFORE the opponent's blunder move), so
+    the side-to-move in the stored key is the OPPONENT's. When the bot
+    pushes its candidate, the resulting board has the OPPONENT's turn --
+    so the resulting `position_key` is directly comparable to the stored
+    blunder keys: a match means the bot's candidate leads to exactly the
+    position the opponent previously blundered in.
+
+    Defensive on every edge: non-legal candidate, unparseable UCI, or a
+    push failure all return False (no trap signal rather than a crash --
+    matches the other per-candidate helpers' defensive convention).
+    """
+    if not exploitable_keys:
+        # None or empty set -> no trap data -> mirror-mode (no-op).
+        return False
+    try:
+        candidate = chess.Move.from_uci(candidate_uci)
+    except ValueError:
+        return False
+    if candidate not in board.legal_moves:
+        # Maia's candidates are legal by construction; defensive guard.
+        return False
+    board_after = board.copy(stack=False)
+    try:
+        board_after.push(candidate)
+    except (AssertionError, ValueError):
+        # python-chess pushes should not fail here (the move is legal),
+        # but if it does, treat as not-trap-triggering rather than crash.
+        return False
+    resulting_key = " ".join(board_after.fen().split()[:4])
+    return resulting_key in exploitable_keys
+
+
+def _is_forcing_move(board: chess.Board, candidate_uci: str) -> bool:
+    """A candidate is 'forcing' iff it is a capture OR gives check.
+
+    Captures and checks are the two 'forcing' move categories in chess
+    (the opponent's response is constrained: they must recapture or
+    address the check). This is a BROADER and CHEAPER proxy for
+    'tactical/aggressive' than `_is_live_sac_move` (which requires a net
+    material loss >= SAC_MATERIAL_THRESHOLD AND a profitable recapture
+    available); a forcing move here includes even trades, non-sac
+    captures, and checks that don't win material. The two indicators are
+    intentionally different -- see the module docstring's decision (7)
+    for why they profile independent stylistic axes (sac frequency
+    profiles material aggression; game length profiles overall tempo).
+
+    Used by the game-length calibration bias as the per-candidate
+    indicator: short-game opponents boost forcing candidates, long-game
+    opponents suppress them. Has the same one-ply-forward shape as
+    `_is_live_sac_move`, `_is_queen_trade_move`, `_is_trap_triggering`,
+    and `_candidate_setup_mult`: inspect the board after pushing the
+    candidate onto a copy, classify, return.
+
+    Defensive on every edge (non-legal candidate, unparseable UCI, push
+    failure) -> returns False, matching the other per-candidate helpers'
+    convention.
+    """
+    try:
+        candidate = chess.Move.from_uci(candidate_uci)
+    except ValueError:
+        return False
+    if candidate not in board.legal_moves:
+        # Maia's candidates are legal by construction; defensive guard.
+        return False
+    # Capture (handles all capture types including en-passant via
+    # board.is_capture, which checks piece_at(to_square) for normal
+    # captures and the en-passant target for e.p. captures).
+    if board.is_capture(candidate):
+        return True
+    # Check: push the candidate on a copy, see if the opponent (the
+    # side to move after our candidate) is in check. board.is_check()
+    # returns True iff the side to move is in check, which after our
+    # push is the opponent -- exactly "did our move give check".
+    board_after = board.copy(stack=False)
+    try:
+        board_after.push(candidate)
+    except (AssertionError, ValueError):
+        return False
+    return board_after.is_check()
+
+
+# --- castle-side preference helpers ----------------------------------------
+#
+# Three helpers that feed the castle_mult bias term in rerank_candidates.
+# _castle_preference extracts the preferred side + strength from the style
+# dict; _castle_path_squares is a static lookup; _castle_indicator classifies
+# a candidate move's effect on the preferred castle side.
+
+
+def _castle_path_squares(color: chess.Color, side: str) -> set:
+    """Squares between king and rook that must be empty for castling.
+
+    For kingside (short castle): the two squares between king and h-rook.
+    For queenside (long castle): the three squares between king and a-rook.
+    The king's and rook's own squares are NOT included -- only the path
+    the king passes through (and the rook passes through for queenside).
+    """
+    if color == chess.WHITE:
+        if side == "kingside":
+            return {chess.F1, chess.G1}
+        return {chess.B1, chess.C1, chess.D1}  # queenside
+    # BLACK
+    if side == "kingside":
+        return {chess.F8, chess.G8}
+    return {chess.B8, chess.C8, chess.D8}  # queenside
+
+
+def _castle_preference(castling_dist: Optional[Dict[str, Any]]) -> tuple:
+    """Extract (preferred_side, strength) from castling_side_distribution.
+
+    Returns (pref_side, pref_strength) where:
+      * pref_side is "kingside" | "queenside" | None
+      * pref_strength is |kingside_frac - queenside_frac| in [0, 1], or 0.0
+
+    None is returned when:
+      * castling_dist is empty/None
+      * "never" is the largest fraction (opponent doesn't castle enough
+        to extract a side preference -- the signal is too noisy)
+      * kingside and queenside fractions are exactly tied
+
+    The "never-dominant" guard is important: an opponent with
+    {"never": 0.7, "kingside": 0.2, "queenside": 0.1} has a 0.1
+    kingside-queenside gap, which would technically clear a low threshold
+    -- but the dominant "never" signal means the opponent mostly doesn't
+    castle at all, so steering the bot toward kingside would be reading
+    a signal that isn't there. The guard returns None instead.
+    """
+    if not castling_dist:
+        return None, 0.0
+
+    try:
+        kingside = float(castling_dist.get("kingside", 0.0) or 0.0)
+        queenside = float(castling_dist.get("queenside", 0.0) or 0.0)
+        never = float(castling_dist.get("never", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        return None, 0.0
+
+    # If "never" dominates, the signal is too noisy to use -- the opponent
+    # doesn't castle enough for a side preference to be meaningful.
+    if never >= kingside and never >= queenside:
+        return None, 0.0
+
+    if kingside > queenside:
+        return "kingside", kingside - queenside
+    if queenside > kingside:
+        return "queenside", queenside - kingside
+    return None, 0.0  # exact tie -- no preference
+
+
+def _castle_indicator(
+    board: chess.Board,
+    candidate_uci: str,
+    pref_side: str,
+) -> int:
+    """Classify a candidate move's effect on the preferred castle side.
+
+    Returns +1, -1, or 0:
+      +1  -> move helps preferred castle side:
+             * the castle move itself on the preferred side (O-O when
+               pref=kingside, O-O-O when pref=queenside)
+             * a piece move that clears a preferred-side path square
+               (e.g. Ng1-f3 when pref=kingside; Bf1-c4 when pref=kingside;
+               Nb1-c3 when pref=queenside; Bc1-d2 when pref=queenside)
+      -1  -> move hurts preferred castle side:
+             * the castle move on the NON-preferred side (O-O when
+               pref=queenside; O-O-O when pref=kingside) -- the clearest
+               "bot is not mimicking the opponent" signal, since it's a
+               binary irreversible commitment to the opposite pattern
+             * any non-castle king move (loses all castling rights)
+             * the preferred-side rook moving (loses preferred-side rights;
+               identified by the from_square's file: h-file for kingside,
+               a-file for queenside)
+             * a piece move TO a preferred-side path square (blocks the
+               king's path)
+      0   -> neutral:
+             * pawn moves (pawns don't block the castling path -- the
+               king and rook pass through rank 1, pawns are on rank 2+)
+             * non-preferred-side rook moves (don't affect preferred-side
+               rights)
+             * pieces clearing the non-preferred path (doesn't help the
+               preferred side, doesn't hurt either)
+             * moves on the other side of the board
+
+    Defensive: returns 0 on any edge case (non-legal candidate, unparseable
+    UCI, missing piece). The outer gate (castle_window_active in
+    rerank_candidates) already ensures the bot has castling rights on the
+    preferred side before this function is called, so the rook-file check
+    is safe (a rook on the h-file with kingside rights intact is the
+    starting h-rook; a rook that's moved would have already lost rights).
+    """
+    try:
+        candidate = chess.Move.from_uci(candidate_uci)
+    except ValueError:
+        return 0
+    if candidate not in board.legal_moves:
+        return 0
+
+    # The castle move itself.
+    if board.is_kingside_castling(candidate):
+        return +1 if pref_side == "kingside" else -1
+    if board.is_queenside_castling(candidate):
+        return +1 if pref_side == "queenside" else -1
+
+    piece = board.piece_at(candidate.from_square)
+    if piece is None:
+        return 0
+
+    # Non-castle king move -- loses all castling rights, including the
+    # preferred side.
+    if piece.piece_type == chess.KING:
+        return -1
+
+    # Rook move -- loses castling rights on the rook's side. Identify which
+    # side by the from_square's file: h-file (file 7) = kingside rook,
+    # a-file (file 0) = queenside rook. A rook on any other file has
+    # already moved (and would have lost rights), so the outer gate would
+    # have short-circuited -- but defensively return 0 for those.
+    if piece.piece_type == chess.ROOK:
+        from_file = chess.square_file(candidate.from_square)
+        if from_file == 7:  # h-file -> kingside rook
+            return -1 if pref_side == "kingside" else 0
+        if from_file == 0:  # a-file -> queenside rook
+            return -1 if pref_side == "queenside" else 0
+        return 0
+
+    # Other piece moves -- check if it clears or blocks a preferred-side
+    # path square. A piece moving FROM a path square clears it (+1); a
+    # piece moving TO a path square blocks it (-1).
+    pref_path = _castle_path_squares(board.turn, pref_side)
+    if candidate.from_square in pref_path:
+        return +1
+    if candidate.to_square in pref_path:
+        return -1
+    return 0
+
+
 def rerank_candidates(
     *,
     candidates: List[Dict[str, Any]],
     style: Dict[str, Any],
     board: chess.Board,
     rng: Optional[random.Random] = None,
+    exploitable_trap_keys: Optional[set] = None,
 ) -> Dict[str, Any]:
     """Combine Maia's candidates with an opponent's style profile.
 
@@ -853,7 +1558,8 @@ def rerank_candidates(
             bias is applied -- this is the regression contract.
             Optional fields consumed: "sacrifice_frequency" (sac
             multiplier), "queens_stay_on_rate" and
-            "queen_trade_move_number" (queen-trade multiplier).
+            "queen_trade_move_number" (queen-trade multiplier),
+            "castling_side_distribution" (castle-side multiplier).
         board: The chess.Board the candidates are FOR (the same board
             best_move_candidates was called with). Used only to push
             candidate copies for live-sac detection and to inspect the
@@ -863,6 +1569,20 @@ def rerank_candidates(
             module-level `random` is used (matches pick_repertoire_move's
             pattern). Tests should pass a seeded Random for
             reproducibility; production should pass None.
+        exploitable_trap_keys: Optional set of `position_key` strings
+            (first 4 FEN fields) the opponent has blundered in >= 2
+            distinct games across >= 5 total imported games (gates
+            applied by `compute_exploitable_traps` in opponent_traps.py).
+            Computed ONCE per sparring session by the caller, NOT
+            recomputed per move. When non-empty AND at least one
+            candidate's resulting position_key is in the set, trap-mode
+            fires: the matching candidate(s) get a boost-only
+            `trap_mult = 1 + TRAP_WEIGHT` multiplied into the weight
+            product (on top of sac/qt/setup/castle, NOT replacing them).
+            None (the default) or an empty set means "no trap data
+            available" -- trap_mode_active is always False and the
+            reranker stays in mirror-mode (today's behavior, unchanged).
+            See decision (6) in the module docstring for the full spec.
 
     Returns:
         dict with:
@@ -933,36 +1653,86 @@ def rerank_candidates(
                                                              qt_indicator,
                                                              qt_window_weight,
                                                              qt_multiplier,
-                                                             bias_multiplier,
-                                                             weight}, ... ],
+                                                             setup_S,
+                                                             setup_multiplier,
+                                                             setup_matched_ply,
+                                                             castle_indicator,
+                                                             castle_multiplier,
+                                                              trap_indicator,
+                                                              trap_multiplier,
+                                                              length_indicator,
+                                                              length_multiplier,
+                                                              bias_multiplier,
+                                                              weight}, ... ],
                                                "family_lean": <sentinel>,
                                                "signals_applied":
                                                  ["sacrifice",
                                                   "queen_trade"]  # subset
                                              }
+            trap_mode_active: bool       -- whether trap-mode fired on
+                                           this specific move (True iff
+                                           exploitable_trap_keys was
+                                           non-empty AND >=1 candidate's
+                                           resulting position_key was in
+                                           it). False when no trap data
+                                           was passed OR no candidate
+                                           matched. See decision (6).
+            trap_candidate_count: int    -- how many candidates in the
+                                           input list were trap-
+                                           triggering (0 when
+                                           trap_mode_active is False).
+            average_game_length: float|None -- surfaced from style for
+                                               transparency; the raw
+                                               input to the game-length
+                                               calibration (decision 7).
+            length_centered: float         -- the centered value in
+                                              [-1, 1] used to compute
+                                              the per-candidate length
+                                              multiplier; 0.0 means
+                                              "no length bias" (None or
+                                              reference-length
+                                              average_game_length).
             game_count: int             -- surfaced from style, raw
                                            game count, for transparency
 
     Contracts:
       * Insufficient data (style["sufficient"]=False): returns
         candidates[0] deterministically, applied_bias=False,
-        source="insufficient_data" -- the regression contract.
+        source="insufficient_data" -- the regression contract. Trap-mode
+        is NEVER evaluated on this path (the outer sufficient gate
+        short-circuits before exploitable_trap_keys is consulted), so
+        trap_mode_active=False and trap_candidate_count=0 even when
+        exploitable_trap_keys is non-empty. See decision (6)'s
+        "DATA-FLOOR INTERACTION" paragraph.
       * Sufficient data but no candidate's per-signal multiplier
         actually deviates from 1.0 (no sac candidates, or sac_freq=0;
         no queen-trade candidates, OR all queen-trade candidates have
-        window_weight=0 / centered=0): returns candidates[0]
-        deterministically, applied_bias=False,
-        source="default_top_candidate". Same behavior as v1.
-        "Indicator fired" is not enough -- the calibration has to
-        actually move the multiplier off 1.0 for the bias to matter.
+        window_weight=0 / centered=0; no setup match; castle dormant;
+        AND no trap-triggering candidate OR exploitable_trap_keys is
+        None/empty; AND length_centered=0 OR no forcing candidates):
+        returns candidates[0] deterministically,
+        applied_bias=False, source="default_top_candidate". Same
+        behavior as v1. "Indicator fired" is not enough -- the
+        calibration has to actually move the multiplier off 1.0 for the
+        bias to matter.
       * Sufficient data and >=1 candidate's per-signal multiplier
         actually deviates from 1.0: weighted random sample using
             weight[i] = base(rank_i) * sac_mult_i * qt_mult_i
+                              * setup_mult_i * castle_mult_i * trap_mult_i
+                              * length_mult_i
         where:
             sac_mult_i = 1 + STYLE_BIAS_STRENGTH * sac_freq * sac_i
             qt_mult_i  = max(QUEEN_TRADE_WEIGHT_FLOOR,
                              1 + QUEEN_TRADE_BIAS_STRENGTH *
                                  centered * window_w * qt_i)
+            setup_mult_i = 1 + SETUP_SIGNATURE_BIAS_STRENGTH * max_S_i
+            castle_mult_i = max(CASTLE_WEIGHT_FLOOR,
+                                1 + CASTLE_BIAS_STRENGTH *
+                                    castle_pref_strength * castle_ind_i)
+            trap_mult_i  = 1 + TRAP_WEIGHT * trap_indicator_i
+            length_mult_i = max(GAME_LENGTH_WEIGHT_FLOOR,
+                                1 + GAME_LENGTH_BIAS_STRENGTH *
+                                    length_centered * is_forcing_i)
         applied_bias=True, source="style_biased", bias_breakdown
         populated (including the list of signals whose multiplier
         actually deviated from 1.0 on at least one candidate).
@@ -971,7 +1741,36 @@ def rerank_candidates(
       * Does not mutate `board` (uses board.copy(stack=False)).
       * Does not mutate `candidates`.
       * Reads `style` but does not mutate it.
+      * Reads `exploitable_trap_keys` but does not mutate it. Does not
+        hold any module-level mutable state related to trap-mode across
+        calls -- trap_mode_active is recomputed fresh every call, so a
+        single sparring game naturally flips between trap-mode and
+        mirror-mode move to move with no residual state (see Test 25).
     """
+    # Compute castle preference once at the top so all return paths
+    # (including the early-return regression paths below) can surface
+    # the same derived transparency fields. Cheap: one dict lookup +
+    # float arithmetic; no board access.
+    castle_pref_side, castle_pref_strength = _castle_preference(
+        style.get("castling_side_distribution")
+    )
+
+    # Compute game-length centering once at the top so all return paths
+    # can surface the same derived transparency field. Same pattern as
+    # castle_pref_side/strength above. See decision (7).
+    average_game_length = style.get("average_game_length")
+    if average_game_length is None:
+        length_centered = 0.0
+    else:
+        try:
+            gl = float(average_game_length)
+            length_centered = max(
+                -1.0,
+                min(1.0, (GAME_LENGTH_REFERENCE_PLY - gl) / GAME_LENGTH_SCALE_PLY),
+            )
+        except (TypeError, ValueError):
+            length_centered = 0.0
+
     if not candidates:
         return {
             "chosen_move_uci": "",
@@ -985,6 +1784,12 @@ def rerank_candidates(
             "setup_family": None,
             "setup_family_confidence": None,
             "setup_filtered_count": 0,
+            "castle_preference_side": castle_pref_side,
+            "castle_preference_strength": round(castle_pref_strength, 4),
+            "trap_mode_active": False,
+            "trap_candidate_count": 0,
+            "average_game_length": average_game_length,
+            "length_centered": round(length_centered, 4),
             "bias_breakdown": None,
             "game_count": style.get("game_count", 0),
         }
@@ -1004,6 +1809,12 @@ def rerank_candidates(
             "setup_family": None,
             "setup_family_confidence": None,
             "setup_filtered_count": 0,
+            "castle_preference_side": castle_pref_side,
+            "castle_preference_strength": round(castle_pref_strength, 4),
+            "trap_mode_active": False,
+            "trap_candidate_count": 0,
+            "average_game_length": average_game_length,
+            "length_centered": round(length_centered, 4),
             "bias_breakdown": None,
             "game_count": style.get("game_count", 0),
         }
@@ -1034,6 +1845,26 @@ def rerank_candidates(
     setup_signatures = style.get("setup_signatures")
     setup_present = bool(setup_signatures)
 
+    # castle-side preference window gate. castle_pref_side and
+    # castle_pref_strength are already computed at the top of the
+    # function; here we add the board-dependent checks (ply cap +
+    # castling rights on the preferred side) to decide whether the
+    # bias is live for this position. See the module docstring's
+    # decision (5) and _castle_indicator for the full rule.
+    castle_window_active = False
+    if castle_pref_side is not None:
+        bot_color = board.turn
+        has_pref_rights = (
+            board.has_kingside_castling_rights(bot_color)
+            if castle_pref_side == "kingside"
+            else board.has_queenside_castling_rights(bot_color)
+        )
+        castle_window_active = (
+            castle_pref_strength > CASTLE_PREFERENCE_THRESHOLD
+            and current_ply <= CASTLE_BIAS_PLY_MAX
+            and has_pref_rights
+        )
+
     # Family-filter the snapshot pool once before the candidate loop.
     # We compute cand_pawn + cand_opp_pawn off the CURRENT board (the
     # board the candidates are for, BEFORE pushing any candidate -- the
@@ -1063,21 +1894,57 @@ def rerank_candidates(
         len(setup_effective) if setup_effective is not None else 0
     )
 
+    # --- trap-mode / mirror-mode branch (decision 6) -----------------------
+    # Compute which candidates are trap-triggering BEFORE the per-candidate
+    # loop, so (a) trap_mode_active can be surfaced in the per-row
+    # breakdown and the top-level return, and (b) the candidate loop can
+    # do an O(1) set-membership lookup instead of re-pushing each
+    # candidate's resulting board. trap_mode_active is True iff at least
+    # one candidate's resulting position_key is in exploitable_trap_keys.
+    # When False (no trap data passed OR no candidate matches), every
+    # trap_mult is 1.0 -- a no-op term in the weight product, NOT a
+    # separate code path. This is the mirror-mode fallthrough: today's
+    # reranker behavior, unchanged (see Test 24).
+    #
+    # Statelessness is a feature here: trap_mode_active is recomputed
+    # fresh every call to rerank_candidates, so a single sparring game
+    # naturally flips between trap-mode and mirror-mode move to move
+    # with NO residual state carried between moves (see Test 25).
+    trap_candidate_indices: List[int] = []
+    if exploitable_trap_keys:
+        for i, c in enumerate(candidates):
+            if _is_trap_triggering(board, c.get("move", ""), exploitable_trap_keys):
+                trap_candidate_indices.append(i)
+    trap_mode_active = bool(trap_candidate_indices)
+    # Set for O(1) "is this candidate trap-triggering?" lookup in the loop.
+    trap_candidate_set = set(trap_candidate_indices)
+
     # --- compute per-candidate live indicators and weights ------------------
     # base_weight_i = candidate["policy"] when the patched UCI wrapper
     # is in use (the actual softmax probability of the candidate), or
-    # the geometric rank-decay proxy when it isn't. Three independent
+    # the geometric rank-decay proxy when it isn't. Six independent
     # multiplicative bias terms compose on top:
-    #   sac_mult_i  = 1 + STYLE_BIAS_STRENGTH * sac_freq * sac_indicator_i
-    #   qt_mult_i   = clamp(1 + QUEEN_TRADE_BIAS_STRENGTH *
-    #                          qt_centered * qt_window_w * qt_indicator_i,
-    #                       min=QUEEN_TRADE_WEIGHT_FLOOR)
-    #   setup_mult_i = 1 + SETUP_SIGNATURE_BIAS_STRENGTH * max_similarity_i
+    #   sac_mult_i    = 1 + STYLE_BIAS_STRENGTH * sac_freq * sac_indicator_i
+    #   qt_mult_i     = clamp(1 + QUEEN_TRADE_BIAS_STRENGTH *
+    #                           qt_centered * qt_window_w * qt_indicator_i,
+    #                        min=QUEEN_TRADE_WEIGHT_FLOOR)
+    #   setup_mult_i  = 1 + SETUP_SIGNATURE_BIAS_STRENGTH * max_similarity_i
+    #   castle_mult_i = clamp(1 + CASTLE_BIAS_STRENGTH *
+    #                           castle_pref_strength * castle_indicator_i,
+    #                        min=CASTLE_WEIGHT_FLOOR)
+    #   trap_mult_i    = 1 + TRAP_WEIGHT * trap_indicator_i  (boost-only)
+    #   length_mult_i  = clamp(1 + GAME_LENGTH_BIAS_STRENGTH *
+    #                           length_centered * is_forcing_i,
+    #                          min=GAME_LENGTH_WEIGHT_FLOOR)
     # weight_i = base_i * sac_mult_i * qt_mult_i * setup_mult_i
+    #                  * castle_mult_i * trap_mult_i * length_mult_i
     weights: List[float] = []
     sac_mults: List[float] = []
     qt_mults: List[float] = []
     setup_mults: List[float] = []
+    castle_mults: List[float] = []
+    trap_mults: List[float] = []
+    length_mults: List[float] = []
     breakdown_rows: List[Dict[str, Any]] = []
     any_used_policy = False
     side_just_moved = board.turn
@@ -1120,10 +1987,60 @@ def rerank_candidates(
                 setup_mult, setup_S, setup_matched_ply = 1.0, None, None
         setup_mults.append(setup_mult)
 
+        # Castle-side preference: +1 if this candidate helps the opponent's
+        # preferred castle side, -1 if it hurts, 0 if neutral. Only
+        # computed when the outer gate (castle_window_active) is True --
+        # otherwise every candidate gets indicator=0 -> castle_mult=1.0.
+        castle_indicator_val = 0
+        if castle_window_active:
+            castle_indicator_val = _castle_indicator(
+                board, uci, castle_pref_side
+            )
+        castle_mult_raw = (
+            1.0 + CASTLE_BIAS_STRENGTH
+            * castle_pref_strength * castle_indicator_val
+        )
+        castle_mult = max(CASTLE_WEIGHT_FLOOR, castle_mult_raw)
+        castle_mults.append(castle_mult)
+
+        # Trap-mode: boost-only multiplier for candidates whose resulting
+        # position_key is in exploitable_trap_keys. trap_indicator is 1
+        # iff this candidate's index was pre-computed as trap-triggering
+        # (see trap_candidate_set above). Boost-only (never below 1.0),
+        # matching setup's shape -- see decision (6)'s derivation. The
+        # other signals (sac/qt/setup/castle) are still computed and
+        # still apply, multiplicatively; trap-mode is "trap signal added
+        # to the stack," not "trap signal replaces the stack."
+        is_trap = idx in trap_candidate_set
+        trap_mult = 1.0 + TRAP_WEIGHT * (1.0 if is_trap else 0.0)
+        trap_mults.append(trap_mult)
+
+        # Game-length calibration (decision 7): per-candidate forcing
+        # indicator (capture or check) boosted for short-game opponents,
+        # suppressed for long-game opponents. The bias only acts on
+        # forcing candidates; quiet candidates get length_mult=1.0 (the
+        # bias is neutral on the absence of a forcing move, not evidence
+        # of "long-game style"). When length_centered=0.0 (None or
+        # reference-length average_game_length), length_mult_raw=1.0 for
+        # every candidate regardless of is_forcing -- the signal is a
+        # no-op. The indicator is still computed and surfaced in the
+        # per-row breakdown for transparency (operators can see which
+        # candidates are forcing even when the bias is dormant).
+        is_forcing = _is_forcing_move(board, uci)
+        length_mult_raw = (
+            1.0 + GAME_LENGTH_BIAS_STRENGTH * length_centered
+            * (1.0 if is_forcing else 0.0)
+        )
+        length_mult = max(GAME_LENGTH_WEIGHT_FLOOR, length_mult_raw)
+        length_mults.append(length_mult)
+
         base, used_policy = _candidate_base_weight(candidate, idx + 1)
         if used_policy:
             any_used_policy = True
-        bias_mult = sac_mult * qt_mult * setup_mult
+        bias_mult = (
+            sac_mult * qt_mult * setup_mult * castle_mult
+            * trap_mult * length_mult
+        )
         weight = base * bias_mult
         weights.append(weight)
         breakdown_rows.append({
@@ -1140,6 +2057,12 @@ def rerank_candidates(
             "setup_S": (round(setup_S, 4) if setup_S is not None else None),
             "setup_multiplier": round(setup_mult, 4),
             "setup_matched_ply": setup_matched_ply,
+            "castle_indicator": castle_indicator_val,
+            "castle_multiplier": round(castle_mult, 4),
+            "trap_indicator": is_trap,
+            "trap_multiplier": round(trap_mult, 4),
+            "length_indicator": is_forcing,
+            "length_multiplier": round(length_mult, 4),
             "bias_multiplier": round(bias_mult, 4),
             "weight": round(weight, 4),
         })
@@ -1163,6 +2086,9 @@ def rerank_candidates(
     sac_actually_biased = _mult_deviated(sac_mults)
     qt_actually_biased = _mult_deviated(qt_mults)
     setup_actually_biased = _mult_deviated(setup_mults)
+    castle_actually_biased = _mult_deviated(castle_mults)
+    trap_actually_biased = _mult_deviated(trap_mults)
+    length_actually_biased = _mult_deviated(length_mults)
     # base_source: "policy" if every candidate had a usable policy,
     # "rank_decay" if every candidate was missing one, "mixed" if the
     # list had both. Surface this at the top level of the result so
@@ -1174,7 +2100,7 @@ def rerank_candidates(
         ) else "mixed"
     else:
         base_source = "rank_decay"
-    if not (sac_actually_biased or qt_actually_biased or setup_actually_biased):
+    if not (sac_actually_biased or qt_actually_biased or setup_actually_biased or castle_actually_biased or trap_actually_biased or length_actually_biased):
         # Sampling would still be a no-op: weights are all just
         # geometric rank-decay, and rank 1 has the largest weight. The
         # sampler MIGHT pick a non-top candidate (it's random), but
@@ -1183,6 +2109,13 @@ def rerank_candidates(
         # deterministically: same behavior the insufficient path uses,
         # same behavior as today's default Maia, no random drift for
         # consumers that didn't opt into style biasing.
+        #
+        # Note: if trap_mode_active were True, trap_mult would be
+        # 1 + TRAP_WEIGHT = 7.0 on the trap-triggering candidate, which
+        # deviates from 1.0 -- so this no-bias path can only be reached
+        # when trap_mode_active is False. We still surface trap_mode_active
+        # and trap_candidate_count (both 0 here) for return-shape
+        # consistency with the style_biased path.
         top = candidates[0]
         return {
             "chosen_move_uci": top.get("move", ""),
@@ -1199,6 +2132,12 @@ def rerank_candidates(
                 if setup_filtered_confidence is not None else None
             ),
             "setup_filtered_count": setup_filtered_count,
+            "castle_preference_side": castle_pref_side,
+            "castle_preference_strength": round(castle_pref_strength, 4),
+            "trap_mode_active": trap_mode_active,
+            "trap_candidate_count": len(trap_candidate_indices),
+            "average_game_length": average_game_length,
+            "length_centered": round(length_centered, 4),
             "bias_breakdown": None,
             "game_count": style.get("game_count", 0),
         }
@@ -1213,6 +2152,12 @@ def rerank_candidates(
         signals_applied.append("queen_trade")
     if setup_actually_biased:
         signals_applied.append("setup_signature")
+    if castle_actually_biased:
+        signals_applied.append("castle")
+    if trap_actually_biased:
+        signals_applied.append("trap")
+    if length_actually_biased:
+        signals_applied.append("game_length")
 
     # --- weighted sample ----------------------------------------------------
     sampler = rng if rng is not None else random
@@ -1238,6 +2183,12 @@ def rerank_candidates(
             if setup_filtered_confidence is not None else None
         ),
         "setup_filtered_count": setup_filtered_count,
+        "castle_preference_side": castle_pref_side,
+        "castle_preference_strength": round(castle_pref_strength, 4),
+        "trap_mode_active": trap_mode_active,
+        "trap_candidate_count": len(trap_candidate_indices),
+        "average_game_length": average_game_length,
+        "length_centered": round(length_centered, 4),
         "bias_breakdown": {
             "weights": breakdown_rows,
             "family_lean": FAMILY_LEAN_DISABLED,
