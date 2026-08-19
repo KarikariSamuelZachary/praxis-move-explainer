@@ -152,6 +152,9 @@ class GameAnalyzer:
                 "color": "white",
                 "classification": "book",
                 "cp_loss": 0,
+                "eval_cp": 0.0,
+                "best_move_san": None,
+                "best_move_uci": None,
             }
         ]
 
@@ -188,8 +191,23 @@ class GameAnalyzer:
                 "color": move_color,
                 "classification": classification,
                 "cp_loss": cp_loss,
-                "best_move_san": eval_before.best_move_san,
-                "best_move_uci": eval_before.best_move_uci,
+                # Position evaluation from White's perspective (positive =
+                # White better). `eval_after` is scored from the side to move
+                # after the move, which is the opponent of `move_color`.
+                "eval_cp": round(
+                    eval_after.score_cp if move_color == "black" else -eval_after.score_cp,
+                    1,
+                ),
+                "best_move_san": (
+                    eval_before.best_move_san
+                    if eval_before.best_move_san and eval_before.best_move_san != "(none)"
+                    else None
+                ),
+                "best_move_uci": (
+                    eval_before.best_move_uci
+                    if eval_before.best_move_uci and eval_before.best_move_uci != "(none)"
+                    else None
+                ),
             }
 
             if include_explanations and classification in {"mistake", "blunder"}:

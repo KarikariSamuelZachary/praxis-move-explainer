@@ -52,6 +52,9 @@ def _normalize_review_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "color": row["color"],
             "classification": row["classification"],
             "cp_loss": row["cp_loss"],
+            "eval_cp": row.get("eval_cp", 0),
+            "best_move_san": row.get("best_move_san"),
+            "best_move_uci": row.get("best_move_uci"),
         }
 
         explanation = row.get("explanation")

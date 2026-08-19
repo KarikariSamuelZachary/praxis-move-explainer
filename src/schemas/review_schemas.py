@@ -32,4 +32,7 @@ class ReviewMoveResponse(BaseModel):
     color: Literal["white", "black"]
     classification: MoveClassification
     cp_loss: int
+    eval_cp: float = 0
+    best_move_san: Optional[str] = None
+    best_move_uci: Optional[str] = None
     explanation: Optional[ReviewExplanation] = None
