@@ -1,9 +1,11 @@
 import logging
+import time
 from typing import Any, Dict, Literal, Optional
 
 import chess
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Query, Request
 
+from core import database
 from core.rate_limit import limit_by_clerk_user_id
 from engines.maia_engine import MaiaUnavailableError, get_maia3, is_maia_available
 from engines.stockfish_engine import StockfishEngine
@@ -37,6 +39,7 @@ from services.opponent_repertoire import (
 )
 from services.opponent_style import compute_opponent_style
 from services.opponent_style_reranker import rerank_candidates
+from services.opponent_traps import compute_exploitable_traps
 from services.weakness_profile import (
     create_weakness_profile_job,
     get_weakness_profile_job,
@@ -145,6 +148,13 @@ def clear_opponent_sparring_data(
         provider=provider,
         opponent_username=opponent_username,
     )
+    # Drop the matching style/traps cache entry so the next sparring move
+    # recomputes against the freshly-cleared data instead of a stale entry.
+    _invalidate_style_traps_cache(
+        requested_by_user_id=clerk_id,
+        provider=provider,
+        opponent_username=opponent_username,
+    )
     return OpponentDataClearResponse(**result)
 
 
@@ -237,6 +247,65 @@ def list_train_opponents(
 # gets its own copy — fine for a non-critical display hint.
 _CHESSCOM_PROFILE_TTL_SECONDS = 3600
 _chesscom_profile_cache: dict[tuple[str, str], tuple[float, Dict[str, Any]]] = {}
+
+
+# --- style + traps in-memory cache (sparring hot path) --------------------
+#
+# compute_opponent_style (~960ms median for a 200-game opponent) and
+# compute_exploitable_traps (~6ms) are recomputed on every out-of-book
+# sparring move. The opponent's imported games never change mid-session,
+# so both are cached together in one process-local entry and reused until
+# the TTL expires. Same pattern as _chesscom_profile_cache above: module
+# scope, no cross-worker sharing, time-based invalidation only.
+#
+# Cache entry shape: (cached_at_unix, style, exploitable_trap_keys,
+# traps_ok). style is only ever stored when compute_opponent_style
+# succeeded (it always returns a dict on success, so a stored style is
+# never None). traps_ok is False when traps was NOT successfully computed
+# (either it failed, or style was insufficient so it was never needed); a
+# hit then reuses the expensive style profile but re-runs traps rather
+# than trusting a poisoned None.
+_SPARRING_STYLE_TRAPS_TTL_SECONDS = 1800  # 30 minutes
+_sparring_style_traps_cache: dict[
+    tuple[str, str, str],
+    tuple[float, Optional[Dict[str, Any]], Optional[set], bool],
+] = {}
+
+
+def _sparring_style_traps_cache_key(
+    requested_by_user_id: str, provider: str, opponent_username: str
+) -> tuple[str, str, str]:
+    """Canonical cache key. Username is lowercased to match the SQL LOWER()
+    the style/traps queries use, so a casing change in the request can't
+    fragment the entry."""
+    return (
+        requested_by_user_id,
+        provider,
+        (opponent_username or "").strip().lower(),
+    )
+
+
+def _invalidate_style_traps_cache(
+    requested_by_user_id: str,
+    provider: Optional[str] = None,
+    opponent_username: Optional[str] = None,
+) -> None:
+    """Drop cached style/traps for one opponent, or the whole user.
+
+    Best-effort nice-to-have: TTL is the primary invalidation mechanism.
+    """
+    if provider and opponent_username:
+        _sparring_style_traps_cache.pop(
+            _sparring_style_traps_cache_key(
+                requested_by_user_id, provider, opponent_username
+            ),
+            None,
+        )
+        return
+    for key in [
+        k for k in _sparring_style_traps_cache if k[0] == requested_by_user_id
+    ]:
+        _sparring_style_traps_cache.pop(key, None)
 
 
 def _chesscom_profile_cached(username: str) -> Optional[Dict[str, Any]]:
@@ -436,11 +505,24 @@ def get_sparring_move(
             # best_move() path -- per the wire-up contract the request MUST
             # NOT block or fail because the style layer is unavailable.
             #
-            # Two failure axes get separate try/excepts:
+            # Three failure axes get separate try/excepts (one failure
+            # axis per try/except, so a trap-computation failure can't
+            # mask a style-computation failure or vice versa):
             #   * compute_opponent_style() reads + python-chess-parses the
             #     opponent's full PGN corpus from the DB -- it can fail in
             #     ways unrelated to Maia (corrupt PGN rows, transient DB
             #     errors). A failure here degrades to unbiased Maia.
+            #   * compute_exploitable_traps() queries the
+            #     opponent_game_blunders + opponent_games tables to find
+            #     positions the opponent has blundered in >=2 distinct
+            #     games across >=5 total games (trap-mode, decision (6) in
+            #     opponent_style_reranker's module docstring). It can fail
+            #     independently of the style layer (transient DB errors,
+            #     pool checkout failure). A failure here degrades to
+            #     mirror-mode (exploitable_trap_keys=None) -- the existing
+            #     sac/qt/setup/castle biasing still runs; only the trap
+            #     boost is lost. Do NOT let a trap-computation failure
+            #     prevent the existing style biasing from running.
             #   * rerank_candidates() is pure-Python (board copies +
             #     per-candidate sac detection); if it raises it degrades to
             #     the unbiased best_move() call.
@@ -450,23 +532,60 @@ def get_sparring_move(
             # hiccupped".
             #
             # LATENCY SURFACE: compute_opponent_style replays every imported
-            # PGN on each call (no cache yet). For a 200-game opponent this
-            # adds ~1-2s to every out-of-book sparring move. Memoization is
-            # a deliberate future task; the wire-up intentionally pays the
-            # cost up front so the bias can be live-verified.
-            try:
-                style = compute_opponent_style(
-                    requested_by_user_id=clerk_id,
-                    provider=body.provider,
-                    opponent_username=body.opponent_username,
+            # PGN on each call; for a 200-game opponent that is ~960ms per
+            # out-of-book move. compute_exploitable_traps adds ~6ms. Both
+            # are now cached together in _sparring_style_traps_cache (see
+            # the module-level helper) so the per-move cost collapses to a
+            # dict lookup after the first call of a session. A miss runs the
+            # exact three-try/except path below; only successful results are
+            # stored.
+            style = None
+            style_ok = False
+            exploitable_trap_keys = None
+            traps_ok = False
+            cache_hit = False
+            cache_key = _sparring_style_traps_cache_key(
+                clerk_id, body.provider, body.opponent_username
+            )
+            cached_entry = _sparring_style_traps_cache.get(cache_key)
+            if cached_entry is not None and (
+                time.time() - cached_entry[0] < _SPARRING_STYLE_TRAPS_TTL_SECONDS
+            ):
+                cache_hit = True
+                style = cached_entry[1]
+                exploitable_trap_keys = cached_entry[2]
+                traps_ok = cached_entry[3]
+                style_ok = style is not None
+                log.info(
+                    "style/traps cache HIT: opponent=%s/%s "
+                    "style_cached=%s traps_cached=%s",
+                    body.provider, body.opponent_username, style_ok, traps_ok,
                 )
-            except Exception as exc:  # noqa: BLE001
-                log.warning(
-                    "compute_opponent_style failed for %s/%s — falling "
-                    "back to unbiased Maia. Underlying: %s",
-                    body.provider, body.opponent_username, exc,
+            else:
+                if cached_entry is not None:
+                    # expired -> drop and recompute below
+                    _sparring_style_traps_cache.pop(cache_key, None)
+                log.info(
+                    "style/traps cache MISS: opponent=%s/%s — computing fresh",
+                    body.provider, body.opponent_username,
                 )
-                style = None
+
+            if not style_ok:
+                try:
+                    style = compute_opponent_style(
+                        requested_by_user_id=clerk_id,
+                        provider=body.provider,
+                        opponent_username=body.opponent_username,
+                    )
+                    style_ok = True
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "compute_opponent_style failed for %s/%s — falling "
+                        "back to unbiased Maia. Underlying: %s",
+                        body.provider, body.opponent_username, exc,
+                    )
+                    style = None
+                    style_ok = False
 
             move_uci = ""
             move_san = ""
@@ -478,11 +597,53 @@ def get_sparring_move(
                     self_elo=opponent_elo,
                     oppo_elo=opponent_elo,
                 )
+                # --- trap-mode data (decision (6)) -----------------------
+                # compute_exploitable_traps returns the bare set of
+                # exploitable position_keys (applying TRAP_MIN_HITS /
+                # TRAP_MIN_GAMES gates). None/empty = mirror-mode (today's
+                # reranker, unchanged). Reused from the cache on a fresh
+                # traps_ok hit; otherwise computed fresh (the conn is
+                # checked out from the pool and returned in a finally --
+                # matching list_opponent_profiles' connection-acquisition
+                # pattern, the same pattern the sibling
+                # compute_opponent_traps call uses for the Opponent Prep
+                # page's "Traps He's Fallen For" UI). On any failure the
+                # trap set is None so the reranker stays in mirror-mode;
+                # the existing sac/qt/setup/castle biasing is NOT blocked.
+                if not traps_ok:
+                    exploitable_trap_keys = None
+                    try:
+                        if database.connection_pool is None:
+                            raise RuntimeError(
+                                "Database connection pool is not initialized"
+                            )
+                        conn = database.connection_pool.getconn()
+                        try:
+                            exploitable_trap_keys = compute_exploitable_traps(
+                                conn,
+                                requested_by_user_id=clerk_id,
+                                provider=body.provider,
+                                opponent_username=body.opponent_username,
+                            )
+                        finally:
+                            database.connection_pool.putconn(conn)
+                        traps_ok = True
+                    except Exception as exc:  # noqa: BLE001
+                        log.warning(
+                            "compute_exploitable_traps failed for %s/%s — "
+                            "falling back to mirror-mode (no trap bias). "
+                            "Underlying: %s",
+                            body.provider, body.opponent_username, exc,
+                        )
+                        exploitable_trap_keys = None
+                        traps_ok = False
+
                 try:
                     rerank = rerank_candidates(
                         candidates=candidates,
                         style=style,
                         board=board,
+                        exploitable_trap_keys=exploitable_trap_keys,
                     )
                     move_uci = rerank.get("chosen_move_uci", "") or ""
                     if move_uci:
@@ -493,7 +654,9 @@ def get_sparring_move(
                             "source=%s base=%s "
                             "setup_present=%s setup_family=%s "
                             "setup_family_confidence=%s "
-                            "setup_filtered_count=%s signals=%s chose=%s",
+                            "setup_filtered_count=%s "
+                            "trap_mode_active=%s trap_candidate_count=%s "
+                            "signals=%s chose=%s",
                             body.provider, body.opponent_username,
                             rerank.get("sacrifice_frequency"),
                             rerank.get("applied_bias"),
@@ -503,6 +666,8 @@ def get_sparring_move(
                             rerank.get("setup_family"),
                             rerank.get("setup_family_confidence"),
                             rerank.get("setup_filtered_count"),
+                            rerank.get("trap_mode_active"),
+                            rerank.get("trap_candidate_count"),
                             (
                                 rerank.get("bias_breakdown", {}) or {}
                             ).get("signals_applied") if rerank.get("applied_bias") else None,
@@ -537,6 +702,22 @@ def get_sparring_move(
                 )
                 move_uci = maia_result.get("best_move_uci") or ""
                 move_san = maia_result.get("best_move_san") or ""
+
+            # Cache the freshly computed results (miss path only, so the TTL
+            # is measured from the actual compute time). Only successful
+            # results are stored: style is cached only when
+            # compute_opponent_style did not raise (style_ok), and traps only
+            # when it was computed successfully (traps_ok) -- a failed traps
+            # computation leaves traps_ok=False so the next move re-runs
+            # traps instead of trusting a poisoned None. A failed style
+            # computation stores nothing at all, so the next move retries it.
+            if not cache_hit and style_ok:
+                _sparring_style_traps_cache[cache_key] = (
+                    time.time(),
+                    style,
+                    exploitable_trap_keys if traps_ok else None,
+                    traps_ok,
+                )
         except MaiaUnavailableError as exc:
             # Typed "engine unavailable" — covers never-started, mid-session
             # crash (best_move() marks the subprocess dead and re-raises this
