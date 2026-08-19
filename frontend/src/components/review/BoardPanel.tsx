@@ -75,12 +75,16 @@ export default function BoardPanel({
       )
     : null;
 
-  // Evaluation bar: position score from White's perspective, mapped to a
-  // white/black split like chess.com's. Positive = White better.
+  // Evaluation bar: position score from White's perspective (positive =
+  // White better). Only the winning side's half fills — it grows outward from
+  // the centre divider — while the losing side stays empty.
   const evalCp = currentMove?.eval_cp ?? 0;
-  const whiteShare = 1 / (1 + Math.exp(-evalCp * 0.00368208));
-  const whitePct = whiteShare * 100;
-  const blackPct = 100 - whitePct;
+  const advantage = Math.min(
+    1,
+    2 / (1 + Math.exp(-Math.abs(evalCp) * 0.00368208)) - 1,
+  );
+  const whiteFillPct = evalCp > 0 ? advantage * 50 : 0;
+  const blackFillPct = evalCp < 0 ? advantage * 50 : 0;
   const evalLabel =
     Math.abs(evalCp) < 0.05
       ? '0.0'
@@ -106,14 +110,15 @@ export default function BoardPanel({
           aria-hidden
           className="flex w-3.5 shrink-0 flex-col items-center gap-1 self-stretch"
         >
-          <div className="relative w-full flex-1 overflow-hidden rounded-full border border-black/50 bg-black/60 shadow-[0_2px_8px_rgba(0,0,0,0.5)]">
+          <div className="relative w-full flex-1 overflow-hidden rounded-full border border-black/50 bg-[#404040] shadow-[0_2px_8px_rgba(0,0,0,0.5)]">
+            <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-white/20" />
             <div
-              className="absolute inset-x-0 top-0 bg-[#2a2a2a] transition-all duration-300"
-              style={{ height: `${blackPct}%` }}
+              className="absolute inset-x-0 bg-[#101010] transition-all duration-300"
+              style={{ bottom: '50%', height: `${blackFillPct}%` }}
             />
             <div
-              className="absolute inset-x-0 bottom-0 bg-[#f5f5f5] transition-all duration-300"
-              style={{ height: `${whitePct}%` }}
+              className="absolute inset-x-0 bg-[#f0f0f0] transition-all duration-300"
+              style={{ top: '50%', height: `${whiteFillPct}%` }}
             />
           </div>
           <span className="font-mono text-[10px] leading-none text-white/70">
