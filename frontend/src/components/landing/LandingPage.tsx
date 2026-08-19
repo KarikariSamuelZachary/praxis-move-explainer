@@ -56,7 +56,24 @@ export default function LandingPage() {
       });
     }, rootRef);
 
+    // The hero pin-spacer is measured before the webfonts swap in, which can
+    // yield a wrong document height (and a stale Lenis scroll limit). Re-measure
+    // once fonts and the window finish loading so the scrollable area settles
+    // before the user scrolls — otherwise the footer can become unreachable.
+    const syncLayout = () => {
+      ScrollTrigger.refresh();
+      lenisRef.current?.resize();
+    };
+
+    document.fonts?.ready?.then(syncLayout).catch(() => {});
+    if (document.readyState === 'complete') {
+      syncLayout();
+    } else {
+      window.addEventListener('load', syncLayout);
+    }
+
     return () => {
+      window.removeEventListener('load', syncLayout);
       ctx.revert();
       gsap.ticker.remove(raf);
       lenis.destroy();
@@ -73,6 +90,25 @@ export default function LandingPage() {
       document.documentElement.classList.remove('landing-scrollbar');
     };
   }, []);
+
+  // While an auth modal is open, freeze the landing page so scrolling only
+  // happens inside the modal. Lenis is paused so wheel events can't move the
+  // page, and body overflow is locked as a fallback (touch, reduced motion).
+  useEffect(() => {
+    if (!authModal) return;
+
+    lenisRef.current?.stop();
+    const previousBodyOverflow = document.body.style.overflow;
+    const previousHtmlOverflow = document.documentElement.style.overflow;
+    document.body.style.overflow = 'hidden';
+    document.documentElement.style.overflow = 'hidden';
+
+    return () => {
+      lenisRef.current?.start();
+      document.body.style.overflow = previousBodyOverflow;
+      document.documentElement.style.overflow = previousHtmlOverflow;
+    };
+  }, [authModal]);
 
   const scrollToSection = useCallback((hash: string) => {
     const target = document.querySelector(hash);
