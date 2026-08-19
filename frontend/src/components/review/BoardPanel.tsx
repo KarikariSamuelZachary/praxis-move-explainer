@@ -65,8 +65,32 @@ export default function BoardPanel({
       )
     : null;
 
+  const MAX_CP_LOSS = 150;
+  const cpLoss = currentMove?.cp_loss ?? 0;
+  const barFill = Math.min(100, Math.max(0, (cpLoss / MAX_CP_LOSS) * 100));
+  const barColor =
+    cpLoss <= 30
+      ? '#10b981'
+      : cpLoss <= 60
+        ? '#f59e0b'
+        : cpLoss <= 120
+          ? '#f97316'
+          : '#ef4444';
+
   return (
     <div className="relative mx-auto aspect-square w-full max-w-[calc(100vh-70px)]">
+      {hasGame && (
+        <div
+          aria-hidden
+          className="absolute overflow-hidden rounded-full border border-black/50 bg-black/60 shadow-[0_0_0_1px_rgba(0,0,0,0.5),0_2px_8px_rgba(0,0,0,0.5)]"
+          style={{ left: -20, top: '50%', transform: 'translateY(-50%)', width: 10, height: '82%' }}
+        >
+          <div
+            className="absolute inset-x-0 bottom-0 rounded-full transition-all duration-300"
+            style={{ height: `${barFill}%`, backgroundColor: barColor }}
+          />
+        </div>
+      )}
       <div
         className="h-full w-full"
         style={{
