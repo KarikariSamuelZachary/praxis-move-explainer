@@ -59,9 +59,6 @@ export default function CtaSection({ onSignUp }: CtaSectionProps) {
                 →
               </span>
             </button>
-            <p className="mt-5 text-xs tracking-wide text-wood-mute/80">
-              No credit card required.
-            </p>
           </div>
         </div>
 
