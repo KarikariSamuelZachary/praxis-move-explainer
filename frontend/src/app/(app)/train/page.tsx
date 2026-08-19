@@ -216,6 +216,7 @@ type ImportStatusResponse = {
   chesscom_username?: string | null;
   requested_limit: number;
   imported_count: number;
+  total_games?: number;
   error_message?: string | null;
 };
 
@@ -292,7 +293,7 @@ function OpponentPrepDialog({ onClose }: { onClose: () => void }) {
             pollData.error_message ?? 'Import failed on the server. Try again in a moment.'
           );
         }
-        const total = pollData.requested_limit || IMPORT_LIMIT;
+        const total = pollData.total_games || pollData.requested_limit || IMPORT_LIMIT;
         setProgress(Math.min(100, Math.round((pollData.imported_count / total) * 100)));
       }
       throw new Error('Import is taking longer than expected. Close this and try again shortly.');

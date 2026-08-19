@@ -82,6 +82,7 @@ def get_opponent_import_job(*, job_id: str, requested_by_user_id: str) -> Option
                     chesscom_username,
                     requested_limit,
                     imported_count,
+                    total_games,
                     error_message
                 FROM opponent_import_jobs
                 WHERE id = %s AND requested_by_user_id = %s
@@ -224,6 +225,21 @@ def _mark_job_running(conn, job_id: str) -> None:
         )
 
 
+_PROGRESS_COMMIT_EVERY = 5
+
+
+def _publish_import_progress(conn, job_id: str, imported_count: int, total_games: int) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            UPDATE opponent_import_jobs
+            SET imported_count = %s, total_games = %s
+            WHERE id = %s
+            """,
+            (imported_count, total_games, job_id),
+        )
+
+
 def _mark_job_completed(conn, job_id: str, imported_count: int) -> None:
     with conn.cursor() as cur:
         cur.execute(
@@ -305,9 +321,17 @@ def _store_opponent_games(
     opponent_username: str,
     games: Iterable[Dict[str, Any]],
 ) -> int:
+    game_list = list(games)
+    total_games = len(game_list)
     inserted_or_updated = 0
+
+    # Publish the total (and zero progress) before the first row lands so the
+    # frontend can compute a real percentage while the import is still running.
+    _publish_import_progress(conn, job_id, 0, total_games)
+    conn.commit()
+
     with conn.cursor() as cur:
-        for game in games:
+        for game in game_list:
             if not game.get("url") or not game.get("pgn"):
                 continue
 
@@ -378,6 +402,10 @@ def _store_opponent_games(
                 black_player=game.get("black") or {},
             )
             inserted_or_updated += 1
+
+            if inserted_or_updated % _PROGRESS_COMMIT_EVERY == 0:
+                _publish_import_progress(conn, job_id, inserted_or_updated, total_games)
+                conn.commit()
 
     return inserted_or_updated
 

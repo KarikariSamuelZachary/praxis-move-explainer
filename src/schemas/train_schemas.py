@@ -39,6 +39,7 @@ class OpponentImportJobResponse(BaseModel):
     chesscom_username: Optional[str] = None
     requested_limit: int
     imported_count: int
+    total_games: int = 0
     error_message: Optional[str] = None
 
 

@@ -396,11 +396,18 @@ def run_migrations():
                     chesscom_username   TEXT,
                     requested_limit     INTEGER NOT NULL DEFAULT 100,
                     imported_count      INTEGER NOT NULL DEFAULT 0,
+                    total_games         INTEGER NOT NULL DEFAULT 0,
                     error_message       TEXT,
                     created_at          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     started_at          TIMESTAMPTZ,
                     completed_at        TIMESTAMPTZ
                 )
+                """
+            )
+            cur.execute(
+                """
+                ALTER TABLE opponent_import_jobs
+                    ADD COLUMN IF NOT EXISTS total_games INTEGER NOT NULL DEFAULT 0
                 """
             )
             cur.execute(
