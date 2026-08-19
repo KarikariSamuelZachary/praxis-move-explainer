@@ -64,21 +64,29 @@ export default function CtaSection({ onSignUp }: CtaSectionProps) {
             </p>
           </div>
         </div>
-      </div>
 
-      <footer className="relative border-t border-white/5">
-        <div className="mx-auto flex w-full max-w-[1400px] items-center justify-between px-5 py-8 sm:px-8 xl:pl-40">
-          <div className="flex items-center gap-3">
-            <KnightMark className="h-6 w-5 opacity-80" />
-            <span className="font-display text-xs font-semibold tracking-[0.28em] text-gold/80">
-              PRAXIS
-            </span>
+        <div className="absolute inset-x-0 bottom-0 z-10">
+          <div className="mx-auto flex w-full max-w-[1400px] flex-col items-center gap-4 px-5 py-6 sm:px-8">
+            <div className="flex items-center justify-center gap-5">
+              <a href="/privacy" className="text-xs text-wood-mute/70 transition hover:text-gold-bright">
+                Privacy
+              </a>
+              <a href="/terms" className="text-xs text-wood-mute/70 transition hover:text-gold-bright">
+                Terms
+              </a>
+              <a href="/contact" className="text-xs text-wood-mute/70 transition hover:text-gold-bright">
+                Contact
+              </a>
+              <a href="/user-agreement" className="text-xs text-wood-mute/70 transition hover:text-gold-bright">
+                User Agreement
+              </a>
+            </div>
+            <p className="text-xs text-wood-mute/70">
+              © 2026 Praxis. Train with purpose.
+            </p>
           </div>
-          <p className="text-xs text-wood-mute/70">
-            © 2026 Praxis. Train with purpose.
-          </p>
         </div>
-      </footer>
+      </div>
     </section>
   );
 }
