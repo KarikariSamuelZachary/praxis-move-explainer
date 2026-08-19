@@ -95,7 +95,7 @@ export default function WoodpeckerSection({ onStartReview }: WoodpeckerSectionPr
           label="Repeat. Remember. Master."
           title={
             <>
-              FSPS Woodpecker
+              Woodpecker
               <br />
               Spaced Repetition.
               <br />
