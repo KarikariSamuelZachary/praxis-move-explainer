@@ -45,9 +45,32 @@ RECENCY_DECAY_LAMBDA_PER_YEAR = 0.5
 # Unix-seconds age into years inside the SQL decay expression.
 _SECONDS_PER_YEAR = 365.25 * 86400.0
 
+# Near-book repertoire similarity (feature D): half-width, in half-moves,
+# of the "nearby position" window used by pick_near_repertoire_moves. A
+# repertoire move is considered "near" the live position when its stored
+# ply_index sits within +/-NEAR_BOOK_PLY_WINDOW of the live position's own
+# ply index AND it was played from the same color (played_color). See
+# pick_near_repertoire_moves' docstring for why a ply window was chosen as
+# the v1 "near" gate instead of a position_key prefix match.
+NEAR_BOOK_PLY_WINDOW = 2
+
 
 def _position_key(board: chess.Board) -> str:
     return " ".join(board.fen().split()[:4])
+
+
+def _candidate_ply_index(board: chess.Board) -> int:
+    """0-indexed half-move index of the move the side-to-move is about to
+    play -- the same index convention as opponent_repertoire_moves.ply_index.
+
+    ply_index is the 0-based enumerate() index from index_opponent_game, so
+    the opponent's k-th move (1-indexed ply k) is stored at ply_index k-1.
+    _candidate_ply_index mirrors the reranker's _candidate_ply (which returns
+    the 1-indexed ply) but subtracts 1 so it is directly comparable to the
+    stored column. Start position (white to move) -> 0; after 1.e4 (black to
+    move) -> 1; after 1.e4 e5 (white to move) -> 2.
+    """
+    return board.fullmove_number * 2 - (1 if board.turn == chess.WHITE else 0) - 1
 
 
 def _normalize_username(value: Optional[str]) -> str:
@@ -442,6 +465,163 @@ def pick_repertoire_move(
 
         choice = random.choices(rows, weights=weighted, k=1)[0]
         return choice
+    finally:
+        database.connection_pool.putconn(conn)
+
+
+def pick_near_repertoire_moves(
+    *,
+    requested_by_user_id: str,
+    provider: str,
+    opponent_username: str,
+    board: chess.Board,
+    ply_window: int = NEAR_BOOK_PLY_WINDOW,
+) -> Optional[Dict[str, float]]:
+    """Near-book repertoire similarity (feature D) data lookup.
+
+    Returns a recency-weighted ``{move_uci: weight}`` map of the moves the
+    opponent has played from repertoire positions NEAR the live position --
+    the "near-book" extension of mirror-mode that fires only once
+    ``pick_repertoire_move`` has returned no exact book hit.
+
+    DEFINITION OF "NEAR" (v1). A repertoire move is near the live position
+    iff BOTH hold:
+
+      (a) SAME COLOR: ``r.played_color`` equals the live side to move's
+          color. Repertoire position_keys are always "opponent to move"
+          positions (see index_opponent_game), and the live board is the
+          bot's turn == the opponent's color, so this keeps the comparison
+          inside the opponent's same-color games.
+
+      (b) PLY WINDOW: ``r.ply_index`` is within +/- ``ply_window`` of the
+          live position's ``_candidate_ply_index``. This is the "near"
+          gate: the opponent reached a position at roughly the same stage
+          of the game (same move number) in another game.
+
+    Why a ply window and not a position_key prefix match (the guidance's
+    first-listed option): a prefix match would require scanning EVERY
+    repertoire position_key and parsing each FEN's piece-placement field
+    (O(rows) string work per sparring move, no usable index on "similar"
+    keys), and it would substantially overlap the existing
+    setup_signatures Jaccard bias (which already measures board-shape
+    similarity to historic snapshots) -- D would double-count that axis.
+    Shared opening family was rejected because the reranker has already
+    documented (opponent_style_reranker decision (1)) that family-lean has
+    no per-candidate classifier and so cannot bias candidates; adopting it
+    here would require building that classifier (out of scope). The ply
+    window is cheap, indexed on the opponent columns, and unambiguous: it
+    profiles the opponent's MOVE-ORDER tendency at this game stage (the
+    "spirit of the repertoire" beyond the exact position), which is exactly
+    what near-book should add on top of exact-book.
+
+    DATA FOUNDATION. Reads the SAME recency-weighted repertoire data as
+    pick_repertoire_move: opponent_repertoire_moves JOIN opponent_games,
+    with the SAME exponential decay (RECENCY_DECAY_LAMBDA_PER_YEAR=0.5,
+    end_time=0 -> neutral 1.0). It does NOT re-query raw unweighted move
+    counts, so a near move's weight ages exactly like an exact book move's.
+    No time-control weighting, deliberately: openings transfer across TCs
+    better than tactical style (same documented choice as the exact book
+    path).
+
+    The live position's OWN exact position_key is excluded from the window
+    (``position_key <> live``) so this can never re-express a move the
+    exact-book path would have owned. That filter is defensive -- by the
+    time this runs the exact key has no rows (pick_repertoire_move would
+    have returned a hit under MIN_REPERTOIRE_SAMPLES=1) -- but it makes the
+    sequencing explicit.
+
+    Returns None (the "no near-book signal" result) when the window yields
+    no rows, when the raw-sample floor (MIN_REPERTOIRE_SAMPLES, same
+    contract as pick_repertoire_move) is not cleared, or when the decayed
+    weights all underflow to zero. Callers must treat None as "fall through
+    to today's mirror-mode with no change".
+
+    Raises RuntimeError when the DB pool is not initialized (matches the
+    sibling pickers); a transient DB error propagates to the caller, which
+    (in the sparring router) catches it and degrades to mirror-mode.
+    """
+    if database.connection_pool is None:
+        raise RuntimeError("Database connection pool is not initialized")
+
+    played_color = "white" if board.turn == chess.WHITE else "black"
+    current_ply_index = _candidate_ply_index(board)
+
+    conn = database.connection_pool.getconn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT
+                    r.move_uci,
+                    COUNT(*)::int AS frequency,
+                    -- Per-move recency-weighted frequency, IDENTICAL decay
+                    -- expression to pick_repertoire_move so near-book and
+                    -- exact-book weights age on the same curve.
+                    SUM(
+                        CASE
+                            WHEN g.end_time > 0
+                                THEN exp(
+                                    ( -%s
+                                      * EXTRACT(EPOCH FROM (NOW() - to_timestamp(g.end_time)))
+                                      / %s
+                                    )::double precision
+                                )
+                            ELSE 1.0
+                        END
+                    )::double precision AS weighted_frequency
+                FROM opponent_repertoire_moves r
+                JOIN opponent_games g ON g.id = r.opponent_game_id
+                WHERE r.requested_by_user_id = %s
+                  AND r.provider = %s
+                  AND LOWER(r.opponent_username) = LOWER(%s)
+                  AND r.played_color = %s
+                  AND r.ply_index BETWEEN %s AND %s
+                  AND r.position_key <> %s
+                GROUP BY r.move_uci
+                """,
+                (
+                    RECENCY_DECAY_LAMBDA_PER_YEAR,
+                    _SECONDS_PER_YEAR,
+                    requested_by_user_id,
+                    provider,
+                    opponent_username,
+                    played_color,
+                    current_ply_index - ply_window,
+                    current_ply_index + ply_window,
+                    _position_key(board),
+                ),
+            )
+            rows = [dict(row) for row in cur.fetchall()]
+
+        if not rows:
+            return None
+
+        # Same per-position floor contract as pick_repertoire_move, on RAW
+        # frequency (how many near occurrences we've actually seen), so old-
+        # but-voluminous near positions still qualify.
+        total_samples = sum(int(row["frequency"]) for row in rows)
+        if total_samples < MIN_REPERTOIRE_SAMPLES:
+            return None
+
+        weights: Dict[str, float] = {}
+        for row in rows:
+            w = float(row["weighted_frequency"] or 0.0)
+            if w > 0.0:
+                weights[row["move_uci"]] = weights.get(row["move_uci"], 0.0) + w
+
+        total_weighted = sum(weights.values())
+        # Defensive underflow fallback: if every contributing game was so old
+        # that exp() underflowed to 0.0, fall back to raw frequency so we
+        # never hand the reranker an empty weight map.
+        if total_weighted <= 0.0:
+            weights = {
+                row["move_uci"]: float(int(row["frequency"])) for row in rows
+            }
+            total_weighted = sum(weights.values())
+        if total_weighted <= 0.0:
+            return None
+
+        return weights
     finally:
         database.connection_pool.putconn(conn)
 
