@@ -99,48 +99,94 @@ log = logging.getLogger(__name__)
 
 # --- aggregate floor -------------------------------------------------------
 #
-# Minimum number of opponent games before this layer commits to a style
-# profile. Below it `compute_opponent_style` reports `sufficient=False`
-# and the caller falls through to default Maia behaviour — exactly the same
-# contract `pick_repertoire_move` uses for the per-position case.
+# Minimum effective sample size (sum of per-game recency weights) before
+# this layer commits to a style profile. Below it `compute_opponent_style`
+# reports `sufficient=False` and the caller falls through to default Maia
+# behaviour — exactly the same contract `pick_repertoire_move` uses for
+# the per-position case.
 #
-# Why 3 and not 5 (the per-position floor in opponent_repertoire.py):
-#   * A whole-game aggregate is much more sample-efficient than a
-#     per-position sample. Each game contributes many opponent moves
-#     (sacrifice denominator) and one family label (opening denominator),
-#     so the variance of the rates shrinks much faster per game added
-#     than per-position move counts. Two games give ~60 opponent moves
-#     and 2 family labels — already past "anecdote" territory for the
-#     sacrifice rate, but still very thin for the family distribution.
-#   * The intuition the spec flagged: aggregating across a player's whole
-#     history needs fewer games than sampling one noisy position, so the
-#     floor can be lower.
-#   * "Rule of three": >=3 events is the smallest count where a rate
-#     starts to mean something rather than being one-or-two isolated
-#     occurrences. With 3 games worth of opponent moves we are well past
-#     this for the sacrifice rate; for the family distribution 3 games
-#     is right at the edge (3 bins at most), which is why the family
-#     lean is reported but the caller should treat a 3-game family lean
-#     as barely-sufficient (still better than nothing, which is the
-#     alternative the caller falls through to).
+# The gate is on EFFECTIVE SAMPLE SIZE (sum of weights), not raw game
+# count. Under exponential decay (lambda=1.0, half-life ~8.3 months),
+# effective_sample_size is always <= raw game count, so this gate is
+# stricter than a raw-count floor for stale opponents — a 500-game
+# opponent whose games are all 4 years old has effective_sample_size
+# ~= 500 * exp(-4.0) = ~9.1, which BARELY clears the floor (not trivially).
+# A 500-game opponent whose games are all recent has effective_sample_size
+# ~= 460, which trivially clears. The gate thus distinguishes recent-large
+# from stale-large opponents — the spec's explicit requirement.
+#
+# Why 5.0 and not the old 3 (raw count):
+#   * The old floor (MIN_STYLE_GAMES=3) was on RAW game count. Under decay,
+#     3 recent games give effective_sample_size=3.0, which would FAIL the
+#     new floor of 5.0. This is intentional: 3 recent games is thin for a
+#     style profile (the old comment called it "barely-sufficient"), and
+#     the raised import limit (500) means most opponents will have many
+#     more games. A floor of 5.0 requires ~5 recent games' worth of
+#     signal, which is a more defensible threshold.
+#   * Under lambda=1.0, a 500-game opponent with all 4-year-old games has
+#     effective_sample_size ~9.1, which clears 5.0 — but its signals are
+#     heavily decayed (each game contributes 0.018 weight). This is the
+#     "soft prior" behaviour the spec wants: old patterns still produce a
+#     signal, just a weak one. To FULLY reject stale-large opponents the
+#     floor would need to be >9.1, but that would also reject recent
+#     small opponents (e.g. a recent 10-game opponent at ~9.2) — too
+#     strict. The 5.0 floor is the calibrated balance.
+#   * The old "rule of three" intuition (>=3 events) still holds for
+#     RECENT games: 5 recent games give effective_sample_size=5.0, well
+#     past the rule-of-three threshold. For stale games, the effective
+#     sample size is lower, so more raw games are needed to clear the
+#     floor — which is the desired behaviour.
+#
+# Existing test fixtures (all using end_time=0 or recent end_times) clear
+# this floor: the 6-game signals fixture gives effective_sample_size=6.0,
+# the 12-game established fixture gives ~11.0, and the 2-game thin fixture
+# gives 2.0 (below floor, correctly insufficient).
 #
 # Tune up if noisy style signals leak into re-ranking; tune down if too
 # many established-but-few-games opponents fall through to default Maia.
+#
+# OPEN QUESTION (same as the TC-axis gap below): this floor on the RECENCY
+# axis means an opponent with a small number of OLD games (e.g. 8 games all
+# 3+ years old -> eff ~0.4) is rejected entirely rather than softened into
+# a weak prior. That is the small-stale case, and whether a sub-5.0-eff
+# profile is useful-vs-noise is UNRESOLVED -- deliberately deferred to the
+# self-play move-prediction calibration backlog, not chased here.
+MIN_STYLE_EFF_SAMPLES = 5.0
+
+# Legacy raw-count floor. Retained for backward-compat references in
+# docstrings and tests, and as a secondary hard floor (compute_opponent_style
+# also checks game_count >= 1 to avoid dividing by zero on an empty
+# corpus). The PRIMARY gate is now MIN_STYLE_EFF_SAMPLES.
 MIN_STYLE_GAMES = 3
 
 # --- recency decay ---------------------------------------------------------
 #
 # Per-game exponential decay rate, per year, applied to per-game weights
-# when computing the weighted average of each style signal. Same value as
-# RECENCY_DECAY_LAMBDA_PER_YEAR in opponent_repertoire.py (half-life
-# ~= 1.39 yr) so the two layers age on the same timescale and do not
-# disagree about whether "old habits still count". DECoupled as a separate
-# constant here (not imported) so the two layers can be tuned independently
-# later — cross-service constant imports of magic tuning numbers are an
-# awkward coupling, and the two layers may legitimately want different
-# lifetimes (openings evolve on the order of years; player style arguably
-# even slower). For now they match.
-STYLE_RECENCY_DECAY_LAMBDA_PER_YEAR = 0.5
+# when computing the weighted average of each style signal.
+#
+# PROVISIONAL VALUE — pending empirical tuning. lambda=1.0 was chosen as a
+# reasoned starting point (half-life = ln(2)/1.0 ~= 0.693 yr ~= 8.3 months),
+# NOT a tuned value. A follow-up task will calibrate this against measured
+# self-play move-prediction accuracy once that test harness exists; until
+# then, do not treat 1.0 as final. The constant is named explicitly so the
+# calibration task can grep for it.
+#
+# Rationale for 1.0 (vs the previous 0.5 / half-life ~1.39 yr): with the
+# import limit raised to 500 games (~1-2 years of active play), a lambda of
+# 0.5 left 2-year-old games at 37% weight — too much for "recent games
+# dominate, older games act only as a soft prior." At lambda=1.0, a
+# 1-year-old game carries 37% weight and a 2-year-old game carries 14%,
+# which gives recent games the dominant voice while still letting old
+# patterns contribute a soft prior (the spec's explicit ask).
+#
+# DECoupled from RECENCY_DECAY_LAMBDA_PER_YEAR in opponent_repertoire.py
+# (which stays at 0.5 — repertoire move counts use mild decay only; see
+# pick_repertoire_move's docstring). The two layers age on different
+# timescales: openings evolve slowly (repertoire), but player style
+# shifts can manifest within months (sac tendencies, castle preferences).
+# Cross-service constant imports of magic tuning numbers are an awkward
+# coupling, and the two layers may legitimately want different lifetimes.
+STYLE_RECENCY_DECAY_LAMBDA_PER_YEAR = 1.0
 
 # Seconds per year (365.25 days, leap-year averaged).
 _SECONDS_PER_YEAR = 365.25 * 86400.0
@@ -249,10 +295,10 @@ SAC_RECOUP_TOLERANCE = 0.5
 # by compute_opponent_style. Defensive bound on transport size, NOT a signal
 # filter. Originally 250 (which truncated the snapshot pool to ~40 most-
 # recent games worth and could exclude minority openings entirely -- the
-# live diagnostic on iaminspiredbroo's 200-game corpus showed this: 7
+# live diagnostic on iaminspiredbroo's 500-game corpus showed this: 7
 # Scandinavian games were all dropped, leaving zero Scandinavian snapshots
 # and breaking family-filtering for the user's preferred opening). Raised
-# to 10000: ~1000 snapshots for a 200-game opponent, well within memory
+# to 10000: ~2500 snapshots for a 500-game opponent, well within memory
 # budget, and the per-candidate Jaccard scan (~1ms at this size) is
 # still cheap vs the 1-3s Maia inference.
 SETUP_SIGNATURE_PLY_MIN = 10
@@ -298,6 +344,185 @@ def _game_recency_weight(end_time: int, now_unix: float) -> float:
     return math.exp(-STYLE_RECENCY_DECAY_LAMBDA_PER_YEAR * age_years)
 
 
+# --- time-control bucketing + similarity (v1) ------------------------------
+#
+# Players play differently in bullet, blitz, rapid, and classical. Mixing
+# them without distinction adds noise to every style signal (a bullet sac
+# rate is not a rapid sac rate). This section adds a per-game time-control
+# similarity multiplier so that, when computing style for a sparring game,
+# games from the SAME (or similar) time control count more heavily. The
+# final per-game weight becomes:
+#
+#     w_i = _game_tc_weight(game_bucket, sparring_bucket)
+#               * exp(-lambda * age_in_years_i)
+#
+# i.e. the PRODUCT of the time-control similarity and the recency decay
+# above. Every style aggregate that already used the recency weight now
+# uses this combined weight instead, so same-TC games dominate the
+# aggregates while cross-TC games act as a down-weighted SOFT PRIOR (NOT
+# purged -- a 0.2-weight bullet game still contributes to a rapid profile,
+# just weakly). This is the same "old evidence survives as a soft prior"
+# philosophy the recency decay uses, applied across the time-control axis.
+#
+# BUCKETING: four coarse buckets -- bullet / blitz / rapid / classical --
+# the granularity the similarity matrix operates on (the spec: "keep it
+# simple for v1"). The source `time_class` DB column (populated by the
+# Chess.com / Lichess importers as "bullet"/"blitz"/"rapid"/"classical"/
+# "daily"/"correspondence") is the PRIMARY source; the PGN `[TimeControl]`
+# header ("base+inc" seconds, e.g. "180+2") is a FALLBACK for games whose
+# `time_class` is missing or unrecognised (manual imports, edge cases).
+# daily/correspondence map to the "unknown" bucket rather than "classical":
+# correspondence is genuinely a different beast from OTB classical, and
+# conflating them would penalise real correspondence games against a
+# classical sparring session.
+_TC_BUCKETS = ("bullet", "blitz", "rapid", "classical")
+
+# SIMILARITY MATRIX. _TC_SIMILARITY[game_bucket][sparring_bucket] is the
+# multiplier applied to a game whose bucket is `game_bucket` when the
+# sparring session's bucket is `sparring_bucket`. Symmetric by construction.
+# PROVISIONAL reasoned starting values (same status as the recency lambda --
+# tune with measured self-play move-prediction accuracy once available):
+#   * diagonal = 1.0  (same-TC games count fully)
+#   * adjacent speeds drop gently (bullet<->blitz=0.5, blitz<->rapid=0.6,
+#       rapid<->classical=0.7) -- neighbour speeds are related but not
+#       identical.
+#   * far pairs drop harder (bullet<->rapid=0.2, bullet<->classical=0.1,
+#       blitz<->classical=0.3) -- a bullet sac rate tells you almost
+#       nothing about a classical game.
+_TC_SIMILARITY: Dict[str, Dict[str, float]] = {
+    "bullet":    {"bullet": 1.0, "blitz": 0.5, "rapid": 0.2, "classical": 0.1},
+    "blitz":     {"bullet": 0.5, "blitz": 1.0, "rapid": 0.6, "classical": 0.3},
+    "rapid":     {"bullet": 0.2, "blitz": 0.6, "rapid": 1.0, "classical": 0.7},
+    "classical": {"bullet": 0.1, "blitz": 0.3, "rapid": 0.7, "classical": 1.0},
+}
+
+# OPEN QUESTION (TC axis, mirrors the small-stale gap at
+# MIN_STYLE_EFF_SAMPLES): the floor was validated against TC-mismatch NOT
+# spuriously triggering it -- a 10-game all-cross-TC corpus under a
+# mismatched sparring TC still clears (10 blitz x 0.6 = 6.0 >= 5.0). But
+# whether a THIN cross-TC profile (e.g. 6 rapid-equivalent games' worth of
+# blitz behaviour) is actually a better bias than falling through to
+# default Maia is UNRESOLVED -- same open question as small-stale, just on
+# the TC axis instead of the age axis. Deliberately deferred to the
+# self-play move-prediction calibration backlog, not chased here.
+
+
+def _bucket_from_tc_str(tc_str: str) -> str:
+    """Map a "base+inc"/"base" time-control string to a coarse bucket.
+
+    Used in two contexts: (a) the FALLBACK path when a game's DB `time_class`
+    is missing -- here `tc_str` is a raw PGN `[TimeControl]` body in SECONDS
+    (e.g. "180+2"); (b) the sparring-TC path, where `tc_str` may be an "M+I"
+    minute label from the sparring prefill (e.g. "3+2", produced by
+    `_time_control_label`). Both are disambiguated below.
+
+    Estimates total game time as base + increment*40 (40 moves is a typical
+    full-game move count -- the standard "estimated total time" heuristic
+    chess platforms use internally) and buckets by the resulting seconds:
+        < 180s  (3 min)  -> bullet
+        < 600s  (10 min) -> blitz
+        < 1800s (30 min) -> rapid
+        else             -> classical
+    These thresholds align with Chess.com/Lichess speed boundaries.
+
+    MINUTES-vs-SECONDS disambiguation: real online controls have a base of
+    >= 60 seconds, so a base value < 60 is interpreted as MINUTES (the
+    "M+I" label form). A base >= 60 is interpreted as raw SECONDS (the PGN
+    header form). The only failure case is the "60+0" minute label (a
+    1-hour game, vanishingly rare in online play), which would be read as
+    60 seconds -> bullet; acceptable for v1. Returns "unknown" for an
+    unparseable string so the caller applies the safe neutral weight 1.0
+    ("don't penalise what you can't classify").
+    """
+    m = _TC_BASE_INC_RE.match(tc_str)
+    if m:
+        base = int(m.group(1))
+        inc = int(m.group(2))
+    else:
+        m = _TC_BASE_ONLY_RE.match(tc_str)
+        if not m:
+            return "unknown"
+        base = int(m.group(1))
+        inc = 0
+    if base < 0 or inc < 0:
+        return "unknown"
+    seconds = base * 60 if base < 60 else base
+    est_total = seconds + inc * 40
+    if est_total < 180:
+        return "bullet"
+    if est_total < 600:
+        return "blitz"
+    if est_total < 1800:
+        return "rapid"
+    return "classical"
+
+
+def _time_control_bucket(raw: Optional[str], pgn: str = "") -> str:
+    """Resolve a time-control source to one of the coarse buckets or "unknown".
+
+    `raw` is whatever time-control string the caller has: the DB `time_class`
+    column value (bullet/blitz/rapid/classical/daily/correspondence), a raw
+    "base+inc" PGN-header body, an "M+I" minute label, or a canonical bucket
+    label the sparring endpoint received from the frontend. `pgn` is an
+    optional full PGN string consulted ONLY when `raw` is empty/unrecognised,
+    so a game with a missing `time_class` but a parseable `[TimeControl]`
+    header still gets bucketed via the header fallback.
+
+    Resolution order:
+      1. `raw` matches a canonical bucket name (case-insensitive) -> that
+         bucket. Covers the DB `time_class` column and any caller passing a
+         bucket label directly.
+      2. `raw` is "daily"/"correspondence" -> "unknown" (correspondence is
+         genuinely different from OTB classical; don't penalise it).
+      3. `raw` matches a "base+inc"/"base" pattern -> bucketed via
+         `_bucket_from_tc_str`. Covers raw PGN headers AND "M+I" labels.
+      4. `pgn` has a `[TimeControl]` header -> `_bucket_from_tc_str` on it.
+         The fallback path for games whose `time_class` is missing.
+      5. "unknown" -- the caller applies the neutral 1.0 weight so an
+         unclassifiable game is never penalised, only flagged in the
+         transparency output for visibility.
+    """
+    if raw:
+        key = raw.strip().lower()
+        if key in _TC_BUCKETS:
+            return key
+        if key in ("daily", "correspondence"):
+            return "unknown"
+        bucket = _bucket_from_tc_str(raw)
+        if bucket != "unknown":
+            return bucket
+    if pgn:
+        bucket = _bucket_from_tc_str(_time_control_header(pgn))
+        if bucket != "unknown":
+            return bucket
+    return "unknown"
+
+
+def _game_tc_weight(
+    game_bucket: str, sparring_bucket: Optional[str]
+) -> float:
+    """Time-control similarity multiplier for one game vs the sparring session.
+
+    Returns `_TC_SIMILARITY[game_bucket][sparring_bucket]`. Both the game
+    and the sparring session must resolve to a KNOWN bucket
+    (bullet/blitz/rapid/classical) for a non-1.0 weight; any "unknown" side
+    yields the neutral 1.0 ("don't penalise what you can't classify"):
+      * sparring bucket unknown/None -> 1.0 for every game (safe fallback;
+        existing callers that don't pass a sparring TC are unaffected --
+        the combined weight collapses to recency-only).
+      * game bucket "unknown" -> 1.0 (an unclassifiable game is not
+        penalised, only flagged in the transparency output).
+    The product w = _game_tc_weight(...) * _game_recency_weight(...) is what
+    every style aggregate in `compute_opponent_style` now uses, so same-TC
+    games dominate while cross-TC games act as a down-weighted soft prior.
+    """
+    if not sparring_bucket or sparring_bucket == "unknown":
+        return 1.0
+    if game_bucket == "unknown" or game_bucket not in _TC_SIMILARITY:
+        return 1.0
+    return _TC_SIMILARITY[game_bucket][sparring_bucket]
+
+
 def _opening_family(game: chess.pgn.Game) -> str:
     """Best-effort opening family label for a parsed game.
 
@@ -313,7 +538,7 @@ def _opening_family(game: chess.pgn.Game) -> str:
          `[ECOUrl "https://www.chess.com/openings/<hyphenated-path>"]`
          in place of an `[Opening]` header. The URL's path encodes the
          family + variation + move list all hyphen-separated; the helper
-         extracts just the family. This is the path all 200 production
+         extracts just the family. This is the path all 500 production
          opponent_games rows in the dev DB take (verified 2026-08-04), so
          it is the de facto live common case, not a corner case.
 
@@ -836,7 +1061,7 @@ def _analyze_game(
 # header (format "base+inc" in seconds, e.g. "180+2"). python-chess is NOT
 # asked to build the full game tree here: we scan the PGN header block with
 # a regex and stop, so the cost is sub-millisecond per game even on a
-# 200-game opponent (no mainline replay). This is what lets us compute it
+# 500-game opponent (no mainline replay). This is what lets us compute it
 # inline in `list_opponent_profiles` (which already aggregates across many
 # opponents) without blowing the sparring-page load budget.
 #
@@ -926,16 +1151,20 @@ def compute_time_control_distribution(games) -> Dict[str, Any]:
     replay) for `[TimeControl]`, normalized to a human-readable "M+I" label
     via `_time_control_label`, and accumulated into a per-bucket weight
     using the SAME recency decay as the other signals
-    (`STYLE_RECENCY_DECAY_LAMBDA_PER_YEAR`, half-life ~1.39 yr) via
+    (`STYLE_RECENCY_DECAY_LAMBDA_PER_YEAR`, half-life ~8.3 months) via
     `_game_recency_weight`. Games with a missing or unparseable
     `[TimeControl]` header contribute to NEITHER numerator nor denominator
     (denominator consistency — a row without a time control is a data-
     quality gap, not a player-style signal).
 
-    Gated by the existing `MIN_STYLE_GAMES` floor constant: below it,
-    distribution and most_common are both None so the caller never
-    prefills a Time Control field off a 1- or 2-game opponent's history
-    (same fall-through contract compute_opponent_style uses).
+    Gated by the legacy `MIN_STYLE_GAMES` raw-count floor constant (NOT
+    the new `MIN_STYLE_EFF_SAMPLES` effective-sample-size gate that
+    `compute_opponent_style` uses): below it, distribution and most_common
+    are both None so the caller never prefills a Time Control field off a
+    1- or 2-game opponent's history. This function feeds the sparring-page
+    prefill (not the reranker), so the stricter recency-based gate is not
+    applied here — a 3-game opponent with a clear time-control preference
+    should still get the prefill even if the games are old.
 
     Top-N buckets by recency-weighted share are reported individually;
     everything else is folded into a single "Other" bucket so the sparring
@@ -1310,11 +1539,41 @@ def compute_opponent_style(
     requested_by_user_id: str,
     provider: str,
     opponent_username: str,
+    sparring_time_control: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Compute recency-weighted aggregate style signals for one opponent.
+    """Compute recency+time-control-weighted aggregate style signals.
 
     Reads the opponent's imported games from `opponent_games`, parses each
-    PGN, and aggregates FIVE signals with per-game recency weighting applied:
+    PGN, and aggregates FIVE signals with per-game weighting applied. The
+    per-game weight is the PRODUCT of two factors:
+
+      * RECENCY:    exp(-lambda * age_in_years)  (_game_recency_weight)
+      * TIME-CONTROL SIMILARITY: _game_tc_weight(game_bucket, sparring_bucket)
+        -- 1.0 for same-TC games, down-weighted (0.1-0.7) for cross-TC,
+        1.0 (neutral) when either the game's or the sparring session's
+        time control is "unknown" (don't penalise what you can't classify).
+
+    So same-TC recent games dominate the aggregates; old cross-TC games act
+    as a down-weighted soft prior (NOT purged). When `sparring_time_control`
+    is None (or unbucketable), the TC factor collapses to 1.0 and the
+    weighting is recency-only -- exactly the pre-TC behaviour, so existing
+    callers are unaffected.
+
+    `sparring_time_control` is the OPTIONAL time-control string of the
+    current sparring session: a canonical bucket label ("bullet"/"blitz"/
+    "rapid"/"classical"), an "M+I" label ("3+2"), or a raw "base+inc"
+    seconds string. Bucketed via `_time_control_bucket`. When the
+    opponent's per-game `time_class` DB column is missing, the PGN
+    `[TimeControl]` header is the fallback bucket source.
+
+    Aggregates that receive the FULL TC weighting: every per-game signal
+    computed here (sac frequency, queen-trade, setup, castle, game length,
+    opening family) and the effective-sample-size gate. The companion
+    `opponent_traps.compute_exploitable_traps` applies the same TC
+    similarity (moderate weighting for blunder patterns); the repertoire
+    sampler (`opponent_repertoire.pick_repertoire_move`) intentionally
+    applies NO TC weighting -- openings transfer across TCs better than
+    tactical style does (see that module's docstring).
 
       1. sacrifice_frequency      — weighted sacs / weighted opponent-moves.
       2. opening_family_lean      — {family: weighted_fraction}.
@@ -1335,15 +1594,45 @@ def compute_opponent_style(
 
     Returns a dict shaped:
         {
-          "sufficient": bool,            # floor check (>= MIN_STYLE_GAMES)
+          "sufficient": bool,            # floor check (effective_sample_size
+                                          #   >= MIN_STYLE_EFF_SAMPLES).
+                                          #   effective_sample_size is now
+                                          #   the sum of per-game COMBINED
+                                          #   (recency x TC) weights, so a
+                                          #   cross-TC-only corpus under a
+                                          #   mismatched sparring TC clears
+                                          #   the gate only if it has enough
+                                          #   same-TC (or unknown-TC) mass.
           "game_count": int,             # raw count, for transparency
-          "weighted_game_count": float,  # sum of ALL per-game recency weights
-                                         #   (incl. unparseable PGNs)
-          "weighted_parseable_game_count": float,  # sum of weights for
-                                                   #   parseable games only.
-                                                   #   Denominator for
-                                                   #   average_game_length
-                                                   #   and queens_stay_on_rate.
+          "effective_sample_size": float, # sum of per-game COMBINED weights
+                                           #   (recency x TC). The gate metric.
+                                           #   Under decay+TC this is <= the
+                                           #   recency-only eff sample; the
+                                           #   gap quantifies staleness +
+                                           #   cross-TC mismatch.
+          "recency_decay_lambda": float, # the recency lambda used (1.0)
+          "sparring_time_control_bucket": str | None,  # the resolved sparring
+                                          #   TC bucket (bullet/blitz/rapid/
+                                          #   classical), or None when no
+                                          #   sparring TC was supplied.
+          "time_control_weighted_by_bucket": dict | None,  # {game_bucket:
+                                          #   sum of combined weights} for
+                                          #   parseable games. Verifies that
+                                          #   same-TC games are being
+                                          #   preferred (the dominant bucket
+                                          #   should match the sparring one).
+          "time_control_unclassified_count": int,  # raw count of games whose
+                                          #   TC bucket was "unknown" --
+                                          #   flags how much of the corpus is
+                                          #   unclassified (each such game
+                                          #   got the neutral 1.0 weight).
+          "weighted_game_count": float,  # sum of ALL per-game COMBINED
+                                         #   weights (incl. unparseable PGNs)
+          "weighted_parseable_game_count": float,  # sum of COMBINED weights for
+                                                    #   parseable games only.
+                                                    #   Denominator for
+                                                    #   average_game_length
+                                                    #   and queens_stay_on_rate.
           "sacrifice_frequency": float | None,
           "opening_family_lean": dict | None,
           "average_game_length": float | None,
@@ -1355,7 +1644,12 @@ def compute_opponent_style(
                                                   #   captured in the
                                                   #   [SETUP_SIGNATURE_PLY_MIN,
                                                   #    SETUP_SIGNATURE_PLY_MAX]
-                                                  #   window; None iff below
+                                                  #   window; each snapshot
+                                                  #   tagged with its game's
+                                                  #   COMBINED recency x TC
+                                                  #   "weight" so the reranker
+                                                  #   can weight the Jaccard by
+                                                  #   recency+TC. None iff below
                                                   #   SETUP_SIGNATURE_MIN_GAMES
                                                   #   OR no snapshots captured.
           "sacrifice_events": int,       # raw total, transparency/debug
@@ -1416,12 +1710,16 @@ def compute_opponent_style(
         raise RuntimeError("Database connection pool is not initialized")
 
     normalized_opponent = _normalize_username(opponent_username)
+    # Resolve the sparring session's time-control bucket ONCE. When it is
+    # None/unbucketable, _game_tc_weight returns 1.0 for every game and the
+    # combined weight collapses to recency-only (existing callers unaffected).
+    sparring_bucket = _time_control_bucket(sparring_time_control)
     conn = database.connection_pool.getconn()
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
                 """
-                SELECT pgn, end_time
+                SELECT pgn, end_time, time_class
                 FROM opponent_games
                 WHERE requested_by_user_id = %s
                   AND provider = %s
@@ -1436,17 +1734,82 @@ def compute_opponent_style(
 
     game_count = len(rows)
 
-    # --- floor check (raw count, never weighted) -----------------------------
-    # Same contract as opponent_repertoire: evaluate sufficiency on raw
-    # sample count, not the decayed weight, so old-but-voluminous opponents
-    # still qualify (an opponent who hasn't played in 4 years but has 80
-    # games on file is still a known-style opponent).
-    sufficient = game_count >= MIN_STYLE_GAMES
+    # --- effective sample size pre-pass (cheap, no PGN parsing) --------------
+    # Compute the sum of per-game COMBINED (recency x TC) weights BEFORE the
+    # expensive PGN-parsing loop. This is the gate metric: under exponential
+    # decay (lambda=1.0) the recency factor is always <= 1.0, and the TC
+    # similarity factor is <= 1.0 for cross-TC games (1.0 for same-TC /
+    # unknown), so effective_sample_size is always <= raw game count AND <=
+    # the recency-only eff sample. A stale-but-voluminous opponent (e.g. 500
+    # four-year-old games) or a cross-TC-heavy corpus under a mismatched
+    # sparring TC both have a much lower effective_sample_size than a recent
+    # same-TC opponent with the same raw count. The gate distinguishes
+    # "recent and same-TC and enough" from "stale / cross-TC and voluminous"
+    # — the spec's explicit requirement, extended to the time-control axis.
+    #
+    # This pre-pass only computes math.exp() + a dict lookup per row (no PGN
+    # parsing), so it is cheap (microseconds per game). The expensive
+    # _analyze_game calls only happen after the gate passes.
+    import time as _time
+
+    now_unix = _time.time()
+    effective_sample_size = 0.0
+    # Transparency: how many games could not be bucketed (each got the
+    # neutral 1.0 TC weight -- flagged so the caller can see how much of
+    # the corpus is unclassified), and the combined-weight mass per bucket
+    # (verifies same-TC dominance).
+    tc_unclassified_count = 0
+    tc_weight_by_bucket: Dict[str, float] = {}
+    for row in rows:
+        end_time = int(row.get("end_time") or 0)
+        game_bucket = _time_control_bucket(
+            row.get("time_class"), row.get("pgn") or ""
+        )
+        if game_bucket == "unknown":
+            tc_unclassified_count += 1
+        weight = _game_recency_weight(end_time, now_unix) * _game_tc_weight(
+            game_bucket, sparring_bucket
+        )
+        effective_sample_size += weight
+        tc_weight_by_bucket[game_bucket] = (
+            tc_weight_by_bucket.get(game_bucket, 0.0) + weight
+        )
+
+    # --- floor check (effective sample size, not raw count) ------------------
+    # The PRIMARY gate is now on effective_sample_size (sum of per-game
+    # COMBINED recency x TC weights), not raw game count. This is stricter
+    # for stale opponents AND for cross-TC-heavy corpora under a mismatched
+    # sparring TC: a 500-game opponent with all 4-year-old games has a
+    # recency-only eff sample ~= 9.1 (barely clears), but under a rapid
+    # sparring session where all those games are bullet, each game's weight
+    # is further scaled by 0.2 (the rapid<->bullet similarity), dropping the
+    # combined eff sample to ~1.8 (fails). A recent same-TC opponent with
+    # the same raw count has ~= 460 (trivially clears). The gate thus
+    # distinguishes "recent + same-TC + enough" from "stale / cross-TC +
+    # voluminous" — the spec's explicit requirement, on both axes.
+    sufficient = effective_sample_size >= MIN_STYLE_EFF_SAMPLES
 
     if not sufficient or game_count == 0:
+        log.debug(
+            "compute_opponent_style: insufficient data for %s/%s — "
+            "game_count=%d, effective_sample_size=%.2f (floor=%.1f), "
+            "lambda=%.2f, sparring_tc_bucket=%s, unclassified=%d, "
+            "falling through to default Maia",
+            provider, opponent_username, game_count,
+            effective_sample_size, MIN_STYLE_EFF_SAMPLES,
+            STYLE_RECENCY_DECAY_LAMBDA_PER_YEAR,
+            sparring_bucket, tc_unclassified_count,
+        )
         return {
             "sufficient": sufficient,  # False (or False via game_count=0)
             "game_count": game_count,
+            "effective_sample_size": round(effective_sample_size, 4),
+            "recency_decay_lambda": STYLE_RECENCY_DECAY_LAMBDA_PER_YEAR,
+            "sparring_time_control_bucket": (
+                sparring_bucket if sparring_bucket != "unknown" else None
+            ),
+            "time_control_weighted_by_bucket": None,
+            "time_control_unclassified_count": tc_unclassified_count,
             "weighted_game_count": 0.0,
             "weighted_parseable_game_count": 0.0,
             "sacrifice_frequency": None,
@@ -1460,18 +1823,30 @@ def compute_opponent_style(
             "opponent_moves": 0,
         }
 
-    # --- aggregate ------------------------------------------------------------
-    # Per-game weights w_g = exp(-lambda * age_years), end_time=0 -> 1.0.
-    # We use Python's time.time() for the "now" anchor; the alternative
-    # (DB-side NOW()) would round-trip another query and pin the aggregate
-    # to the DB clock, which is noisier than the OS clock for a one-shot
-    # per-opponent computation that already parses every PGN in Python.
-    import time as _time
+    log.debug(
+        "compute_opponent_style: sufficient for %s/%s — "
+        "game_count=%d, effective_sample_size=%.2f (floor=%.1f), "
+        "lambda=%.2f, sparring_tc_bucket=%s, unclassified=%d, "
+        "recency+TC weighting ACTIVE",
+        provider, opponent_username, game_count,
+        effective_sample_size, MIN_STYLE_EFF_SAMPLES,
+        STYLE_RECENCY_DECAY_LAMBDA_PER_YEAR,
+        sparring_bucket, tc_unclassified_count,
+    )
 
-    now_unix = _time.time()
-    # weighted_game_count: sum of ALL per-game weights, including games
-    # whose PGNs we couldn't parse. This is the "how much data do we have
-    # on file" transparency field — it always >= weighted_parseable_game_count.
+    # --- aggregate ------------------------------------------------------------
+    # Per-game COMBINED weights
+    #   w_g = _game_tc_weight(game_bucket, sparring_bucket)
+    #           * exp(-lambda * age_years),   end_time=0 -> recency 1.0.
+    # now_unix was already computed in the pre-pass above; reusing it here
+    # keeps the gate and the aggregate on the same time anchor. The TC
+    # factor is the SAME one the pre-pass applied, so the gate and the
+    # aggregate stay consistent (a corpus that clears the gate has the
+    # combined weight mass the aggregates then distribute).
+    # weighted_game_count: sum of ALL per-game COMBINED weights, including
+    # games whose PGNs we couldn't parse. This is the "how much data do we
+    # have on file" transparency field — it always >=
+    # weighted_parseable_game_count.
     weighted_game_count = 0.0
     # weighted_parseable_game_count: sum of weights for games whose PGNs
     # we successfully parsed. This is the denominator for every per-game
@@ -1517,7 +1892,19 @@ def compute_opponent_style(
     for row in rows:
         end_time = int(row.get("end_time") or 0)
         pgn = row.get("pgn") or ""
-        weight = _game_recency_weight(end_time, now_unix)
+        # COMBINED per-game weight: recency x TC-similarity. The game's TC
+        # bucket is resolved from the DB `time_class` column (primary) with
+        # the PGN `[TimeControl]` header as fallback. _game_tc_weight
+        # returns 1.0 when either bucket is "unknown" (don't penalise what
+        # you can't classify), so an unbucketable sparring session or an
+        # unbucketable game collapses to recency-only weighting. The
+        # pre-pass already computed this same combined weight for the gate;
+        # recomputing here is cheaper than carrying a per-row weight list
+        # and keeps the loop body self-documenting.
+        game_bucket = _time_control_bucket(row.get("time_class"), pgn)
+        weight = _game_recency_weight(end_time, now_unix) * _game_tc_weight(
+            game_bucket, sparring_bucket
+        )
 
         analyzed = _analyze_game(pgn, normalized_opponent)
         if analyzed is None:
@@ -1545,20 +1932,27 @@ def compute_opponent_style(
         weighted_plies += weight * analyzed["plies"]
         castling_side_weight[analyzed["opp_castled"]] += weight
 
-        # setup-signature snapshots are unweighted at v1 (each snapshot
-        # counts equally; recency/frequency weighting of snapshots is a
-        # documented v2 deferred concern -- see the spec's §13).
+        # setup-signature snapshots: each snapshot is tagged with the
+        # game's COMBINED recency x TC weight so the reranker can weight
+        # the Jaccard similarity by recency+TC (recent same-TC setups
+        # dominate, old cross-TC setups act as a soft prior — the same
+        # philosophy as the other aggregate signals). This EXTENDS the
+        # existing "weight" field rather than adding a second field, so
+        # the reranker reads the single snap["weight"] it already consumes
+        # (opponent_style_reranker._setup_similarity) and automatically
+        # benefits from the combined weighting with NO reranker change.
         # Tag each snapshot with the game's opening family and the
         # profiled player's color in this game, so the reranker can
         # filter by family + color before computing setup_mult. Without
         # this filter, a Scandinavian position would match against
         # Italian/Scotch snapshots (the dominant majority), drowning the
-        # 7 Scandinavian games' signal in 200+ non-Scandinavian ones.
+        # 7 Scandinavian games' signal in 500+ non-Scandinavian ones.
         game_family = analyzed["family"]
         game_color = analyzed["opponent_color"]
         for snap in analyzed["setup_snapshots"]:
             snap["family"] = game_family
             snap["player_color"] = game_color
+            snap["weight"] = weight
         aggregated_setup_snapshots.extend(analyzed["setup_snapshots"])
 
         if analyzed["queens_on_at_end"]:
@@ -1720,9 +2114,28 @@ def compute_opponent_style(
         else None
     )
 
+    # Round the per-bucket combined-weight masses for transparency. The
+    # dominant bucket should match `sparring_bucket` when same-TC games are
+    # being preferred (the spec's verification requirement). The "unknown"
+    # bucket's mass corresponds to games that got the neutral 1.0 TC weight
+    # (flagged via time_control_unclassified_count as a raw count too).
+    tc_weighted_by_bucket = {
+        bucket: round(w, 4)
+        for bucket, w in sorted(
+            tc_weight_by_bucket.items(), key=lambda kv: kv[1], reverse=True
+        )
+    }
+
     return {
         "sufficient": sufficient,
         "game_count": game_count,
+        "effective_sample_size": round(effective_sample_size, 4),
+        "recency_decay_lambda": STYLE_RECENCY_DECAY_LAMBDA_PER_YEAR,
+        "sparring_time_control_bucket": (
+            sparring_bucket if sparring_bucket != "unknown" else None
+        ),
+        "time_control_weighted_by_bucket": tc_weighted_by_bucket or None,
+        "time_control_unclassified_count": tc_unclassified_count,
         "weighted_game_count": round(weighted_game_count, 4),
         "weighted_parseable_game_count": round(weighted_parseable_game_count, 4),
         "sacrifice_frequency": round(sacrifice_frequency, 4),
