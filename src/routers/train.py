@@ -35,6 +35,7 @@ from services.opponent_repertoire import (
     ensure_opponent_repertoire,
     get_opponent_rating,
     list_opponent_profiles,
+    pick_near_repertoire_moves,
     pick_repertoire_move,
 )
 from services.opponent_style import compute_opponent_style
@@ -659,12 +660,48 @@ def get_sparring_move(
                         exploitable_trap_keys = None
                         traps_ok = False
 
+                # --- near-book repertoire data (feature D) -----------------
+                # SEQUENCING RULE: this is reached ONLY when
+                # pick_repertoire_move returned no exact book move (the
+                # in-book branch above returns the book move and never
+                # enters the Maia/style block). So near-book similarity is
+                # structurally skipped whenever an exact book hit exists --
+                # it is not evaluated, scored, or allowed to compete.
+                #
+                # pick_near_repertoire_moves returns a recency-weighted
+                # {move_uci: weight} map of the opponent's moves from
+                # positions NEAR the live one (same color, +/- ply window),
+                # reading the SAME weighted repertoire table the exact-book
+                # path reads. None/empty = no near-book signal -> the
+                # reranker's near_book_mult is 1.0 for every candidate
+                # (mirror-mode unchanged). Computed per out-of-book move (it
+                # depends on the live ply) -- a single cheap indexed query,
+                # so it is NOT added to the session cache. On any failure it
+                # degrades to None and mirror-mode is preserved.
+                near_book_weights = None
+                try:
+                    near_book_weights = pick_near_repertoire_moves(
+                        requested_by_user_id=clerk_id,
+                        provider=body.provider,
+                        opponent_username=body.opponent_username,
+                        board=board,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    log.warning(
+                        "pick_near_repertoire_moves failed for %s/%s — "
+                        "falling back to mirror-mode (no near-book bias). "
+                        "Underlying: %s",
+                        body.provider, body.opponent_username, exc,
+                    )
+                    near_book_weights = None
+
                 try:
                     rerank = rerank_candidates(
                         candidates=candidates,
                         style=style,
                         board=board,
                         exploitable_trap_keys=exploitable_trap_keys,
+                        near_book_weights=near_book_weights,
                     )
                     move_uci = rerank.get("chosen_move_uci", "") or ""
                     if move_uci:
@@ -677,6 +714,7 @@ def get_sparring_move(
                             "setup_family_confidence=%s "
                             "setup_filtered_count=%s "
                             "trap_mode_active=%s trap_candidate_count=%s "
+                            "near_book_active=%s near_book_candidate_count=%s "
                             "signals=%s chose=%s",
                             body.provider, body.opponent_username,
                             rerank.get("sacrifice_frequency"),
@@ -689,6 +727,8 @@ def get_sparring_move(
                             rerank.get("setup_filtered_count"),
                             rerank.get("trap_mode_active"),
                             rerank.get("trap_candidate_count"),
+                            rerank.get("near_book_active"),
+                            rerank.get("near_book_candidate_count"),
                             (
                                 rerank.get("bias_breakdown", {}) or {}
                             ).get("signals_applied") if rerank.get("applied_bias") else None,
