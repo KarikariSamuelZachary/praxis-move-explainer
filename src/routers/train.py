@@ -251,7 +251,8 @@ _chesscom_profile_cache: dict[tuple[str, str], tuple[float, Dict[str, Any]]] = {
 
 # --- style + traps in-memory cache (sparring hot path) --------------------
 #
-# compute_opponent_style (~960ms median for a 200-game opponent) and
+# compute_opponent_style (~2.4s cold-cache for a 500-game opponent at
+# ~4.8ms/game PGN-parsing cost; ~960ms for the previous 200-game cap) and
 # compute_exploitable_traps (~6ms) are recomputed on every out-of-book
 # sparring move. The opponent's imported games never change mid-session,
 # so both are cached together in one process-local entry and reused until
@@ -266,22 +267,33 @@ _chesscom_profile_cache: dict[tuple[str, str], tuple[float, Dict[str, Any]]] = {
 # hit then reuses the expensive style profile but re-runs traps rather
 # than trusting a poisoned None.
 _SPARRING_STYLE_TRAPS_TTL_SECONDS = 1800  # 30 minutes
+# Cache key includes the sparring time control so a session that switches
+# speed (e.g. bullet then rapid vs the same opponent) does not reuse a
+# style profile computed under the wrong TC weighting. The key stores the
+# raw normalized TC string (not the resolved bucket) so two
+# differently-spelled-but-equivalent labels are conservative cache misses
+# (recompute) rather than a stale-bucket correctness risk.
 _sparring_style_traps_cache: dict[
-    tuple[str, str, str],
+    tuple[str, str, str, str],
     tuple[float, Optional[Dict[str, Any]], Optional[set], bool],
 ] = {}
 
 
 def _sparring_style_traps_cache_key(
-    requested_by_user_id: str, provider: str, opponent_username: str
-) -> tuple[str, str, str]:
+    requested_by_user_id: str,
+    provider: str,
+    opponent_username: str,
+    time_control: Optional[str] = None,
+) -> tuple[str, str, str, str]:
     """Canonical cache key. Username is lowercased to match the SQL LOWER()
     the style/traps queries use, so a casing change in the request can't
-    fragment the entry."""
+    fragment the entry. The time-control string (lowercased) is the 4th
+    element so different sparring speeds get separate cache entries."""
     return (
         requested_by_user_id,
         provider,
         (opponent_username or "").strip().lower(),
+        (time_control or "").strip().lower(),
     )
 
 
@@ -295,12 +307,18 @@ def _invalidate_style_traps_cache(
     Best-effort nice-to-have: TTL is the primary invalidation mechanism.
     """
     if provider and opponent_username:
-        _sparring_style_traps_cache.pop(
-            _sparring_style_traps_cache_key(
-                requested_by_user_id, provider, opponent_username
-            ),
-            None,
+        # Drop ALL time-control variants for this opponent (the TC element
+        # varies across cache entries for one opponent, so a single pop on
+        # the 3-element prefix would miss; iterate the matching prefix).
+        prefix = (
+            requested_by_user_id,
+            provider,
+            (opponent_username or "").strip().lower(),
         )
+        for key in [
+            k for k in _sparring_style_traps_cache if k[:3] == prefix
+        ]:
+            _sparring_style_traps_cache.pop(key, None)
         return
     for key in [
         k for k in _sparring_style_traps_cache if k[0] == requested_by_user_id
@@ -532,7 +550,7 @@ def get_sparring_move(
             # hiccupped".
             #
             # LATENCY SURFACE: compute_opponent_style replays every imported
-            # PGN on each call; for a 200-game opponent that is ~960ms per
+            # PGN on each call; for a 500-game opponent that is ~2.4s per
             # out-of-book move. compute_exploitable_traps adds ~6ms. Both
             # are now cached together in _sparring_style_traps_cache (see
             # the module-level helper) so the per-move cost collapses to a
@@ -545,7 +563,8 @@ def get_sparring_move(
             traps_ok = False
             cache_hit = False
             cache_key = _sparring_style_traps_cache_key(
-                clerk_id, body.provider, body.opponent_username
+                clerk_id, body.provider, body.opponent_username,
+                body.time_control,
             )
             cached_entry = _sparring_style_traps_cache.get(cache_key)
             if cached_entry is not None and (
@@ -576,6 +595,7 @@ def get_sparring_move(
                         requested_by_user_id=clerk_id,
                         provider=body.provider,
                         opponent_username=body.opponent_username,
+                        sparring_time_control=body.time_control,
                     )
                     style_ok = True
                 except Exception as exc:  # noqa: BLE001
@@ -624,6 +644,7 @@ def get_sparring_move(
                                 requested_by_user_id=clerk_id,
                                 provider=body.provider,
                                 opponent_username=body.opponent_username,
+                                sparring_time_control=body.time_control,
                             )
                         finally:
                             database.connection_pool.putconn(conn)
