@@ -109,7 +109,7 @@ OTHER_NAME = "TestRival"
 
 
 def _pgn(moves_san, *, opponent_plays_white, eco, opening, end_time,
-         site="https://example.test", result="*"):
+         site="https://example.test", result="*", time_class=""):
     game = chess.pgn.Game()
     game.headers["White"] = OPP_NAME if opponent_plays_white else OTHER_NAME
     game.headers["Black"] = OTHER_NAME if opponent_plays_white else OPP_NAME
@@ -132,7 +132,12 @@ def _pgn(moves_san, *, opponent_plays_white, eco, opening, end_time,
 
     exporter = chess.pgn.StringExporter(headers=True, variations=False, comments=False)
     pgn_text = game.accept(exporter)
-    return {"pgn": pgn_text, "end_time": end_time, "opponent_username": OPP_NAME}
+    return {
+        "pgn": pgn_text,
+        "end_time": end_time,
+        "opponent_username": OPP_NAME,
+        "time_class": time_class,
+    }
 
 
 # A quiet Italian Game mainline (16 plies), no captures, leaves plenty of
@@ -393,10 +398,10 @@ def _fixture_time_controls_recency_tilt():
     """7 games engineered so raw count and recency-weight disagree.
 
       3 RECENT "10+0" games at end_time = NOW          -> weight 1.0 each
-      4 OLD    "3+2"  games at end_time = NOW - 4yrs    -> weight ~0.135 each
+      4 OLD    "3+2"  games at end_time = NOW - 4yrs    -> weight ~0.018 each
 
     Raw count tilts toward "3+2" (4 > 3); recency-weighted share tilts
-    toward "10+0" (3.0 > 4 * 0.135 ~= 0.541). If
+    toward "10+0" (3.0 > 4 * 0.018 ~= 0.072). If
     compute_time_control_distribution were a raw tally it would pick
     "3+2"; the test asserts it picks "10+0", proving the SAME decay
     constant the other signals use (STYLE_RECENCY_DECAY_LAMBDA_PER_YEAR)
@@ -590,7 +595,7 @@ YEAR_SEC = int(365.25 * 86400)
 
 
 def _fixture_thin():
-    """2 games — below MIN_STYLE_GAMES=3."""
+    """2 games — below MIN_STYLE_EFF_SAMPLES=5.0 (effective_sample_size ~2.0)."""
     return [
         _quiet_game(NOW, "C50", "Italian Game", opp_white=True),
         _sac_white(NOW, "C44", "Scotch Game"),
@@ -621,7 +626,7 @@ def _fixture_recent_shift():
     """12 games = 6 OLD quiet + 6 RECENT high-sac."""
     games = []
     old_end = NOW - (4 * YEAR_SEC)
-    # 6 old quiet games — decayed to ~0.135 weight each.
+    # 6 old quiet games — at lambda=1.0 these decay to ~0.018 weight each.
     for eco, opening, opp_white in [
         ("C50", "Italian Game", True),
         ("B20", "Sicilian Defense", False),
@@ -647,10 +652,52 @@ def _fixture_recent_shift():
     return games
 
 
+def _fixture_stale_only_sac():
+    """12 games = 6 RECENT quiet + 6 OLD high-sac.
+
+    The MIRROR of _fixture_recent_shift: the sacrifice pattern appears
+    ONLY in the old games. The recent games are all quiet (zero sacs).
+    Under recency weighting, the old sac pattern should still produce a
+    SOFT signal (weighted sac freq > 0, because old games still carry
+    ~0.018 weight each), but it should be MUCH weaker than the unweighted
+    rate (which treats old and recent equally).
+
+    This is the spec's test case: "Pattern that appears only in older
+    games → still produces a soft signal."
+    """
+    games = []
+    recent_end = NOW - (24 * 3600)  # yesterday
+    # 6 recent quiet games — weight ~1.0 each, zero sacrifices.
+    for eco, opening, opp_white in [
+        ("C50", "Italian Game", True),
+        ("B20", "Sicilian Defense", False),
+        ("B10", "Caro-Kann Defense", False),
+        ("D06", "Queen's Gambit Declined", True),
+        ("C50", "Italian Game", False),
+        ("B20", "Sicilian Defense", True),
+    ]:
+        games.append(_quiet_game(recent_end, eco, opening, opp_white))
+    old_end = NOW - (4 * YEAR_SEC)
+    # 6 old sac games — weight ~0.018 each, but each carries sacrifices.
+    for eco, opening, opp_white in [
+        ("B20", "Sicilian Defense", True),
+        ("B20", "Sicilian Defense", True),
+        ("B20", "Sicilian Defense", False),
+        ("B33", "Sicilian Defense: Sveshnikov", False),
+        ("C44", "Scotch Game", True),
+        ("C44", "Scotch Game", True),
+    ]:
+        if opp_white:
+            games.append(_sac_white(old_end, eco, opening))
+        else:
+            games.append(_sac_black(old_end, eco, opening))
+    return games
+
+
 # ---------------------------------------------------------------------------
 # Test runner.
 # ---------------------------------------------------------------------------
-def _run_fixture(label, games):
+def _run_fixture(label, games, sparring_tc=None):
     fake_pool = _FakePool(games)
     database.connection_pool = fake_pool
     try:
@@ -658,6 +705,7 @@ def _run_fixture(label, games):
             requested_by_user_id="user_test_001",
             provider="lichess",
             opponent_username=OPP_NAME,
+            sparring_time_control=sparring_tc,
         )
     finally:
         database.connection_pool = None
@@ -675,6 +723,21 @@ def _assert_thin(result):
     assert result["sacrifice_frequency"] is None
     assert result["opening_family_lean"] is None
     assert result["game_count"] == 2, f"thin: expected game_count=2, got {result['game_count']}"
+    # New transparency fields: effective_sample_size and recency_decay_lambda
+    # are always present, even in the insufficient path.
+    assert "effective_sample_size" in result, (
+        f"thin: effective_sample_size should be in the return dict even below floor"
+    )
+    assert "recency_decay_lambda" in result, (
+        f"thin: recency_decay_lambda should be in the return dict even below floor"
+    )
+    assert abs(result["effective_sample_size"] - 2.0) < 0.01, (
+        f"thin: effective_sample_size should be ~2.0 (2 recent games), "
+        f"got {result['effective_sample_size']}"
+    )
+    assert result["recency_decay_lambda"] == 1.0, (
+        f"thin: recency_decay_lambda should be 1.0, got {result['recency_decay_lambda']}"
+    )
     # All five signals (incl. the three new ones) must also be None below the floor.
     assert result["average_game_length"] is None, (
         f"thin: average_game_length should be None below floor, got {result['average_game_length']}"
@@ -699,6 +762,17 @@ def _assert_thin(result):
 def _assert_established(result):
     assert result["sufficient"] is True, f"est: expected sufficient=True, got {result['sufficient']}"
     assert result["game_count"] == 12, f"est: expected game_count=12, got {result['game_count']}"
+    # Effective sample size: 12 games at ~30 days old (lambda=1.0) ->
+    # weight = exp(-1.0 * 30/365.25) ~= 0.92 -> eff_sample ~= 11.04.
+    # Well above MIN_STYLE_EFF_SAMPLES=5.0.
+    assert "effective_sample_size" in result, "est: effective_sample_size should be in dict"
+    assert result["effective_sample_size"] > 5.0, (
+        f"est: effective_sample_size should clear MIN_STYLE_EFF_SAMPLES=5.0, "
+        f"got {result['effective_sample_size']}"
+    )
+    assert result["recency_decay_lambda"] == 1.0, (
+        f"est: recency_decay_lambda should be 1.0, got {result['recency_decay_lambda']}"
+    )
     assert result["opening_family_lean"] is not None, "est: family lean should be populated"
     s = sum(result["opening_family_lean"].values())
     assert abs(s - 1.0) < 1e-3, f"est: family lean should sum to ~1.0, got {s}"
@@ -773,6 +847,22 @@ def _assert_recent_shift(result):
         f"weighted={weighted} unweighted={unweighted}"
     )
     print(f"  [PASS] recency tilt verified: weighted > 1.5 * unweighted.")
+    # Effective sample size under decay: 12 games, 6 old (4yr, weight
+    # ~0.018 each) + 6 recent (1day, weight ~1.0 each). eff_sample ~ 6.1,
+    # well below the raw 12 — decay is operative.
+    assert "effective_sample_size" in result, (
+        f"shift: effective_sample_size should be in the return dict"
+    )
+    assert result["effective_sample_size"] < float(result["game_count"]), (
+        f"shift: effective_sample_size ({result['effective_sample_size']}) should "
+        f"be < game_count ({result['game_count']}) under decay"
+    )
+    assert result["effective_sample_size"] >= 5.0, (
+        f"shift: effective_sample_size ({result['effective_sample_size']}) should "
+        f"clear MIN_STYLE_EFF_SAMPLES=5.0 (6 recent games at ~1.0 each dominate)"
+    )
+    print(f"  [PASS] effective_sample_size = {result['effective_sample_size']} "
+          f"< game_count = {result['game_count']} (decay operative)")
     lean = result["opening_family_lean"]
     print(f"  family_lean = {lean}")
     sicilian_share = lean.get("Sicilian Defense", 0.0)
@@ -780,6 +870,263 @@ def _assert_recent_shift(result):
         f"shift: expected Sicilian Defense dominant; got {sicilian_share}"
     )
     print(f"  [PASS] Sicilian Defense leans dominant: share={sicilian_share}")
+
+
+def _assert_stale_only_soft_signal(result):
+    """Assert the STALE-ONLY fixture: sac pattern only in old games.
+
+    The 6 recent games are quiet (zero sacs); the 6 old games (4yr ago)
+    are all sac games. Under recency weighting (lambda=1.0):
+
+      - Weighted sac freq: dominated by the recent quiet games, so the
+        weighted rate should be MUCH lower than the unweighted rate.
+      - BUT the old sac pattern still produces a SOFT signal: the
+        weighted rate should be > 0 (old games carry ~0.018 weight each,
+        so their sacs still contribute to the numerator and denominator).
+
+    This is the spec's test case: "Pattern that appears only in older
+    games → still produces a soft signal."
+    """
+    assert result["sufficient"] is True, (
+        f"stale-only: 12 games with ~6.1 effective_sample_size should be sufficient"
+    )
+    assert result["game_count"] == 12, (
+        f"stale-only: expected 12, got {result['game_count']}"
+    )
+    weighted = result["sacrifice_frequency"]
+    if result["opponent_moves"] > 0:
+        unweighted = result["sacrifice_events"] / result["opponent_moves"]
+    else:
+        unweighted = 0.0
+    print(f"  recency-weighted sacrifice_frequency = {weighted}")
+    print(f"  raw/unweighted sacrificial rate     = {round(unweighted, 4)}")
+    # SOFT SIGNAL: weighted rate is > 0 (old sacs still contribute).
+    assert weighted > 0.0, (
+        f"stale-only: weighted sac freq should be > 0 (old sacs still "
+        f"produce a soft signal under decay), got {weighted}"
+    )
+    # DECAY SUPPRESSED: weighted rate is much lower than unweighted
+    # (old games are decayed, recent games have zero sacs).
+    assert weighted < unweighted, (
+        f"stale-only: weighted sac freq should be < unweighted (decay "
+        f"suppresses the old-only pattern), got weighted={weighted} "
+        f"unweighted={unweighted}"
+    )
+    print(f"  [PASS] soft signal verified: 0 < weighted ({weighted}) < "
+          f"unweighted ({round(unweighted, 4)}) — old pattern is a soft "
+          f"signal, not silenced.")
+
+
+def _assert_uniform_age_sanity(result):
+    """Assert the UNIFORM-AGE sanity check: when all games are the same
+    age (here: all end_time=0, so all weights = 1.0), the weighted
+    aggregates should collapse to the unweighted aggregates.
+
+    This confirms the math doesn't distort results when there's nothing
+    to distort: if every game carries the same weight, the weighted mean
+    IS the unweighted mean, and the weighted frequency IS the raw
+    frequency. A bug in the weighting (e.g., a systematic bias toward
+    older or newer games) would show up here as a divergence between
+    weighted and unweighted values.
+
+    Uses the existing SIGNALS fixture (D) which has 6 games all at
+    end_time=0. The _assert_signals function already checks the
+    closed-form expected values; here we additionally assert that
+    effective_sample_size == game_count (the defining property of
+    uniform weighting).
+    """
+    assert result["sufficient"] is True
+    assert result["game_count"] == 6
+    # Under uniform age (all end_time=0 -> weight 1.0), effective_sample_size
+    # equals game_count exactly. This is the sanity check: decay doesn't
+    # distort when all weights are equal.
+    assert abs(result["effective_sample_size"] - float(result["game_count"])) < 1e-9, (
+        f"uniform-age: effective_sample_size ({result['effective_sample_size']}) "
+        f"should equal game_count ({result['game_count']}) when all games "
+        f"are the same age (neutral weighting)"
+    )
+    # weighted_game_count should also equal game_count under uniform
+    # weighting (no data-quality gap in this fixture).
+    assert abs(result["weighted_game_count"] - float(result["game_count"])) < 1e-3, (
+        f"uniform-age: weighted_game_count ({result['weighted_game_count']}) "
+        f"should equal game_count ({result['game_count']}) under neutral weighting"
+    )
+    # The weighted aggregates should equal the unweighted aggregates.
+    # For sacrifice_frequency: weighted = raw_sacs / raw_opp_moves (since
+    # all weights are 1.0, the weighted sums reduce to raw counts).
+    if result["opponent_moves"] > 0:
+        unweighted_sac_freq = result["sacrifice_events"] / result["opponent_moves"]
+        assert abs(result["sacrifice_frequency"] - unweighted_sac_freq) < 1e-3, (
+            f"uniform-age: weighted sac_freq ({result['sacrifice_frequency']}) "
+            f"should equal unweighted ({round(unweighted_sac_freq, 4)}) under "
+            f"neutral weighting"
+        )
+    print(f"  [PASS] uniform-age sanity: effective_sample_size == game_count "
+          f"({result['effective_sample_size']}), weighted aggregates == "
+          f"unweighted aggregates")
+
+
+# ---------------------------------------------------------------------------
+# Time-control similarity weighting tests (L-P).
+# All use end_time=0 (recency-neutral, weight 1.0) unless noted, so the
+# closed-form expected values are pure arithmetic over the TC similarity
+# matrix (_TC_SIMILARITY) -- no exp() involved, so the assertions are exact.
+# ---------------------------------------------------------------------------
+
+# 4 rapid (sac) + 4 blitz (quiet) + 4 bullet (quiet), all recent (end_time=0).
+# Under a RAPID sparring session, rapid games dominate the aggregates.
+def _fixture_tc_same_dominance():
+    games = []
+    # 4 rapid Scotch-sac games (opponent=white, high sac count).
+    for _ in range(4):
+        games.append(_pgn(_SCOTCH_SAC_WHITE, opponent_plays_white=True,
+                          eco="C44", opening="Scotch Game",
+                          end_time=0, time_class="rapid"))
+    # 4 blitz quiet Italian games.
+    for _ in range(4):
+        games.append(_pgn(_QUIET_ITALIAN, opponent_plays_white=True,
+                          eco="C50", opening="Italian Game",
+                          end_time=0, time_class="blitz"))
+    # 4 bullet quiet Italian games.
+    for _ in range(4):
+        games.append(_pgn(_QUIET_ITALIAN, opponent_plays_white=True,
+                          eco="C50", opening="Italian Game",
+                          end_time=0, time_class="bullet"))
+    return games
+
+
+def _assert_tc_same_dominance(result, result_no_tc):
+    """Under a rapid sparring session, rapid games dominate.
+
+    Closed-form (all recent, recency=1.0): eff_sample = 4*1.0(rapid<->rapid)
+    + 4*0.6(blitz<->rapid) + 4*0.2(bullet<->rapid) = 4 + 2.4 + 0.8 = 7.2.
+    The per-bucket transparency mass should show rapid as dominant (== the
+    sparring bucket). And the sacrifice frequency should be HIGHER under the
+    rapid sparring session than under no-TC weighting, because the rapid
+    (sac) games get full weight while the quiet blitz/bullet games are
+    down-weighted -- so the sac rate is no longer diluted by 8 quiet games.
+    """
+    assert result["sufficient"] is True
+    assert result["sparring_time_control_bucket"] == "rapid"
+    assert result["time_control_unclassified_count"] == 0
+    # Closed-form effective sample size.
+    assert abs(result["effective_sample_size"] - 7.2) < 1e-6, (
+        f"tc-same-dominance: eff_sample should be 7.2 "
+        f"(4*1.0+4*0.6+4*0.2), got {result['effective_sample_size']}"
+    )
+    # Per-bucket transparency: rapid dominant, blitz next, bullet last.
+    by_bucket = result["time_control_weighted_by_bucket"]
+    assert by_bucket is not None
+    assert abs(by_bucket["rapid"] - 4.0) < 1e-6, f"rapid mass: {by_bucket['rapid']}"
+    assert abs(by_bucket["blitz"] - 2.4) < 1e-6, f"blitz mass: {by_bucket['blitz']}"
+    assert abs(by_bucket["bullet"] - 0.8) < 1e-6, f"bullet mass: {by_bucket['bullet']}"
+    # First key (sorted desc) must be 'rapid' == sparring bucket.
+    assert list(by_bucket.keys())[0] == "rapid"
+    # Same-TC games dominate the sac signal: rapid-sparring sac freq >
+    # no-TC sac freq (quiet games no longer dilute the sac rate).
+    sf_tc = result["sacrifice_frequency"]
+    sf_no = result_no_tc["sacrifice_frequency"]
+    assert sf_tc > sf_no, (
+        f"tc-same-dominance: sac freq under rapid sparring ({sf_tc}) "
+        f"should be > no-TC sac freq ({sf_no}) -- rapid sac games dominate"
+    )
+    print(f"  [PASS] rapid sparring: eff_sample=7.2, rapid bucket dominant "
+          f"(4.0>2.4>0.8), sac freq {sf_tc} > no-TC {sf_no}")
+
+
+def _assert_tc_cross_down_weight(result):
+    """10 blitz games under a RAPID sparring session are down-weighted x0.6.
+
+    Closed-form (all recent): eff_sample = 10 * 1.0 * 0.6 = 6.0, vs the
+    recency-only 10.0. Confirms cross-TC games are down-weighted (NOT
+    purged -- 6.0 > 0, and 10 games still clears the floor under the
+    down-weighting so the sufficient path + per-bucket mass are visible).
+    """
+    assert result["sufficient"] is True
+    assert result["sparring_time_control_bucket"] == "rapid"
+    assert abs(result["effective_sample_size"] - 6.0) < 1e-6, (
+        f"tc-cross: eff_sample should be 6.0 (10*0.6), "
+        f"got {result['effective_sample_size']}"
+    )
+    # Not purged: the blitz mass is still present (6.0), not 0.
+    by_bucket = result["time_control_weighted_by_bucket"]
+    assert by_bucket is not None
+    assert abs(by_bucket["blitz"] - 6.0) < 1e-6
+    print(f"  [PASS] blitz games under rapid sparring: eff_sample=6.0 "
+          f"(x0.6 down-weight, not purged)")
+
+
+def _assert_tc_unknown_fallback(result):
+    """No sparring TC -> TC factor collapses to 1.0 (recency-only).
+
+    No crash, uniform weights. sparring_time_control_bucket is None (the
+    "unknown" bucket is surfaced as None to the caller). The 10 blitz games
+    each get weight 1.0 (recency) so eff_sample = 10.0 == recency-only.
+    """
+    assert result["sufficient"] is True
+    assert result["sparring_time_control_bucket"] is None
+    # Recency-only: 10 recent games -> eff_sample 10.0.
+    assert abs(result["effective_sample_size"] - 10.0) < 1e-6, (
+        f"tc-unknown: eff_sample should be 10.0 (recency-only), "
+        f"got {result['effective_sample_size']}"
+    )
+    # No-TC path still surfaces the per-bucket mass (recency-only weights).
+    by_bucket = result["time_control_weighted_by_bucket"]
+    assert by_bucket is not None
+    assert abs(by_bucket["blitz"] - 10.0) < 1e-6
+    print(f"  [PASS] unknown sparring TC: no crash, eff_sample=10.0 "
+          f"(recency-only fallback), sparring_bucket=None")
+
+
+def _assert_tc_combined_product(result_tc, result_no_tc):
+    """Combined weight = recency x TC (product, not just one factor).
+
+    4 blitz games (2 recent + 2 old) under rapid sparring. The recency-only
+    run (result_no_tc) gives eff_sample_noTC = 2*1.0 + 2*recency(age). The
+    TC run should give eff_sample_TC = 0.6 * eff_sample_noTC exactly --
+    every game's weight is the recency factor TIMES the 0.6 TC factor, so
+    the TC run is a uniform 0.6 scaling of the recency-only run. This
+    verifies the two factors compose multiplicatively without needing to
+    compute exp() in the test (the recency-only run is the ground truth).
+    """
+    ratio = result_tc["effective_sample_size"] / result_no_tc["effective_sample_size"]
+    # 1e-3 tolerance: the two runs anchor on slightly different time.time()
+    # calls (a few ms apart), so the 1-year-old games' recency factor drifts
+    # by a relative ~1e-8 between runs -- negligible, but the RATIO of two
+    # slightly-different eff_samples amplifies it to ~1e-5. 1e-3 still
+    # catches a gross bug (e.g. a 0.5 instead of 0.6 factor would be off by
+    # 0.1 >> 1e-3) while tolerating the wall-clock drift.
+    assert abs(ratio - 0.6) < 1e-3, (
+        f"tc-combined: eff_sample ratio (TC/no-TC) should be 0.6 "
+        f"(blitz<->rapid similarity), got {ratio} -- "
+        f"TC={result_tc['effective_sample_size']} "
+        f"no-TC={result_no_tc['effective_sample_size']}"
+    )
+    # And it's strictly less than the recency-only number (TC bites) but
+    # strictly greater than 0 (old cross-TC games still contribute a soft
+    # prior -- neither factor zeroes them out).
+    assert result_tc["effective_sample_size"] < result_no_tc["effective_sample_size"]
+    assert result_tc["effective_sample_size"] > 0.0
+    print(f"  [PASS] combined recency x TC: eff_sample_TC "
+          f"({result_tc['effective_sample_size']}) = 0.6 x "
+          f"eff_sample_noTC ({result_no_tc['effective_sample_size']}) "
+          f"-- multiplicative composition verified")
+
+
+def _assert_tc_uniform_sanity(result_tc, result_no_tc):
+    """Uniform-TC sanity: all games match the sparring bucket -> TC factor
+    1.0 -> eff_sample == recency-only eff_sample. TC doesn't distort when
+    there's nothing to down-weight."""
+    assert result_tc["sparring_time_control_bucket"] == "rapid"
+    assert abs(result_tc["effective_sample_size"]
+               - result_no_tc["effective_sample_size"]) < 1e-6, (
+        f"tc-uniform: eff_sample should match recency-only when all games "
+        f"are same-TC, got TC={result_tc['effective_sample_size']} "
+        f"no-TC={result_no_tc['effective_sample_size']}"
+    )
+    print(f"  [PASS] uniform-TC sanity: all-rapid games under rapid "
+          f"sparring -> eff_sample {result_tc['effective_sample_size']} == "
+          f"recency-only (TC factor 1.0, no distortion)")
 
 
 def _assert_signals(result):
@@ -799,12 +1146,32 @@ def _assert_signals(result):
 
     # --- sufficient -------------------------------------------------------
     assert result["sufficient"] is True, (
-        f"signals: 6 games is above MIN_STYLE_GAMES=3; "
+        f"signals: 6 games at neutral weight give effective_sample_size=6.0 "
+        f"(above MIN_STYLE_EFF_SAMPLES=5.0); "
         f"got sufficient={result['sufficient']}"
     )
     assert result["game_count"] == 6, (
         f"signals: expected 6 games, got {result['game_count']}"
     )
+    # Effective sample size: 6 games at end_time=0 (neutral weight 1.0)
+    # -> effective_sample_size = 6.0. This is the UNIFORM-AGE SANITY CHECK:
+    # when all games are the same age (here: all end_time=0, weight 1.0),
+    # the weighted aggregates should collapse to the unweighted aggregates
+    # (decay is uniform so it doesn't distort). effective_sample_size
+    # equals the raw game count.
+    assert "effective_sample_size" in result, (
+        f"signals: effective_sample_size should be in the return dict"
+    )
+    assert abs(result["effective_sample_size"] - 6.0) < 1e-3, (
+        f"signals: effective_sample_size should be 6.0 (6 games at neutral "
+        f"weight 1.0 each), got {result['effective_sample_size']}"
+    )
+    assert result["recency_decay_lambda"] == 1.0, (
+        f"signals: recency_decay_lambda should be 1.0, "
+        f"got {result['recency_decay_lambda']}"
+    )
+    print(f"  [PASS] effective_sample_size = {result['effective_sample_size']} "
+          f"(== game_count under neutral weighting — uniform-age sanity)")
 
     # --- average game length ---------------------------------------------
     # (13 + 17 + 12 + 12 + 10 + 12) / 6 = 76 / 6 = 12.6667
@@ -1199,17 +1566,17 @@ def _assert_time_control_recency_tilt(games, result):
 
     Fixture G (designed so raw count and recency-weight disagree):
       3 recent "10+0" games at end_time NOW            (weight 1.0 each)
-      4 OLD    "3+2" games at end_time NOW - 4 years    (weight ~0.135 each)
+      4 OLD    "3+2" games at end_time NOW - 4 years    (weight ~0.018 each)
 
     Raw count tilts toward "3+2" (4 > 3), so if this function were a raw
     tally it would pick "3+2". With the recency decay reused from the rest
-    of the module (lambda=0.5/yr -> 4yr weight ~0.135), the weighted share
-    of "10+0" (3.0) dominates "3+2" (4 * 0.135 ~= 0.541), so the
+    of the module (lambda=1.0/yr -> 4yr weight ~0.018), the weighted share
+    of "10+0" (3.0) dominates "3+2" (4 * 0.018 ~= 0.072), so the
     most_common bucket flips to "10+0". This is the test that
     distinguishes "reuse of the existing decay" from "raw count" — a
     raw-tally implementation would FAIL this assertion.
     """
-    expected_4yr_weight = 2.71828 ** (-0.5 * 4)
+    expected_4yr_weight = 2.71828 ** (-1.0 * 4)
     expected_3plus2_weight = 4 * expected_4yr_weight
     expected_10plus0_weight = 3.0
     expected_total = expected_10plus0_weight + expected_3plus2_weight
@@ -1594,8 +1961,8 @@ def _assert_opening_results_with_aborted(result, result_clean):
 def main():
     print("opponent_style live test harness")
     print(f"NOW (unix) = {NOW}")
-    four_year_weight = 2.71828 ** (-0.5 * 4)
-    print(f"4-year-decay weight = {round(four_year_weight, 4)}  (expect ~0.135)")
+    four_year_weight = 2.71828 ** (-1.0 * 4)
+    print(f"4-year-decay weight = {round(four_year_weight, 4)}  (expect ~0.018)")
 
     thin, pool_t = _run_fixture("thin", _fixture_thin())
     _print("A. THIN (2 games)", thin, pool_t)
@@ -1629,6 +1996,12 @@ def main():
     sig, pool_d = _run_fixture("signals", _fixture_signals())
     _print("D. SIGNALS (6 engineered games, neutral weighting)", sig, pool_d)
     _assert_signals(sig)
+    # D-prime: UNIFORM-AGE SANITY CHECK on the same fixture — when all
+    # games are the same age (end_time=0, weight 1.0), the weighted
+    # aggregates collapse to the unweighted aggregates. Confirms the
+    # decay math doesn't distort results when there's nothing to distort.
+    print("\n=== D-prime. UNIFORM-AGE SANITY CHECK (same fixture, all neutral) ===")
+    _assert_uniform_age_sanity(sig)
 
     # E. UNPARSEABLE EXCLUSION — same 6 games + 2 deliberately malformed
     # PGN rows. Verifies the denominator-consistency fix: all five signals
@@ -1694,6 +2067,91 @@ def main():
     or_dirty_result = style_mod.compute_opening_results(or_dirty_games)
     print(json.dumps(or_dirty_result, indent=2, default=str))
     _assert_opening_results_with_aborted(or_dirty_result, or_result)
+
+    # K. STALE-ONLY SAC — the MIRROR of fixture C: the sacrifice pattern
+    # appears ONLY in the old games. The recent games are all quiet (zero
+    # sacs). Under recency weighting, the old pattern should still produce
+    # a SOFT signal (weighted sac freq > 0) but be much weaker than the
+    # unweighted rate (decay suppresses the old-only pattern).
+    print("\n=== K. STALE-ONLY SAC (6 recent quiet + 6 old high-sac) ===")
+    stale, pool_k = _run_fixture("stale-only-sac", _fixture_stale_only_sac())
+    _print("K. STALE-ONLY SAC (mirror of C: pattern only in old games)", stale, pool_k)
+    _assert_stale_only_soft_signal(stale)
+
+    # L. TIME-CONTROL SAME-TC DOMINANCE — 4 rapid (sac) + 4 blitz (quiet) +
+    # 4 bullet (quiet), all recent, under a RAPID sparring session. The
+    # rapid games must dominate the aggregates: eff_sample = 7.2 (closed
+    # form), the rapid bucket is the dominant per-bucket mass, and the sac
+    # frequency is HIGHER than under no-TC weighting (the quiet blitz/bullet
+    # games no longer dilute the sac rate).
+    print("\n=== L. TC SAME-TC DOMINANCE (4 rapid sac + 4 blitz quiet + 4 bullet quiet; rapid sparring) ===")
+    tc_dom_games = _fixture_tc_same_dominance()
+    tc_dom, _ = _run_fixture("tc-same-dominance", tc_dom_games, sparring_tc="rapid")
+    # No-TC control run of the SAME fixture (recency-only) for the sac-freq
+    # comparison.
+    tc_dom_no, _ = _run_fixture("tc-same-dominance (no-TC)", tc_dom_games)
+    _print("L. TC SAME-TC DOMINANCE (rapid sparring)", tc_dom, _FakePool([]))
+    _assert_tc_same_dominance(tc_dom, tc_dom_no)
+
+    # M. TC CROSS-TC DOWN-WEIGHT — 10 blitz games under a rapid sparring
+    # session. Each game's weight is 1.0 (recency) x 0.6 (blitz<->rapid) =
+    # 0.6, so eff_sample = 6.0 (vs 10.0 recency-only). 10 games clears the
+    # floor even under the 0.6 down-weighting (6.0 >= 5.0) so the sufficient
+    # path + per-bucket mass are visible. Cross-TC games are down-weighted,
+    # NOT purged.
+    print("\n=== M. TC CROSS-TC DOWN-WEIGHT (10 blitz games, rapid sparring) ===")
+    tc_cross_games = [
+        _pgn(_QUIET_ITALIAN, opponent_plays_white=True, eco="C50",
+             opening="Italian Game", end_time=0, time_class="blitz")
+        for _ in range(10)
+    ]
+    tc_cross, _ = _run_fixture("tc-cross", tc_cross_games, sparring_tc="rapid")
+    _print("M. TC CROSS-TC DOWN-WEIGHT (blitz under rapid)", tc_cross, _FakePool([]))
+    _assert_tc_cross_down_weight(tc_cross)
+
+    # N. TC UNKNOWN SPARRING FALLBACK — same 4 blitz games, NO sparring TC.
+    # The TC factor collapses to 1.0 (recency-only), no crash, and
+    # sparring_time_control_bucket is None.
+    print("\n=== N. TC UNKNOWN SPARRING FALLBACK (no sparring TC supplied) ===")
+    tc_unknown, _ = _run_fixture("tc-unknown", tc_cross_games)
+    _print("N. TC UNKNOWN SPARRING (no TC)", tc_unknown, _FakePool([]))
+    _assert_tc_unknown_fallback(tc_unknown)
+
+    # O. COMBINED RECENCY x TC — 4 blitz games (2 recent + 2 one-year-old)
+    # under rapid sparring. The TC run's eff_sample should be exactly 0.6 x
+    # the recency-only run's eff_sample (the 0.6 TC factor scales uniformly),
+    # proving the two factors compose multiplicatively.
+    print("\n=== O. TC COMBINED RECENCY x TC (4 blitz: 2 recent + 2 old; rapid sparring) ===")
+    one_year_ago = int((time.time()) - 365.25 * 86400)
+    tc_combined_games = []
+    for _ in range(2):
+        tc_combined_games.append(_pgn(_QUIET_ITALIAN, opponent_plays_white=True,
+                                     eco="C50", opening="Italian Game",
+                                     end_time=0, time_class="blitz"))
+    for _ in range(2):
+        tc_combined_games.append(_pgn(_QUIET_ITALIAN, opponent_plays_white=True,
+                                     eco="C50", opening="Italian Game",
+                                     end_time=one_year_ago, time_class="blitz"))
+    tc_combined, _ = _run_fixture("tc-combined", tc_combined_games, sparring_tc="rapid")
+    tc_combined_no, _ = _run_fixture("tc-combined (no-TC)", tc_combined_games)
+    _print("O. TC COMBINED RECENCY x TC (blitz, mixed age, rapid sparring)",
+           tc_combined, _FakePool([]))
+    _assert_tc_combined_product(tc_combined, tc_combined_no)
+
+    # P. UNIFORM-TC SANITY — 6 rapid games, all recent, under rapid
+    # sparring. Since every game matches the sparring bucket, the TC factor
+    # is 1.0 for all, so eff_sample must EQUAL the recency-only eff_sample
+    # (TC introduces no distortion when there's nothing to down-weight).
+    print("\n=== P. UNIFORM-TC SANITY (6 rapid games, rapid sparring) ===")
+    tc_uni_games = [
+        _pgn(_QUIET_ITALIAN, opponent_plays_white=True, eco="C50",
+             opening="Italian Game", end_time=0, time_class="rapid")
+        for _ in range(6)
+    ]
+    tc_uni, _ = _run_fixture("tc-uniform", tc_uni_games, sparring_tc="rapid")
+    tc_uni_no, _ = _run_fixture("tc-uniform (no-TC)", tc_uni_games)
+    _print("P. UNIFORM-TC SANITY (all rapid, rapid sparring)", tc_uni, _FakePool([]))
+    _assert_tc_uniform_sanity(tc_uni, tc_uni_no)
 
     print("\nAll assertions passed.")
 
