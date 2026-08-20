@@ -333,6 +333,7 @@ const gameOver = game.isGameOver();
           fen: gameRef.current.fen(),
           move_history: gameRef.current.history(),
           bot_color: botColor,
+          time_control: timeControl || undefined,
         }),
       });
 
