@@ -29,11 +29,40 @@ mirror-mode (today's style-bias behaviour).  See decision (6) in
 spec.
 """
 import logging
-from typing import Any, Dict, List, Set
+import math
+import time
+from typing import Any, Dict, List, Optional, Set
 
 from psycopg2.extras import RealDictCursor
 
+from services.opponent_style import (
+    STYLE_RECENCY_DECAY_LAMBDA_PER_YEAR,
+    _game_tc_weight,
+    _time_control_bucket,
+)
+
 log = logging.getLogger(__name__)
+
+# Seconds per year (365.25 days, leap-year averaged). Used by the
+# recency-weight helper that applies moderate decay to the per-position
+# blunder hit count (see compute_exploitable_traps below).
+_SECONDS_PER_YEAR = 365.25 * 86400.0
+
+
+def _game_recency_weight(end_time: int, now_unix: float) -> float:
+    """exp(-lambda * age_years) for one game, with end_time=0 -> neutral 1.0.
+
+    Mirrors the helper in opponent_style.py so the trap layer ages blunders
+    on the SAME timescale as the style-aggregate signals (lambda=1.0,
+    half-life ~8.3 months). This is the "moderate decay" the spec asks for
+    on trap/blunder patterns: recent blunders count fully toward the
+    TRAP_MIN_HITS gate, while old blunders need more volume to clear it.
+    """
+    if not end_time or end_time <= 0:
+        return 1.0
+    age_seconds = max(0.0, now_unix - float(end_time))
+    age_years = age_seconds / _SECONDS_PER_YEAR
+    return math.exp(-STYLE_RECENCY_DECAY_LAMBDA_PER_YEAR * age_years)
 
 
 # --- exploitability floor (trap-mode gates) ---------------------------------
@@ -41,14 +70,23 @@ log = logging.getLogger(__name__)
 # A position_key is "exploitable" for a given opponent iff BOTH gates pass:
 #
 #   (1) TRAP_MIN_HITS = 2: the opponent has blundered from this exact
-#       position_key in >= 2 DIFFERENT games (deduped by game_id, matching
-#       compute_opponent_traps' dedupe convention).  A single-occurrence
-#       "blunder" is not a pattern, it's noise -- do not treat it as
-#       exploitable no matter how large the opponent's overall game count.
-#       2 is the smallest count where a recurrence starts to mean something
-#       rather than being one isolated occurrence (the same "rule of three"
-#       intuition MIN_STYLE_GAMES uses, tightened by 1 because a repeated
-#       BLUNDER is a stronger signal than a repeated opening choice).
+#       position_key in games whose RECENCY-WEIGHTED sum >= 2.0 (deduped
+#       by game_id, matching compute_opponent_traps' dedupe convention).
+#       Each distinct game's blunder contributes its per-game recency
+#       weight (exp(-lambda * age_years), lambda=1.0, half-life ~8.3
+#       months — same decay as the style-aggregate signals) to the sum.
+#       Two RECENT blunders give 2.0 >= 2.0 (clears). Two 1-year-old
+#       blunders give 2 * 0.368 = 0.74 < 2.0 (doesn't clear — old
+#       blunders need more volume to be "exploitable"). This is the
+#       "moderate decay" the spec asks for: recent blunder patterns
+#       count fully, old ones need more recurrence to clear the same
+#       floor. The floor VALUE (2) is kept; only the unit changed from
+#       raw count to weighted sum.
+#       2 is the smallest count where a recurrence starts to mean
+#       something rather than being one isolated occurrence (the same
+#       "rule of three" intuition MIN_STYLE_GAMES uses, tightened by 1
+#       because a repeated BLUNDER is a stronger signal than a repeated
+#       opening choice).
 #
 #   (2) TRAP_MIN_GAMES = 5: the opponent has >= 5 total games in the
 #       imported dataset (COUNT over opponent_games, NOT over
@@ -59,8 +97,8 @@ log = logging.getLogger(__name__)
 #       its OWN named constant here (not imported) so this layer can be
 #       tuned independently -- matching how
 #       STYLE_RECENCY_DECAY_LAMBDA_PER_YEAR is a separate constant from
-#       the repertoire sampler's RECENCY_DECAY_LAMBDA_PER_YEAR despite
-#       the same value.  5 (not 3) because a *repeated blunder pattern*
+#       the repertoire sampler's RECENCY_DECAY_LAMBDA_PER_YEAR (the two
+#       now diverge: style=1.0, repertoire=0.5).  5 (not 3) because a *repeated blunder pattern*
 #       is a stronger claim than a *style aggregate*: the style layer
 #       profiling "this player sacs a lot" can afford to fire at 3 games
 #       since each game contributes many opponent moves (variance shrinks
@@ -175,6 +213,7 @@ def compute_exploitable_traps(
     requested_by_user_id: str,
     provider: str,
     opponent_username: str,
+    sparring_time_control: Optional[str] = None,
 ) -> Set[str]:
     """Return the bare set of exploitable ``position_key`` strings for
     this opponent, applying BOTH exploitability gates (see
@@ -189,23 +228,45 @@ def compute_exploitable_traps(
     ``rerank_candidates(exploitable_trap_keys=...)`` -- not recomputed
     per move.
 
+    ``sparring_time_control`` is the OPTIONAL time-control string of the
+    current sparring session (a bucket label, "M+I" label, or raw
+    "base+inc").  When supplied, each blunder's per-game weight is the
+    PRODUCT of the recency decay AND the time-control similarity
+    (``_game_tc_weight``), so blunders from the SAME time control as the
+    sparring session count fully toward ``TRAP_MIN_HITS`` while cross-TC
+    blunders are down-weighted (moderate weighting -- the off-diagonal
+    similarity values are 0.1-0.7, not zero, so a cross-TC blunder still
+    contributes, just needs more volume to clear the gate).  When it is
+    None/unbucketable, the TC factor collapses to 1.0 and the weighting
+    is recency-only (existing callers unaffected).
+
     Gates (both must pass; a failure on either returns a key-free set):
 
-      (1) ``TRAP_MIN_GAMES`` (opponent-level): the opponent has >= 5
-          total games in ``opponent_games``.  Below this the whole
-          opponent is treated as "no exploitable traps" regardless of
-          how concentrated any single position's blunders are -- a
+      (1) ``TRAP_MIN_GAMES`` (opponent-level, RAW count): the opponent
+          has >= 5 total games in ``opponent_games``.  Below this the
+          whole opponent is treated as "no exploitable traps" regardless
+          of how concentrated any single position's blunders are -- a
           3-game opponent with 3 identical blunders is anecdote, not a
           statistically real pattern.  Checked first so the (cheaper)
           per-position gate only runs when the opponent-level gate has
-          already passed.
+          already passed.  This gate is on RAW game count (not
+          recency-weighted) because it is a volume check ("does the
+          opponent have enough games on file for the absence of blunders
+          elsewhere to be meaningful"), not a recency check.
 
-      (2) ``TRAP_MIN_HITS`` (per-position_key): each candidate
-          ``position_key`` must have blunders in >= 2 DIFFERENT games
-          (deduped by ``game_id``, matching ``compute_opponent_traps``
-          convention).  Grouping/deduping is done in Python (not SQL
-          GROUP BY) so the dedupe-by-game_id logic is testable without
-          a real database, matching ``compute_opponent_traps``'s shape.
+      (2) ``TRAP_MIN_HITS`` (per-position_key, RECENCY+TC-WEIGHTED): each
+          candidate ``position_key`` must have blunders in distinct
+          games whose RECENCY+TC-WEIGHTED sum >= 2.0 (TRAP_MIN_HITS as a
+          float).  Each distinct game's blunder contributes its
+          per-game combined weight (recency exp(-lambda * age_years)
+          times _game_tc_weight(game_bucket, sparring_bucket),
+          lambda=1.0 -- same decay as the style-aggregate signals) to
+          the sum.  Two recent same-TC blunders give 2.0 >= 2.0
+          (clears); old or cross-TC blunders need more volume to clear.
+          Grouping/deduping is done in Python (not SQL GROUP BY) so the
+          dedupe-by-game_id logic is testable without a real database,
+          matching ``compute_opponent_traps``'s shape.  This is the
+          "moderate decay" the spec asks for on trap/blunder patterns.
 
     Returns an empty ``set`` when the opponent has no blunder rows, or
     when no ``position_key`` clears both gates.  ``None`` is never
@@ -213,7 +274,14 @@ def compute_exploitable_traps(
     omit the argument entirely"; an empty set and an omitted argument
     both reproduce mirror-only behaviour (``trap_mode_active=False``).
     """
-    # --- Gate 1: opponent-level total game count ----------------------------
+    # Resolve the sparring session's time-control bucket ONCE. When it is
+    # None/unbucketable, _game_tc_weight returns 1.0 for every game and
+    # the combined weight collapses to recency-only (existing callers
+    # unaffected -- the moderate TC weighting only bites when a bucketable
+    # sparring TC is supplied).
+    sparring_bucket = _time_control_bucket(sparring_time_control)
+
+    # --- Gate 1: opponent-level total game count (RAW) ----------------------
     # Checked first so the per-position gate only runs when this passes.
     # COUNT(DISTINCT id) over opponent_games, NOT over opponent_game_blunders
     # -- a position can be reached without a blunder occurring, so the
@@ -241,18 +309,21 @@ def compute_exploitable_traps(
         # per-position query below doesn't run.
         return set()
 
-    # --- Gate 2: per-position_key hit count (distinct games) ----------------
-    # Same WHERE clause + grouping/dedupe-by-game_id shape as
-    # compute_opponent_traps, but we only need position_key + game_id
-    # (not the full display fields) so the set is as thin as possible.
+    # --- Gate 2: per-position_key hit count (recency+TC-weighted) -----------
+    # Join opponent_game_blunders with opponent_games to get end_time AND
+    # time_class for each blunder row, so we can compute per-game COMBINED
+    # (recency x TC) weights. The WHERE clause on opponent_game_blunders'
+    # own columns keeps the blunder-table index
+    # (idx_opponent_game_blunders_lookup) usable.
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             """
-            SELECT position_key, game_id
-            FROM opponent_game_blunders
-            WHERE requested_by_user_id = %s
-              AND provider = %s
-              AND LOWER(opponent_username) = LOWER(%s)
+            SELECT b.position_key, b.game_id, g.end_time, g.time_class
+            FROM opponent_game_blunders b
+            JOIN opponent_games g ON g.id = b.game_id
+            WHERE b.requested_by_user_id = %s
+              AND b.provider = %s
+              AND LOWER(b.opponent_username) = LOWER(%s)
             """,
             (requested_by_user_id, provider, opponent_username),
         )
@@ -260,21 +331,39 @@ def compute_exploitable_traps(
 
     # Group by position_key, dedupe by game_id (same convention as
     # compute_opponent_traps: the same game blundering twice at the same
-    # position counts as ONE game, not two).
-    key_to_games: Dict[str, set] = {}
+    # position counts as ONE game, not two). For each distinct game, keep
+    # the MAX combined weight (all blunder rows from the same game share
+    # the same end_time/time_class so the weight is the same; max is
+    # defensive against any row-level oddness).
+    now_unix = time.time()
+    key_to_game_weights: Dict[str, Dict[Any, float]] = {}
     for row in rows:
         key = row.get("position_key")
         if not key:
             continue
         game_id = row.get("game_id")
-        key_to_games.setdefault(key, set()).add(game_id)
+        end_time = int(row.get("end_time") or 0)
+        game_bucket = _time_control_bucket(row.get("time_class"))
+        weight = _game_recency_weight(end_time, now_unix) * _game_tc_weight(
+            game_bucket, sparring_bucket
+        )
+        game_weights = key_to_game_weights.setdefault(key, {})
+        # If the same game_id appears multiple times (multiple blunders in
+        # one game at the same position), keep the weight (they all share
+        # the same end_time/time_class so the weight is the same; max is
+        # defensive).
+        if game_id not in game_weights or weight > game_weights[game_id]:
+            game_weights[game_id] = weight
 
-    # A position_key is exploitable iff it has blunders in >= TRAP_MIN_HITS
-    # distinct games.  Below this a single-occurrence "blunder" is noise,
-    # not a pattern -- see the TRAP_MIN_HITS constant comment above.
+    # A position_key is exploitable iff the SUM of per-game COMBINED
+    # (recency x TC) weights across distinct games clears TRAP_MIN_HITS
+    # (as a float). Two recent same-TC blunders give 2.0 >= 2.0 (clears);
+    # old or cross-TC blunders need more volume. Below this a single-
+    # occurrence "blunder" is noise, not a pattern -- see the
+    # TRAP_MIN_HITS constant comment above.
     exploitable: Set[str] = {
         key
-        for key, game_ids in key_to_games.items()
-        if len(game_ids) >= TRAP_MIN_HITS
+        for key, game_weights in key_to_game_weights.items()
+        if sum(game_weights.values()) >= float(TRAP_MIN_HITS)
     }
     return exploitable
