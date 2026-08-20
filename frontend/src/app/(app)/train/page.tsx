@@ -227,7 +227,7 @@ type ApiErrorResponse = {
 
 const POLL_INTERVAL_MS = 1500;
 const MAX_POLL_ATTEMPTS = 80;
-const IMPORT_LIMIT = 200;
+const IMPORT_LIMIT = 500;
 
 function OpponentPrepDialog({ onClose }: { onClose: () => void }) {
   const router = useRouter();
