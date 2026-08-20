@@ -463,6 +463,85 @@ DESIGN DECISIONS (recorded here because they shape the whole module)
         actually-deviated-not-just-triggered discipline already used for
         sac/qt/setup/castle/trap).
 
+(8) NEAR-BOOK REPERTOIRE SIMILARITY (multiplicative with all existing
+    signals; the "near-book" extension of mirror-mode).
+
+    PRODUCT DECISION. When the position is NOT an exact repertoire hit but
+    is still close to positions the opponent has played, prefer candidates
+    that stay in the spirit of the opponent's repertoire. This is the
+    natural near-book extension of the exact-book path
+    (opponent_repertoire.pick_repertoire_move).
+
+    SEQUENCING RULE (STRUCTURAL, NOT JUST TEST-COVERED). D only runs when
+    pick_repertoire_move returns no move for the current position. This is
+    enforced in the CALLER's control flow (routers/train.py), not inside
+    this function: the near-book data lookup
+    (opponent_repertoire.pick_near_repertoire_moves) and this reranker are
+    only ever reached in the out-of-book branch, AFTER pick_repertoire_move
+    has returned None. When an exact book hit exists, the router returns the
+    book move directly and never computes near_book_weights nor calls
+    rerank_candidates -- so D is not evaluated, scored, or allowed to
+    compete at all. This function further cannot accidentally re-express a
+    book move: pick_near_repertoire_moves excludes the live position's own
+    position_key, and the live exact-key has no rows by the time D runs
+    (pick_repertoire_move would have hit under MIN_REPERTOIRE_SAMPLES=1).
+
+    DEFINITION OF "NEAR-BOOK" (v1). A candidate is near-book iff its
+    `move_uci` appears in the recency-weighted near-repertoire move map
+    (`near_book_weights`). The map is produced by
+    opponent_repertoire.pick_near_repertoire_moves, which reads the SAME
+    recency-weighted repertoire table the exact-book path reads (NOT raw
+    unweighted counts), gated to (a) the opponent's same-color games and
+    (b) a +/- NEAR_BOOK_PLY_WINDOW ply window around the live ply. See that
+    function's docstring for why a ply window was chosen over a
+    position_key prefix match or shared opening family.
+
+    DERIVATION:
+      total_nb         = sum(near_book_weights.values())
+      share_i          = near_book_weights[candidate_i.move] / total_nb
+      near_book_mult_i = 1 + NEAR_BOOK_WEIGHT * share_i
+      weight_i         = base_i * sac_mult_i * qt_mult_i * setup_mult_i
+                           * castle_mult_i * trap_mult_i * length_mult_i
+                           * near_book_mult_i
+
+    Boost-only (never below 1.0), matching setup/trap's shape. The move
+    matching is on the candidate's UCI string only -- NO board push, so it
+    is O(1) per candidate and is NOT the one-ply result-position check the
+    trap/setup/sac signals use; near-book profiles the opponent's move-
+    order tendency at this game stage, which is a different axis from the
+    board-shape (setup) and blunder-position (trap) signals.
+
+    DATA PLUMBING. rerank_candidates takes a new keyword-only argument
+    `near_book_weights: Optional[Dict[str, float]] = None`. None (the
+    default) or an empty dict means "no near-book data available" --
+    near_book_mult is 1.0 for every candidate and the function reproduces
+    today's behavior exactly. This keeps the function backward-compatible
+    for any caller that hasn't been updated.
+
+    GATING. D sits inside the existing style["sufficient"] contract,
+    unchanged: if sufficient is False, the function returns via the
+    insufficient_data path before near_book_weights is consulted. The
+    near-book data lookup also applies its own floor
+    (MIN_REPERTOIRE_SAMPLES on raw near-sample count) before returning a
+    non-None map. If the lookup fails or returns None, near_book_mult is
+    1.0 for every candidate -- mirror-mode unchanged.
+
+    TRANSPARENCY FIELDS (extending the existing return shape, same pattern
+    as trap_mode_active / trap_candidate_count):
+      * near_book_active: bool -- whether any candidate's move_uci matched
+        the near-book map on this specific move.
+      * near_book_candidate_count: int -- how many candidates matched (0
+        when near_book_active is False).
+      * Per-row breakdown: near_book_weight (float, the normalized share in
+        [0,1], 0.0 for non-matches) and near_book_multiplier (float).
+      * "near_book" added to signals_applied when the near_book multiplier
+        actually deviates from 1.0 on at least one candidate (same
+        actually-deviated-not-just-triggered discipline as the rest).
+
+    EXPLICITLY OUT OF SCOPE: multi-ply planning, fuzzy motif matching
+    beyond the ply-window move-overlap, any UI surfacing, and any new
+    multiplicative signal beyond this one.
+
 ================================================================================
 CONSTANTS
 ================================================================================
@@ -772,6 +851,39 @@ GAME_LENGTH_BIAS_STRENGTH = 0.8
 GAME_LENGTH_REFERENCE_PLY = 50.0
 GAME_LENGTH_SCALE_PLY = 20.0
 GAME_LENGTH_WEIGHT_FLOOR = 0.05
+
+# --- near-book repertoire similarity (feature D, v1) ------------------------
+#
+# Per-candidate multiplicative boost for moves the opponent has played from
+# repertoire positions NEAR the live position (the "near-book" extension of
+# mirror-mode). The near-book data is a recency-weighted {move_uci: weight}
+# map produced by opponent_repertoire.pick_near_repertoire_moves, passed in
+# by the caller as `near_book_weights` -- the SAME data-plumbing shape as
+# `exploitable_trap_keys` (computed once by the caller, never inside this
+# pure function). The reranker never touches the DB.
+#
+# Derivation (decision (8) in the module docstring):
+#   total_nb          = sum of near_book_weights values
+#   share_i           = near_book_weights[candidate_i.move] / total_nb   in [0,1]
+#   near_book_mult_i  = 1 + NEAR_BOOK_WEIGHT * share_i
+#
+# Boost-only (never below 1.0), matching setup/trap's shape -- the absence
+# of a near-book match is neutral (1.0), not evidence the opponent avoids
+# the move. A candidate whose move_uci is absent from the map gets
+# near_book_mult=1.0. share_i is the opponent's recency-weighted share of
+# near-position moves that go to this exact UCI: a move the opponent plays
+# from ~every near position reaches share=1.0 -> mult = 1 + NEAR_BOOK_WEIGHT;
+# a move they play from a minority of near positions gets a proportionally
+# smaller boost.
+#
+# NEAR_BOOK_WEIGHT = 2.0: deliberately between CASTLE_BIAS_STRENGTH (1.5) and
+# SETUP_SIGNATURE_BIAS_STRENGTH (2.5), and clearly below TRAP_WEIGHT (6.0).
+# Near-book evidence is a softer claim than a confirmed >=2x repeated trap
+# blunder (so weaker than trap), and about as strong as setup/castle -- it
+# says "the opponent tends to play this move at this stage", which is a real
+# but continuous signal. At strength 2.0 a fully-confident near move gets
+# mult 3.0, in the same ballpark as setup's max 3.5.
+NEAR_BOOK_WEIGHT = 2.0
 
 
 def _base_weight(rank: int) -> float:
@@ -1558,6 +1670,7 @@ def rerank_candidates(
     board: chess.Board,
     rng: Optional[random.Random] = None,
     exploitable_trap_keys: Optional[set] = None,
+    near_book_weights: Optional[Dict[str, float]] = None,
 ) -> Dict[str, Any]:
     """Combine Maia's candidates with an opponent's style profile.
 
@@ -1599,6 +1712,16 @@ def rerank_candidates(
             available" -- trap_mode_active is always False and the
             reranker stays in mirror-mode (today's behavior, unchanged).
             See decision (6) in the module docstring for the full spec.
+        near_book_weights: Optional dict of {move_uci: recency_weighted_
+            frequency} produced by opponent_repertoire.
+            pick_near_repertoire_moves (the near-book data lookup, feature
+            D). Computed by the caller ONLY in the out-of-book branch
+            (after pick_repertoire_move returned None). When non-empty AND
+            at least one candidate's move_uci is a key in the map, that
+            candidate gets a boost-only near_book_mult (see decision (8)).
+            None (the default) or an empty dict means "no near-book data
+            available" -- near_book_mult is 1.0 for every candidate and
+            the reranker reproduces today's behavior exactly.
 
     Returns:
         dict with:
@@ -1710,6 +1833,18 @@ def rerank_candidates(
                                               average_game_length).
             game_count: int             -- surfaced from style, raw
                                            game count, for transparency
+            near_book_active: bool       -- whether near-book similarity
+                                           fired on this specific move
+                                           (True iff near_book_weights was
+                                           non-empty AND >=1 candidate's
+                                           move_uci was a key in it).
+                                           False when no near-book data
+                                           was passed OR no candidate
+                                           matched. See decision (8).
+            near_book_candidate_count: int -- how many candidates in the
+                                              input list had a near-book
+                                              match (0 when
+                                              near_book_active is False).
 
     Contracts:
       * Insufficient data (style["sufficient"]=False): returns
@@ -1725,7 +1860,8 @@ def rerank_candidates(
         no queen-trade candidates, OR all queen-trade candidates have
         window_weight=0 / centered=0; no setup match; castle dormant;
         AND no trap-triggering candidate OR exploitable_trap_keys is
-        None/empty; AND length_centered=0 OR no forcing candidates):
+        None/empty; AND length_centered=0 OR no forcing candidates;
+        AND no near-book match OR near_book_weights is None/empty):
         returns candidates[0] deterministically,
         applied_bias=False, source="default_top_candidate". Same
         behavior as v1. "Indicator fired" is not enough -- the
@@ -1735,7 +1871,7 @@ def rerank_candidates(
         actually deviates from 1.0: weighted random sample using
             weight[i] = base(rank_i) * sac_mult_i * qt_mult_i
                               * setup_mult_i * castle_mult_i * trap_mult_i
-                              * length_mult_i
+                              * length_mult_i * near_book_mult_i
         where:
             sac_mult_i = 1 + STYLE_BIAS_STRENGTH * sac_freq * sac_i
             qt_mult_i  = max(QUEEN_TRADE_WEIGHT_FLOOR,
@@ -1749,6 +1885,7 @@ def rerank_candidates(
             length_mult_i = max(GAME_LENGTH_WEIGHT_FLOOR,
                                 1 + GAME_LENGTH_BIAS_STRENGTH *
                                     length_centered * is_forcing_i)
+            near_book_mult_i = 1 + NEAR_BOOK_WEIGHT * near_book_share_i
         applied_bias=True, source="style_biased", bias_breakdown
         populated (including the list of signals whose multiplier
         actually deviated from 1.0 on at least one candidate).
@@ -1762,6 +1899,7 @@ def rerank_candidates(
         calls -- trap_mode_active is recomputed fresh every call, so a
         single sparring game naturally flips between trap-mode and
         mirror-mode move to move with no residual state (see Test 25).
+      * Reads `near_book_weights` but does not mutate it.
     """
     # Compute castle preference once at the top so all return paths
     # (including the early-return regression paths below) can surface
@@ -1806,6 +1944,8 @@ def rerank_candidates(
             "trap_candidate_count": 0,
             "average_game_length": average_game_length,
             "length_centered": round(length_centered, 4),
+            "near_book_active": False,
+            "near_book_candidate_count": 0,
             "bias_breakdown": None,
             "game_count": style.get("game_count", 0),
         }
@@ -1831,6 +1971,8 @@ def rerank_candidates(
             "trap_candidate_count": 0,
             "average_game_length": average_game_length,
             "length_centered": round(length_centered, 4),
+            "near_book_active": False,
+            "near_book_candidate_count": 0,
             "bias_breakdown": None,
             "game_count": style.get("game_count", 0),
         }
@@ -1938,7 +2080,7 @@ def rerank_candidates(
     # --- compute per-candidate live indicators and weights ------------------
     # base_weight_i = candidate["policy"] when the patched UCI wrapper
     # is in use (the actual softmax probability of the candidate), or
-    # the geometric rank-decay proxy when it isn't. Six independent
+    # the geometric rank-decay proxy when it isn't. Seven independent
     # multiplicative bias terms compose on top:
     #   sac_mult_i    = 1 + STYLE_BIAS_STRENGTH * sac_freq * sac_indicator_i
     #   qt_mult_i     = clamp(1 + QUEEN_TRADE_BIAS_STRENGTH *
@@ -1952,8 +2094,10 @@ def rerank_candidates(
     #   length_mult_i  = clamp(1 + GAME_LENGTH_BIAS_STRENGTH *
     #                           length_centered * is_forcing_i,
     #                          min=GAME_LENGTH_WEIGHT_FLOOR)
+    #   near_book_mult_i = 1 + NEAR_BOOK_WEIGHT * near_book_share_i (boost-only)
     # weight_i = base_i * sac_mult_i * qt_mult_i * setup_mult_i
     #                  * castle_mult_i * trap_mult_i * length_mult_i
+    #                  * near_book_mult_i
     weights: List[float] = []
     sac_mults: List[float] = []
     qt_mults: List[float] = []
@@ -1961,9 +2105,26 @@ def rerank_candidates(
     castle_mults: List[float] = []
     trap_mults: List[float] = []
     length_mults: List[float] = []
+    near_book_mults: List[float] = []
+    near_book_shares: List[float] = []
     breakdown_rows: List[Dict[str, Any]] = []
     any_used_policy = False
     side_just_moved = board.turn
+
+    # Near-book (decision 8): the total recency-weighted mass of the
+    # near-repertoire move map. Each candidate's share = its UCI's weight /
+    # this total. Computed once here so the per-candidate loop does an O(1)
+    # dict lookup + a division, never re-scanning the map. None/empty map ->
+    # total 0.0 -> every near_book_mult is 1.0 (a no-op term, NOT a separate
+    # code path -- same mirror-mode fallthrough as trap, see Test 24).
+    near_book_total = 0.0
+    if near_book_weights:
+        for _w in near_book_weights.values():
+            try:
+                near_book_total += float(_w)
+            except (TypeError, ValueError):
+                continue
+
     for idx, candidate in enumerate(candidates):
         uci = candidate.get("move", "")
 
@@ -2050,12 +2211,30 @@ def rerank_candidates(
         length_mult = max(GAME_LENGTH_WEIGHT_FLOOR, length_mult_raw)
         length_mults.append(length_mult)
 
+        # Near-book repertoire similarity (decision 8): boost-only
+        # multiplier for candidates whose move_uci appears in the
+        # recency-weighted near-repertoire map. share_i = the move's share
+        # of the total near-repertoire mass (in [0,1]); absent -> 0.0 ->
+        # near_book_mult=1.0. Matching is on the UCI string only -- NO
+        # board push, unlike trap/setup/sac. See decision (8).
+        near_book_share = 0.0
+        if near_book_weights and near_book_total > 0.0:
+            try:
+                nb_w = float(near_book_weights.get(uci) or 0.0)
+            except (TypeError, ValueError):
+                nb_w = 0.0
+            if nb_w > 0.0:
+                near_book_share = nb_w / near_book_total
+        near_book_mult = 1.0 + NEAR_BOOK_WEIGHT * near_book_share
+        near_book_mults.append(near_book_mult)
+        near_book_shares.append(near_book_share)
+
         base, used_policy = _candidate_base_weight(candidate, idx + 1)
         if used_policy:
             any_used_policy = True
         bias_mult = (
             sac_mult * qt_mult * setup_mult * castle_mult
-            * trap_mult * length_mult
+            * trap_mult * length_mult * near_book_mult
         )
         weight = base * bias_mult
         weights.append(weight)
@@ -2079,6 +2258,8 @@ def rerank_candidates(
             "trap_multiplier": round(trap_mult, 4),
             "length_indicator": is_forcing,
             "length_multiplier": round(length_mult, 4),
+            "near_book_weight": round(near_book_share, 4),
+            "near_book_multiplier": round(near_book_mult, 4),
             "bias_multiplier": round(bias_mult, 4),
             "weight": round(weight, 4),
         })
@@ -2105,6 +2286,12 @@ def rerank_candidates(
     castle_actually_biased = _mult_deviated(castle_mults)
     trap_actually_biased = _mult_deviated(trap_mults)
     length_actually_biased = _mult_deviated(length_mults)
+    near_book_actually_biased = _mult_deviated(near_book_mults)
+    # near_book_active mirrors trap_mode_active: True iff near-book data was
+    # provided AND >=1 candidate's move_uci matched the map (i.e. its share
+    # was > 0). Recomputed fresh every call (stateless), like trap.
+    near_book_candidate_count = sum(1 for s in near_book_shares if s > 0.0)
+    near_book_active = near_book_candidate_count > 0
     # base_source: "policy" if every candidate had a usable policy,
     # "rank_decay" if every candidate was missing one, "mixed" if the
     # list had both. Surface this at the top level of the result so
@@ -2116,7 +2303,7 @@ def rerank_candidates(
         ) else "mixed"
     else:
         base_source = "rank_decay"
-    if not (sac_actually_biased or qt_actually_biased or setup_actually_biased or castle_actually_biased or trap_actually_biased or length_actually_biased):
+    if not (sac_actually_biased or qt_actually_biased or setup_actually_biased or castle_actually_biased or trap_actually_biased or length_actually_biased or near_book_actually_biased):
         # Sampling would still be a no-op: weights are all just
         # geometric rank-decay, and rank 1 has the largest weight. The
         # sampler MIGHT pick a non-top candidate (it's random), but
@@ -2154,6 +2341,8 @@ def rerank_candidates(
             "trap_candidate_count": len(trap_candidate_indices),
             "average_game_length": average_game_length,
             "length_centered": round(length_centered, 4),
+            "near_book_active": near_book_active,
+            "near_book_candidate_count": near_book_candidate_count,
             "bias_breakdown": None,
             "game_count": style.get("game_count", 0),
         }
@@ -2174,6 +2363,8 @@ def rerank_candidates(
         signals_applied.append("trap")
     if length_actually_biased:
         signals_applied.append("game_length")
+    if near_book_actually_biased:
+        signals_applied.append("near_book")
 
     # --- weighted sample ----------------------------------------------------
     sampler = rng if rng is not None else random
@@ -2205,6 +2396,8 @@ def rerank_candidates(
         "trap_candidate_count": len(trap_candidate_indices),
         "average_game_length": average_game_length,
         "length_centered": round(length_centered, 4),
+        "near_book_active": near_book_active,
+        "near_book_candidate_count": near_book_candidate_count,
         "bias_breakdown": {
             "weights": breakdown_rows,
             "family_lean": FAMILY_LEAN_DISABLED,
