@@ -588,10 +588,12 @@ QUEEN_TRADE_WEIGHT_FLOOR = 0.05
 # design spec docstring in opponent_style.py for the rationale.
 #
 # SETUP_SIGNATURE_BIAS_STRENGTH = max boost strength. sig_mult = 1 + B * S
-# where S in [0, 1] is the max Jaccard composite across all historic
-# snapshots. With B = 2.5, sig_mult in [1.0, 3.5]: boost-only (no
-# suppression of non-matching candidates), see the spec's 7.1.
-# Default 2.5 keeps Maia's policy as the default and tilts toward
+# where S in [0, 1] is the max RECENCY-WEIGHTED Jaccard composite across
+# all historic snapshots (each snapshot's Jaccard is multiplied by its
+# per-game recency weight snap["weight"], tagged by
+# compute_opponent_style). With B = 2.5, sig_mult in [1.0, 3.5]:
+# boost-only (no suppression of non-matching candidates), see the spec's
+# 7.1. Default 2.5 keeps Maia's policy as the default and tilts toward
 # setup-consistent moves when there's match evidence; tune empirically via
 # Test 10's head-to-head distribution.
 SETUP_SIGNATURE_BIAS_STRENGTH = 2.5
@@ -959,13 +961,17 @@ def _candidate_setup_mult(
     """Compute the per-candidate setup-signature multiplier.
 
     Returns (sig_mult, best_S, matched_ply):
-      * sig_mult  -- 1 + SETUP_SIGNATURE_BIAS_STRENGTH * max_S, in
+      * sig_mult  -- 1 + SETUP_SIGNATURE_BIAS_STRENGTH * max_weighted_S, in
                      [1.0, 1 + SETUP_SIGNATURE_BIAS_STRENGTH]. Boost-only
                      (never below 1.0). When `hist_signatures` is None or
                      empty, returns (1.0, None, None) -- the feature is a
                      no-op for this candidate (no historic evidence).
-      * best_S    -- the max Jaccard composite across all historic
-                     snapshots (None iff no signatures were available).
+      * best_S    -- the max RECENCY-WEIGHTED Jaccard composite across all
+                     historic snapshots (None iff no signatures were
+                     available). Each snapshot's Jaccard is multiplied by
+                     its per-game recency weight (snap["weight"], default
+                     1.0 for backward compat), so recent setups dominate
+                     the max and old setups act as a soft prior.
       * matched_ply -- the snapshot_ply of the best-matching historic
                      snapshot (None iff no signatures were available).
                      Surfaced in the per-row audit for operator inspection.
@@ -991,7 +997,8 @@ def _candidate_setup_mult(
     best_ply: Optional[int] = None
     for snap in hist_signatures:
         # Historic snapshot shape: {"pawn_squares": [...],
-        # "piece_squares": {"N": [...], ...}, "snapshot_ply": int}.
+        # "piece_squares": {"N": [...], ...}, "snapshot_ply": int,
+        # "weight": float (optional, default 1.0)}.
         # Frozen once for cheap intersection.
         hist_pawn = frozenset(snap.get("pawn_squares") or ())
         hist_piece_list = snap.get("piece_squares") or {}
@@ -1001,12 +1008,21 @@ def _candidate_setup_mult(
             for sq in (hist_piece_list.get(letter) or ())
         )
         s = _setup_similarity(cand_pawn, cand_piece, hist_pawn, hist_piece)
-        if s > best_s or (s == best_s and best_ply is None):
+        # Recency weighting: multiply the Jaccard similarity by the
+        # snapshot's per-game recency weight (tagged by
+        # compute_opponent_style as snap["weight"]). Recent setups
+        # dominate the max; old setups act as a soft prior (their S is
+        # scaled down, so a perfect old match scores lower than a good
+        # recent match). Default weight=1.0 for backward compat with
+        # test fixtures that don't tag a weight.
+        snap_weight = float(snap.get("weight") or 1.0)
+        weighted_s = s * snap_weight
+        if weighted_s > best_s or (weighted_s == best_s and best_ply is None):
             # Strict-greater keeps the FIRST max (deterministic for ties);
             # the second clause picks any ply when best_s is still 0.0 so
             # a 0-similarity match still reports a ply (rare; only if
             # every signature shares nothing with the candidate).
-            best_s = s
+            best_s = weighted_s
             best_ply = snap.get("snapshot_ply")
 
     sig_mult = 1.0 + SETUP_SIGNATURE_BIAS_STRENGTH * best_s
@@ -1024,7 +1040,7 @@ def _filter_signatures_by_family(
 
     This is the fix for the "Scandinavian Ne2 vs Bd2" bug. Without family
     filtering, the reranker compared a candidate's resulting board against
-    the WHOLE snapshot pool, which for the user (200 games, 7 Scandi)
+    the WHOLE snapshot pool, which for the user (500 games, 7 Scandi)
     contains ~190 Italian/Scotch/Caro-Kann etc snapshots whose user-side
     pawn shape happens to look a lot like Scandi's (both have e4 and d3
     pawns for White). The non-Scandi majority drowned Scandi's signal,
