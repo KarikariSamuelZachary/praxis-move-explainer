@@ -17,7 +17,7 @@ class OpponentImportRequest(BaseModel):
         description="Public Chess.com username to import as an opponent profile.",
     )
     limit: int = Field(
-        100,
+        500,
         ge=1,
         le=500,
         description="Maximum games per provider to fetch in the background job.",
@@ -236,6 +236,22 @@ class SparringMoveRequest(BaseModel):
     bot_color: Literal["white", "black"]
     catastrophic_loss_cp: int = Field(300, ge=100, le=2000)
     maia_temperature: float = Field(0.15, ge=0, le=2)
+    # The current sparring session's time control, so the style-bias
+    # re-ranker can prefer games from the same (or similar) time control
+    # when aggregating the opponent's style profile. Accepts a canonical
+    # bucket label ("bullet"/"blitz"/"rapid"/"classical"), an "M+I"
+    # label ("3+2"), or a raw "base+inc" seconds string. When omitted
+    # (or unbucketable) the style layer falls back to recency-only
+    # weighting -- existing callers are unaffected.
+    time_control: Optional[str] = Field(
+        None,
+        max_length=20,
+        description=(
+            "Sparring session time control (bucket label, 'M+I' label, "
+            "or 'base+inc' seconds). Optional; when absent the style "
+            "layer uses recency-only weighting."
+        ),
+    )
 
 
 class SparringMoveResponse(BaseModel):
