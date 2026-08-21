@@ -191,12 +191,7 @@ const TIME_CLASS_ORDER: TimeClassKey[] = ['rapid', 'blitz', 'bullet'];
 export default function SparringPage() {
   const [profiles, setProfiles] = useState<OpponentProfile[]>([]);
   const [selectedKey, setSelectedKey] = useState('');
-  // Per the mockup spec: the user is always white, the bot always black.
-  // The "Play As" toggle was intentionally omitted from the design; this
-  // removes that UI but preserves the same gameplay semantics by pinning
-  // the color choice at the page level (avoids needing a stale
-  // humanColor toggle UI hanging around after Start).
-  const [humanColor] = useState<'white' | 'black'>('white');
+  const [humanColor, setHumanColor] = useState<'white' | 'black'>('white');
   const [game, setGame] = useState(() => new Chess());
   const [isStarted, setIsStarted] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
@@ -301,11 +296,11 @@ export default function SparringPage() {
   }, [selectedProfile]);
 
   // The right card no longer shows a per-move log — the mockup replaces
-// it with three aggregate sections (Openings / Traps / Time Control).
-// The latest bot move's SAN still surfaces in the StatusStrip via the
-// `lastMove` API response, so we don't need a derived `moveHistory`
-// here.
-const gameOver = game.isGameOver();
+  // it with three aggregate sections (Openings / Traps / Time Control).
+  // The latest bot move's SAN still surfaces in the StatusStrip via the
+  // `lastMove` API response, so we don't need a derived `moveHistory`
+  // here.
+  const gameOver = game.isGameOver();
 
   const humanCanMove =
     isStarted &&
@@ -355,7 +350,7 @@ const gameOver = game.isGameOver();
       botMoveInFlightRef.current = false;
       setIsThinking(false);
     }
-  }, [botColor, selectedProfile]);
+  }, [botColor, selectedProfile, timeControl]);
 
   useEffect(() => {
     if (!isStarted || !selectedProfile || gameOver || isThinking || status === 'error') {
@@ -529,11 +524,6 @@ const gameOver = game.isGameOver();
             <ProfileCard
               profile={selectedProfile}
               profileInfo={profileInfo}
-              gameCount={selectedProfile?.game_count ?? 0}
-              estimatedRating={selectedProfile?.rating ?? null}
-              opponents={profiles}
-              selectedKey={selectedKey}
-              onSelectKey={setSelectedKey}
               loadError={loadError}
             />
 
@@ -545,6 +535,12 @@ const gameOver = game.isGameOver();
               options={timeControlOptions}
               value={timeControl}
               onChange={setTimeControl}
+              disabled={!selectedProfile || isStarted}
+            />
+
+            <PlayAsSelect
+              value={humanColor}
+              onChange={setHumanColor}
               disabled={!selectedProfile || isStarted}
             />
 
@@ -658,25 +654,13 @@ const gameOver = game.isGameOver();
 function ProfileCard({
   profile,
   profileInfo,
-  gameCount,
-  estimatedRating,
-  opponents,
-  selectedKey,
-  onSelectKey,
   loadError,
 }: {
   profile: OpponentProfile | null;
   profileInfo: OpponentProfileInfo | null;
-  gameCount: number;
-  estimatedRating: number | null;
-  opponents: OpponentProfile[];
-  selectedKey: string;
-  onSelectKey: (key: string) => void;
   loadError: string | null;
 }) {
   const displayName = profile?.opponent_username ?? 'No opponent';
-  const handle = profile ? `@${profile.opponent_username}` : '@—';
-  const providerLabel = profile ? displayProvider(profile.provider) : '—';
   const initials = (profile?.opponent_username ?? '—')
     .replace(/[^A-Za-z0-9]/g, '')
     .slice(0, 2)
@@ -695,45 +679,13 @@ function ProfileCard({
             </h2>
             {showVerified && <VerifiedBadge />}
           </div>
-          <div className="mt-0.5 flex items-center gap-1.5 text-xs text-[#f7e5c6]/55">
-            <span className="truncate">{handle}</span>
-            <span className="shrink-0 opacity-40">·</span>
-            <span className="shrink-0">{providerLabel}</span>
-            {estimatedRating !== null && (
-              <>
-                <span className="shrink-0 opacity-40">·</span>
-                <span className="shrink-0">est. {estimatedRating}</span>
-              </>
-            )}
-          </div>
         </div>
       </div>
-
-      <select
-        value={selectedKey}
-        onChange={(event) => onSelectKey(event.target.value)}
-        aria-label="Select opponent"
-        className="h-10 cursor-pointer rounded-2xl border border-black/50 bg-black/60 px-3 text-sm text-white outline-none transition hover:border-emerald-400/30 focus:border-[#10b981]/60 focus:ring-2 focus:ring-[#10b981]/20"
-      >
-        {opponents.length === 0 ? (
-          <option value="">No imported opponents</option>
-        ) : (
-          opponents.map((opp) => (
-            <option key={profileKey(opp)} value={profileKey(opp)}>
-              {opp.opponent_username} ({displayProvider(opp.provider)})
-            </option>
-          ))
-        )}
-      </select>
 
       {loadError && (
         <p role="alert" className="rounded-2xl border border-red-400/30 bg-red-400/10 px-3 py-2 text-xs text-red-300">
           {loadError}
         </p>
-      )}
-
-      {profile && gameCount === 0 && (
-        <p className="text-[11px] text-[#f7e5c6]/55">No games imported for this opponent.</p>
       )}
     </section>
   );
@@ -794,9 +746,7 @@ function RatingsRow({
   return (
     <section className="grid grid-cols-3 gap-2">
       {entries.length === 0 ? (
-        <div className="col-span-3 rounded-2xl border border-black/30 bg-black/25 px-3 py-2 text-center text-[11px] text-[#f7e5c6]/45">
-          No rating data yet.
-        </div>
+        <div className="col-span-3 h-16 rounded-2xl border border-black/30 bg-black/25" aria-hidden />
       ) : (
         entries.map(({ key, value, meta }) => (
           <div
@@ -889,6 +839,53 @@ function TimeControlSelect({
   );
 }
 
+function PlayAsSelect({
+  value,
+  onChange,
+  disabled,
+}: {
+  value: 'white' | 'black';
+  onChange: (next: 'white' | 'black') => void;
+  disabled: boolean;
+}) {
+  const options: { value: 'white' | 'black'; label: string; icon: string }[] = [
+    { value: 'white', label: 'White', icon: '♔' },
+    { value: 'black', label: 'Black', icon: '♚' },
+  ];
+
+  return (
+    <section className="flex flex-col gap-1.5">
+      <label className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#f7e5c6]/55">
+        Play As
+      </label>
+      <div className="grid grid-cols-2 gap-2 rounded-2xl border border-black/40 bg-black/35 p-1">
+        {options.map((option) => {
+          const isSelected = value === option.value;
+          return (
+            <button
+              key={option.value}
+              type="button"
+              onClick={() => onChange(option.value)}
+              disabled={disabled}
+              className={`flex h-10 items-center justify-center gap-2 rounded-xl text-sm font-semibold transition-all duration-200 disabled:pointer-events-none disabled:opacity-50 ${
+                isSelected
+                  ? 'bg-[#f7e5c6] text-[#20120a] shadow-[0_8px_22px_rgba(0,0,0,0.3)]'
+                  : 'text-[#f7e5c6]/65 hover:bg-white/[0.06] hover:text-[#f7e5c6]'
+              }`}
+              aria-pressed={isSelected}
+            >
+              <span className="text-base leading-none" aria-hidden>
+                {option.icon}
+              </span>
+              <span>{option.label}</span>
+            </button>
+          );
+        })}
+      </div>
+    </section>
+  );
+}
+
 function OpeningsLostAgainst({
   openings,
 }: {
@@ -901,34 +898,56 @@ function OpeningsLostAgainst({
     .slice(0, 5);
 
   return (
-    <section className="flex flex-col gap-2">
+    <section className="rounded-[18px] border border-[#f7e5c6]/10 bg-black/25 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
       <SectionHeader icon={<BookIcon />} title="Openings He Lost Against" />
 
       {top.length === 0 ? (
-        <EmptyHint text="No decisive opening data yet." />
+        <div className="mt-3">
+          <EmptyHint text="No decisive opening data yet." />
+        </div>
       ) : (
-        <div className="flex flex-col gap-1.5">
-          {top.map((opening) => (
-            <div
-              key={opening.name}
-              className="grid grid-cols-[1fr_auto] items-center gap-3 rounded-lg px-1.5 py-1 -mx-1.5 text-xs transition-colors duration-200 hover:bg-white/[0.04]"
-            >
-              <div className="flex min-w-0 items-center gap-2">
-                <span className="truncate text-[#f7e5c6]/85">{opening.name}</span>
-                <div className="relative h-1.5 min-w-0 flex-1 overflow-hidden rounded-full bg-black/45">
+        <div className="mt-3 flex flex-col gap-2">
+          {top.map((opening, index) => {
+            const percentage = Math.round(opening.loss_percentage * 100);
+            return (
+              <div
+                key={opening.name}
+                className="group rounded-2xl border border-black/30 bg-black/30 px-3 py-2.5 transition-colors duration-200 hover:border-emerald-400/25 hover:bg-emerald-400/[0.05]"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div className="flex min-w-0 items-start gap-2.5">
+                    <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-[#f7e5c6]/10 bg-[#f7e5c6]/10 text-[10px] font-bold tabular-nums text-[#f7e5c6]/70">
+                      {index + 1}
+                    </span>
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold text-[#f7e5c6]">
+                        {opening.name}
+                      </div>
+                      <div className="mt-1 text-[11px] text-[#f7e5c6]/50">
+                        {opening.games} game{opening.games === 1 ? '' : 's'} sampled
+                      </div>
+                    </div>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <div className="text-sm font-semibold tabular-nums text-emerald-300">
+                      {percentage}%
+                    </div>
+                    <div className="text-[10px] uppercase tracking-[0.16em] text-[#f7e5c6]/35">
+                      losses
+                    </div>
+                  </div>
+                </div>
+                <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-black/45">
                   <div
-                    className="absolute inset-y-0 left-0 rounded-full bg-emerald-400/85 transition-[width] duration-500 ease-out"
+                    className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-emerald-300 transition-[width] duration-500 ease-out"
                     style={{
-                      width: `${Math.max(2, Math.min(100, opening.loss_percentage * 100))}%`,
+                      width: `${Math.max(3, Math.min(100, opening.loss_percentage * 100))}%`,
                     }}
                   />
                 </div>
               </div>
-              <span className="shrink-0 tabular-nums text-[#f7e5c6]">
-                {Math.round(opening.loss_percentage * 100)}%
-              </span>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </section>
@@ -939,13 +958,15 @@ function TrapsFallenFor({ traps }: { traps: OpponentTrap[] }) {
   const top = traps.slice(0, 5);
 
   return (
-    <section className="flex flex-col gap-2">
-      <SectionHeader icon={<KnightIcon />} title="Traps He's Fallen For" />
+    <section className="rounded-[18px] border border-[#f7e5c6]/10 bg-black/25 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+      <SectionHeader icon={<KnightReliefIcon size="sm" />} title="Traps He's Fallen For" />
 
       {top.length === 0 ? (
-        <EmptyHint text="No recurring traps detected yet." />
+        <div className="mt-3">
+          <EmptyHint text="No recurring traps detected yet." />
+        </div>
       ) : (
-        <div className="flex flex-col gap-1.5">
+        <div className="mt-3 flex flex-col gap-2">
           {top.map((trap) => {
             const moveLabel = trap.moves.length > 0 ? trap.moves[0] : '?';
             const moveRange =
@@ -955,26 +976,37 @@ function TrapsFallenFor({ traps }: { traps: OpponentTrap[] }) {
             const games = `${trap.game_count} game${trap.game_count === 1 ? '' : 's'}`;
             const classificationTone =
               trap.classification === 'blunder'
-                ? 'text-rose-300/90'
-                : 'text-orange-300/90';
+                ? 'border-rose-400/30 bg-rose-500/10 text-rose-200'
+                : 'border-amber-400/30 bg-amber-500/10 text-amber-200';
+            const accent =
+              trap.classification === 'blunder' ? 'bg-rose-400' : 'bg-amber-300';
 
             return (
               <div
                 key={trap.position_key}
-                className="flex cursor-default items-center gap-2.5 rounded-2xl border border-black/30 bg-black/25 px-3 py-2 text-xs transition-colors duration-200 hover:border-emerald-400/25 hover:bg-black/40"
+                className="group relative overflow-hidden rounded-2xl border border-black/30 bg-black/30 px-3 py-2.5 transition-colors duration-200 hover:border-emerald-400/25 hover:bg-emerald-400/[0.05]"
               >
-                <div className={classificationTone}>
-                  <KnightIcon />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <div className="truncate text-[#f7e5c6]">
-                    Played {moveLabel}
+                <div className={`absolute inset-y-3 left-0 w-1 rounded-r-full ${accent}`} />
+                <div className="flex items-start justify-between gap-3 pl-1.5">
+                  <div className="min-w-0 flex-1">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="truncate text-sm font-semibold text-[#f7e5c6]">
+                        Played {moveLabel}
+                      </span>
+                      <span
+                        className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] ${classificationTone}`}
+                      >
+                        {trap.classification}
+                      </span>
+                    </div>
+                    <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[#f7e5c6]/50">
+                      <span>{moveRange}</span>
+                      <span className="h-1 w-1 rounded-full bg-[#f7e5c6]/25" aria-hidden />
+                      <span>{games}</span>
+                    </div>
                   </div>
-                  <div className="mt-0.5 text-[11px] text-[#f7e5c6]/50">
-                    {trap.classification} · {moveRange}
-                  </div>
+                  <KnightReliefIcon size="md" />
                 </div>
-                <span className="shrink-0 text-[#f7e5c6]/75 tabular-nums">{games}</span>
               </div>
             );
           })}
@@ -992,121 +1024,54 @@ function PreferredTimeControl({
   mostPlayed: string | null;
 }) {
   const entries = distribution
-    ? Object.entries(distribution).map(([label, fraction]) => ({
-        label,
-        fraction,
-        color: TC_COLOR[label] ?? DEFAULT_TC_COLOR,
-      }))
+    ? Object.entries(distribution)
+        .map(([label, fraction]) => ({
+          label,
+          fraction,
+          color: TC_COLOR[label] ?? DEFAULT_TC_COLOR,
+        }))
+        .sort((a, b) => b.fraction - a.fraction)
     : [];
+  const primaryLabel = mostPlayed ?? entries[0]?.label ?? null;
 
   return (
-    <section className="flex flex-col gap-2">
+    <section className="rounded-[18px] border border-[#f7e5c6]/10 bg-black/25 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
       <SectionHeader icon={<StopwatchIcon />} title="Preferred Time Control" />
 
       {entries.length === 0 ? (
-        <EmptyHint text="No time-control data yet." />
+        <div className="mt-3">
+          <EmptyHint text="No time-control data yet." />
+        </div>
       ) : (
-        <div className="grid grid-cols-[110px_1fr] items-center gap-3 rounded-2xl border border-black/30 bg-black/25 px-3 py-3">
-          <DonutChart entries={entries} />
-          <div className="flex flex-col gap-1.5 text-xs">
-            {entries.map(({ label, fraction, color }) => (
-              <div
-                key={label}
-                className="grid grid-cols-[auto_1fr_auto] items-center gap-2 rounded-md px-1 -mx-1 transition-colors duration-200 hover:bg-white/[0.04]"
-              >
-                <span
-                  aria-hidden
-                  className="h-2.5 w-2.5 rounded-sm"
-                  style={{ backgroundColor: color }}
-                />
-                <span className="text-[#f7e5c6]/85">{label}</span>
-                <span className="tabular-nums text-[#f7e5c6]">
-                  {Math.round(fraction * 100)}%
-                </span>
-              </div>
-            ))}
-            {mostPlayed && (
-              <p className="mt-1 border-t border-white/5 pt-1.5 text-[11px] text-[#f7e5c6]/55">
-                Most Played: <span className="text-[#f7e5c6]/80">{mostPlayed}</span>
-              </p>
-            )}
+        <div className="mt-3 rounded-2xl border border-black/30 bg-black/30 p-3">
+          <div className="grid gap-1.5 text-xs">
+            {entries.map(({ label, fraction, color }) => {
+              const isPrimary = label === primaryLabel;
+              return (
+                <div
+                  key={label}
+                  className={`grid grid-cols-[auto_1fr_auto] items-center gap-2 rounded-xl px-2 py-1.5 transition-colors duration-200 ${
+                    isPrimary
+                      ? 'border border-emerald-400/20 bg-emerald-400/[0.06] text-[#f7e5c6]'
+                      : 'text-[#f7e5c6]/70 hover:bg-white/[0.04]'
+                  }`}
+                >
+                  <span
+                    aria-hidden
+                    className="h-2.5 w-2.5 rounded-full"
+                    style={{ backgroundColor: color }}
+                  />
+                  <span className="truncate">{label}</span>
+                  <span className="tabular-nums">
+                    {Math.round(fraction * 100)}%
+                  </span>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
     </section>
-  );
-}
-
-function DonutChart({
-  entries,
-}: {
-  entries: { label: string; fraction: number; color: string }[];
-}) {
-  // Donut geometry: SVG viewBox is 100x100, donut centered at (50,50),
-  // outer radius 35, inner radius 22. Slices are drawn as filled donut
-  // sectors; each slice's start/end are the cumulative fraction in [0, 1]
-  // multiplied by 2*PI. Computed via reduce (NOT a let/mutate loop) so
-  // the linter doesn't flag a render-phase mutation on the input array.
-  const cx = 50;
-  const cy = 50;
-  const outerR = 35;
-  const innerR = 22;
-
-  const slices = entries.reduce<
-    { label: string; fraction: number; color: string; start: number; end: number }[]
-  >((acc, entry) => {
-    const start = acc.length === 0 ? 0 : acc[acc.length - 1].end;
-    acc.push({ ...entry, start, end: start + entry.fraction });
-    return acc;
-  }, []);
-
-  return (
-    <svg viewBox="0 0 100 100" className="block h-[100px] w-[100px]">
-      {slices.map((slice) => {
-        // Empty slice (fraction 0) — skip; an arc with start == end
-        // collapses to a single point and renders nothing visible.
-        if (slice.fraction <= 0) return null;
-        // If the slice fills the whole circle (rare but possible when
-        // one bucket is 100%), draw a full ring instead of a degenerate
-        // two-arc path.
-        if (slice.fraction >= 1) {
-          return (
-            <circle
-              key={slice.label}
-              cx={cx}
-              cy={cy}
-              r={(outerR + innerR) / 2}
-              fill="none"
-              stroke={slice.color}
-              strokeWidth={outerR - innerR}
-            />
-          );
-        }
-
-        const startAngle = slice.start * 2 * Math.PI - Math.PI / 2;
-        const endAngle = slice.end * 2 * Math.PI - Math.PI / 2;
-        const largeArc = slice.fraction > 0.5 ? 1 : 0;
-
-        const x1 = cx + outerR * Math.cos(startAngle);
-        const y1 = cy + outerR * Math.sin(startAngle);
-        const x2 = cx + outerR * Math.cos(endAngle);
-        const y2 = cy + outerR * Math.sin(endAngle);
-        const x3 = cx + innerR * Math.cos(endAngle);
-        const y3 = cy + innerR * Math.sin(endAngle);
-        const x4 = cx + innerR * Math.cos(startAngle);
-        const y4 = cy + innerR * Math.sin(startAngle);
-
-        const d = [
-          `M ${x1} ${y1}`,
-          `A ${outerR} ${outerR} 0 ${largeArc} 1 ${x2} ${y2}`,
-          `L ${x3} ${y3}`,
-          `A ${innerR} ${innerR} 0 ${largeArc} 0 ${x4} ${y4}`,
-          'Z',
-        ].join(' ');
-
-        return <path key={slice.label} d={d} fill={slice.color} className="transition-opacity duration-200 hover:opacity-80" style={{ cursor: 'default' }} />;
-      })}
-    </svg>
   );
 }
 
@@ -1198,11 +1163,19 @@ function BookIcon() {
   );
 }
 
-function KnightIcon() {
+function KnightReliefIcon({ size }: { size: 'sm' | 'md' }) {
+  const boxClass = size === 'sm' ? 'h-5 w-5 text-[13px]' : 'h-10 w-10 text-[24px]';
+
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-      <path d="M5 21h14v-1H5v1Zm0-2h14a3 3 0 0 0-1.5-2.6c-.8-.5-1.3-.7-1.3-1.4 0-.6.4-.9.4-2.3 0-2-1-3.7-2.4-4.5-.4-.3-.7-.7-.7-1.2 0-1.7 2.4-2.3 2.4-4.4C16 0 13 0 12 1.4c-.3.5-.5 1-.5 1.6 0 .5.1.7.1 1.1 0 .4-.3.6-.6.6-.5 0-.7-.4-.7-.9 0-.4.1-.8.1-1.2 0-.6-.2-1-.6-1.4-.3-.3-.6-.4-1-.4-.6 0-1 .5-1 1.2 0 .4.2.7.5 1 .4.4.5.7.5 1.2 0 .6-.4 1-.9 1.3-1 .6-1.5 1.5-1.5 2.7 0 1.2.5 2.1 1.2 2.6.4.3.5.7.5 1.1 0 .7-.4 1.4-.6 2-.4 1.2-.4 2.3-.4 2.3l.6.6c-.4.4-.6.7-.6 1.2 0 .4.1.7.3 1Z" />
-    </svg>
+    <span
+      className={`relative inline-flex shrink-0 items-center justify-center rounded-full border border-[#f7e5c6]/20 bg-[radial-gradient(circle_at_34%_26%,#fff3cf_0%,#d6a95e_32%,#7a4a1d_68%,#1a0d05_100%)] text-[#2a1609] shadow-[inset_0_1px_1px_rgba(255,255,255,0.55),inset_0_-2px_4px_rgba(0,0,0,0.55),0_8px_18px_rgba(0,0,0,0.35)] ${boxClass}`}
+      aria-hidden
+    >
+      <span className="absolute inset-[18%] rounded-full bg-black/10 blur-[1px]" />
+      <span className="relative -mt-px font-serif font-black leading-none [filter:drop-shadow(0_1px_0_rgba(255,240,190,0.55))_drop-shadow(0_2px_1px_rgba(0,0,0,0.45))]">
+        ♞
+      </span>
+    </span>
   );
 }
 
