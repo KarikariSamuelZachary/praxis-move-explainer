@@ -139,25 +139,6 @@ function SearchIcon() {
   );
 }
 
-function InfoIcon() {
-  return (
-    <svg
-      className="h-5 w-5 text-[#efd9a7]/70"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <circle cx="12" cy="12" r="10" />
-      <path d="M12 16v-4" />
-      <path d="M12 8h.01" />
-    </svg>
-  );
-}
-
 function ChevronDownIcon() {
   return (
     <svg
@@ -836,13 +817,6 @@ export default function RepertoireListPage() {
           >
             My Repertoires
           </h1>
-          <button
-            type="button"
-            aria-label="About repertoires"
-            className="flex h-8 w-8 items-center justify-center rounded-lg text-[#efd9a7]/70 transition hover:bg-white/5 hover:text-[#efd9a7]"
-          >
-            <InfoIcon />
-          </button>
         </header>
 
         <div className="flex flex-col gap-3">
