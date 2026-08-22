@@ -284,7 +284,7 @@ function OpponentPrepDialog({ onClose }: { onClose: () => void }) {
             );
           }
           setProgress(100);
-          router.push('/train/sparring');
+          router.push('/train/opponent-prep');
           onClose();
           return;
         }
