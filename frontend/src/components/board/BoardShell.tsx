@@ -4,7 +4,7 @@
  * BoardShell — reusable walnut-frame chessboard shell shared by the
  * Repertoire build/train pages so their board looks and feels
  * identical to the puzzles-page board (src/components/board/ChessBoard.tsx)
- * and the train/sparring board.
+ * and the train/opponent-prep board.
  *
  * What it owns:
  *   * The walnut frame (14px padding, walnut-dark gradient, the layered
