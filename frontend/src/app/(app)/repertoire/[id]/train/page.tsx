@@ -92,36 +92,25 @@ import { Chess, type Square } from 'chess.js';
 
 import BoardShell from '@/components/board/BoardShell';
 import ReviewShell from '@/components/review/ReviewShell';
+import {
+  applyUci,
+  buildQuizItems,
+  findLinePath,
+  normalizeFen,
+  type RepertoireColor,
+  type RepertoirePositionRow,
+} from './train-logic';
 
 const CARD_CLASS =
   'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
 
 type TrainParams = Promise<{ id: string }>;
 
-type RepertoireColor = 'white' | 'black';
-
 type ApiRepertoire = {
   id: string;
   user_id: string;
   name: string;
   color: RepertoireColor;
-  created_at: string;
-  updated_at: string;
-};
-
-type RepertoirePositionRow = {
-  id: string;
-  repertoire_id: string;
-  fen: string;
-  move: string;
-  due: string;
-  stability: number | null;
-  difficulty: number | null;
-  state: string;
-  step: number | null;
-  reps: number;
-  lapses: number;
-  last_review: string | null;
   created_at: string;
   updated_at: string;
 };
@@ -142,78 +131,6 @@ type StartSessionResponse = {
 };
 
 type Phase = 'config' | 'session' | 'done';
-
-// 4-field FEN (matches `_normalize_fen` in services/repertoire_service.py:82).
-// Stored FENs in repertoire_positions are normalized to 4 fields, so
-// comparing positions uses these keys.
-function normalizeFen(fen: string): string {
-  return fen.split(/\s+/).slice(0, 4).join(' ');
-}
-
-// Apply a UCI move to a (4-field) FEN; returns the resulting 4-field
-// FEN, or null if chess.js rejects the move (illegal / corrupt). The
-// en-passant square is reset to "-" so the returned FEN matches the
-// convention used by stored repertoire_positions rows (the persistence
-// path doesn't carry the EP target); without this the opponent-reply
-// lookup below would miss the row whenever the just-played move was a
-// two-square pawn push.
-function applyUci(fen4: string, uci: string): string | null {
-  try {
-    const game = new Chess(`${fen4} 0 1`);
-    const played = game.move({
-      from: uci.slice(0, 2) as Square,
-      to: uci.slice(2, 4) as Square,
-      promotion: uci.length > 4 ? uci[4] : undefined,
-    });
-    if (!played) return null;
-    const fields = normalizeFen(game.fen()).split(/\s+/);
-    fields[3] = '-';
-    return fields.join(' ');
-  } catch {
-    return null;
-  }
-}
-
-const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -';
-
-// Reconstruct the sequence of positions from the standard start to a
-// target FEN, stepping through the session's stored (fen, move) rows
-// (BFS over the stored edges — a diverging repertoire can offer several
-// moves at one FEN). Returns a list of normalized FENs starting at the
-// start position and ending AT the target. Used by the line-transition
-// replay: when the session switches from one line to a different one,
-// the board auto-plays every move of the new line from the start so the
-// user sees the sideline develop before it's their turn. Empty list if
-// the target is unreachable from the start via the stored rows.
-function findLinePath(
-  rows: RepertoirePositionRow[],
-  targetFen: string
-): string[] {
-  const edges = new Map<string, string[]>();
-  for (const r of rows) {
-    const from = normalizeFen(r.fen);
-    const to = applyUci(from, r.move);
-    if (!to) continue;
-    const list = edges.get(from) ?? [];
-    list.push(normalizeFen(to));
-    edges.set(from, list);
-  }
-  const startKey = normalizeFen(START_FEN);
-  const targetKey = normalizeFen(targetFen);
-  const queue: string[][] = [[startKey]];
-  const visited = new Set<string>([startKey]);
-  while (queue.length > 0) {
-    const path = queue.shift() as string[];
-    const current = path[path.length - 1];
-    if (current === targetKey) return path;
-    for (const next of edges.get(current) ?? []) {
-      if (visited.has(next)) continue;
-      visited.add(next);
-      queue.push([...path, next]);
-    }
-  }
-  return [];
-}
 
 function SearchBackIcon() {
   return (
@@ -385,26 +302,19 @@ export default function RepertoireTrainPage({
   // since this position was shown). useRef avoids re-renders on read.
   const shownAtRef = useRef<number>(Date.now());
 
-  // Quiz items: the OWNER-side rows deduped by FEN. A diverging
-  // position (several prepared branches) is one quiz item that
-  // accepts any of its saved moves; the opponent's stored reply is
-  // auto-played on the board after each correct answer instead of
-  // being its own quiz. sessionPositions keeps the full row list so
-  // the auto-reply lookup can find the opponent's chosen response.
-  const quizItems = useMemo(() => {
-    if (!color) return [];
-    const ownerLetter = color === 'white' ? 'w' : 'b';
-    const seen = new Set<string>();
-    const items: RepertoirePositionRow[] = [];
-    for (const p of sessionPositions) {
-      if ((p.fen.split(/\s+/)[1] ?? '') !== ownerLetter) continue;
-      const key = normalizeFen(p.fen);
-      if (seen.has(key)) continue;
-      seen.add(key);
-      items.push(p);
-    }
-    return items;
-  }, [sessionPositions, color]);
+  // Quiz items: EVERY owner-side row is its own quiz item — one per
+  // saved move, even when several moves share the same position FEN
+  // (e.g. both e4 AND f4 stored against the start position). Deduping
+  // by FEN used to collapse diverging branches into a single item and
+  // silently dropped moves like f4 from the session. The opponent's
+  // stored reply is still auto-played on the board after each correct
+  // answer instead of being its own quiz. sessionPositions keeps the
+  // full row list so the auto-reply lookup can find the opponent's
+  // chosen response.
+  const quizItems = useMemo(
+    () => buildQuizItems(sessionPositions, color),
+    [sessionPositions, color]
+  );
 
   const currentPosition =
     currentIdx < quizItems.length ? quizItems[currentIdx] : null;
@@ -471,17 +381,13 @@ export default function RepertoireTrainPage({
         }
         const rows = (await res.json()) as RepertoirePositionRow[];
         if (!cancelled && Array.isArray(rows)) {
-          // Train quizzes OWNER positions only (deduped by FEN),
-          // with the opponent's stored reply auto-played on the
-          // board. Match that here so the modal's "Positions that
-          // will be trained" matches what the user actually gets.
-          const ownerLetter = color === 'white' ? 'w' : 'b';
-          const seen = new Set<string>();
-          for (const r of rows) {
-            if ((r.fen.split(/\s+/)[1] ?? '') !== ownerLetter) continue;
-            seen.add(normalizeFen(r.fen));
-          }
-          setTotalPositionCount(seen.size);
+          // Train quizzes OWNER positions only (one item per stored
+          // owner move — diverging moves at the same FEN are all
+          // trained, not deduped away), with the opponent's stored
+          // reply auto-played on the board. Match that here so the
+          // modal's "Positions that will be trained" matches what the
+          // user actually gets.
+          setTotalPositionCount(buildQuizItems(rows, color).length);
         }
       } catch (err) {
         if (!cancelled) {
@@ -579,57 +485,52 @@ export default function RepertoireTrainPage({
       );
 
       setReviewPending(true);
-      try {
-        // Fire /review for the FSRS scheduling update. We do NOT use
-        // the response to determine correctness (per the task — the
-        // client tallies from its own comparison; the response only
-        // confirms the persistence happened). A non-2xx here is
-        // logged and the session proceeds per the correctness rules
-        // below, so a transient backend error doesn't strand the
-        // user mid-session. We DO bump
-        // `reviewFailureCount` so the in-session banner can call
-        // out that a recording gap has appeared — the user has to
-        // see SOME signal a position's FSRS update didn't persist,
-        // not just a console.warn nobody reads.
-        // NOTE: the URL has no `/review` suffix — the Next.js proxy
-        // route lives at /api/repertoires/positions/[position_id] and
-        // its POST handler appends `/review` when forwarding to the
-        // backend (see src/app/api/repertoires/positions/[position_id]/
-        // route.ts). Calling `/…/{id}/review` directly would 404 on the
-        // proxy and (wrongly) trip the recording-honesty banner below.
-        const res = await fetch(
-          `/api/repertoires/positions/${encodeURIComponent(reviewedRowId)}`,
-          {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              solved_correctly: correct,
-              time_taken_ms: timeTakenMs,
-            }),
-          }
-        );
-        if (!res.ok) {
-          // Surface the backend detail to the console for debugging;
-          // do NOT block the user's progress on a transient review
-          // failure. The /complete tally at the end is the
-          // authoritative correctness record. Bump
-          // `reviewFailureCount` so the banner under the board
-          // appears — the user has to know this attempt's FSRS
-          // update didn't land, not see it silently swallowed.
-          const body = (await res.json().catch(() => ({}))) as ApiError;
-          console.warn(
-            `Review POST failed (${res.status}):`,
-            body.detail ?? body.error
+      // Fire the /review FSRS recording in the BACKGROUND. It must NOT
+      // gate the move feedback / reply animation — awaiting the HTTP
+      // round-trip on every move is what makes the flow feel laggy.
+      // The promise still surfaces failures (non-2xx or throw) into
+      // `reviewFailureCount` so the recording-honesty banner appears.
+      // NOTE: the URL has no `/review` suffix — the Next.js proxy
+      // route lives at /api/repertoires/positions/[position_id] and
+      // its POST handler appends `/review` when forwarding to the
+      // backend (see src/app/api/repertoires/positions/[position_id]/
+      // route.ts). Calling `/…/{id}/review` directly would 404 on the
+      // proxy and (wrongly) trip the recording-honesty banner below.
+      void (async () => {
+        try {
+          const res = await fetch(
+            `/api/repertoires/positions/${encodeURIComponent(reviewedRowId)}`,
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                solved_correctly: correct,
+                time_taken_ms: timeTakenMs,
+              }),
+            }
           );
+          if (!res.ok) {
+            // Surface the backend detail to the console for debugging;
+            // the /complete tally at the end is the authoritative
+            // correctness record. Bump `reviewFailureCount` so the
+            // banner under the board appears — the user has to know
+            // this attempt's FSRS update didn't land, not see it
+            // silently swallowed.
+            const body = (await res.json().catch(() => ({}))) as ApiError;
+            console.warn(
+              `Review POST failed (${res.status}):`,
+              body.detail ?? body.error
+            );
+            setReviewFailureCount((c) => c + 1);
+          }
+        } catch (err) {
+          // Thrown fetch (network unreachable / DNS failure / etc.) —
+          // same treatment as a non-2xx: log + bump the counter so
+          // the in-session banner appears.
+          console.warn('Review POST threw:', err);
           setReviewFailureCount((c) => c + 1);
         }
-      } catch (err) {
-        // Thrown fetch (network unreachable / DNS failure / etc.) —
-        // same treatment as a non-2xx: log + bump the counter so
-        // the in-session banner appears.
-        console.warn('Review POST threw:', err);
-        setReviewFailureCount((c) => c + 1);
-      }
+      })();
       // Tally. A WRONG move stays on the SAME position for a retry —
       // it only bumps the incorrect counter (and fires /review above
       // with solved_correctly=false). Only a CORRECT move advances.
@@ -746,12 +647,12 @@ export default function RepertoireTrainPage({
             setAutoMoveFen(path[0]);
             path.forEach((fen, idx) => {
               if (idx === 0) return;
-              window.setTimeout(() => setAutoMoveFen(fen), idx * 450);
+              window.setTimeout(() => setAutoMoveFen(fen), idx * 250);
             });
             window.setTimeout(() => {
               setAutoMoveFen(null);
               handoff();
-            }, (path.length - 1) * 450 + 700);
+            }, (path.length - 1) * 250 + 450);
           } else {
             // Unreachable target (shouldn't happen — the target is a
             // stored row reachable from start by construction); fall
@@ -775,13 +676,13 @@ export default function RepertoireTrainPage({
         // before the board shifts again.
         window.setTimeout(() => {
           setAutoMoveFen(replyFen);
-        }, 450);
+        }, 250);
       }
-      // Quick in-line cadence: reply plays at ~450ms and doAdvance
-      // runs at ~950ms. For a same-line handoff the board is already
+      // Quick in-line cadence: reply plays at ~250ms and doAdvance
+      // runs at ~600ms. For a same-line handoff the board is already
       // sitting on the next position; for a line switch doAdvance
       // starts the from-start replay instead.
-      const paceMs = replyFen ? 950 : 450;
+      const paceMs = replyFen ? 600 : 350;
       window.setTimeout(() => {
         doAdvance();
       }, paceMs);
@@ -1280,12 +1181,6 @@ export default function RepertoireTrainPage({
                       {currentIdx + (reviewPending ? 0 : 1)} so far.)
                     </span>
                   </div>
-                )}
-
-                {reviewPending && (
-                  <p className="text-xs text-[#a79b8a]/70">
-                    Recording attempt…
-                  </p>
                 )}
               </div>
             )}
