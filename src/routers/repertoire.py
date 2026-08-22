@@ -787,11 +787,12 @@ def start_session(
         rep_row = _load_owned_repertoire(cur, rid, user_id)
         owner_letter = "w" if rep_row["color"] == "white" else "b"
 
-        # Training and review both quiz the user on THEIR moves only
-        # (the owner's prepared responses). The writer now persists
-        # both owner AND opponent rows; `split_part(fen, ' ', 2)`
-        # keeps opponent rows out of the session's position set so
-        # the user isn't quizzed on "what does black play here?"
+        # Review quizzes the user on THEIR moves only. Train quizzes
+        # owner positions AND sends the opponent reply rows along
+        # with them so the client can look up + auto-play the stored
+        # opponent reply after each correct owner answer (the client
+        # filters down to owner rows for the actual quiz items;
+        # opponent rows are session data, not quiz items).
         if body.mode == "review":
             # Same query as GET /queue — due <= NOW(), due ASC, owner
             # rows only. The SELECT column list is shared via
@@ -810,10 +811,13 @@ def start_session(
             )
             rows = cur.fetchall()
         else:
-            # mode == 'train': all OWNER rows for this repertoire. If
-            # the client also asked for main_lines_only, filter after
-            # the SELECT via the pure tree-walk classifier — same
-            # module already used for read-side classification,
+            # mode == 'train': ALL rows for this repertoire (owner AND
+            # opponent plies). The owner rows are the quiz items; the
+            # opponent rows are returned so the client can look up +
+            # auto-play the stored reply after each correct answer.
+            # If the client also asked for main_lines_only, filter
+            # after the SELECT via the pure tree-walk classifier —
+            # same module already used for read-side classification,
             # imported here as a pure function so we don't need a
             # second schema-aware conn cursor.
             cur.execute(
@@ -821,10 +825,9 @@ def start_session(
                 SELECT {_POSITION_COLUMNS}
                 FROM repertoire_positions
                 WHERE repertoire_id = %s
-                  AND split_part(fen, ' ', 2) = %s
                 ORDER BY created_at ASC
                 """,
-                (rid, owner_letter),
+                (rid,),
             )
             rows = cur.fetchall()
 
