@@ -37,7 +37,7 @@
  * (ChessBoard in src/components/board/ChessBoard.tsx is locked to
  * the Puzzle playback flow with callback hooks). The list page
  * mounted `<Chessboard>` directly via `dynamic` for thumbnails, and
- * `train/sparring/page.tsx:599` mounts it directly for interactive
+ * `train/opponent-prep/page.tsx:599` mounts it directly for interactive
  * play with `onPieceDrop`. Same pattern here — direct dynamic
  * import of `react-chessboard`'s `Chessboard` component with the
  * walnut square styling that every other Praxis board uses.
@@ -67,7 +67,7 @@
  *     matching what the schema can persist.
  *   * Sort / orientation: board flipped to the owner's color (the
  *     white repertoire shows white at the bottom; black flipped).
- *     Same as train/sparring/page.tsx (which does humanColor flips).
+ *     Same as train/opponent-prep/page.tsx (which does humanColor flips).
  */
 
 import { use, useCallback, useEffect, useMemo, useState } from 'react';
