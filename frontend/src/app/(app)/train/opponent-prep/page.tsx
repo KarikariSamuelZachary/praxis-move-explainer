@@ -188,7 +188,7 @@ const TIME_CLASS_META: Record<
 
 const TIME_CLASS_ORDER: TimeClassKey[] = ['rapid', 'blitz', 'bullet'];
 
-export default function SparringPage() {
+export default function OpponentPrepPage() {
   const [profiles, setProfiles] = useState<OpponentProfile[]>([]);
   const [selectedKey, setSelectedKey] = useState('');
   const [humanColor, setHumanColor] = useState<'white' | 'black'>('white');
