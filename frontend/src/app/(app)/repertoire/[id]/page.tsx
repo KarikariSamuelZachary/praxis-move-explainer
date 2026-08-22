@@ -280,26 +280,6 @@ function SearchBackIcon() {
   );
 }
 
-function InfoIcon() {
-  return (
-    <svg
-      width="20"
-      height="20"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <circle cx="12" cy="12" r="10" />
-      <path d="M12 16v-4" />
-      <path d="M12 8h.01" />
-    </svg>
-  );
-}
-
 function TrainIcon() {
   return (
     <svg
@@ -867,13 +847,6 @@ export default function RepertoireDetailPage({
               >
                 <SearchBackIcon />
               </Link>
-              <button
-                type="button"
-                aria-label="About this repertoire"
-                className="flex h-9 w-9 items-center justify-center rounded-lg border border-black/50 bg-black/40 text-[#efd9a7]/70 transition hover:bg-black/60 hover:text-[#efd9a7]"
-              >
-                <InfoIcon />
-              </button>
             </div>
 
             {/* Identity row — king glyph tile in the repertoire's
