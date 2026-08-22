@@ -26,21 +26,22 @@
  *      the final tally and transition to DONE.
  *
  *      Recording-honesty contract (here, not in the backend): the
- *      client tallies counters from its own UCI comparison and
- *      ADVANCES UNCONDITIONALLY even when /review or /complete
- *      fails — a flaky connection must not strand the user
- *      mid-session. But "advance anyway" must not become "lie about
- *      what was recorded": a /review that returned non-2xx OR threw
- *      bumps `reviewFailureCount`, and a non-blocking banner appears
- *      under the board ("Some attempts couldn't be recorded…") so a
- *      string of silent failures can't produce a session that looks
- *      entirely normal to the user but is entirely unrecorded
- *      server-side. We do NOT try to reconcile which individual
- *      /review calls succeeded — that doesn't map cleanly to a
- *      useful UI (per the investigation: the session-level
- *      recorded-or-not signal is what the DB can actually answer
- *      for). A single binary success/failure state for the whole
- *      session's completion is what we surface instead.
+ *      client tallies counters from its own UCI comparison. A WRONG
+ *      move stays on the same position for a retry (bumping only the
+ *      incorrect counter); a CORRECT move advances. The session
+ *      therefore cannot be stranded by app logic — every path either
+ *      advances or clearly stays with feedback. But "advance anyway"
+ *      must not become "lie about what was recorded": a /review that
+ *      returned non-2xx OR threw bumps `reviewFailureCount`, and a
+ *      non-blocking banner appears under the board ("Some attempts
+ *      couldn't be recorded…") so a string of silent failures can't
+ *      produce a session that looks entirely normal to the user but is
+ *      entirely unrecorded server-side. We do NOT try to reconcile
+ *      which individual /review calls succeeded — that doesn't map
+ *      cleanly to a useful UI. A single binary success/failure state
+ *      for the whole session's completion is what we surface instead.
+ *      Hint clicks also count as incorrect (revealing the answer isn't
+ *      solving it).
  *
  *   3. DONE — completion view: final score, link back to the
  *      repertoire detail page. Two visible variants keyed off
@@ -147,6 +148,71 @@ type Phase = 'config' | 'session' | 'done';
 // comparing positions uses these keys.
 function normalizeFen(fen: string): string {
   return fen.split(/\s+/).slice(0, 4).join(' ');
+}
+
+// Apply a UCI move to a (4-field) FEN; returns the resulting 4-field
+// FEN, or null if chess.js rejects the move (illegal / corrupt). The
+// en-passant square is reset to "-" so the returned FEN matches the
+// convention used by stored repertoire_positions rows (the persistence
+// path doesn't carry the EP target); without this the opponent-reply
+// lookup below would miss the row whenever the just-played move was a
+// two-square pawn push.
+function applyUci(fen4: string, uci: string): string | null {
+  try {
+    const game = new Chess(`${fen4} 0 1`);
+    const played = game.move({
+      from: uci.slice(0, 2) as Square,
+      to: uci.slice(2, 4) as Square,
+      promotion: uci.length > 4 ? uci[4] : undefined,
+    });
+    if (!played) return null;
+    const fields = normalizeFen(game.fen()).split(/\s+/);
+    fields[3] = '-';
+    return fields.join(' ');
+  } catch {
+    return null;
+  }
+}
+
+const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq -';
+
+// Reconstruct the sequence of positions from the standard start to a
+// target FEN, stepping through the session's stored (fen, move) rows
+// (BFS over the stored edges — a diverging repertoire can offer several
+// moves at one FEN). Returns a list of normalized FENs starting at the
+// start position and ending AT the target. Used by the line-transition
+// replay: when the session switches from one line to a different one,
+// the board auto-plays every move of the new line from the start so the
+// user sees the sideline develop before it's their turn. Empty list if
+// the target is unreachable from the start via the stored rows.
+function findLinePath(
+  rows: RepertoirePositionRow[],
+  targetFen: string
+): string[] {
+  const edges = new Map<string, string[]>();
+  for (const r of rows) {
+    const from = normalizeFen(r.fen);
+    const to = applyUci(from, r.move);
+    if (!to) continue;
+    const list = edges.get(from) ?? [];
+    list.push(normalizeFen(to));
+    edges.set(from, list);
+  }
+  const startKey = normalizeFen(START_FEN);
+  const targetKey = normalizeFen(targetFen);
+  const queue: string[][] = [[startKey]];
+  const visited = new Set<string>([startKey]);
+  while (queue.length > 0) {
+    const path = queue.shift() as string[];
+    const current = path[path.length - 1];
+    if (current === targetKey) return path;
+    for (const next of edges.get(current) ?? []) {
+      if (visited.has(next)) continue;
+      visited.add(next);
+      queue.push([...path, next]);
+    }
+  }
+  return [];
 }
 
 function SearchBackIcon() {
@@ -271,6 +337,21 @@ export default function RepertoireTrainPage({
   const [reviewPending, setReviewPending] = useState(false);
   const [completePending, setCompletePending] = useState(false);
   const [hintMessage, setHintMessage] = useState<string | null>(null);
+  // Transient wrong-attempt feedback ("Incorrect — try again"). The
+  // session no longer advances on a wrong move, so the user needs an
+  // explicit signal the attempt was registered and rejected.
+  const [attemptFeedback, setAttemptFeedback] = useState<string | null>(null);
+  // Auto-played opponent reply FEN. While set, the board renders
+  // this FEN instead of the current quiz item's FEN, and input is
+  // blocked. Cleared when the reply sequence finishes advancing.
+  const [autoMoveFen, setAutoMoveFen] = useState<string | null>(null);
+  // Keyed by position row id: the position that ALREADY registered its
+  // single "incorrect" (from a wrong move OR a hint click). Any later
+  // wrong move or hint on the SAME position must not add another
+  // incorrect — only the first miss counts. Resetting is implicit:
+  // the value is compared against the current position's id, which
+  // changes when the session advances.
+  const incorrectCountedPosRef = useRef<string | null>(null);
 
   // Recording-honesty state (added after the kill-mid-session test
   // exposed that the DONE phase would render "Session complete · X%"
@@ -304,31 +385,38 @@ export default function RepertoireTrainPage({
   // since this position was shown). useRef avoids re-renders on read.
   const shownAtRef = useRef<number>(Date.now());
 
-  const boardOrientation: 'white' | 'black' =
-    color === 'black' ? 'black' : 'white';
-
-  // Quiz items: the session's rows deduped by position (normalized
-  // FEN). A position with SEVERAL saved moves (a diverging repertoire
-  // — e.g. both Nf3 and Be2 prepared) appears ONCE, and ANY of its
-  // saved moves counts as a correct answer (see `handleAttempt`).
-  // `sessionPositions` keeps the FULL row list so the attempt handler
-  // can credit the specific branch the user actually played.
+  // Quiz items: the OWNER-side rows deduped by FEN. A diverging
+  // position (several prepared branches) is one quiz item that
+  // accepts any of its saved moves; the opponent's stored reply is
+  // auto-played on the board after each correct answer instead of
+  // being its own quiz. sessionPositions keeps the full row list so
+  // the auto-reply lookup can find the opponent's chosen response.
   const quizItems = useMemo(() => {
+    if (!color) return [];
+    const ownerLetter = color === 'white' ? 'w' : 'b';
     const seen = new Set<string>();
     const items: RepertoirePositionRow[] = [];
     for (const p of sessionPositions) {
+      if ((p.fen.split(/\s+/)[1] ?? '') !== ownerLetter) continue;
       const key = normalizeFen(p.fen);
       if (seen.has(key)) continue;
       seen.add(key);
       items.push(p);
     }
     return items;
-  }, [sessionPositions]);
+  }, [sessionPositions, color]);
 
   const currentPosition =
     currentIdx < quizItems.length ? quizItems[currentIdx] : null;
   const total = quizItems.length;
   const completedCount = currentIdx; // # of positions fully attempted
+
+  // Board orientation is FIXED to the repertoire owner's color for
+  // the whole session — even when the quiz reaches an opponent ply,
+  // the board keeps the owner's viewpoint and the user drags the
+  // opposite-color piece from that same angle.
+  const boardOrientation: 'white' | 'black' =
+    color === 'black' ? 'black' : 'white';
 
   // --- Header metadata fetch (name + color for the modal title and
   // session header). Mirrors the detail page's pattern: dedicated
@@ -383,14 +471,17 @@ export default function RepertoireTrainPage({
         }
         const rows = (await res.json()) as RepertoirePositionRow[];
         if (!cancelled && Array.isArray(rows)) {
-          // Owner-side filter: training quizzes the user on their
-          // OWN moves. The FEN's second field is the side-to-move;
-          // owner rows have the owner's color letter there.
+          // Train quizzes OWNER positions only (deduped by FEN),
+          // with the opponent's stored reply auto-played on the
+          // board. Match that here so the modal's "Positions that
+          // will be trained" matches what the user actually gets.
           const ownerLetter = color === 'white' ? 'w' : 'b';
-          const ownerRows = rows.filter(
-            (r) => (r.fen.split(/\s+/)[1] ?? '') === ownerLetter
-          );
-          setTotalPositionCount(ownerRows.length);
+          const seen = new Set<string>();
+          for (const r of rows) {
+            if ((r.fen.split(/\s+/)[1] ?? '') !== ownerLetter) continue;
+            seen.add(normalizeFen(r.fen));
+          }
+          setTotalPositionCount(seen.size);
         }
       } catch (err) {
         if (!cancelled) {
@@ -443,6 +534,7 @@ export default function RepertoireTrainPage({
       setCurrentIdx(0);
       setCorrectCount(0);
       setIncorrectCount(0);
+      setAutoMoveFen(null);
       // Reset the recording-honesty state for the new session —
       // a previous session's /review failures or /complete failure
       // must not bleed into the new one's banner / DONE framing.
@@ -471,6 +563,10 @@ export default function RepertoireTrainPage({
     async (uci: string) => {
       if (reviewPending) return;
       if (!currentPosition || !sessionId) return;
+      // A new user attempt wipes any auto-reply overlay from the
+      // prior position so the dragged piece lands on the real
+      // current item's position.
+      setAutoMoveFen(null);
       const posKey = normalizeFen(currentPosition.fen);
       const matchingRow = sessionPositions.find(
         (p) => normalizeFen(p.fen) === posKey && p.move === uci
@@ -488,8 +584,9 @@ export default function RepertoireTrainPage({
         // the response to determine correctness (per the task — the
         // client tallies from its own comparison; the response only
         // confirms the persistence happened). A non-2xx here is
-        // logged and we still advance, so a transient backend error
-        // doesn't strand the user mid-session. We DO bump
+        // logged and the session proceeds per the correctness rules
+        // below, so a transient backend error doesn't strand the
+        // user mid-session. We DO bump
         // `reviewFailureCount` so the in-session banner can call
         // out that a recording gap has appeared — the user has to
         // see SOME signal a position's FSRS update didn't persist,
@@ -532,90 +629,165 @@ export default function RepertoireTrainPage({
         // the in-session banner appears.
         console.warn('Review POST threw:', err);
         setReviewFailureCount((c) => c + 1);
-      } finally {
-        // Tally + advance. Both branches run unconditionally so a
-        // failed /review still moves the session forward.
-        if (correct) {
-          setCorrectCount((c) => c + 1);
-        } else {
+      }
+      // Tally. A WRONG move stays on the SAME position for a retry —
+      // it only bumps the incorrect counter (and fires /review above
+      // with solved_correctly=false). Only a CORRECT move advances.
+      if (!correct) {
+        // Only the FIRST miss on this position adds an incorrect
+        // (subsequent wrong moves — or hint clicks — on the same
+        // position don't stack). The session still stays on the
+        // position for a retry regardless.
+        if (incorrectCountedPosRef.current !== currentPosition.id) {
           setIncorrectCount((c) => c + 1);
+          incorrectCountedPosRef.current = currentPosition.id;
         }
-        const nextIdx = currentIdx + 1;
         shownAtRef.current = Date.now();
-        if (nextIdx >= total) {
-          // Last position attempted — call /complete and transition.
+        setAttemptFeedback('Incorrect — try again.');
+        window.setTimeout(() => setAttemptFeedback(null), 3000);
+        setReviewPending(false);
+        return;
+      }
+      setCorrectCount((c) => c + 1);
+      const nextIdx = currentIdx + 1;
+      shownAtRef.current = Date.now();
+      // Auto-play the opponent's stored reply: look up the row whose
+      // FEN equals the position after the user's move, briefly show
+      // that intermediate position, then show the reply and advance.
+      // If no reply exists (line ended), just advance. The whole
+      // sequence runs with reviewPending=true so drops are blocked.
+      const afterUser = applyUci(currentPosition.fen, uci);
+      const isFinalItem = nextIdx >= total;
+      // Opponent reply to the user's just-played move: the stored row
+      // whose FEN equals the position after the user's move.
+      const replyRow = afterUser
+        ? sessionPositions.find(
+            (p) => normalizeFen(p.fen) === normalizeFen(afterUser)
+          )
+        : null;
+      const replyFen =
+        afterUser && replyRow ? applyUci(afterUser, replyRow.move) : null;
+
+      const doAdvance = () => {
+        // Clear the auto-reply overlay BEFORE the index advances so
+        // the board renders the NEXT item's real FEN. Keeping it
+        // pinned here was the bug: when the next quiz item belongs
+        // to a different line (e.g. the start position has several
+        // first moves), the board stayed frozen on the just-finished
+        // line's last position and the session appeared stuck. The
+        // applyUci EP-strip makes the reply FEN equal to the next
+        // same-line item's stored FEN, so clearing the overlay does
+        // not hide the opponent's last move — the next item shows the
+        // same position.
+        setAutoMoveFen(null);
+        if (isFinalItem) {
+          // Last quiz item attempted — call /complete and transition.
           // Build the FINAL tally at call time (not from state
           // closures) so the value we send matches the visible
           // counters.
-          const finalCorrect = correctCount + (correct ? 1 : 0);
+          const finalCorrect = correctCount + 1;
           setCompletePending(true);
           // Default to "recorded" — flipped to true on any failure
-          // path below. Defaults matter here: if the fetch throws
-          // before we ever see a status, the catch block sets the
-          // flag; if it returns non-2xx, the !ok branch does.
-          // Either way, the finally block transitions to DONE and
-          // the DONE render reads `completeFailure` to pick the
-          // honest variant. This is the FIX for the prior bug where
-          // a failed /complete still rendered "Session complete · X%"
-          // while the DB row stayed completed_at=NULL /
-          // positions_correct=0.
+          // path below. Either way, the catch / !ok blocks set
+          // completeFailed and the finally transitions to DONE; the
+          // DONE render reads `completeFailure` to pick the honest
+          // variant.
           let completeFailed = false;
-          try {
-            const completeRes = await fetch(
-              `/api/repertoires/sessions/${encodeURIComponent(sessionId)}/complete`,
-              {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ positions_correct: finalCorrect }),
-              }
-            );
-            if (!completeRes.ok) {
-              // Non-2xx — the backend either rejected our tally
-              // (e.g. out-of-range positions_correct, which
-              // shouldn't happen but is validated server-side) or,
-              // more commonly, returned 400 "training session
-              // already completed" if a duplicate /complete raced
-              // ours (also shouldn't happen — we only fire once).
-              // Either way: the session row did NOT get our tally
-              // recorded by THIS call (the racing caller's might
-              // have landed, but we can't know that). Set the flag
-              // so the DONE screen tells the user the truth: this
-              // attempt wasn't recorded from their seat. Keep the
-              // console.warn for debugging — but the user no longer
-              // has to read the console to know.
-              const body = (await completeRes.json().catch(() => ({}))) as ApiError;
-              console.warn(
-                `Complete POST failed (${completeRes.status}):`,
-                body.detail ?? body.error
+          (async () => {
+            try {
+              const completeRes = await fetch(
+                `/api/repertoires/sessions/${encodeURIComponent(sessionId)}/complete`,
+                {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ positions_correct: finalCorrect }),
+                }
               );
+              if (!completeRes.ok) {
+                const body = (await completeRes.json().catch(() => ({}))) as ApiError;
+                console.warn(
+                  `Complete POST failed (${completeRes.status}):`,
+                  body.detail ?? body.error
+                );
+                completeFailed = true;
+              }
+            } catch (err) {
+              console.warn('Complete POST threw:', err);
               completeFailed = true;
+            } finally {
+              setCompleteFailure(completeFailed);
+              setCompletePending(false);
+              setPhase('done');
             }
-          } catch (err) {
-            // Thrown fetch (network unreachable / DNS / etc.) —
-            // the session row is definitively unrecorded by this
-            // call. Same treatment: console.warn for debugging,
-            // completeFailed=true so the DONE screen flips.
-            console.warn('Complete POST threw:', err);
-            completeFailed = true;
-          } finally {
-            // Set the flag BEFORE clearing completePending and
-            // transitioning so the DONE render (which runs in the
-            // next commit) reads the correct value. Even on the
-            // success path we set false explicitly — defensive in
-            // case a stale value from a prior session was left
-            // around (handleStart also resets it, but belt + braces
-            // is cheap here).
-            setCompleteFailure(completeFailed);
-            setCompletePending(false);
-            setPhase('done');
-          }
+          })();
         } else {
-          setCurrentIdx(nextIdx);
+          const nextItem = quizItems[nextIdx];
+          const sameLine =
+            replyFen !== null &&
+            normalizeFen(nextItem.fen) === normalizeFen(replyFen);
+          const handoff = () => {
+            setCurrentIdx(nextIdx);
+            setReviewPending(false);
+          };
+          if (sameLine) {
+            // The reply already left the board AT the next item's
+            // position — nothing more to animate, just hand off.
+            handoff();
+            return;
+          }
+          // LINE SWITCH: the next item belongs to a different line.
+          // Replay the new line from the START position — all its
+          // stored plies, both colors, ~450ms each — so the user sees
+          // the sideline develop, then stop AT the position where it
+          // becomes their turn (a slightly longer hold before the
+          // input unlocks).
+          const path = findLinePath(sessionPositions, nextItem.fen);
+          if (path.length >= 2) {
+            setAutoMoveFen(path[0]);
+            path.forEach((fen, idx) => {
+              if (idx === 0) return;
+              window.setTimeout(() => setAutoMoveFen(fen), idx * 450);
+            });
+            window.setTimeout(() => {
+              setAutoMoveFen(null);
+              handoff();
+            }, (path.length - 1) * 450 + 700);
+          } else {
+            // Unreachable target (shouldn't happen — the target is a
+            // stored row reachable from start by construction); fall
+            // back to a plain handoff.
+            handoff();
+          }
         }
-        setReviewPending(false);
+      };
+      if (!afterUser) {
+        // Shouldn't happen — handleDrop validated the move — but if
+        // chess.js refused it just advance without a reply.
+        doAdvance();
+        return;
       }
+      // First beat: show the FEN after the user's move so the user
+      // sees their own piece change before the opponent's reply.
+      setAutoMoveFen(afterUser);
+      if (replyFen) {
+        // Second beat: play the opponent's stored reply after a
+        // short pause so the user can register the first move
+        // before the board shifts again.
+        window.setTimeout(() => {
+          setAutoMoveFen(replyFen);
+        }, 450);
+      }
+      // Quick in-line cadence: reply plays at ~450ms and doAdvance
+      // runs at ~950ms. For a same-line handoff the board is already
+      // sitting on the next position; for a line switch doAdvance
+      // starts the from-start replay instead.
+      const paceMs = replyFen ? 950 : 450;
+      window.setTimeout(() => {
+        doAdvance();
+      }, paceMs);
+      return;
     },
-    [currentPosition, currentIdx, correctCount, reviewPending, sessionId, sessionPositions, total]
+    [currentPosition, currentIdx, correctCount, quizItems, reviewPending, sessionId, sessionPositions, total]
   );
 
   // --- Board drag handler. Same pattern as the detail page:
@@ -630,11 +802,9 @@ export default function RepertoireTrainPage({
       promotion?: string
     ): boolean => {
       if (!color || reviewPending || !currentPosition) return false;
-      // Only the owner's turn — every stored repertoire row is
-      // owner-turn by construction, but we double-check defensively.
-      const side = currentPosition.fen.split(/\s+/)[1];
-      const ownerSide = color === 'white' ? 'w' : 'b';
-      if (side !== ownerSide) return false;
+      // Every stored row is its side-to-move by construction;
+      // canDragPiece already restricts drags to the moving side's
+      // pieces, so no extra color gate is needed here.
       // Verify the move is legal at this FEN (rejects accidental
       // drops to invalid squares). Use the 4-field FEN + ' 0 1' so
       // chess.js's validator is happy (4-field alone fails
@@ -665,7 +835,9 @@ export default function RepertoireTrainPage({
   );
 
   // --- Hint button handler. Shows the SAN of one correct move at
-  // the current position. Any saved move at this FEN counts as
+  // the current position AND costs one incorrect — revealing the
+  // answer means the position can't also count as solved unaided.
+  // Any saved move at this FEN counts as
   // correct (the "accept either move" rule), so we pick the current
   // quiz row's stored move — its SAN is computed from the position's
   // FEN + UCI via chess.js. Falls back to the raw UCI if chess.js
@@ -675,6 +847,13 @@ export default function RepertoireTrainPage({
       setHintMessage('No position to hint.');
       window.setTimeout(() => setHintMessage(null), 3000);
       return;
+    }
+    // A hint costs ONE incorrect per position — once this position has
+    // already registered its incorrect (from a wrong move or a prior
+    // hint), further hint clicks add nothing.
+    if (incorrectCountedPosRef.current !== currentPosition.id) {
+      setIncorrectCount((c) => c + 1);
+      incorrectCountedPosRef.current = currentPosition.id;
     }
     try {
       const game = new Chess(`${normalizeFen(currentPosition.fen)} 0 1`);
@@ -854,7 +1033,13 @@ export default function RepertoireTrainPage({
 
   if (phase === 'done') {
     const total = quizItems.length;
-    const pct = total > 0 ? Math.round((correctCount / total) * 100) : 0;
+    // Wrong moves (and hint clicks) no longer advance the session, so
+    // correctCount always ends at `total` — the honest score is
+    // ACCURACY: correct solves over total attempts (retries + hints
+    // included in the denominator via incorrectCount).
+    const attemptTotal = correctCount + incorrectCount;
+    const pct =
+      attemptTotal > 0 ? Math.round((correctCount / attemptTotal) * 100) : 0;
     return (
       <div className="relative h-[calc(100vh-3rem)] w-full overflow-y-auto px-4 py-4 text-white sm:px-6 sm:py-6 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
         {/* Back button — top-left, sits above the centered card. */}
@@ -895,7 +1080,7 @@ export default function RepertoireTrainPage({
               <p className="text-sm text-[#a79b8a]">
                 {total === 0
                   ? 'No positions were trained.'
-                  : `${correctCount} of ${total} correct`}
+                  : `${correctCount} of ${total} positions · ${incorrectCount} incorrect`}
               </p>
               <p className="font-display text-5xl font-bold tabular-nums text-[#efd9a7]">
                 {pct}%
@@ -974,19 +1159,17 @@ export default function RepertoireTrainPage({
             */}
             {currentPosition ? (
               <BoardShell
-                position={currentPosition.fen}
+                position={autoMoveFen ?? currentPosition.fen}
                 orientation={boardOrientation}
                 allowDragging={!reviewPending}
                 canDragPiece={({ piece }) => {
-                  if (reviewPending || !color) return false;
-                  // Train mode owns ONE move per stored row; the
-                  // schema's upsert contract pins every stored row
-                  // to owner-to-move, so we only let the owner's
-                  // pieces drag during a quiz attempt (deliberately
-                  // MORE restrictive than the build page, which lets
-                  // the user play both colors to author lines).
-                  const ownerSide = color === 'white' ? 'w' : 'b';
-                  return piece.pieceType[0] === ownerSide;
+                  if (reviewPending || !color || !currentPosition) return false;
+                  // The session includes BOTH sides' plies, so the
+                  // draggable pieces are whichever color is on turn
+                  // in the CURRENT position (not the repertoire
+                  // owner's color).
+                  const side = currentPosition.fen.split(/\s+/)[1];
+                  return piece.pieceType[0] === side;
                 }}
                 onMove={(source, target, promotion) =>
                   handleDrop(source, target, promotion ?? 'q')
@@ -1020,6 +1203,18 @@ export default function RepertoireTrainPage({
                     return `${label} to move. What\u2019s your move?`;
                   })()}
                 </p>
+
+                {/* Wrong-attempt feedback — a rejected move keeps the
+                    user on this position, so say so explicitly. */}
+                {attemptFeedback && (
+                  <p
+                    role="status"
+                    aria-live="polite"
+                    className="rounded-full border border-red-400/30 bg-red-400/10 px-3 py-1 text-center text-xs text-red-300"
+                  >
+                    {attemptFeedback}
+                  </p>
+                )}
 
                 {/* Counters row + progress bar (matches reference-5
                     layout) */}
