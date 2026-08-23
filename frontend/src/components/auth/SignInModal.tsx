@@ -126,7 +126,7 @@ export default function SignInModal({ onClose, onSwitchToSignUp }: SignInModalPr
 
     await signIn.authenticateWithRedirect({
       strategy: 'oauth_google',
-      redirectUrl: '/',
+      redirectUrl: '/sso-callback',
       redirectUrlComplete: '/puzzles',
     });
   }
