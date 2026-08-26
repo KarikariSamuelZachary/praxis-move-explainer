@@ -179,17 +179,24 @@ DESIGN DECISIONS (recorded here because they shape the whole module)
     compute_opponent_style in v1 but never consumed by the reranker;
     this wires it in.
 
+    NARROW INDICATOR (rebuilt 2026-08-23). The indicator fires ONLY on the
+    literal castling move -- NOT on development moves that merely clear the
+    castle path. The previous, broader indicator (+1 for any move clearing
+    a preferred-side path square: Nf3, Bc4, Nf6, ...) measured a net -1.22pp
+    top-1 cost (-4.88pp in-book) on held-out replay by boosting generic
+    opening development over the actual move; the rebuild keeps the
+    boost/suppress shape but restricts it to the castling decision itself.
+
     Derivation:
       (pref_side, pref_strength) = _castle_preference(castling_dist)
         where pref_side is "kingside" or "queenside" (or None if "never"
         dominates or the signal is too weak), and pref_strength is
         |kingside_frac - queenside_frac| in [0, 1].
       indicator_i = _castle_indicator(board, candidate_i, pref_side)
-        in {+1, 0, -1}: +1 if the candidate helps the preferred castle
-        side (clears a path square, or is the castle move itself on the
-        preferred side), -1 if it hurts (king move losing rights,
-        preferred-side rook move, piece moves INTO the preferred path,
-        or the castle move on the non-preferred side), 0 otherwise.
+        in {+1, 0, -1}: +1 if the candidate is the castle move on the
+        preferred side (O-O / O-O-O), -1 if it is the castle move on the
+        non-preferred side, 0 for everything else (development, king
+        moves, rook moves, pawn moves).
       castle_mult_i = clamp(1 + CASTLE_BIAS_STRENGTH * pref_strength *
                               indicator_i,
                             min=CASTLE_WEIGHT_FLOOR)
@@ -206,10 +213,9 @@ DESIGN DECISIONS (recorded here because they shape the whole module)
 
     Why multiplicative with the other signals: castle-side preference is
     an independent stylistic axis from material aggression (sac), queen-
-    trade structure, or setup-structure similarity. A high-sac opponent
-    who also prefers kingside castling should see both biases compound on
-    a sac-looking move that also clears the kingside path -- the product
-    form preserves each signal's relative strength.
+    trade structure, or setup-structure similarity. The product form
+    preserves each signal's relative strength; with the narrow indicator
+    the two only compound when a candidate is itself the castle move.
 
     Why the "wrong-side castle" gets indicator=-1 (not 0): playing O-O
     when the opponent prefers O-O-O is the clearest "bot is not mimicking
@@ -374,94 +380,17 @@ DESIGN DECISIONS (recorded here because they shape the whole module)
     existing Opponent Prep page's "Traps He's Fallen For" section stays
     as-is; this spec only touches move-selection, not display).
 
-(7) AVERAGE-GAME-LENGTH CALIBRATION (multiplicative with all existing
-    signals; gated by the existing sufficient-data contract). The
-    opponent's `average_game_length` (recency-weighted mean plies per
-    game, already computed by compute_opponent_style) is converted into
-    a gentle per-candidate multiplier that tilts the bot's candidate
-    selection toward the tempo profile of the opponent's games.
+(7) AVERAGE-GAME-LENGTH CALIBRATION -- REMOVED (diagnostic 2026-08-23).
 
-    INTUITION. Opponents whose games tend to be SHORT (low plies per
-    game) play sharper, more tactical chess -- their games end early in
-    blunders or time forfeits, and a sparring bot mimicking them should
-    lean toward forcing/tactical candidates. Opponents whose games tend
-    to be LONG (high plies per game) play quieter, more positional chess
-    -- their games grind into endgames, and the bot should lean toward
-    solid/quiet candidates. This is the weakest signal in the stack
-    (GAME_LENGTH_BIAS_STRENGTH = 0.8, deliberately below STYLE_BIAS_
-    STRENGTH = 4.0, QUEEN_TRADE_BIAS_STRENGTH = 1.5, CASTLE_BIAS_
-    STRENGTH = 1.5, SETUP_SIGNATURE_BIAS_STRENGTH = 2.5, and
-    TRAP_WEIGHT = 6.0) because game length is a noisy proxy for style:
-    the mean smooths over individual-game variance (a short time-forfeit
-    doesn't mean the opponent plays tactically), so the calibration is
-    soft -- this is a calibration signal, not a dominant one.
-
-    PER-CANDIDATE INDICATOR: _is_forcing_move (see below). A candidate is
-    "forcing" iff it is a capture OR gives check -- the two move
-    categories in chess that constrain the opponent's response. This is
-    a BROADER and CHEAPER proxy for "tactical/aggressive" than
-    _is_live_sac_move (which requires a net material loss >=
-    SAC_MATERIAL_THRESHOLD AND a profitable recapture available); a
-    forcing move here includes even trades, non-sac captures, and checks
-    that don't win material. The two indicators are intentionally
-    different: sac frequency profiles the opponent's tendency to give up
-    material; game length profiles the opponent's overall tempo. A player
-    who sacrifices often but plays long games (e.g. a romantic attacker
-    whose attacks are repulsed) gets the sac boost on sac-looking moves
-    AND the length suppress on forcing moves -- the two compose
-    multiplicatively, each preserving its own axis.
-
-    DERIVATION:
-      game_length  = style["average_game_length"]  (weighted mean plies)
-      centered     = clamp((GAME_LENGTH_REFERENCE_PLY - game_length)
-                           / GAME_LENGTH_SCALE_PLY, -1.0, 1.0)
-      is_forcing_i = _is_forcing_move(board, candidate_i)   (0 or 1)
-      length_mult_i = clamp(1 + GAME_LENGTH_BIAS_STRENGTH
-                            * centered * is_forcing_i,
-                           min=GAME_LENGTH_WEIGHT_FLOOR)
-
-    Centering: GAME_LENGTH_REFERENCE_PLY = 50.0 is the neutral midpoint
-    (opponents at this length get length_mult=1.0 for every candidate).
-    50 plies (~25 fullmoves) is the typical Chess.com blitz/rapid game
-    length in the dev DB's provider mix. GAME_LENGTH_SCALE_PLY = 20.0 is
-    the half-width of the linear ramp: an opponent 20 plies from the
-    reference reaches the full +/-1.0 centered value, and opponents
-    further than 20 plies away are clamped. 20 plies = 10 fullmoves, a
-    meaningful difference in game length (the difference between a
-    15-move blitz and a 25-move rapid).
-
-    BOOST-OR-SUPPRESS SHAPE (not boost-only). Short-game opponents
-    (centered > 0) get length_mult > 1.0 on forcing candidates (boost);
-    long-game opponents (centered < 0) get length_mult < 1.0 on forcing
-    candidates (suppress); quiet candidates always get length_mult = 1.0
-    (the bias only acts on the forcing indicator, like qt only acts on
-    queen-trade moves). This matches the qt/castle symmetric shape rather
-    than the setup/trap boost-only shape, because game length has a
-    natural DIRECTION (shorter = more tactical) -- the absence of a
-    forcing candidate is neutral, not evidence of "long-game style".
-
-    GATING: the bias only fires when ALL of:
-      * style["sufficient"] is True (the outer gate -- insufficient data
-        short-circuits before length is evaluated, same as every other
-        signal).
-      * style["average_game_length"] is not None (defensive --
-        compute_opponent_style always returns a float when sufficient=True,
-        but a hand-constructed style dict might omit it; None means "no
-        length data" -> centered=0.0 -> no-op, matching the
-        unknown-signal-is-neutral pattern used by queens_stay_on_rate).
-
-    TRANSPARENCY FIELDS (extending the existing return shape, same
-    pattern as castle_preference_side / trap_mode_active):
-      * average_game_length: float | None -- surfaced from style for
-        transparency; the raw input to the calibration.
-      * length_centered: float -- the centered value in [-1, 1] used to
-        compute the per-candidate multiplier; 0.0 means "no length bias".
-      * Per-row: length_indicator (bool) and length_multiplier (float),
-        same shape as the other per-row fields.
-      * "game_length" added to signals_applied when the length multiplier
-        actually deviates from 1.0 on at least one candidate (same
-        actually-deviated-not-just-triggered discipline already used for
-        sac/qt/setup/castle/trap).
+    This signal was removed permanently, not just disabled. Held-out replay
+    measured a NET -0.78pp top-1 cost (54 helped / 77 hurt): `_is_forcing_move`
+    ("capture OR check") conflated forced/objectively-correct captures with
+    stylistic aggression, so a mildly-long average game length (63 vs 50 plies)
+    suppressed winning captures the opponent actually played. This was a
+    structural flaw in the proxy (not a calibration issue), so no threshold or
+    strength adjustment could fix it. The `average_game_length` field remains
+    in the style object (compute_opponent_style still surfaces it for
+    transparency/UI), but the reranker no longer consumes it.
 
 (8) NEAR-BOOK REPERTOIRE SIMILARITY (multiplicative with all existing
     signals; the "near-book" extension of mirror-mode).
@@ -501,7 +430,7 @@ DESIGN DECISIONS (recorded here because they shape the whole module)
       share_i          = near_book_weights[candidate_i.move] / total_nb
       near_book_mult_i = 1 + NEAR_BOOK_WEIGHT * share_i
       weight_i         = base_i * sac_mult_i * qt_mult_i * setup_mult_i
-                           * castle_mult_i * trap_mult_i * length_mult_i
+                           * castle_mult_i * trap_mult_i
                            * near_book_mult_i
 
     Boost-only (never below 1.0), matching setup/trap's shape. The move
@@ -706,24 +635,19 @@ SETUP_FAMILY_DETECTION_THRESHOLD = 0.5
 # signal. See the module docstring's decision (1).
 FAMILY_LEAN_DISABLED = "disabled_in_v1_no_candidate_family_classifier"
 
-# --- castle-side preference (v1) -------------------------------------------
+# --- castle-side preference (v1; indicator rebuilt 2026-08-23) -------------
 #
-# Per-candidate multiplicative bias for moves that help / hurt the
-# opponent's preferred castling side. The signal comes from
-# `style["castling_side_distribution"]` (produced by compute_opponent_style
-# as a {kingside, queenside, never} fraction over the opponent's games).
-# castling_side_distribution was already computed in v1 but never consumed
-# by the reranker; this wires it in.
+# Per-candidate multiplicative bias for the LITERAL castling move. The signal
+# comes from `style["castling_side_distribution"]` (produced by
+# compute_opponent_style as a {kingside, queenside, never} fraction over the
+# opponent's games). castling_side_distribution was already computed in v1 but
+# never consumed by the reranker; this wires it in.
 #
-# Per-candidate indicator (see _castle_indicator):
-#   +1  -> move helps preferred castle side (clears a path square, or is
-#          the castle move itself on the preferred side)
-#   -1  -> move hurts preferred castle side (king move losing rights,
-#          preferred-side rook move, piece moves INTO preferred-side path,
-#          OR the castle move on the non-preferred side)
-#   0   -> neutral (pawn moves, moves on the other side of the board,
-#          non-preferred-side rook moves, pieces clearing the non-preferred
-#          path)
+# Per-candidate indicator (see _castle_indicator -- NARROW: only the literal
+# O-O/O-O-O move is non-zero):
+#   +1  -> the candidate is the castle move on the preferred side
+#   -1  -> the candidate is the castle move on the NON-preferred side
+#   0   -> everything else (development, king moves, rook moves, pawn moves)
 #
 # castle_mult = clamp(1 + CASTLE_BIAS_STRENGTH * pref_strength * indicator,
 #                     min=CASTLE_WEIGHT_FLOOR)
@@ -737,7 +661,9 @@ FAMILY_LEAN_DISABLED = "disabled_in_v1_no_candidate_family_classifier"
 #   pref_strength=0.8,                        indicator=-1 -> clamped to 0.05
 # A "wrong-side castle" move gets the strongest penalty (indicator=-1 with
 # the highest typical pref_strength) -- this is the clearest "bot is not
-# mimicking the opponent" signal.
+# mimicking the opponent" signal. The strength is unchanged from v1: the
+# diagnostic found the INDICATOR (firing on path-clearing development) was
+# the flaw, not the calibration.
 #
 # CASTLE_PREFERENCE_THRESHOLD = 0.3: minimum |kingside_frac - queenside_frac|
 # to apply the bias. Below this the opponent's preference is too weak to
@@ -759,6 +685,20 @@ CASTLE_BIAS_STRENGTH = 1.5
 CASTLE_PREFERENCE_THRESHOLD = 0.3
 CASTLE_BIAS_PLY_MAX = 40
 CASTLE_WEIGHT_FLOOR = 0.05
+
+# REBUILT (diagnostic 2026-08-23): the castle-side signal measured a NET
+# -1.22pp top-1 cost on held-out replay (16 helped / 52 hurt; -4.88pp in-book)
+# when _castle_indicator fired on ANY kingside-path-clearing move (Nf3, Bc4,
+# O-O, Nf6...). The indicator has been NARROWED to only the literal castling
+# move (O-O / O-O-O): +1 on the preferred side, -1 on the wrong side, 0 for
+# everything else. Re-enabled; the strength (1.5) is unchanged since the
+# problem was the indicator, not the calibration.
+#
+# NEUTRALIZED (2026-08-25): the narrowed indicator still measured a NET
+# -0.44pp top-1 cost (5 helped / 18 hurt) on held-out replay -- a strict
+# improvement over the old -1.22pp but still net-negative. Disabled for the
+# clean-baseline stack. Keep the flag False unless the signal is re-derived.
+CASTLE_BIAS_ENABLED = False
 
 # --- trap-mode / mirror-mode branch (v1) -----------------------------------
 #
@@ -806,51 +746,6 @@ CASTLE_WEIGHT_FLOOR = 0.05
 # STYLE_BIAS_STRENGTH was calibrated -- this starting value is a reasoned
 # default, not a measured one.
 TRAP_WEIGHT = 6.0
-
-# --- average-game-length calibration (v1) -----------------------------------
-#
-# Per-candidate multiplicative bias that tilts the bot's candidate
-# selection toward the tempo profile of the opponent's games. The signal
-# comes from `style["average_game_length"]` (already computed by
-# compute_opponent_style as the recency-weighted mean plies per game).
-#
-# See the module docstring's decision (7) for the full spec (intuition,
-# per-candidate indicator, derivation, centering, boost-or-suppress
-# shape, gating, transparency fields).
-#
-# GAME_LENGTH_BIAS_STRENGTH = 0.8: deliberately the WEAKEST signal in
-# the stack (below STYLE_BIAS_STRENGTH=4.0, QUEEN_TRADE_BIAS_STRENGTH=1.5,
-# CASTLE_BIAS_STRENGTH=1.5, SETUP_SIGNATURE_BIAS_STRENGTH=2.5, and
-# TRAP_WEIGHT=6.0). Game length is a noisy proxy for style: the mean
-# smooths over individual-game variance (a short time-forfeit doesn't
-# mean the opponent plays tactically), so the calibration is soft. At
-# strength=0.8:
-#   centered=+1.0 (short games), is_forcing=1 -> mult = 1.8  (max boost)
-#   centered= 0.0 (reference)  , is_forcing=1 -> mult = 1.0  (no effect)
-#   centered=-1.0 (long games) , is_forcing=1 -> mult = 0.2  (suppress)
-#   centered=anything          , is_forcing=0 -> mult = 1.0  (quiet neutral)
-# The suppress direction (0.2) is above the 0.05 floor, so the floor
-# never triggers at this strength -- it's kept for defensive consistency
-# with the other signals' floors.
-#
-# GAME_LENGTH_REFERENCE_PLY = 50.0: the neutral midpoint. Opponents at
-# this weighted-mean length get length_mult=1.0 for every candidate.
-# 50 plies (~25 fullmoves) is the typical Chess.com blitz/rapid game
-# length in the dev DB's provider mix. Revisit when the dev DB has a
-# meaningful classical-games population (which would shift the reference
-# upward toward 60-70 plies).
-#
-# GAME_LENGTH_SCALE_PLY = 20.0: the half-width of the linear centering
-# ramp. An opponent 20 plies from the reference reaches the full +/-1.0
-# centered value; opponents further away are clamped. 20 plies = 10
-# fullmoves, a meaningful game-length difference.
-#
-# GAME_LENGTH_WEIGHT_FLOOR = 0.05: defensive floor matching the other
-# signals' floors so random.choices never sees a non-positive weight.
-GAME_LENGTH_BIAS_STRENGTH = 0.8
-GAME_LENGTH_REFERENCE_PLY = 50.0
-GAME_LENGTH_SCALE_PLY = 20.0
-GAME_LENGTH_WEIGHT_FLOOR = 0.05
 
 # --- near-book repertoire similarity (feature D, v1) ------------------------
 #
@@ -1459,79 +1354,12 @@ def _is_trap_triggering(
     return resulting_key in exploitable_keys
 
 
-def _is_forcing_move(board: chess.Board, candidate_uci: str) -> bool:
-    """A candidate is 'forcing' iff it is a capture OR gives check.
-
-    Captures and checks are the two 'forcing' move categories in chess
-    (the opponent's response is constrained: they must recapture or
-    address the check). This is a BROADER and CHEAPER proxy for
-    'tactical/aggressive' than `_is_live_sac_move` (which requires a net
-    material loss >= SAC_MATERIAL_THRESHOLD AND a profitable recapture
-    available); a forcing move here includes even trades, non-sac
-    captures, and checks that don't win material. The two indicators are
-    intentionally different -- see the module docstring's decision (7)
-    for why they profile independent stylistic axes (sac frequency
-    profiles material aggression; game length profiles overall tempo).
-
-    Used by the game-length calibration bias as the per-candidate
-    indicator: short-game opponents boost forcing candidates, long-game
-    opponents suppress them. Has the same one-ply-forward shape as
-    `_is_live_sac_move`, `_is_queen_trade_move`, `_is_trap_triggering`,
-    and `_candidate_setup_mult`: inspect the board after pushing the
-    candidate onto a copy, classify, return.
-
-    Defensive on every edge (non-legal candidate, unparseable UCI, push
-    failure) -> returns False, matching the other per-candidate helpers'
-    convention.
-    """
-    try:
-        candidate = chess.Move.from_uci(candidate_uci)
-    except ValueError:
-        return False
-    if candidate not in board.legal_moves:
-        # Maia's candidates are legal by construction; defensive guard.
-        return False
-    # Capture (handles all capture types including en-passant via
-    # board.is_capture, which checks piece_at(to_square) for normal
-    # captures and the en-passant target for e.p. captures).
-    if board.is_capture(candidate):
-        return True
-    # Check: push the candidate on a copy, see if the opponent (the
-    # side to move after our candidate) is in check. board.is_check()
-    # returns True iff the side to move is in check, which after our
-    # push is the opponent -- exactly "did our move give check".
-    board_after = board.copy(stack=False)
-    try:
-        board_after.push(candidate)
-    except (AssertionError, ValueError):
-        return False
-    return board_after.is_check()
-
-
 # --- castle-side preference helpers ----------------------------------------
 #
-# Three helpers that feed the castle_mult bias term in rerank_candidates.
+# Two helpers that feed the castle_mult bias term in rerank_candidates.
 # _castle_preference extracts the preferred side + strength from the style
-# dict; _castle_path_squares is a static lookup; _castle_indicator classifies
-# a candidate move's effect on the preferred castle side.
-
-
-def _castle_path_squares(color: chess.Color, side: str) -> set:
-    """Squares between king and rook that must be empty for castling.
-
-    For kingside (short castle): the two squares between king and h-rook.
-    For queenside (long castle): the three squares between king and a-rook.
-    The king's and rook's own squares are NOT included -- only the path
-    the king passes through (and the rook passes through for queenside).
-    """
-    if color == chess.WHITE:
-        if side == "kingside":
-            return {chess.F1, chess.G1}
-        return {chess.B1, chess.C1, chess.D1}  # queenside
-    # BLACK
-    if side == "kingside":
-        return {chess.F8, chess.G8}
-    return {chess.B8, chess.C8, chess.D8}  # queenside
+# dict; _castle_indicator classifies a candidate move's effect on the
+# preferred castle side (narrow: only the literal O-O/O-O-O move is non-zero).
 
 
 def _castle_preference(castling_dist: Optional[Dict[str, Any]]) -> tuple:
@@ -1583,39 +1411,31 @@ def _castle_indicator(
 ) -> int:
     """Classify a candidate move's effect on the preferred castle side.
 
+    NARROW INDICATOR (rebuilt 2026-08-23). Only the LITERAL castling move
+    is non-zero; every other move returns 0. The previous indicator fired
+    +1 on any move that cleared a preferred-side path square (Nf3, Bc4,
+    Nf6, ...), which measured a net -1.22pp top-1 cost (-4.88pp in-book)
+    on held-out replay by boosting generic opening development over the
+    actual move. The rebuild keeps the boost/suppress shape but restricts
+    it to the castling decision itself.
+
     Returns +1, -1, or 0:
-      +1  -> move helps preferred castle side:
-             * the castle move itself on the preferred side (O-O when
-               pref=kingside, O-O-O when pref=queenside)
-             * a piece move that clears a preferred-side path square
-               (e.g. Ng1-f3 when pref=kingside; Bf1-c4 when pref=kingside;
-               Nb1-c3 when pref=queenside; Bc1-d2 when pref=queenside)
-      -1  -> move hurts preferred castle side:
-             * the castle move on the NON-preferred side (O-O when
-               pref=queenside; O-O-O when pref=kingside) -- the clearest
-               "bot is not mimicking the opponent" signal, since it's a
-               binary irreversible commitment to the opposite pattern
-             * any non-castle king move (loses all castling rights)
-             * the preferred-side rook moving (loses preferred-side rights;
-               identified by the from_square's file: h-file for kingside,
-               a-file for queenside)
-             * a piece move TO a preferred-side path square (blocks the
-               king's path)
-      0   -> neutral:
-             * pawn moves (pawns don't block the castling path -- the
-               king and rook pass through rank 1, pawns are on rank 2+)
-             * non-preferred-side rook moves (don't affect preferred-side
-               rights)
-             * pieces clearing the non-preferred path (doesn't help the
-               preferred side, doesn't hurt either)
-             * moves on the other side of the board
+      +1  -> the candidate is the castle move on the preferred side
+             (O-O when pref=kingside; O-O-O when pref=queenside).
+      -1  -> the candidate is the castle move on the NON-preferred side
+             (O-O when pref=queenside; O-O-O when pref=kingside) -- the
+             clearest "bot is not mimicking the opponent" signal, since
+             it's a binary, irreversible commitment to the opposite
+             castle pattern.
+       0  -> everything else: development moves that clear the castle
+             path (Nf3, Bc4, ...), non-castle king moves, rook moves,
+             pawn moves. These are separate decisions from the castling
+             decision and no longer tilt the bias.
 
     Defensive: returns 0 on any edge case (non-legal candidate, unparseable
-    UCI, missing piece). The outer gate (castle_window_active in
-    rerank_candidates) already ensures the bot has castling rights on the
-    preferred side before this function is called, so the rook-file check
-    is safe (a rook on the h-file with kingside rights intact is the
-    starting h-rook; a rook that's moved would have already lost rights).
+    UCI). The outer gate (castle_window_active in rerank_candidates) already
+    ensures the bot has castling rights on the preferred side before this
+    function is called.
     """
     try:
         candidate = chess.Move.from_uci(candidate_uci)
@@ -1624,42 +1444,10 @@ def _castle_indicator(
     if candidate not in board.legal_moves:
         return 0
 
-    # The castle move itself.
     if board.is_kingside_castling(candidate):
         return +1 if pref_side == "kingside" else -1
     if board.is_queenside_castling(candidate):
         return +1 if pref_side == "queenside" else -1
-
-    piece = board.piece_at(candidate.from_square)
-    if piece is None:
-        return 0
-
-    # Non-castle king move -- loses all castling rights, including the
-    # preferred side.
-    if piece.piece_type == chess.KING:
-        return -1
-
-    # Rook move -- loses castling rights on the rook's side. Identify which
-    # side by the from_square's file: h-file (file 7) = kingside rook,
-    # a-file (file 0) = queenside rook. A rook on any other file has
-    # already moved (and would have lost rights), so the outer gate would
-    # have short-circuited -- but defensively return 0 for those.
-    if piece.piece_type == chess.ROOK:
-        from_file = chess.square_file(candidate.from_square)
-        if from_file == 7:  # h-file -> kingside rook
-            return -1 if pref_side == "kingside" else 0
-        if from_file == 0:  # a-file -> queenside rook
-            return -1 if pref_side == "queenside" else 0
-        return 0
-
-    # Other piece moves -- check if it clears or blocks a preferred-side
-    # path square. A piece moving FROM a path square clears it (+1); a
-    # piece moving TO a path square blocks it (-1).
-    pref_path = _castle_path_squares(board.turn, pref_side)
-    if candidate.from_square in pref_path:
-        return +1
-    if candidate.to_square in pref_path:
-        return -1
     return 0
 
 
@@ -1795,14 +1583,12 @@ def rerank_candidates(
                                                              setup_S,
                                                              setup_multiplier,
                                                              setup_matched_ply,
-                                                             castle_indicator,
-                                                             castle_multiplier,
-                                                              trap_indicator,
-                                                              trap_multiplier,
-                                                              length_indicator,
-                                                              length_multiplier,
-                                                              bias_multiplier,
-                                                              weight}, ... ],
+                                                              castle_indicator,
+                                                              castle_multiplier,
+                                                               trap_indicator,
+                                                               trap_multiplier,
+                                                               bias_multiplier,
+                                                               weight}, ... ],
                                                "family_lean": <sentinel>,
                                                "signals_applied":
                                                  ["sacrifice",
@@ -1817,20 +1603,9 @@ def rerank_candidates(
                                            was passed OR no candidate
                                            matched. See decision (6).
             trap_candidate_count: int    -- how many candidates in the
-                                           input list were trap-
-                                           triggering (0 when
-                                           trap_mode_active is False).
-            average_game_length: float|None -- surfaced from style for
-                                               transparency; the raw
-                                               input to the game-length
-                                               calibration (decision 7).
-            length_centered: float         -- the centered value in
-                                              [-1, 1] used to compute
-                                              the per-candidate length
-                                              multiplier; 0.0 means
-                                              "no length bias" (None or
-                                              reference-length
-                                              average_game_length).
+                                            input list were trap-
+                                            triggering (0 when
+                                            trap_mode_active is False).
             game_count: int             -- surfaced from style, raw
                                            game count, for transparency
             near_book_active: bool       -- whether near-book similarity
@@ -1860,7 +1635,7 @@ def rerank_candidates(
         no queen-trade candidates, OR all queen-trade candidates have
         window_weight=0 / centered=0; no setup match; castle dormant;
         AND no trap-triggering candidate OR exploitable_trap_keys is
-        None/empty; AND length_centered=0 OR no forcing candidates;
+        None/empty;
         AND no near-book match OR near_book_weights is None/empty):
         returns candidates[0] deterministically,
         applied_bias=False, source="default_top_candidate". Same
@@ -1871,7 +1646,7 @@ def rerank_candidates(
         actually deviates from 1.0: weighted random sample using
             weight[i] = base(rank_i) * sac_mult_i * qt_mult_i
                               * setup_mult_i * castle_mult_i * trap_mult_i
-                              * length_mult_i * near_book_mult_i
+                              * near_book_mult_i
         where:
             sac_mult_i = 1 + STYLE_BIAS_STRENGTH * sac_freq * sac_i
             qt_mult_i  = max(QUEEN_TRADE_WEIGHT_FLOOR,
@@ -1882,9 +1657,6 @@ def rerank_candidates(
                                 1 + CASTLE_BIAS_STRENGTH *
                                     castle_pref_strength * castle_ind_i)
             trap_mult_i  = 1 + TRAP_WEIGHT * trap_indicator_i
-            length_mult_i = max(GAME_LENGTH_WEIGHT_FLOOR,
-                                1 + GAME_LENGTH_BIAS_STRENGTH *
-                                    length_centered * is_forcing_i)
             near_book_mult_i = 1 + NEAR_BOOK_WEIGHT * near_book_share_i
         applied_bias=True, source="style_biased", bias_breakdown
         populated (including the list of signals whose multiplier
@@ -1909,22 +1681,6 @@ def rerank_candidates(
         style.get("castling_side_distribution")
     )
 
-    # Compute game-length centering once at the top so all return paths
-    # can surface the same derived transparency field. Same pattern as
-    # castle_pref_side/strength above. See decision (7).
-    average_game_length = style.get("average_game_length")
-    if average_game_length is None:
-        length_centered = 0.0
-    else:
-        try:
-            gl = float(average_game_length)
-            length_centered = max(
-                -1.0,
-                min(1.0, (GAME_LENGTH_REFERENCE_PLY - gl) / GAME_LENGTH_SCALE_PLY),
-            )
-        except (TypeError, ValueError):
-            length_centered = 0.0
-
     if not candidates:
         return {
             "chosen_move_uci": "",
@@ -1942,8 +1698,6 @@ def rerank_candidates(
             "castle_preference_strength": round(castle_pref_strength, 4),
             "trap_mode_active": False,
             "trap_candidate_count": 0,
-            "average_game_length": average_game_length,
-            "length_centered": round(length_centered, 4),
             "near_book_active": False,
             "near_book_candidate_count": 0,
             "bias_breakdown": None,
@@ -1969,8 +1723,6 @@ def rerank_candidates(
             "castle_preference_strength": round(castle_pref_strength, 4),
             "trap_mode_active": False,
             "trap_candidate_count": 0,
-            "average_game_length": average_game_length,
-            "length_centered": round(length_centered, 4),
             "near_book_active": False,
             "near_book_candidate_count": 0,
             "bias_breakdown": None,
@@ -2080,7 +1832,7 @@ def rerank_candidates(
     # --- compute per-candidate live indicators and weights ------------------
     # base_weight_i = candidate["policy"] when the patched UCI wrapper
     # is in use (the actual softmax probability of the candidate), or
-    # the geometric rank-decay proxy when it isn't. Seven independent
+    # the geometric rank-decay proxy when it isn't. Six independent
     # multiplicative bias terms compose on top:
     #   sac_mult_i    = 1 + STYLE_BIAS_STRENGTH * sac_freq * sac_indicator_i
     #   qt_mult_i     = clamp(1 + QUEEN_TRADE_BIAS_STRENGTH *
@@ -2091,12 +1843,9 @@ def rerank_candidates(
     #                           castle_pref_strength * castle_indicator_i,
     #                        min=CASTLE_WEIGHT_FLOOR)
     #   trap_mult_i    = 1 + TRAP_WEIGHT * trap_indicator_i  (boost-only)
-    #   length_mult_i  = clamp(1 + GAME_LENGTH_BIAS_STRENGTH *
-    #                           length_centered * is_forcing_i,
-    #                          min=GAME_LENGTH_WEIGHT_FLOOR)
     #   near_book_mult_i = 1 + NEAR_BOOK_WEIGHT * near_book_share_i (boost-only)
     # weight_i = base_i * sac_mult_i * qt_mult_i * setup_mult_i
-    #                  * castle_mult_i * trap_mult_i * length_mult_i
+    #                  * castle_mult_i * trap_mult_i
     #                  * near_book_mult_i
     weights: List[float] = []
     sac_mults: List[float] = []
@@ -2104,7 +1853,6 @@ def rerank_candidates(
     setup_mults: List[float] = []
     castle_mults: List[float] = []
     trap_mults: List[float] = []
-    length_mults: List[float] = []
     near_book_mults: List[float] = []
     near_book_shares: List[float] = []
     breakdown_rows: List[Dict[str, Any]] = []
@@ -2164,20 +1912,27 @@ def rerank_candidates(
                 setup_mult, setup_S, setup_matched_ply = 1.0, None, None
         setup_mults.append(setup_mult)
 
-        # Castle-side preference: +1 if this candidate helps the opponent's
-        # preferred castle side, -1 if it hurts, 0 if neutral. Only
-        # computed when the outer gate (castle_window_active) is True --
+        # Castle-side preference: +1 if this candidate is the castle move on
+        # the preferred side, -1 if on the non-preferred side, 0 otherwise.
+        # Only computed when the outer gate (castle_window_active) is True --
         # otherwise every candidate gets indicator=0 -> castle_mult=1.0.
-        castle_indicator_val = 0
-        if castle_window_active:
-            castle_indicator_val = _castle_indicator(
-                board, uci, castle_pref_side
+        # Gated by CASTLE_BIAS_ENABLED (rebuilt/narrow indicator 2026-08-23;
+        # see the constant's comment); when off, the multiplier collapses to
+        # 1.0 for every candidate so the signal cannot tilt the weight product.
+        if CASTLE_BIAS_ENABLED:
+            castle_indicator_val = 0
+            if castle_window_active:
+                castle_indicator_val = _castle_indicator(
+                    board, uci, castle_pref_side
+                )
+            castle_mult_raw = (
+                1.0 + CASTLE_BIAS_STRENGTH
+                * castle_pref_strength * castle_indicator_val
             )
-        castle_mult_raw = (
-            1.0 + CASTLE_BIAS_STRENGTH
-            * castle_pref_strength * castle_indicator_val
-        )
-        castle_mult = max(CASTLE_WEIGHT_FLOOR, castle_mult_raw)
+            castle_mult = max(CASTLE_WEIGHT_FLOOR, castle_mult_raw)
+        else:
+            castle_indicator_val = 0
+            castle_mult = 1.0
         castle_mults.append(castle_mult)
 
         # Trap-mode: boost-only multiplier for candidates whose resulting
@@ -2191,25 +1946,6 @@ def rerank_candidates(
         is_trap = idx in trap_candidate_set
         trap_mult = 1.0 + TRAP_WEIGHT * (1.0 if is_trap else 0.0)
         trap_mults.append(trap_mult)
-
-        # Game-length calibration (decision 7): per-candidate forcing
-        # indicator (capture or check) boosted for short-game opponents,
-        # suppressed for long-game opponents. The bias only acts on
-        # forcing candidates; quiet candidates get length_mult=1.0 (the
-        # bias is neutral on the absence of a forcing move, not evidence
-        # of "long-game style"). When length_centered=0.0 (None or
-        # reference-length average_game_length), length_mult_raw=1.0 for
-        # every candidate regardless of is_forcing -- the signal is a
-        # no-op. The indicator is still computed and surfaced in the
-        # per-row breakdown for transparency (operators can see which
-        # candidates are forcing even when the bias is dormant).
-        is_forcing = _is_forcing_move(board, uci)
-        length_mult_raw = (
-            1.0 + GAME_LENGTH_BIAS_STRENGTH * length_centered
-            * (1.0 if is_forcing else 0.0)
-        )
-        length_mult = max(GAME_LENGTH_WEIGHT_FLOOR, length_mult_raw)
-        length_mults.append(length_mult)
 
         # Near-book repertoire similarity (decision 8): boost-only
         # multiplier for candidates whose move_uci appears in the
@@ -2234,7 +1970,7 @@ def rerank_candidates(
             any_used_policy = True
         bias_mult = (
             sac_mult * qt_mult * setup_mult * castle_mult
-            * trap_mult * length_mult * near_book_mult
+            * trap_mult * near_book_mult
         )
         weight = base * bias_mult
         weights.append(weight)
@@ -2256,8 +1992,6 @@ def rerank_candidates(
             "castle_multiplier": round(castle_mult, 4),
             "trap_indicator": is_trap,
             "trap_multiplier": round(trap_mult, 4),
-            "length_indicator": is_forcing,
-            "length_multiplier": round(length_mult, 4),
             "near_book_weight": round(near_book_share, 4),
             "near_book_multiplier": round(near_book_mult, 4),
             "bias_multiplier": round(bias_mult, 4),
@@ -2285,7 +2019,6 @@ def rerank_candidates(
     setup_actually_biased = _mult_deviated(setup_mults)
     castle_actually_biased = _mult_deviated(castle_mults)
     trap_actually_biased = _mult_deviated(trap_mults)
-    length_actually_biased = _mult_deviated(length_mults)
     near_book_actually_biased = _mult_deviated(near_book_mults)
     # near_book_active mirrors trap_mode_active: True iff near-book data was
     # provided AND >=1 candidate's move_uci matched the map (i.e. its share
@@ -2303,7 +2036,7 @@ def rerank_candidates(
         ) else "mixed"
     else:
         base_source = "rank_decay"
-    if not (sac_actually_biased or qt_actually_biased or setup_actually_biased or castle_actually_biased or trap_actually_biased or length_actually_biased or near_book_actually_biased):
+    if not (sac_actually_biased or qt_actually_biased or setup_actually_biased or castle_actually_biased or trap_actually_biased or near_book_actually_biased):
         # Sampling would still be a no-op: weights are all just
         # geometric rank-decay, and rank 1 has the largest weight. The
         # sampler MIGHT pick a non-top candidate (it's random), but
@@ -2339,8 +2072,6 @@ def rerank_candidates(
             "castle_preference_strength": round(castle_pref_strength, 4),
             "trap_mode_active": trap_mode_active,
             "trap_candidate_count": len(trap_candidate_indices),
-            "average_game_length": average_game_length,
-            "length_centered": round(length_centered, 4),
             "near_book_active": near_book_active,
             "near_book_candidate_count": near_book_candidate_count,
             "bias_breakdown": None,
@@ -2361,8 +2092,6 @@ def rerank_candidates(
         signals_applied.append("castle")
     if trap_actually_biased:
         signals_applied.append("trap")
-    if length_actually_biased:
-        signals_applied.append("game_length")
     if near_book_actually_biased:
         signals_applied.append("near_book")
 
@@ -2394,8 +2123,6 @@ def rerank_candidates(
         "castle_preference_strength": round(castle_pref_strength, 4),
         "trap_mode_active": trap_mode_active,
         "trap_candidate_count": len(trap_candidate_indices),
-        "average_game_length": average_game_length,
-        "length_centered": round(length_centered, 4),
         "near_book_active": near_book_active,
         "near_book_candidate_count": near_book_candidate_count,
         "bias_breakdown": {
