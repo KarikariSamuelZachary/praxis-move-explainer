@@ -43,6 +43,133 @@ def resolve_stockfish_path(stockfish_path: Optional[str] = None) -> str:
     return "stockfish"
 
 
+def _validate_strength_value(value, name: str, opt) -> int:
+    """Validate a strength-limiting int against an advertised UCI spin option.
+
+    Mirrors best_move_candidates()'s strict-int rule for multipv: bool (an
+    int subclass) is rejected, and float/str are rejected even though they
+    would coerce through int(). `opt` is the Option object read from
+    `engine.options`; its .min/.max supply the valid range, so a different
+    Stockfish build cannot silently drift the range out from under us.
+    """
+    lo, hi = opt.min, opt.max
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(
+            f"{name} must be an integer in [{lo}, {hi}]; got {value!r} "
+            f"(type {type(value).__name__})"
+        )
+    if (lo is not None and value < lo) or (hi is not None and value > hi):
+        raise ValueError(f"{name} must be in [{lo}, {hi}]; got {value}")
+    return value
+
+
+def configure_strength(
+    engine: chess.engine.SimpleEngine,
+    elo: Optional[int] = None,
+    skill_level: Optional[int] = None,
+) -> dict:
+    """Configure Stockfish's UCI strength-limiting options on `engine`.
+
+    Supports two limiting mechanisms, whichever the bundled binary advertises
+    (read from `engine.options` at call time, never hardcoded):
+
+      * UCI_LimitStrength (check) + UCI_Elo (spin) -- fine-grained Elo control.
+      * Skill Level (spin) -- coarse 0-20 control.
+
+    The Stockfish 16 binary in this repo advertises BOTH: `UCI_Elo` spin
+    1320..3190 (default 1320), `Skill Level` spin 0..20 (default 20), and
+    `UCI_LimitStrength` check default False -- verified live against the
+    binary (see engines/stockfish_engine_test.py). The valid Elo/Skill ranges
+    are read from `engine.options` here, so a future Stockfish build that
+    changes them is handled automatically rather than trusted from memory.
+
+    Precedence:
+      1. `elo` given + UCI_Elo advertised            -> Elo path.
+      2. `elo` given + UCI_Elo NOT advertised        -> fall back to
+         `skill_level` (required; ValueError if also absent).
+      3. only `skill_level` given                    -> Skill Level path.
+      4. neither given                               -> full-strength reset.
+
+    Both provided values are validated strictly up front (even when a
+    higher-precedence value wins) so a wrong-type or out-of-range argument is
+    always loud, never silently ignored.
+
+    Stale-state note: every path sets BOTH limiting gates explicitly, so a
+    setting from a prior call cannot leak into a later call that didn't ask
+    for it (the same class of stale-Elo bug that bit the Maia side). The Elo
+    path also resets Skill Level to its max because the two mechanisms are
+    independent -- a leftover low Skill Level would otherwise keep weakening
+    the engine on top of the Elo limit. The Skill Level path and the reset
+    both disable UCI_LimitStrength, because a stale `LimitStrength=true` +
+    `UCI_Elo` would otherwise still apply even with Skill Level at full.
+
+    Persistence (verified live): UCI setoptions persist across subsequent
+    analyse()/play() calls on the SAME subprocess until changed again. They
+    do NOT need to be re-applied per move -- call this once per strength
+    change and every later analyse() runs at that strength. Re-applying per
+    move is harmless (one cheap setoption round-trip) but unnecessary.
+
+    Returns a small dict describing what was applied:
+
+        {"limit_strength": bool, "elo": Optional[int],
+         "skill_level": Optional[int]}
+    """
+    options = engine.options
+    limit_opt = options.get("UCI_LimitStrength")
+    elo_opt = options.get("UCI_Elo")
+    skill_opt = options.get("Skill Level")
+
+    # Validate whatever the caller provided, strictly, regardless of which
+    # mechanism ends up winning.
+    if elo is not None and elo_opt is not None:
+        _validate_strength_value(elo, "elo", elo_opt)
+    if skill_level is not None:
+        if skill_opt is None:
+            raise ValueError(
+                "skill_level was requested but this engine does not advertise "
+                "the Skill Level option."
+            )
+        _validate_strength_value(skill_level, "skill_level", skill_opt)
+
+    if elo is not None:
+        if elo_opt is not None:
+            mechanism = "elo"
+        elif skill_level is not None:
+            mechanism = "skill"
+        else:
+            raise ValueError(
+                "elo was requested but this engine does not advertise the "
+                "UCI_Elo option; pass skill_level as a fallback strength limit."
+            )
+    elif skill_level is not None:
+        mechanism = "skill"
+    else:
+        mechanism = "full"
+
+    if mechanism == "elo":
+        config: dict = {"UCI_LimitStrength": True, "UCI_Elo": elo}
+        if skill_opt is not None:
+            config["Skill Level"] = skill_opt.max
+    elif mechanism == "skill":
+        config = {"Skill Level": skill_level}
+        if limit_opt is not None:
+            config["UCI_LimitStrength"] = False
+    else:
+        config = {}
+        if limit_opt is not None:
+            config["UCI_LimitStrength"] = False
+        if skill_opt is not None:
+            config["Skill Level"] = skill_opt.max
+
+    engine.configure(config)
+
+    return {
+        "limit_strength": mechanism == "elo",
+        "elo": elo if mechanism == "elo" else None,
+        "skill_level": skill_level if mechanism == "skill" else None,
+    }
+
+
 class StockfishEngine:
     FAST_ANALYSIS_TIME = 0.1
 
