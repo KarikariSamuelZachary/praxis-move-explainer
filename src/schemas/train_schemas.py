@@ -265,6 +265,38 @@ class SparringMoveResponse(BaseModel):
     best_move_san: Optional[str] = None
 
 
+class EngineSparringMoveRequest(BaseModel):
+    # Strength-control fields for the Stockfish-based Engine Sparring mode.
+    # This is a SEPARATE feature from the Maia-based Opponent Preparation
+    # flow (SparringMoveRequest above): there is no provider /
+    # opponent_username / time_control here -- the user picks a Stockfish
+    # strength directly instead of importing an opponent.
+    #
+    # The valid Elo range is deliberately NOT hardcoded in this schema. It is
+    # read at request time from the bundled Stockfish binary's advertised
+    # UCI_Elo min/max (via engines.stockfish_engine.configure_strength), so a
+    # Stockfish upgrade cannot drift the schema out of sync. Both fields are
+    # optional; when both are None (or omitted) the engine plays at full
+    # strength. Move-generation fields (fen, bot_color) are added when the
+    # persona re-ranker lands -- this task is scoped strictly to strength
+    # control, so only the strength fields live here for now.
+    target_elo: Optional[int] = Field(
+        None,
+        description=(
+            "Target Elo for Stockfish's UCI_LimitStrength/UCI_Elo limiting. "
+            "Valid range is read from the bundled Stockfish binary's "
+            "advertised UCI_Elo option (Stockfish 16: 1320-3190)."
+        ),
+    )
+    skill_level: Optional[int] = Field(
+        None,
+        description=(
+            "Coarse Stockfish Skill Level (0-20). Used when target_elo is "
+            "omitted, or as a fallback on builds that don't advertise UCI_Elo."
+        ),
+    )
+
+
 class OpponentDataClearResponse(BaseModel):
     # Result of DELETE /api/train/opponent-data — wipes the sparring
     # feature's persisted state so the user isn't paying DB storage for
