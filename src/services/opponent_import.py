@@ -1,18 +1,33 @@
 import logging
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, Iterable, Optional
 
 from psycopg2.extras import Json, RealDictCursor
 
 from core import database
-from integrations.chess_com import fetch_recent_chesscom_games
+from integrations.chess_com import (
+    fetch_chesscom_profile,
+    fetch_recent_chesscom_games,
+)
 from integrations.lichess import fetch_recent_lichess_games
 from services.opponent_game_analysis import (
     run_opponent_game_analysis,
     try_start_opponent_analysis,
 )
-from services.opponent_repertoire import index_opponent_game
+from services.opponent_repertoire import (
+    build_opponent_profile_snapshot,
+    index_opponent_game,
+    upsert_opponent_profile_snapshot,
+    replay_opponent_game,
+)
 
 log = logging.getLogger(__name__)
+
+_REPERTOIRE_EXECUTOR = ThreadPoolExecutor(
+    max_workers=2,
+    thread_name_prefix="opponent-repertoire",
+)
 
 
 def _normalize_username(username: Optional[str]) -> Optional[str]:
@@ -83,6 +98,10 @@ def get_opponent_import_job(*, job_id: str, requested_by_user_id: str) -> Option
                     requested_limit,
                     imported_count,
                     total_games,
+                    opponent_prep_ready,
+                    repertoire_index_status,
+                    repertoire_indexed_games,
+                    repertoire_total_games,
                     error_message
                 FROM opponent_import_jobs
                 WHERE id = %s AND requested_by_user_id = %s
@@ -99,9 +118,22 @@ def run_opponent_import_job(job_id: str) -> None:
     if database.connection_pool is None:
         raise RuntimeError("Database connection pool is not initialized")
 
+    total_started = time.perf_counter()
+    profile: Dict[str, Any] = {
+        "fetch_games": 0,
+        "fetch_duration": 0.0,
+        "fetch_api_calls": 0,
+        "fetch_providers": [],
+        "db_insert_games": 0,
+        "db_insert_duration": 0.0,
+        "db_insert_representative_duration": None,
+        "pgn_replay_games": 0,
+        "pgn_replay_duration": 0.0,
+    }
     conn = database.connection_pool.getconn()
     job: Optional[Dict[str, Any]] = None
     providers_to_analyze: list[tuple[str, str]] = []
+    repertoire_jobs: list[tuple[str, str]] = []
     try:
         job = _load_job_for_update(conn, job_id)
         if not job:
@@ -123,6 +155,7 @@ def run_opponent_import_job(job_id: str) -> None:
                 username=job["lichess_username"],
                 limit=int(job["requested_limit"]),
                 errors=errors,
+                profile=profile,
             )
 
         if job.get("chesscom_username"):
@@ -134,6 +167,27 @@ def run_opponent_import_job(job_id: str) -> None:
                 username=job["chesscom_username"],
                 limit=int(job["requested_limit"]),
                 errors=errors,
+                profile=profile,
+            )
+
+        if not errors:
+            snapshot_started = time.perf_counter()
+            for provider, username in _job_opponents(job):
+                avatar_url, verified = _fetch_profile_metadata(provider, username)
+                snapshot = build_opponent_profile_snapshot(
+                    conn,
+                    requested_by_user_id=job["requested_by_user_id"],
+                    provider=provider,
+                    opponent_username=username,
+                    avatar_url=avatar_url,
+                    verified=verified,
+                )
+                upsert_opponent_profile_snapshot(conn, snapshot)
+                repertoire_jobs.append((provider, username))
+            log.info(
+                "[IMPORT_PROFILE] phase=snapshot_compute games=%d duration_ms=%.2f",
+                imported_count,
+                (time.perf_counter() - snapshot_started) * 1000,
             )
 
         if errors:
@@ -159,6 +213,13 @@ def run_opponent_import_job(job_id: str) -> None:
         _mark_job_failed_after_rollback(job_id, str(exc))
     finally:
         database.connection_pool.putconn(conn)
+
+    if repertoire_jobs:
+        _enqueue_repertoire_indexing(
+            job_id=job_id,
+            requested_by_user_id=job["requested_by_user_id"],
+            opponents=repertoire_jobs,
+        )
 
     # --- Chain the Stockfish analysis AFTER releasing the import conn ---
     # The import is committed and the conn is back in the pool. The
@@ -191,6 +252,12 @@ def run_opponent_import_job(job_id: str) -> None:
                     provider, username,
                 )
 
+    _log_import_profile(profile)
+    log.info(
+        "[IMPORT_PROFILE] phase=total duration_ms=%.2f",
+        (time.perf_counter() - total_started) * 1000,
+    )
+
 
 def _load_job_for_update(conn, job_id: str) -> Optional[Dict[str, Any]]:
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
@@ -211,6 +278,165 @@ def _load_job_for_update(conn, job_id: str) -> Optional[Dict[str, Any]]:
         )
         row = cur.fetchone()
         return dict(row) if row else None
+
+
+def _job_opponents(job: Dict[str, Any]) -> list[tuple[str, str]]:
+    opponents: list[tuple[str, str]] = []
+    if job.get("lichess_username"):
+        opponents.append(("lichess", job["lichess_username"]))
+    if job.get("chesscom_username"):
+        opponents.append(("chesscom", job["chesscom_username"]))
+    return opponents
+
+
+def _fetch_profile_metadata(provider: str, username: str) -> tuple[Optional[str], bool]:
+    if provider != "chesscom":
+        return None, False
+    try:
+        payload = fetch_chesscom_profile(username)
+    except Exception as exc:  # noqa: BLE001 -- profile metadata is optional
+        log.warning("Opponent profile metadata fetch failed for %s: %s", username, exc)
+        return None, False
+    return payload.get("avatar"), bool(payload.get("verified"))
+
+
+def _enqueue_repertoire_indexing(
+    *,
+    job_id: str,
+    requested_by_user_id: str,
+    opponents: list[tuple[str, str]],
+) -> None:
+    """Queue repertoire work after prep data has been committed and exposed."""
+    _REPERTOIRE_EXECUTOR.submit(
+        run_opponent_repertoire_index,
+        job_id=job_id,
+        requested_by_user_id=requested_by_user_id,
+        opponents=opponents,
+    )
+
+
+def run_opponent_repertoire_index(
+    *,
+    job_id: str,
+    requested_by_user_id: str,
+    opponents: list[tuple[str, str]],
+) -> None:
+    """Index the complete opponent corpus independently of import readiness."""
+    if database.connection_pool is None:
+        raise RuntimeError("Database connection pool is not initialized")
+
+    started = time.perf_counter()
+    conn = database.connection_pool.getconn()
+    processed = 0
+    total_games = 0
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                UPDATE opponent_import_jobs
+                SET repertoire_index_status = 'running',
+                    repertoire_indexed_games = 0
+                WHERE id = %s
+                """,
+                (job_id,),
+            )
+            rows: list[Dict[str, Any]] = []
+            for provider, opponent_username in opponents:
+                cur.execute(
+                    """
+                    SELECT
+                        g.id::text AS game_id,
+                        g.requested_by_user_id,
+                        g.provider,
+                        g.opponent_username,
+                        g.pgn,
+                        g.white_player,
+                        g.black_player
+                    FROM opponent_games g
+                    WHERE g.requested_by_user_id = %s
+                      AND g.provider = %s
+                      AND LOWER(g.opponent_username) = LOWER(%s)
+                    ORDER BY g.end_time DESC, g.imported_at DESC
+                    """,
+                    (requested_by_user_id, provider, opponent_username),
+                )
+                rows.extend(dict(row) for row in cur.fetchall())
+        total_games = len(rows)
+        conn.commit()
+
+        for row in rows:
+            index_timing: Dict[str, float] = {}
+            index_opponent_game(conn, **row, timing=index_timing)
+            processed += 1
+            if processed % _PROGRESS_COMMIT_EVERY == 0:
+                _update_repertoire_index_progress(
+                    conn,
+                    job_id=job_id,
+                    indexed_games=processed,
+                )
+                conn.commit()
+
+        _update_repertoire_index_progress(
+            conn,
+            job_id=job_id,
+            indexed_games=processed,
+            status="complete",
+        )
+        conn.commit()
+    except Exception as exc:  # noqa: BLE001
+        conn.rollback()
+        _update_repertoire_index_progress(
+            conn,
+            job_id=job_id,
+            indexed_games=processed,
+            status="failed",
+        )
+        conn.commit()
+        log.exception(
+            "Opponent repertoire indexing failed for %d opponent(s): %s",
+            len(opponents),
+            exc,
+        )
+    finally:
+        duration_ms = (time.perf_counter() - started) * 1000
+        log.info(
+            "[IMPORT_PROFILE] phase=repertoire_insert games=%d "
+            "duration_ms=%.2f avg_per_game_ms=%.2f providers=%d background=true",
+            processed,
+            duration_ms,
+            duration_ms / processed if processed else 0.0,
+            len(opponents),
+        )
+        database.connection_pool.putconn(conn)
+
+
+def _update_repertoire_index_progress(
+    conn,
+    *,
+    job_id: str,
+    indexed_games: int,
+    status: Optional[str] = None,
+) -> None:
+    with conn.cursor() as cur:
+        if status is None:
+            cur.execute(
+                """
+                UPDATE opponent_import_jobs
+                SET repertoire_indexed_games = %s
+                WHERE id = %s
+                """,
+                (indexed_games, job_id),
+            )
+        else:
+            cur.execute(
+                """
+                UPDATE opponent_import_jobs
+                SET repertoire_index_status = %s,
+                    repertoire_indexed_games = %s
+                WHERE id = %s
+                """,
+                (status, indexed_games, job_id),
+            )
 
 
 def _mark_job_running(conn, job_id: str) -> None:
@@ -248,10 +474,14 @@ def _mark_job_completed(conn, job_id: str, imported_count: int) -> None:
             SET status = 'completed',
                 imported_count = %s,
                 completed_at = NOW(),
-                error_message = NULL
+                error_message = NULL,
+                opponent_prep_ready = TRUE,
+                repertoire_index_status = 'queued',
+                repertoire_indexed_games = 0,
+                repertoire_total_games = %s
             WHERE id = %s
             """,
-            (imported_count, job_id),
+            (imported_count, imported_count, job_id),
         )
 
 
@@ -291,7 +521,11 @@ def _fetch_and_store_provider_games(
     username: str,
     limit: int,
     errors: list[str],
+    profile: Dict[str, Any],
 ) -> int:
+    fetch_started = time.perf_counter()
+    profile["fetch_api_calls"] += 1
+    profile["fetch_providers"].append(provider)
     try:
         if provider == "lichess":
             games = fetch_recent_lichess_games(username=username, limit=limit)
@@ -300,7 +534,11 @@ def _fetch_and_store_provider_games(
     except Exception as exc:  # noqa: BLE001
         log.exception("Opponent %s import failed for %s", provider, username)
         errors.append(f"{provider} {username}: {exc}")
+        profile["fetch_duration"] += time.perf_counter() - fetch_started
         return 0
+
+    profile["fetch_games"] += len(games)
+    profile["fetch_duration"] += time.perf_counter() - fetch_started
 
     return _store_opponent_games(
         conn,
@@ -309,6 +547,7 @@ def _fetch_and_store_provider_games(
         provider=provider,
         opponent_username=username,
         games=games,
+        profile=profile,
     )
 
 
@@ -320,6 +559,7 @@ def _store_opponent_games(
     provider: str,
     opponent_username: str,
     games: Iterable[Dict[str, Any]],
+    profile: Dict[str, Any],
 ) -> int:
     game_list = list(games)
     total_games = len(game_list)
@@ -345,6 +585,7 @@ def _store_opponent_games(
             # schema compatibility; we just never populate it.  If a future
             # feature needs the raw payload, re-fetch from the provider on
             # demand rather than restoring the write here.
+            db_insert_started = time.perf_counter()
             cur.execute(
                 """
                 INSERT INTO opponent_games (
@@ -391,15 +632,17 @@ def _store_opponent_games(
                 ),
             )
             game_id = cur.fetchone()[0]
-            index_opponent_game(
-                conn,
-                game_id=game_id,
-                requested_by_user_id=requested_by_user_id,
-                provider=provider,
-                opponent_username=opponent_username,
-                pgn=game["pgn"],
-                white_player=game.get("white") or {},
-                black_player=game.get("black") or {},
+            db_insert_duration = time.perf_counter() - db_insert_started
+            profile["db_insert_games"] += 1
+            profile["db_insert_duration"] += db_insert_duration
+            if profile["db_insert_representative_duration"] is None:
+                profile["db_insert_representative_duration"] = db_insert_duration
+
+            replay_timing: Dict[str, float] = {}
+            replay_opponent_game(game["pgn"], timing=replay_timing)
+            profile["pgn_replay_games"] += 1
+            profile["pgn_replay_duration"] += replay_timing.get(
+                "pgn_replay_duration", 0.0
             )
             inserted_or_updated += 1
 
@@ -409,6 +652,48 @@ def _store_opponent_games(
 
     return inserted_or_updated
 
+
+def _log_import_profile(profile: Dict[str, Any]) -> None:
+    fetch_games = int(profile["fetch_games"])
+    fetch_duration_ms = float(profile["fetch_duration"]) * 1000
+    providers = profile["fetch_providers"]
+    pagination = "sequential" if "chesscom" in providers else "none"
+    log.info(
+        "[IMPORT_PROFILE] phase=fetch_games games=%d duration_ms=%.2f "
+        "api_calls=%d api_call_scope=provider_fetch pagination=%s "
+        "execution=sequential",
+        fetch_games,
+        fetch_duration_ms,
+        int(profile["fetch_api_calls"]),
+        pagination,
+    )
+
+    db_games = int(profile["db_insert_games"])
+    db_duration_ms = float(profile["db_insert_duration"]) * 1000
+    db_avg_ms = db_duration_ms / db_games if db_games else 0.0
+    representative = profile["db_insert_representative_duration"]
+    representative_ms = (
+        float(representative) * 1000 if representative is not None else 0.0
+    )
+    log.info(
+        "[IMPORT_PROFILE] phase=db_insert games=%d duration_ms=%.2f "
+        "avg_per_game_ms=%.2f representative_insert_ms=%.2f",
+        db_games,
+        db_duration_ms,
+        db_avg_ms,
+        representative_ms,
+    )
+
+    replay_games = int(profile["pgn_replay_games"])
+    replay_duration_ms = float(profile["pgn_replay_duration"]) * 1000
+    replay_avg_ms = replay_duration_ms / replay_games if replay_games else 0.0
+    log.info(
+        "[IMPORT_PROFILE] phase=pgn_replay games=%d duration_ms=%.2f "
+        "avg_per_game_ms=%.2f",
+        replay_games,
+        replay_duration_ms,
+        replay_avg_ms,
+    )
 
 # ---------------------------------------------------------------------------
 # Opponent data cleanup
@@ -491,6 +776,16 @@ def clear_opponent_data(
             if per_opponent:
                 cur.execute(
                     """
+                    DELETE FROM opponent_profile_snapshots
+                    WHERE requested_by_user_id = %s
+                      AND provider = %s
+                      AND LOWER(opponent_username) = LOWER(%s)
+                    """,
+                    (requested_by_user_id, provider, opponent_username),
+                )
+
+                cur.execute(
+                    """
                     DELETE FROM opponent_games
                     WHERE requested_by_user_id = %s
                       AND provider = %s
@@ -525,6 +820,14 @@ def clear_opponent_data(
 
                 import_jobs_deleted = 0
             else:
+                cur.execute(
+                    """
+                    DELETE FROM opponent_profile_snapshots
+                    WHERE requested_by_user_id = %s
+                    """,
+                    (requested_by_user_id,),
+                )
+
                 cur.execute(
                     """
                     DELETE FROM opponent_games
