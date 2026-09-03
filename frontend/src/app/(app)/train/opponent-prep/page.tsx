@@ -34,6 +34,8 @@ type OpponentProfile = {
   opponent_username: string;
   game_count: number;
   rating: number;
+  avatar_url: string | null;
+  verified: boolean;
   ratings_by_time_class: Partial<Record<TimeClassKey, number>> | null;
   playing_style: 'Passive' | 'Balanced' | 'Aggressive' | null;
   preferred_time_control: string | null;
@@ -56,13 +58,6 @@ type OpponentTrap = {
   move_number_min: number;
   move_number_max: number;
   tier: 'position';
-};
-
-type OpponentProfileInfo = {
-  provider: 'lichess' | 'chesscom';
-  opponent_username: string;
-  avatar_url: string | null;
-  verified: boolean;
 };
 
 type SparringMoveResponse = {
@@ -201,7 +196,6 @@ export default function OpponentPrepPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
   const [timeControl, setTimeControl] = useState<string>('');
-  const [profileInfo, setProfileInfo] = useState<OpponentProfileInfo | null>(null);
   const gameRef = useRef(game);
   const botMoveInFlightRef = useRef(false);
 
@@ -213,6 +207,7 @@ export default function OpponentPrepPage() {
     let isCancelled = false;
 
     async function loadOpponents() {
+      const pageLoadRequestStarted = performance.now();
       try {
         const response = await fetch('/api/train/opponents', { cache: 'no-store' });
         if (!response.ok) {
@@ -220,6 +215,15 @@ export default function OpponentPrepPage() {
           throw new Error(body.detail ?? body.error ?? `Opponent request failed (${response.status})`);
         }
         const data = (await response.json()) as { opponents: OpponentProfile[] };
+        const gameCount = data.opponents.reduce(
+          (total, profile) => total + profile.game_count,
+          0
+        );
+        console.info(
+          `[IMPORT_PROFILE] phase=page_load_request duration_ms=${(
+            performance.now() - pageLoadRequestStarted
+          ).toFixed(2)} games=${gameCount} location=browser`
+        );
         if (!isCancelled) {
           setProfiles(data.opponents);
           setSelectedKey((current) => current || profileKey(data.opponents[0]));
@@ -242,42 +246,6 @@ export default function OpponentPrepPage() {
     [profiles, selectedKey]
   );
   const botColor = humanColor === 'white' ? 'black' : 'white';
-
-  // Lazy-fetch the opponent's display metadata (avatar + verified badge)
-  // when the selected profile changes. Server-side TTL-cached at the
-  // chess.com profile endpoint; lichess returns {avatar_url: null,
-  // verified: false} without a network call. The fetch failure is silent
-  // — the frontend falls back to an initials avatar without a check.
-  useEffect(() => {
-    if (!selectedProfile) {
-      setProfileInfo(null);
-      return;
-    }
-    let isCancelled = false;
-
-    async function loadProfileInfo() {
-      try {
-        const params = new URLSearchParams({
-          provider: selectedProfile!.provider,
-          opponent_username: selectedProfile!.opponent_username,
-        });
-        const response = await fetch(
-          `/api/train/opponent-profile-info?${params.toString()}`,
-          { cache: 'no-store' }
-        );
-        if (!response.ok) return;
-        const data = (await response.json()) as OpponentProfileInfo;
-        if (!isCancelled) setProfileInfo(data);
-      } catch {
-        // Silent — fall back to initials avatar without a check.
-      }
-    }
-
-    loadProfileInfo();
-    return () => {
-      isCancelled = true;
-    };
-  }, [selectedProfile]);
 
   // Prefill the Time Control dropdown when the selected profile changes.
   // Uses preferred_time_control when present (the recency-weighted most-
@@ -523,7 +491,6 @@ export default function OpponentPrepPage() {
           <aside className={panelClass}>
             <ProfileCard
               profile={selectedProfile}
-              profileInfo={profileInfo}
               loadError={loadError}
             />
 
@@ -653,11 +620,9 @@ export default function OpponentPrepPage() {
 
 function ProfileCard({
   profile,
-  profileInfo,
   loadError,
 }: {
   profile: OpponentProfile | null;
-  profileInfo: OpponentProfileInfo | null;
   loadError: string | null;
 }) {
   const displayName = profile?.opponent_username ?? 'No opponent';
@@ -665,8 +630,8 @@ function ProfileCard({
     .replace(/[^A-Za-z0-9]/g, '')
     .slice(0, 2)
     .toUpperCase();
-  const showVerified = profileInfo?.verified ?? false;
-  const avatarUrl = profileInfo?.avatar_url ?? null;
+  const showVerified = profile?.verified ?? false;
+  const avatarUrl = profile?.avatar_url ?? null;
 
   return (
     <section className="flex flex-col gap-3">
