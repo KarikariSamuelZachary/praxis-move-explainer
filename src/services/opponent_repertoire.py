@@ -1,11 +1,12 @@
 import logging
+import time
 import random
 from io import StringIO
 from typing import Any, Dict, List, Optional
 
 import chess
 import chess.pgn
-from psycopg2.extras import RealDictCursor
+from psycopg2.extras import Json, RealDictCursor
 
 from core import database
 from services.opponent_style import (
@@ -90,6 +91,22 @@ def _player_rating(player: Dict[str, Any]) -> Optional[int]:
     return rating if 100 <= rating <= 4000 else None
 
 
+def replay_opponent_game(
+    pgn: str,
+    *,
+    timing: Optional[Dict[str, float]] = None,
+) -> None:
+    """Replay a PGN without writing repertoire rows."""
+    started = time.perf_counter() if timing is not None else None
+    game = chess.pgn.read_game(StringIO(pgn))
+    if game is not None:
+        board = game.board()
+        for move in game.mainline_moves():
+            board.push(move)
+    if started is not None:
+        timing["pgn_replay_duration"] = time.perf_counter() - started
+
+
 def index_opponent_game(
     conn,
     *,
@@ -100,14 +117,21 @@ def index_opponent_game(
     pgn: str,
     white_player: Optional[Dict[str, Any]] = None,
     black_player: Optional[Dict[str, Any]] = None,
+    timing: Optional[Dict[str, float]] = None,
+    write_repertoire: bool = True,
 ) -> int:
+    pgn_replay_started = time.perf_counter() if timing is not None else None
     game = chess.pgn.read_game(StringIO(pgn))
     if game is None:
         return 0
 
     normalized_opponent = _normalize_username(opponent_username)
-    white_name = _player_username(white_player or {}) or _normalize_username(game.headers.get("White"))
-    black_name = _player_username(black_player or {}) or _normalize_username(game.headers.get("Black"))
+    white_name = _player_username(white_player or {}) or _normalize_username(
+        game.headers.get("White")
+    )
+    black_name = _player_username(black_player or {}) or _normalize_username(
+        game.headers.get("Black")
+    )
 
     if white_name == normalized_opponent:
         opponent_color = chess.WHITE
@@ -118,50 +142,76 @@ def index_opponent_game(
     else:
         return 0
 
-    inserted = 0
     board = game.board()
-    with conn.cursor() as cur:
-        cur.execute(
-            "DELETE FROM opponent_repertoire_moves WHERE opponent_game_id = %s",
-            (game_id,),
-        )
-        for ply_index, move in enumerate(game.mainline_moves()):
-            if board.turn == opponent_color:
-                try:
-                    move_san = board.san(move)
-                except ValueError:
-                    move_san = move.uci()
-
-                cur.execute(
-                    """
-                    INSERT INTO opponent_repertoire_moves (
-                        opponent_game_id,
-                        requested_by_user_id,
-                        provider,
-                        opponent_username,
-                        position_key,
-                        move_uci,
-                        move_san,
-                        ply_index,
-                        played_color
-                    )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    ON CONFLICT (opponent_game_id, ply_index) DO NOTHING
-                    """,
-                    (
-                        game_id,
-                        requested_by_user_id,
-                        provider,
-                        opponent_username,
-                        _position_key(board),
-                        move.uci(),
-                        move_san,
-                        ply_index,
-                        played_color,
-                    ),
+    inserted = 0
+    repertoire_insert_duration = 0.0
+    if write_repertoire:
+        with conn.cursor() as cur:
+            repertoire_query_started = (
+                time.perf_counter() if timing is not None else None
+            )
+            cur.execute(
+                "DELETE FROM opponent_repertoire_moves WHERE opponent_game_id = %s",
+                (game_id,),
+            )
+            if repertoire_query_started is not None:
+                repertoire_insert_duration += (
+                    time.perf_counter() - repertoire_query_started
                 )
-                inserted += cur.rowcount
+            for ply_index, move in enumerate(game.mainline_moves()):
+                if board.turn == opponent_color:
+                    try:
+                        move_san = board.san(move)
+                    except ValueError:
+                        move_san = move.uci()
+
+                    repertoire_query_started = (
+                        time.perf_counter() if timing is not None else None
+                    )
+                    cur.execute(
+                        """
+                        INSERT INTO opponent_repertoire_moves (
+                            opponent_game_id,
+                            requested_by_user_id,
+                            provider,
+                            opponent_username,
+                            position_key,
+                            move_uci,
+                            move_san,
+                            ply_index,
+                            played_color
+                        )
+                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        ON CONFLICT (opponent_game_id, ply_index) DO NOTHING
+                        """,
+                        (
+                            game_id,
+                            requested_by_user_id,
+                            provider,
+                            opponent_username,
+                            _position_key(board),
+                            move.uci(),
+                            move_san,
+                            ply_index,
+                            played_color,
+                        ),
+                    )
+                    if repertoire_query_started is not None:
+                        repertoire_insert_duration += (
+                            time.perf_counter() - repertoire_query_started
+                        )
+                    inserted += cur.rowcount
+                board.push(move)
+    else:
+        for move in game.mainline_moves():
             board.push(move)
+
+    if timing is not None and pgn_replay_started is not None:
+        timing["repertoire_insert_duration"] = repertoire_insert_duration
+        timing["pgn_replay_duration"] = max(
+            0.0,
+            time.perf_counter() - pgn_replay_started - repertoire_insert_duration,
+        )
 
     return inserted
 
@@ -219,13 +269,176 @@ def ensure_opponent_repertoire(
         database.connection_pool.putconn(conn)
 
 
+def build_opponent_profile_snapshot(
+    conn,
+    *,
+    requested_by_user_id: str,
+    provider: str,
+    opponent_username: str,
+    avatar_url: Optional[str],
+    verified: bool,
+) -> Dict[str, Any]:
+    """Compute the complete non-Stockfish opponent-prep summary once."""
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT
+                COUNT(*)::int AS game_count,
+                JSONB_AGG(white_player) AS white_players,
+                JSONB_AGG(black_player) AS black_players,
+                JSONB_AGG(pgn) AS pgns,
+                JSONB_AGG(end_time) AS end_times,
+                JSONB_AGG(time_class) AS time_classes
+            FROM opponent_games
+            WHERE requested_by_user_id = %s
+              AND provider = %s
+              AND LOWER(opponent_username) = LOWER(%s)
+            """,
+            (requested_by_user_id, provider, opponent_username),
+        )
+        row = dict(cur.fetchone())
+
+    pgns = row.get("pgns") or []
+    end_times = row.get("end_times") or []
+    games = [
+        {
+            "pgn": pgn,
+            "end_time": end_time,
+            "opponent_username": opponent_username,
+        }
+        for pgn, end_time in zip(pgns, end_times)
+    ]
+    opening_results = compute_opening_results(games) if games else None
+    tc_profile = compute_time_control_distribution(games) if games else None
+    return {
+        "requested_by_user_id": requested_by_user_id,
+        "provider": provider,
+        "opponent_username": opponent_username,
+        "game_count": int(row.get("game_count") or 0),
+        "rating": _rating_from_player_lists(
+            opponent_username=opponent_username,
+            white_players=row.get("white_players") or [],
+            black_players=row.get("black_players") or [],
+        ),
+        "ratings_by_time_class": _ratings_by_time_class(
+            opponent_username=opponent_username,
+            white_players=row.get("white_players") or [],
+            black_players=row.get("black_players") or [],
+            time_classes=row.get("time_classes") or [],
+        ),
+        "playing_style": _playing_style_from_sac_freq(
+            opening_results.get("weighted_sacrifice_frequency")
+            if opening_results
+            else None
+        ),
+        "preferred_time_control": (
+            tc_profile["most_common"] if tc_profile else None
+        ),
+        "time_control_distribution": (
+            tc_profile["distribution"] if tc_profile else None
+        ),
+        "opening_results": (
+            opening_results["by_opening"] if opening_results else None
+        ),
+        "openings_lost_against": _openings_lost_against(
+            opening_results["by_opening"]
+            if opening_results and opening_results.get("by_opening")
+            else None
+        ),
+        "avatar_url": avatar_url,
+        "verified": verified,
+    }
+
+
+def upsert_opponent_profile_snapshot(conn, snapshot: Dict[str, Any]) -> None:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO opponent_profile_snapshots (
+                requested_by_user_id,
+                provider,
+                opponent_username,
+                game_count,
+                rating,
+                ratings_by_time_class,
+                playing_style,
+                preferred_time_control,
+                time_control_distribution,
+                opening_results,
+                openings_lost_against,
+                avatar_url,
+                verified,
+                computed_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+            ON CONFLICT (requested_by_user_id, provider, opponent_username)
+            DO UPDATE SET
+                game_count = EXCLUDED.game_count,
+                rating = EXCLUDED.rating,
+                ratings_by_time_class = EXCLUDED.ratings_by_time_class,
+                playing_style = EXCLUDED.playing_style,
+                preferred_time_control = EXCLUDED.preferred_time_control,
+                time_control_distribution = EXCLUDED.time_control_distribution,
+                opening_results = EXCLUDED.opening_results,
+                openings_lost_against = EXCLUDED.openings_lost_against,
+                avatar_url = EXCLUDED.avatar_url,
+                verified = EXCLUDED.verified,
+                computed_at = NOW()
+            """,
+            (
+                snapshot["requested_by_user_id"],
+                snapshot["provider"],
+                snapshot["opponent_username"],
+                snapshot["game_count"],
+                snapshot["rating"],
+                Json(snapshot["ratings_by_time_class"]),
+                snapshot["playing_style"],
+                snapshot["preferred_time_control"],
+                Json(snapshot["time_control_distribution"]),
+                Json(snapshot["opening_results"]),
+                Json(snapshot["openings_lost_against"]),
+                snapshot["avatar_url"],
+                snapshot["verified"],
+            ),
+        )
+
+
 def list_opponent_profiles(*, requested_by_user_id: str) -> list[Dict[str, Any]]:
     if database.connection_pool is None:
         raise RuntimeError("Database connection pool is not initialized")
 
+    legacy_recalc_started: Optional[float] = None
+    legacy_recalc_duration_ms: Optional[float] = None
     conn = database.connection_pool.getconn()
     try:
+        snapshot_read_duration_ms = 0.0
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            snapshot_read_started = time.perf_counter()
+            cur.execute(
+                """
+                SELECT
+                    provider,
+                    opponent_username,
+                    game_count,
+                    rating,
+                    ratings_by_time_class,
+                    playing_style,
+                    preferred_time_control,
+                    time_control_distribution,
+                    opening_results,
+                    openings_lost_against,
+                    avatar_url,
+                    verified
+                FROM opponent_profile_snapshots
+                WHERE requested_by_user_id = %s
+                ORDER BY computed_at DESC
+                """,
+                (requested_by_user_id,),
+            )
+            snapshot_rows = [dict(row) for row in cur.fetchall()]
+            snapshot_read_duration_ms = (
+                time.perf_counter() - snapshot_read_started
+            ) * 1000
             cur.execute(
                 """
                 SELECT
@@ -248,6 +461,13 @@ def list_opponent_profiles(*, requested_by_user_id: str) -> list[Dict[str, Any]]
                     JSONB_AGG(time_class) AS time_classes
                 FROM opponent_games
                 WHERE requested_by_user_id = %s
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM opponent_profile_snapshots s
+                      WHERE s.requested_by_user_id = opponent_games.requested_by_user_id
+                        AND s.provider = opponent_games.provider
+                        AND LOWER(s.opponent_username) = LOWER(opponent_games.opponent_username)
+                  )
                 GROUP BY provider, opponent_username
                 ORDER BY MAX(imported_at) DESC
                 """,
@@ -256,6 +476,41 @@ def list_opponent_profiles(*, requested_by_user_id: str) -> list[Dict[str, Any]]
             rows = [dict(row) for row in cur.fetchall()]
 
         profiles: List[Dict[str, Any]] = []
+        snapshots_to_backfill: List[Dict[str, Any]] = []
+        snapshot_backfill_started = time.perf_counter()
+        snapshot_trap_started = time.perf_counter()
+        for row in snapshot_rows:
+            profiles.append(
+                {
+                    "provider": row["provider"],
+                    "opponent_username": row["opponent_username"],
+                    "game_count": row["game_count"],
+                    "rating": row["rating"],
+                    "ratings_by_time_class": row.get("ratings_by_time_class"),
+                    "playing_style": row.get("playing_style"),
+                    "preferred_time_control": row.get("preferred_time_control"),
+                    "time_control_distribution": row.get("time_control_distribution"),
+                    "opening_results": row.get("opening_results"),
+                    "openings_lost_against": row.get("openings_lost_against") or [],
+                    "avatar_url": row.get("avatar_url"),
+                    "verified": bool(row.get("verified")),
+                    "traps": compute_opponent_traps(
+                        conn,
+                        requested_by_user_id=requested_by_user_id,
+                        provider=row["provider"],
+                        opponent_username=row["opponent_username"],
+                    ),
+                }
+            )
+        log.info(
+            "[IMPORT_PROFILE] phase=snapshot_path duration_ms=%.2f snapshots=%d trap_lookups=%d",
+            snapshot_read_duration_ms
+            + (time.perf_counter() - snapshot_trap_started) * 1000,
+            len(snapshot_rows),
+            len(snapshot_rows),
+        )
+
+        legacy_recalc_started = time.perf_counter() if rows else None
         for row in rows:
             pgns = row.get("pgns") or []
             end_times = row.get("end_times") or []
@@ -298,52 +553,89 @@ def list_opponent_profiles(*, requested_by_user_id: str) -> list[Dict[str, Any]]
                 provider=row["provider"],
                 opponent_username=opponent_username,
             )
-            profiles.append(
-                {
-                    "provider": row["provider"],
-                    "opponent_username": opponent_username,
-                    "game_count": row["game_count"],
-                    "rating": _rating_from_player_lists(
-                        opponent_username=opponent_username,
-                        white_players=row.get("white_players") or [],
-                        black_players=row.get("black_players") or [],
-                    ),
-                    "ratings_by_time_class": _ratings_by_time_class(
-                        opponent_username=opponent_username,
-                        white_players=row.get("white_players") or [],
-                        black_players=row.get("black_players") or [],
-                        time_classes=time_classes,
-                    ),
-                    "playing_style": _playing_style_from_sac_freq(
-                        opening_results.get("weighted_sacrifice_frequency")
-                        if opening_results
-                        else None
-                    ),
-                    "preferred_time_control": (
-                        tc_profile["most_common"] if tc_profile else None
-                    ),
-                    "time_control_distribution": (
-                        tc_profile["distribution"] if tc_profile else None
-                    ),
-                    # Per-opening buckets are the SAME family labels
-                    # `opening_family_lean` (in compute_opponent_style)
-                    # produces — both go through `_analyze_game`'s single
-                    # `_opening_family(game)` call, so the Opponent Prep
-                    # page's frequency and results views zip together by
-                    # key without a remap.
-                    "opening_results": (
-                        opening_results["by_opening"] if opening_results else None
-                    ),
-                    "openings_lost_against": _openings_lost_against(
-                        opening_results["by_opening"]
-                        if opening_results and opening_results.get("by_opening")
-                        else None
-                    ),
-                    "traps": traps,
-                }
-            )
+            profile = {
+                "provider": row["provider"],
+                "opponent_username": opponent_username,
+                "game_count": row["game_count"],
+                "rating": _rating_from_player_lists(
+                    opponent_username=opponent_username,
+                    white_players=row.get("white_players") or [],
+                    black_players=row.get("black_players") or [],
+                ),
+                "ratings_by_time_class": _ratings_by_time_class(
+                    opponent_username=opponent_username,
+                    white_players=row.get("white_players") or [],
+                    black_players=row.get("black_players") or [],
+                    time_classes=time_classes,
+                ),
+                "playing_style": _playing_style_from_sac_freq(
+                    opening_results.get("weighted_sacrifice_frequency")
+                    if opening_results
+                    else None
+                ),
+                "preferred_time_control": (
+                    tc_profile["most_common"] if tc_profile else None
+                ),
+                "time_control_distribution": (
+                    tc_profile["distribution"] if tc_profile else None
+                ),
+                # Per-opening buckets are the SAME family labels
+                # `opening_family_lean` (in compute_opponent_style)
+                # produces — both go through `_analyze_game`'s single
+                # `_opening_family(game)` call, so the Opponent Prep
+                # page's frequency and results views zip together by
+                # key without a remap.
+                "opening_results": (
+                    opening_results["by_opening"] if opening_results else None
+                ),
+                "openings_lost_against": _openings_lost_against(
+                    opening_results["by_opening"]
+                    if opening_results and opening_results.get("by_opening")
+                    else None
+                ),
+                "traps": traps,
+                "avatar_url": None,
+                "verified": False,
+            }
+            profiles.append(profile)
+            snapshot = dict(profile)
+            snapshot["requested_by_user_id"] = requested_by_user_id
+            snapshot.pop("traps", None)
+            snapshots_to_backfill.append(snapshot)
+        if legacy_recalc_started is not None:
+            legacy_recalc_duration_ms = (
+                time.perf_counter() - legacy_recalc_started
+            ) * 1000
+        if snapshots_to_backfill:
+            try:
+                for snapshot in snapshots_to_backfill:
+                    upsert_opponent_profile_snapshot(conn, snapshot)
+                conn.commit()
+                log.info(
+                    "[IMPORT_PROFILE] phase=snapshot_backfill snapshots=%d games=%d duration_ms=%.2f",
+                    len(snapshots_to_backfill),
+                    sum(int(snapshot["game_count"] or 0) for snapshot in snapshots_to_backfill),
+                    (time.perf_counter() - snapshot_backfill_started) * 1000,
+                )
+            except Exception:
+                conn.rollback()
+                log.exception(
+                    "Failed to backfill opponent profile snapshots for user %s",
+                    requested_by_user_id,
+                )
         return profiles
     finally:
+        if legacy_recalc_started is not None:
+            if legacy_recalc_duration_ms is None:
+                legacy_recalc_duration_ms = (
+                    time.perf_counter() - legacy_recalc_started
+                ) * 1000
+            log.info(
+                "[IMPORT_PROFILE] phase=legacy_recalc duration_ms=%.2f opponents=%d games=%d",
+                legacy_recalc_duration_ms,
+                len(rows),
+                sum(int(row.get("game_count") or 0) for row in rows),
+            )
         database.connection_pool.putconn(conn)
 
 
