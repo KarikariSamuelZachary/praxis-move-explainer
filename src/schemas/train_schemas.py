@@ -41,6 +41,10 @@ class OpponentImportJobResponse(BaseModel):
     imported_count: int
     total_games: int = 0
     error_message: Optional[str] = None
+    opponent_prep_ready: bool = False
+    repertoire_index_status: Literal["queued", "running", "complete", "failed"] = "queued"
+    repertoire_indexed_games: int = 0
+    repertoire_total_games: int = 0
 
 
 class WeaknessProfileRequest(BaseModel):
@@ -118,6 +122,8 @@ class OpponentProfileResponse(BaseModel):
     opponent_username: str
     game_count: int
     rating: int
+    avatar_url: Optional[str] = None
+    verified: bool = False
     # Per-time-class average rating for the opponent, keyed by the
     # provider's time-class label (`rapid`, `blitz`, `bullet`, or
     # `daily` for Lichess's "correspondence"). Computed by averaging
