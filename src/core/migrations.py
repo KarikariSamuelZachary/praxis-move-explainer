@@ -407,7 +407,11 @@ def run_migrations():
             cur.execute(
                 """
                 ALTER TABLE opponent_import_jobs
-                    ADD COLUMN IF NOT EXISTS total_games INTEGER NOT NULL DEFAULT 0
+                    ADD COLUMN IF NOT EXISTS total_games INTEGER NOT NULL DEFAULT 0,
+                    ADD COLUMN IF NOT EXISTS opponent_prep_ready BOOLEAN NOT NULL DEFAULT FALSE,
+                    ADD COLUMN IF NOT EXISTS repertoire_index_status TEXT NOT NULL DEFAULT 'queued',
+                    ADD COLUMN IF NOT EXISTS repertoire_indexed_games INTEGER NOT NULL DEFAULT 0,
+                    ADD COLUMN IF NOT EXISTS repertoire_total_games INTEGER NOT NULL DEFAULT 0
                 """
             )
             cur.execute(
@@ -560,6 +564,38 @@ def run_migrations():
                 """
                 CREATE INDEX IF NOT EXISTS idx_opponent_game_blunders_analysis_id
                     ON opponent_game_blunders(analysis_id)
+                """
+            )
+            # --- opponent profile snapshots -------------------------------
+            # Immutable-at-read-time summary of the imported opponent corpus.
+            # The snapshot is replaced after every successful import so the
+            # opponent-prep page does not reparse every PGN on each request.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS opponent_profile_snapshots (
+                    id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    requested_by_user_id     TEXT NOT NULL REFERENCES users(clerk_id) ON DELETE CASCADE,
+                    provider                 TEXT NOT NULL CHECK (provider IN ('lichess', 'chesscom')),
+                    opponent_username        TEXT NOT NULL,
+                    game_count               INTEGER NOT NULL DEFAULT 0,
+                    rating                   INTEGER NOT NULL DEFAULT 0,
+                    ratings_by_time_class   JSONB,
+                    playing_style            TEXT,
+                    preferred_time_control  TEXT,
+                    time_control_distribution JSONB,
+                    opening_results         JSONB,
+                    openings_lost_against   JSONB NOT NULL DEFAULT '[]'::jsonb,
+                    avatar_url               TEXT,
+                    verified                 BOOLEAN NOT NULL DEFAULT FALSE,
+                    computed_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (requested_by_user_id, provider, opponent_username)
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_opponent_profile_snapshots_user_computed
+                    ON opponent_profile_snapshots(requested_by_user_id, computed_at DESC)
                 """
             )
             cur.execute(
