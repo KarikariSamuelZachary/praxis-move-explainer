@@ -1,7 +1,9 @@
 import logging
 import os
+import time
 import psycopg2
 from psycopg2 import pool
+from fastapi import Request
 
 log = logging.getLogger(__name__)
 
@@ -25,8 +27,14 @@ def init_db():
         raise
 
 
-def get_db():
+def get_db(request: Request):
+    acquisition_started = time.perf_counter()
     conn = connection_pool.getconn()
+    if request.url.path == "/api/puzzles":
+        log.info(
+            "[PUZZLE_PROFILE] phase=connection_acquisition duration_ms=%.2f",
+            (time.perf_counter() - acquisition_started) * 1000,
+        )
     try:
         yield conn
     except Exception:
