@@ -1,4 +1,7 @@
+import logging
 import random
+import string
+import time
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from psycopg2.extras import RealDictCursor
 from pydantic import BaseModel
@@ -9,6 +12,11 @@ from core.rating import calculate_rating_change
 from schemas.puzzle_schemas import PuzzleResponse
 
 router = APIRouter()
+log = logging.getLogger(__name__)
+
+# Puzzle IDs in the seeded Lichess dataset are fixed-width alphanumeric IDs.
+_PUZZLE_ID_LENGTH = 5
+_PUZZLE_ID_ALPHABET = string.ascii_letters + string.digits
 
 SKILL_RATING_BANDS = {
     "new": (800, 1000),
@@ -36,11 +44,16 @@ def get_puzzles(
     clerk_id = request.headers.get("X-Clerk-User-Id")
     if clerk_id:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            user_query_started = time.perf_counter()
             cur.execute(
                 "SELECT skill_level, tactical_rating FROM users WHERE clerk_id = %s",
                 (clerk_id,),
             )
             user_row = cur.fetchone()
+            log.info(
+                "[PUZZLE_PROFILE] phase=query_execution query=user duration_ms=%.2f",
+                (time.perf_counter() - user_query_started) * 1000,
+            )
             if user_row:
                 if user_row["tactical_rating"] is not None:
                     rating = user_row["tactical_rating"]
@@ -60,39 +73,97 @@ def get_puzzles(
         )
 
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        random_id = "".join(
+            random.choice(_PUZZLE_ID_ALPHABET)
+            for _ in range(_PUZZLE_ID_LENGTH)
+        )
+        select_started = time.perf_counter()
         cur.execute(
             """
-            SELECT COUNT(*) AS total
+            SELECT id, fen, moves, rating, themes, game_url
             FROM puzzles
-            WHERE (%s::text IS NULL OR themes @> ARRAY[%s]::text[])
-            AND rating BETWEEN %s AND %s
+            WHERE id >= %s
+              AND (%s::text IS NULL OR themes @> ARRAY[%s]::text[])
+              AND rating BETWEEN %s AND %s
+            ORDER BY id
+            LIMIT %s
             """,
-            (theme or None, theme, min_rating, max_rating),
+            (
+                random_id,
+                theme or None,
+                theme,
+                min_rating,
+                max_rating,
+                limit,
+            ),
         )
-        total = cur.fetchone()["total"]
+        rows = cur.fetchall()
+        log.info(
+            "[PUZZLE_PROFILE] phase=query_execution query=select_forward duration_ms=%.2f rows=%d pivot=%s limit=%d min_rating=%d max_rating=%d",
+            (time.perf_counter() - select_started) * 1000,
+            len(rows),
+            random_id,
+            limit,
+            min_rating,
+            max_rating,
+        )
 
-        if total == 0:
+        wraparound_used = False
+        if len(rows) < limit:
+            wraparound_used = True
+            remaining = limit - len(rows)
+            wrap_started = time.perf_counter()
+            cur.execute(
+                """
+                SELECT id, fen, moves, rating, themes, game_url
+                FROM puzzles
+                WHERE id < %s
+                  AND (%s::text IS NULL OR themes @> ARRAY[%s]::text[])
+                  AND rating BETWEEN %s AND %s
+                ORDER BY id DESC
+                LIMIT %s
+                """,
+                (
+                    random_id,
+                    theme or None,
+                    theme,
+                    min_rating,
+                    max_rating,
+                    remaining,
+                ),
+            )
+            wrapped_rows = cur.fetchall()
+            rows.extend(wrapped_rows)
+            log.info(
+                "[PUZZLE_PROFILE] phase=query_execution query=select_wraparound duration_ms=%.2f rows=%d pivot=%s limit=%d min_rating=%d max_rating=%d",
+                (time.perf_counter() - wrap_started) * 1000,
+                len(wrapped_rows),
+                random_id,
+                remaining,
+                min_rating,
+                max_rating,
+            )
+
+        log.info(
+            "[PUZZLE_PROFILE] phase=query_execution query=select_total duration_ms=%.2f rows=%d pivot=%s limit=%d min_rating=%d max_rating=%d wraparound=%s",
+            (time.perf_counter() - select_started) * 1000,
+            len(rows),
+            random_id,
+            limit,
+            min_rating,
+            max_rating,
+            wraparound_used,
+        )
+
+        if not rows:
             theme_detail = f" for theme '{theme}'" if theme else ""
             raise HTTPException(
                 status_code=404,
                 detail=f"No puzzles found{theme_detail} in rating range {min_rating}-{max_rating}"
             )
 
-        offset = random.randint(0, max(total - limit, 0))
-        cur.execute(
-            """
-            SELECT id, fen, moves, rating, themes, game_url
-            FROM puzzles
-            WHERE (%s::text IS NULL OR themes @> ARRAY[%s]::text[])
-            AND rating BETWEEN %s AND %s
-            OFFSET %s
-            LIMIT %s
-            """,
-            (theme or None, theme, min_rating, max_rating, offset, limit),
-        )
-        rows = cur.fetchall()
-
-    return [
+    serialization_started = time.perf_counter()
+    response = [
         PuzzleResponse(
             id=row["id"],
             fen=row["fen"],
@@ -103,6 +174,12 @@ def get_puzzles(
         )
         for row in rows
     ]
+    log.info(
+        "[PUZZLE_PROFILE] phase=result_serialization duration_ms=%.2f rows=%d",
+        (time.perf_counter() - serialization_started) * 1000,
+        len(response),
+    )
+    return response
 
 
 @router.get("/puzzles/{puzzle_id}", response_model=PuzzleResponse)
