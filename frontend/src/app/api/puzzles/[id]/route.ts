@@ -28,16 +28,32 @@ export async function GET(
 ) {
   const backendApiUrl = process.env.BACKEND_API_URL ?? 'http://localhost:8000';
   const internalSecret = process.env.INTERNAL_SECRET ?? '';
+  const requestPath = request.nextUrl.pathname;
 
   try {
+    const authStartedAt = performance.now();
     const { userId } = await auth();
+    console.info('[WOODPECKER_PROFILE] phase=proxy_auth', {
+      timestamp: new Date().toISOString(),
+      path: requestPath,
+      elapsed_ms: Number((performance.now() - authStartedAt).toFixed(2)),
+      user_present: Boolean(userId),
+    });
     if (!userId) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
     const { id } = await params;
     const ip = getClientIp(request);
-    if (await isRateLimited(ip)) {
+    const rateLimitStartedAt = performance.now();
+    const rateLimited = await isRateLimited(ip);
+    console.info('[WOODPECKER_PROFILE] phase=proxy_redis_rate_limit', {
+      timestamp: new Date().toISOString(),
+      path: requestPath,
+      elapsed_ms: Number((performance.now() - rateLimitStartedAt).toFixed(2)),
+      rate_limited: rateLimited,
+    });
+    if (rateLimited) {
       return NextResponse.json(
         { detail: 'Too many requests. Please slow down.' },
         { status: 429 }
@@ -46,12 +62,19 @@ export async function GET(
 
     const backendUrl = new URL(`/api/puzzles/${encodeURIComponent(id)}`, backendApiUrl);
 
+    const backendStartedAt = performance.now();
     const response = await fetch(backendUrl, {
       headers: {
         Accept: 'application/json',
         'X-Internal-Secret': internalSecret,
         'X-Clerk-User-Id': userId,
       },
+    });
+    console.info('[WOODPECKER_PROFILE] phase=proxy_backend_fetch', {
+      timestamp: new Date().toISOString(),
+      path: requestPath,
+      elapsed_ms: Number((performance.now() - backendStartedAt).toFixed(2)),
+      status: response.status,
     });
 
     return new NextResponse(response.body, {
