@@ -46,7 +46,7 @@ function squareToPercent(square: string) {
 }
 
 const EXPLANATION =
-  'White grabs a poisoned pawn. After 4...Qg5! the knight is trapped and the kingside collapses — three moves later the game ends in a mating net.';
+  'White grabs a poisoned pawn. After 4...Qg5! the knight is trapped and the kingside collapses - three moves later the game ends in a mating net.';
 
 const woodBoxStyle: React.CSSProperties = {
   borderRadius: '4px',
@@ -132,7 +132,7 @@ export default function ReviewDemo() {
       // 2. Load Game "clicks", then the board plays through.
       //    Moves are spaced 700ms apart with a 200ms animation (matching
       //    the real game review BoardPanel) so each piece lands cleanly
-      //    before the next move starts — no overshoot.
+      //    before the next move starts - no overshoot.
       later(900, () => {
         setPhase('playing');
         const game = new Chess(START_FEN);
@@ -275,7 +275,7 @@ export default function ReviewDemo() {
           </button>
         </div>
 
-        {/* Board — same wood-box wrapper structure as the real game
+        {/* Board - same wood-box wrapper structure as the real game
             review BoardPanel so square-width measurement and piece
             animation behave identically. */}
         <div className="relative mx-auto aspect-square w-full max-w-[260px] self-center md:w-[280px] md:max-w-none">
