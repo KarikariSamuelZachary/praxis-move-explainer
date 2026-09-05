@@ -32,7 +32,18 @@ def get_db(request: Request):
     conn = connection_pool.getconn()
     if request.url.path == "/api/puzzles":
         log.info(
-            "[PUZZLE_PROFILE] phase=connection_acquisition duration_ms=%.2f",
+            "[PUZZLE_PROFILE] phase=connection_acquisition endpoint=puzzle_batch duration_ms=%.2f",
+            (time.perf_counter() - acquisition_started) * 1000,
+        )
+    elif request.method == "GET" and request.url.path.startswith("/api/puzzles/"):
+        log.info(
+            "[PUZZLE_PROFILE] phase=connection_acquisition endpoint=puzzle_by_id duration_ms=%.2f path=%s",
+            (time.perf_counter() - acquisition_started) * 1000,
+            request.url.path,
+        )
+    elif request.method == "POST" and request.url.path == "/api/woodpecker/entries":
+        log.info(
+            "[WOODPECKER_PROFILE] phase=connection_acquisition endpoint=entry_create duration_ms=%.2f",
             (time.perf_counter() - acquisition_started) * 1000,
         )
     try:
