@@ -29,8 +29,8 @@ const CARD_CLASS =
 const WEEK_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const RATING_DATA = [1814, 1828, 1851, 1840, 1860, 1854, 1876];
 const WOODPECKER_SKIP_MESSAGES: Record<string, string> = {
-  daily_cap_reached: 'Daily practice queue limit reached — try again tomorrow.',
-  active_cap_reached: 'Practice queue full — solve some due puzzles first.',
+  daily_cap_reached: 'Daily practice queue limit reached - try again tomorrow.',
+  active_cap_reached: 'Practice queue full - solve some due puzzles first.',
 };
 
 function formatTheme(theme: string) {
@@ -444,7 +444,7 @@ export default function PuzzlesPage() {
       setPuzzleEnded(false);
       setCurrentIndex((prev) => prev + 1);
     } else {
-      // Ran out of prefetched puzzles — kick off a fetch and wait for
+      // Ran out of prefetched puzzles - kick off a fetch and wait for
       // it to land; the effect above will auto-advance the index.
       stuckAtEndRef.current = true;
       prefetchPuzzles();
@@ -507,7 +507,7 @@ export default function PuzzlesPage() {
                 <Image ref={birdRef} src="/woodpecker-bird-v2.webp" alt="" width={160} height={160} className="mx-auto h-[160px] w-[160px] shrink-0 object-contain" />
                 <div className="mt-0 text-center">
                   <div className="text-sm font-normal text-[#f7e5c6]/60">Reviews Due</div>
-                  <div className="mt-1 text-[50px] font-bold leading-none text-[#f7e5c6]">{reviewsDue ?? '—'}</div>
+                  <div className="mt-1 text-[50px] font-bold leading-none text-[#f7e5c6]">{reviewsDue ?? '-'}</div>
                 </div>
                 <Link href="/woodpecker" className="mt-5 flex w-full items-center justify-center rounded-lg border border-[#f7e5c6]/30 bg-transparent px-4 py-3 text-lg font-bold text-[#f7e5c6] transition hover:border-[#f7e5c6]/60 hover:bg-[#f7e5c6]/5">
                   Go to Woodpecker
@@ -564,7 +564,7 @@ export default function PuzzlesPage() {
                 <div className="mt-5 border-t border-white/5 pt-4">
                   <div className="text-[11px] font-bold uppercase tracking-[0.25em] text-white/40">Your Rating</div>
                   <div className="mt-1.5 text-4xl font-bold leading-none text-[#f7e5c6]">
-                    {currentRating ?? '—'}
+                    {currentRating ?? '-'}
                   </div>
                 </div>
               </div>
