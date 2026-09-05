@@ -142,7 +142,16 @@ export default function WoodpeckerPage() {
     setIsLoading(true);
     setError(null);
     try {
+      const queueRequestStartedAt = performance.now();
+      console.info('[WOODPECKER_PROFILE] queue_request_start', {
+        timestamp: new Date().toISOString(),
+      });
       const res = await fetch('/api/woodpecker/queue', { cache: 'no-store' });
+      console.info('[WOODPECKER_PROFILE] queue_request_resolved', {
+        timestamp: new Date().toISOString(),
+        elapsed_ms: Number((performance.now() - queueRequestStartedAt).toFixed(2)),
+        status: res.status,
+      });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
         throw new Error(body.detail || body.error || `Failed to load queue (${res.status})`);
@@ -155,9 +164,22 @@ export default function WoodpeckerPage() {
 
       const uniqueIds = Array.from(new Set(entries.map((e) => e.puzzle_id)));
       const fetched: Record<string, Puzzle> = {};
+      const fanoutStartedAt = performance.now();
+      console.info('[WOODPECKER_PROFILE] detail_fanout_start', {
+        timestamp: new Date().toISOString(),
+        request_count: uniqueIds.length,
+      });
       await Promise.all(
         uniqueIds.map(async (id) => {
+          const requestStartedAt = performance.now();
           const r = await fetch(`/api/puzzles/${encodeURIComponent(id)}`, { cache: 'no-store' });
+          console.info('[WOODPECKER_PROFILE] detail_request_resolved', {
+            timestamp: new Date().toISOString(),
+            puzzle_id: id,
+            elapsed_ms: Number((performance.now() - requestStartedAt).toFixed(2)),
+            fanout_elapsed_ms: Number((performance.now() - fanoutStartedAt).toFixed(2)),
+            status: r.status,
+          });
           if (!r.ok) return;
           const data = await r.json();
           const setupMove = data.moves?.[0];
@@ -193,6 +215,11 @@ export default function WoodpeckerPage() {
           };
         })
       );
+      console.info('[WOODPECKER_PROFILE] detail_fanout_complete', {
+        timestamp: new Date().toISOString(),
+        elapsed_ms: Number((performance.now() - fanoutStartedAt).toFixed(2)),
+        request_count: uniqueIds.length,
+      });
       setPuzzles(fetched);
     } catch (e) {
       console.error('Woodpecker queue load failed:', e);
