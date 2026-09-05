@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * Repertoire detail / Build page — mounted at /repertoire/{id}.
+ * Repertoire detail / Build page - mounted at /repertoire/{id}.
  *
  * Replaces the prior "detail coming next" placeholder stub with the
  * real page: header (name + color + Train button), clickable SAN
@@ -10,20 +10,20 @@
  * gaps endpoint cache.
  *
  * State model (CLIENT-SIDE, no new endpoint for navigation):
- *   * `path: string[]`  — UCI moves replayed from the starting
+ *   * `path: string[]`  - UCI moves replayed from the starting
  *     position. The board always shows the position at the end of
  *     `path`. Clicking breadcrumb ply N truncates `path` to [:N].
- *   * `clientKnownMoves: Map<normalizedFen, KnownMove[]>` — stored
+ *   * `clientKnownMoves: Map<normalizedFen, KnownMove[]>` - stored
  *     rows grouped by their row's FEN, with the row id threaded
  *     through so the trash icon can DELETE the row. A FEN can hold
- *     SEVERAL rows (one per saved move — a diverging repertoire).
+ *     SEVERAL rows (one per saved move - a diverging repertoire).
  *     Seeded ONCE on mount from `GET /api/repertoires/{id}/positions`
  *     (every stored row, unfiltered by FSRS due), and merged with
  *     additional entries from in-session POST responses as the user
  *     drags new moves. Used to populate "My saved moves" at the
- *     current position (all saved continuations from here — see
+ *     current position (all saved continuations from here - see
  *     `savedContinuations`).
- *   * `suggestions` — Stockfish top-N for the CURRENT position,
+ *   * `suggestions` - Stockfish top-N for the CURRENT position,
  *     fetched per navigation; filtered against the saved set to
  *     render "Other moves" (unsaved replies only).
  *
@@ -38,22 +38,22 @@
  * the Puzzle playback flow with callback hooks). The list page
  * mounted `<Chessboard>` directly via `dynamic` for thumbnails, and
  * `train/opponent-prep/page.tsx:599` mounts it directly for interactive
- * play with `onPieceDrop`. Same pattern here — direct dynamic
+ * play with `onPieceDrop`. Same pattern here - direct dynamic
  * import of `react-chessboard`'s `Chessboard` component with the
  * walnut square styling that every other Praxis board uses.
  *
  * Known backend gaps (REPORTED in this task's summary):
  *   * The header's name/color now come from GET /api/repertoires/{id}
- *     (the dedicated single-repertoire endpoint) — no list-page
+ *     (the dedicated single-repertoire endpoint) - no list-page
  *     derivation anymore, so a direct link / cold refresh works.
  *   * The per-row subtree counts in "My saved moves" are computed
  *     CLIENT-SIDE by `countSubtreeRows` (a bounded walk over the
- *     already-fetched /positions map — owner nodes follow their one
+ *     already-fetched /positions map - owner nodes follow their one
  *     stored row, opponent nodes fan into every prepared reply). No
  *     server tree logic is duplicated; a 400-node guard caps corrupt
  *     data.
  *   * The reference screenshot's per-line comment box was removed
- *     entirely — there's no schema field or endpoint for it and it
+ *     entirely - there's no schema field or endpoint for it and it
  *     wasn't part of the original scope (it was cargo-culted from
  *     the screenshot layout).
  *
@@ -101,7 +101,7 @@ type DetailParams = Promise<{ id: string }>;
 
 type RepertoireColor = 'white' | 'black';
 
-// Shape returned by GET /api/repertoires/{id} — the plain Repertoire
+// Shape returned by GET /api/repertoires/{id} - the plain Repertoire
 // row (NOT RepertoireSummary; the detail page doesn't need the
 // last_trained_at / times_trained / last_score_percent list-page
 // aggregates).
@@ -158,7 +158,7 @@ function playToFen(startFen: string, moves: string[]): string {
         promotion: uci.length > 4 ? uci[4] : undefined,
       });
     } catch {
-      // Best-effort replay — an illegal move simply truncates the
+      // Best-effort replay - an illegal move simply truncates the
       // reconstruction at the last legal ply.
       break;
     }
@@ -191,13 +191,13 @@ function isOwnersTurn(fen: string, ownerColor: RepertoireColor): boolean {
 
 // One stored repertoire_positions row as tracked client-side. Keyed by
 // the row's normalized 4-field pre-ply FEN in `clientKnownMoves`
-// (a FEN can hold SEVERAL rows — one per saved move, i.e. one per
+// (a FEN can hold SEVERAL rows - one per saved move, i.e. one per
 // prepared branch from that position).
 type KnownMove = { uci: string; san: string; id: string; createdAt: string };
 
 // Merge stored rows into a per-FEN KnownMove map (mutates `target`).
 // Same-UCI rows are replaced in place (re-save is idempotent);
-// different UCIs at the same FEN append — that's a diverging
+// different UCIs at the same FEN append - that's a diverging
 // repertoire (e.g. both Nf3 and Be2 prepared from one position).
 function mergeKnownRows(
   target: Map<string, KnownMove[]>,
@@ -224,7 +224,7 @@ function mergeKnownRows(
 
 // Count the stored rows in the branch subtree rooted at `rootFen`.
 // Walk: every stored row at a node contributes 1 and follows its own
-// move (a FEN can hold SEVERAL saved moves — each branch is walked);
+// move (a FEN can hold SEVERAL saved moves - each branch is walked);
 // nodes with no rows are leaves. Bounded by a visited set
 // (transpositions/cycles) and a node guard so a corrupt map can never
 // spin the walk. All data is already client-side (the full /positions
@@ -254,7 +254,7 @@ function countSubtreeRows(
           });
           stack.push(normalizeFen(next.fen()));
         } catch {
-          // Stale/corrupt row — this branch is a leaf.
+          // Stale/corrupt row - this branch is a leaf.
         }
       }
     }
@@ -386,7 +386,7 @@ export default function RepertoireDetailPage({
   // Derived: position we're currently viewing (end of `path`).
   const currentFen = useMemo(() => playToFen(STARTING_FEN, path), [path]);
 
-  // Total stored rows (one per saved move — NOT the FEN count, which
+  // Total stored rows (one per saved move - NOT the FEN count, which
   // would undercount diverging positions that hold several branches).
   const totalSavedRows = useMemo(
     () =>
@@ -400,7 +400,7 @@ export default function RepertoireDetailPage({
   // Load repertoire metadata via GET /api/repertoires/{id}. A dedicated
   // single-repertoire endpoint exists now, so we fetch it directly on
   // mount instead of deriving name/color from the LIST endpoint's
-  // cached data — the latter only worked when the page was reached
+  // cached data - the latter only worked when the page was reached
   // via list-page navigation and broke on a direct link or a cold
   // refresh (the list fetch wasn't guaranteed to have run).
   useEffect(() => {
@@ -418,7 +418,7 @@ export default function RepertoireDetailPage({
           setColor(item.color);
         }
       } catch {
-        // Silent — board still renders from the STARTING_FEN. Header
+        // Silent - board still renders from the STARTING_FEN. Header
         // falls back to "Repertoire".
       }
     })();
@@ -428,7 +428,7 @@ export default function RepertoireDetailPage({
   }, [id]);
 
   // Seed `clientKnownMoves` from EVERY stored position for this
-  // repertoire (NOT due-filtered — see routers/repertoire.py:520's
+  // repertoire (NOT due-filtered - see routers/repertoire.py:520's
   // /queue for the contrast). One fetch on mount; subsequent
   // breadcrumb navigation reads from this map locally. Subsequent
   // drag-and-drop POSTs MERGE additional rows into the same map
@@ -453,7 +453,7 @@ export default function RepertoireDetailPage({
         const rows = (await res.json()) as RepertoirePositionRow[];
         if (cancelled || !Array.isArray(rows)) return;
         setClientKnownMoves((prev) => {
-          // Merge into a copy (rows win on same-UCI collision — the
+          // Merge into a copy (rows win on same-UCI collision - the
           // stored row is the source of truth; DIFFERENT UCIs at the
           // same FEN append as separate branches). POST-response
           // merges happen immediately on success, so a same-session
@@ -523,7 +523,7 @@ export default function RepertoireDetailPage({
     };
   }, [currentFen, color]);
 
-  // The primary saved line — the ordered UCI move sequence reconstructed
+  // The primary saved line - the ordered UCI move sequence reconstructed
   // by walking the stored rows from the start position. At EVERY node
   // (owner AND opponent alike) it follows the EARLIEST-CREATED saved
   // row at that FEN (the same main-line tiebreak the backend tree
@@ -560,12 +560,12 @@ export default function RepertoireDetailPage({
     return line;
   }, [clientKnownMoves, color]);
 
-  // "My saved moves" AT THE CURRENT POSITION — every saved
+  // "My saved moves" AT THE CURRENT POSITION - every saved
   // continuation from here. Under the save-every-ply model, the
   // current FEN holds rows for BOTH the owner AND the opponent (a
   // row is stored for every ply, regardless of which side is on
   // move). So the continuations are simply ALL rows at the current
-  // FEN — no legal-move fan-out at opponent nodes anymore. Each row
+  // FEN - no legal-move fan-out at opponent nodes anymore. Each row
   // carries the stored row's id (for DELETE) plus the subtree's
   // stored-row count.
   const savedContinuations = useMemo<
@@ -587,7 +587,7 @@ export default function RepertoireDetailPage({
       subtreeRows: number;
     }[] = [];
 
-    // Every row at the current FEN is a continuation — owner moves
+    // Every row at the current FEN is a continuation - owner moves
     // AND opponent moves. The subtree count is per-branch: the walk
     // starts AFTER this row's move, so sibling branches' rows don't
     // inflate the number.
@@ -615,7 +615,7 @@ export default function RepertoireDetailPage({
     return results;
   }, [color, currentFen, clientKnownMoves]);
 
-  // "Other moves" excludes anything already saved at this position —
+  // "Other moves" excludes anything already saved at this position -
   // a move the user built a subtree for belongs in "My saved moves",
   // never in both panels (the saved set is now potentially multi-row,
   // so every one of its UCIs must be checked against suggestions).
@@ -627,7 +627,7 @@ export default function RepertoireDetailPage({
     [suggestions, savedContinuations]
   );
 
-  // Board arrows — one arrow PER saved continuation from the current
+  // Board arrows - one arrow PER saved continuation from the current
   // position, so a diverged repertoire shows every branch at once
   // (e.g. a position with both Nf3 and Be2 saved draws the knight
   // arrow g1→f3 AND the bishop arrow c1/f1→e2). Owner moves render
@@ -646,7 +646,7 @@ export default function RepertoireDetailPage({
   }, [savedContinuations, currentFen, color]);
 
   // Unified move handler. Both colors play in turn during the build
-  // flow — EVERY move (owner AND opponent) is POSTed so the backend
+  // flow - EVERY move (owner AND opponent) is POSTed so the backend
   // persists a row for every ply. This is the fix for "the last move
   // black played is not saved": when the line ends with an opponent
   // reply (e.g. d4 d5), d5 is POSTed and stored even though no owner
@@ -657,7 +657,7 @@ export default function RepertoireDetailPage({
   // then POST in the background. On a failed POST we roll `path` back
   // so the user can retry from the position they left. This is the fix
   // for the "dragging my piece snaps it back while the save round-
-  // trips" behaviour — previously the move only committed after the
+  // trips" behaviour - previously the move only committed after the
   // POST resolved, which made every move appear to bounce back on a
   // slow/flaky backend.
   const handleMove = useCallback(
@@ -682,7 +682,7 @@ export default function RepertoireDetailPage({
       // Owner AND opponent moves both POST the full path. The backend
       // saves a row for EVERY ply in the path (the new save-every-ply
       // model), so the opponent's reply is persisted alongside the
-      // owner's move — including terminal opponent moves with no
+      // owner's move - including terminal opponent moves with no
       // following owner move (e.g. d4 d5 stops at d5 and d5 IS saved).
       const pathBefore = path; // snapshot for rollback on failure
       setSavePending(true);
@@ -723,24 +723,24 @@ export default function RepertoireDetailPage({
         } catch (err) {
           setSaveError(err instanceof Error ? err.message : 'Failed to save move');
           // Roll back the optimistic path so the board returns to the
-          // position before the failed save — the user can retry the
+          // position before the failed save - the user can retry the
           // drag. Only roll back if the path is still what we set it
-          // to (it should be — savePending blocks concurrent moves).
+          // to (it should be - savePending blocks concurrent moves).
           setPath(pathBefore);
         } finally {
           setSavePending(false);
         }
       })();
-      return true; // accept the drop immediately — the board is already updated
+      return true; // accept the drop immediately - the board is already updated
     },
     [color, path, id, savePending]
   );
 
-  // Navigation strip (first / prev / next / last) — relocated under the
+  // Navigation strip (first / prev / next / last) - relocated under the
   // "Other moves" panel and restyled to match the game-review movement
   // buttons. "Next" steps into the UNIQUE saved continuation from the
   // current position (the same move the board arrow points at) and is
-  // disabled at branch points/leaves — that's what keeps arrow, Next
+  // disabled at branch points/leaves - that's what keeps arrow, Next
   // and the saved-moves list consistent with each other. "Last" jumps
   // to the end of the primary reconstructed line.
   const atStart = path.length === 0;
@@ -759,7 +759,7 @@ export default function RepertoireDetailPage({
   const handleEnd = useCallback(() => setPath(savedLine), [savedLine]);
 
   // Clicking a "My saved moves" row navigates the board forward into
-  // that continuation by appending the row's move to `path` — the same
+  // that continuation by appending the row's move to `path` - the same
   // local path-append the opponent-reply branch of `handleMove` uses
   // (no POST: the move is already stored, this is pure navigation).
   const handleContinuationClick = useCallback((uci: string) => {
@@ -768,7 +768,7 @@ export default function RepertoireDetailPage({
 
   // Trash icon on a saved-moves row: DELETE the anchoring stored row
   // via the existing per-position endpoint (the backend 409s if the
-  // row still has prepared responses beneath it — that detail is
+  // row still has prepared responses beneath it - that detail is
   // surfaced verbatim through the board's save-error toast). On
   // success ONLY that row is dropped from the per-FEN list (a sibling
   // branch at the same position stays) so the panels and arrows
@@ -830,7 +830,7 @@ export default function RepertoireDetailPage({
   // Side-to-move at the currently viewed position. Used by the board's
   // canDragPiece guard so the user can grab whichever color is on move
   // (owner pieces during their turn, opponent pieces during the
-  // opponent's turn — the schema persists owner rows only, but the
+  // opponent's turn - the schema persists owner rows only, but the
   // user drives both sides to walk into lines they want to prepare).
   const currentSide = currentFen.split(/\s+/)[1] ?? 'w';
 
@@ -849,7 +849,7 @@ export default function RepertoireDetailPage({
               </Link>
             </div>
 
-            {/* Identity row — king glyph tile in the repertoire's
+            {/* Identity row - king glyph tile in the repertoire's
                 color beside the name. Fit-content height: the card
                 ends after the hint instead of stretching the rail. */}
             <div className="mt-4 flex items-center gap-3">
@@ -873,7 +873,7 @@ export default function RepertoireDetailPage({
               </div>
             </div>
 
-            {/* Saved-move counter — owner rows stored for this line. */}
+            {/* Saved-move counter - owner rows stored for this line. */}
             <div className="mt-4 flex items-center justify-between rounded-xl border border-black/40 bg-black/30 px-3 py-2">
               <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#a79b8a]/80">
                 Saved moves
@@ -937,7 +937,7 @@ export default function RepertoireDetailPage({
                 </div>
               )}
 
-              {/* My saved moves — every saved continuation FROM THE
+              {/* My saved moves - every saved continuation FROM THE
                   CURRENT POSITION (there can be several at opponent
                   nodes). Rows are clickable to descend into their
                   branch; the trash icon deletes the anchoring row. */}
@@ -956,7 +956,7 @@ export default function RepertoireDetailPage({
                   <div className="rounded-2xl border border-dashed border-[#efd9a7]/15 bg-black/25 px-3 py-3 text-center text-xs text-[#a79b8a]/85">
                     {loadingPositions && clientKnownMoves.size === 0
                       ? 'Loading saved moves…'
-                      : 'Nothing saved from this position yet — drag a piece or tap a suggestion below.'}
+                      : 'Nothing saved from this position yet - drag a piece or tap a suggestion below.'}
                   </div>
                 ) : (
                   savedContinuations.map((c) => (
@@ -992,7 +992,7 @@ export default function RepertoireDetailPage({
                 )}
               </div>
 
-              {/* Other moves — suggestions for the current position
+              {/* Other moves - suggestions for the current position
                   that are NOT already saved here, clickable to play
                   the move on the board. */}
               <div className={`${CARD_CLASS} flex flex-col gap-2 p-4`}>
@@ -1028,7 +1028,7 @@ export default function RepertoireDetailPage({
               </div>
             </div>
 
-            {/* Navigation strip — first / prev / next / last. Styled as
+            {/* Navigation strip - first / prev / next / last. Styled as
                 four wooden boxes to match the game-review movement
                 controls, pinned to the bottom of the right panel. */}
             <div className="grid grid-cols-4 gap-1.5">
