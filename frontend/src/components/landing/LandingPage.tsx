@@ -59,7 +59,7 @@ export default function LandingPage() {
     // The hero pin-spacer is measured before the webfonts swap in, which can
     // yield a wrong document height (and a stale Lenis scroll limit). Re-measure
     // once fonts and the window finish loading so the scrollable area settles
-    // before the user scrolls — otherwise the footer can become unreachable.
+    // before the user scrolls - otherwise the footer can become unreachable.
     const syncLayout = () => {
       ScrollTrigger.refresh();
       lenisRef.current?.resize();
@@ -129,13 +129,13 @@ export default function LandingPage() {
       ref={rootRef}
       className="landing-root relative min-h-screen overflow-x-clip font-sans text-cream"
     >
-      {/* Same walnut backdrop the app pages use — fixed, sections scroll over it */}
+      {/* Same walnut backdrop the app pages use - fixed, sections scroll over it */}
       <div
         aria-hidden
         className="pointer-events-none fixed inset-0 z-0 bg-cover bg-center"
         style={{ backgroundImage: 'url(/walnut-dark.webp)' }}
       />
-      {/* Page-wide warm vignette — light enough to let the walnut grain show */}
+      {/* Page-wide warm vignette - light enough to let the walnut grain show */}
       <div
         aria-hidden
         className="pointer-events-none fixed inset-0 z-0"
