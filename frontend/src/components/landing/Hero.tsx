@@ -161,20 +161,10 @@ export default function Hero({ onStartTraining, onExplore }: HeroProps) {
         }}
       />
 
-      <div
-        aria-hidden
-        className="pointer-events-none absolute inset-0 opacity-[0.09] [background-image:linear-gradient(rgba(217,184,124,0.32)_1px,transparent_1px),linear-gradient(90deg,rgba(217,184,124,0.32)_1px,transparent_1px)] [background-size:72px_72px] [mask-image:linear-gradient(to_bottom,black,transparent_78%)]"
-      />
-
       <DustCanvas />
 
       <div className="relative z-10 mx-auto grid w-full max-w-[1400px] items-center gap-12 px-5 pb-24 pt-32 sm:px-8 lg:grid-cols-2 lg:gap-6 lg:pb-16 lg:pt-20 xl:pl-40">
         <div ref={textRef} className="max-w-2xl">
-          <div data-hero-line className="mb-6 flex items-center gap-3 text-[10px] font-semibold uppercase tracking-[0.32em] text-moss-bright">
-            <span className="h-px w-8 bg-moss-bright/70" />
-            The chess workspace for deeper thinkers
-          </div>
-
           <h1 className="font-display text-[2.3rem] font-semibold leading-[1.14] tracking-wide text-gold-bright sm:text-5xl lg:text-[2.9rem] xl:text-[3.35rem]">
             <span data-hero-line className="block">
               Train Like Masters.
@@ -222,61 +212,10 @@ export default function Hero({ onStartTraining, onExplore }: HeroProps) {
               Explore Praxis
             </button>
           </div>
-
-          <div data-hero-cta className="mt-12 flex flex-wrap gap-x-8 gap-y-4 border-t border-white/10 pt-5">
-            <div>
-              <div className="font-display text-xl text-gold-bright">5.8M</div>
-              <div className="mt-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-wood-mute">
-                Real positions
-              </div>
-            </div>
-            <div className="hidden h-10 w-px bg-white/10 sm:block" />
-            <div>
-              <div className="font-display text-xl text-gold-bright">64</div>
-              <div className="mt-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-wood-mute">
-                Tactical themes
-              </div>
-            </div>
-            <div className="hidden h-10 w-px bg-white/10 sm:block" />
-            <div>
-              <div className="font-display text-xl text-gold-bright">∞</div>
-              <div className="mt-1 text-[10px] font-semibold uppercase tracking-[0.2em] text-wood-mute">
-                Better questions
-              </div>
-            </div>
-          </div>
         </div>
 
         {/* Knight visual: relief carved in wood, dimensional knight lifts out on scroll */}
         <div className="relative mx-auto flex h-[46vh] w-full max-w-md items-center justify-center lg:h-[78vh] lg:max-w-none">
-          <div
-            aria-hidden
-            data-hero-cta
-            className="absolute right-[-2%] top-[8%] z-20 hidden w-48 rounded-xl border border-[#d9b87c]/25 bg-[#1b120d]/75 p-3 shadow-[0_18px_40px_rgba(0,0,0,0.42)] backdrop-blur-md lg:block"
-          >
-            <div className="flex items-center justify-between border-b border-white/10 pb-2 text-[9px] font-semibold uppercase tracking-[0.2em] text-wood-mute">
-              <span>Training room</span>
-              <span className="text-moss-bright">Live</span>
-            </div>
-            <div className="mt-4">
-              <div className="text-[10px] uppercase tracking-[0.2em] text-wood-mute">Current focus</div>
-              <div className="mt-1 font-display text-lg text-gold-bright">Pattern recall</div>
-            </div>
-            <div className="mt-4 flex items-end gap-1.5">
-              {[35, 54, 43, 72, 88, 64, 92].map((height, index) => (
-                <span
-                  key={height}
-                  className={`w-2 rounded-t-sm ${index === 6 ? 'bg-moss-bright' : 'bg-gold/45'}`}
-                  style={{ height: `${height / 2}px` }}
-                />
-              ))}
-            </div>
-            <div className="mt-3 flex items-center justify-between text-[10px] text-wood-mute">
-              <span>7 of 10 positions</span>
-              <span className="text-gold">+18%</span>
-            </div>
-          </div>
-
           <div
             ref={reliefRef}
             className="absolute inset-0 flex items-center justify-center"
