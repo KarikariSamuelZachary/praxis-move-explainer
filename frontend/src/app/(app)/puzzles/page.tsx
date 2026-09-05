@@ -28,6 +28,10 @@ const CARD_CLASS =
   'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
 const WEEK_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const RATING_DATA = [1814, 1828, 1851, 1840, 1860, 1854, 1876];
+const WOODPECKER_SKIP_MESSAGES: Record<string, string> = {
+  daily_cap_reached: 'Daily practice queue limit reached — try again tomorrow.',
+  active_cap_reached: 'Practice queue full — solve some due puzzles first.',
+};
 
 function formatTheme(theme: string) {
   return theme.replace(/([A-Z])/g, ' $1').trim();
@@ -129,6 +133,7 @@ export default function PuzzlesPage() {
   const [puzzleEnded, setPuzzleEnded] = useState(false);
   const [currentRating, setCurrentRating] = useState<number | null>(null);
   const [reviewsDue, setReviewsDue] = useState<number | null>(null);
+  const [woodpeckerNotice, setWoodpeckerNotice] = useState<string | null>(null);
   const [isFetchingMore, setIsFetchingMore] = useState(false);
   const loadIdRef = useRef(0);
   const hasScoredAttemptRef = useRef(false);
@@ -260,7 +265,19 @@ export default function PuzzlesPage() {
 
   useEffect(() => {
     hasScoredAttemptRef.current = false;
+    setWoodpeckerNotice(null);
   }, [currentIndex]);
+
+  function surfaceWoodpeckerSkip(data: unknown) {
+    if (!data || typeof data !== 'object') return;
+    const response = data as { skipped?: unknown; reason?: unknown };
+    if (response.skipped !== true || typeof response.reason !== 'string') return;
+
+    const message = WOODPECKER_SKIP_MESSAGES[response.reason];
+    if (message) {
+      setWoodpeckerNotice(message);
+    }
+  }
 
   function handlePuzzleSolved(timeSeconds: number) {
     setSessionStats((prev) => ({
@@ -305,20 +322,48 @@ export default function PuzzlesPage() {
           .catch((error) => console.error('Failed to update rating:', error));
 
         if (timeSeconds > threshold) {
+          const entryRequestStarted = performance.now();
+          const entryRequest = {
+            puzzle_id: puzzle.id,
+            theme: puzzle.themes[0] ?? 'middlegame',
+            source_reason: 'slow_solution',
+          };
+          console.info('[WOODPECKER_ENTRY_PROFILE] request_start', {
+            timestamp: new Date().toISOString(),
+            puzzle_id: entryRequest.puzzle_id,
+            source_reason: entryRequest.source_reason,
+          });
+
           fetch('/api/woodpecker/entries', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              puzzle_id: puzzle.id,
-              theme: puzzle.themes[0] ?? 'middlegame',
-              source_reason: 'slow_solution',
-            }),
+            body: JSON.stringify(entryRequest),
           })
-            .then((res) => (res.ok ? res.json() : null))
-            .then(() => fetchReviewsDue())
-            .catch((error) =>
-              console.error('Failed to add woodpecker entry:', error),
-            );
+            .then((res) => {
+              console.info('[WOODPECKER_ENTRY_PROFILE] request_resolved', {
+                timestamp: new Date().toISOString(),
+                puzzle_id: entryRequest.puzzle_id,
+                source_reason: entryRequest.source_reason,
+                status: res.status,
+                ok: res.ok,
+                duration_ms: Number((performance.now() - entryRequestStarted).toFixed(2)),
+              });
+              return res.ok ? res.json() : null;
+            })
+            .then((data) => {
+              surfaceWoodpeckerSkip(data);
+              return fetchReviewsDue();
+            })
+            .catch((error) => {
+              console.error('[WOODPECKER_ENTRY_PROFILE] request_rejected', {
+                timestamp: new Date().toISOString(),
+                puzzle_id: entryRequest.puzzle_id,
+                source_reason: entryRequest.source_reason,
+                duration_ms: Number((performance.now() - entryRequestStarted).toFixed(2)),
+                error,
+              });
+              console.error('Failed to add woodpecker entry:', error);
+            });
         }
       }
     }
@@ -348,20 +393,48 @@ export default function PuzzlesPage() {
           })
           .catch((error) => console.error('Failed to update rating:', error));
 
+        const entryRequestStarted = performance.now();
+        const entryRequest = {
+          puzzle_id: puzzle.id,
+          theme: puzzle.themes[0] ?? 'middlegame',
+          source_reason: 'wrong_answer',
+        };
+        console.info('[WOODPECKER_ENTRY_PROFILE] request_start', {
+          timestamp: new Date().toISOString(),
+          puzzle_id: entryRequest.puzzle_id,
+          source_reason: entryRequest.source_reason,
+        });
+
         fetch('/api/woodpecker/entries', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            puzzle_id: puzzle.id,
-            theme: puzzle.themes[0] ?? 'middlegame',
-            source_reason: 'wrong_answer',
-          }),
+          body: JSON.stringify(entryRequest),
         })
-          .then((res) => (res.ok ? res.json() : null))
-          .then(() => fetchReviewsDue())
-          .catch((error) =>
-            console.error('Failed to add woodpecker entry:', error),
-          );
+          .then((res) => {
+            console.info('[WOODPECKER_ENTRY_PROFILE] request_resolved', {
+              timestamp: new Date().toISOString(),
+              puzzle_id: entryRequest.puzzle_id,
+              source_reason: entryRequest.source_reason,
+              status: res.status,
+              ok: res.ok,
+              duration_ms: Number((performance.now() - entryRequestStarted).toFixed(2)),
+            });
+            return res.ok ? res.json() : null;
+          })
+          .then((data) => {
+            surfaceWoodpeckerSkip(data);
+            return fetchReviewsDue();
+          })
+          .catch((error) => {
+            console.error('[WOODPECKER_ENTRY_PROFILE] request_rejected', {
+              timestamp: new Date().toISOString(),
+              puzzle_id: entryRequest.puzzle_id,
+              source_reason: entryRequest.source_reason,
+              duration_ms: Number((performance.now() - entryRequestStarted).toFixed(2)),
+              error,
+            });
+            console.error('Failed to add woodpecker entry:', error);
+          });
       }
     }
   }
@@ -376,6 +449,23 @@ export default function PuzzlesPage() {
       stuckAtEndRef.current = true;
       prefetchPuzzles();
     }
+  }
+
+  function handleShowSolution() {
+    // Treat revealing the solution before a recorded solve like the existing
+    // wrong-answer path. The same ref also prevents re-intake after a correct
+    // solve or a prior wrong/reveal attempt on this puzzle.
+    const puzzle = puzzles[currentIndex];
+    const shouldIntake = !hasScoredAttemptRef.current;
+    console.info('[PUZZLE_FLOW] show_solution', {
+      timestamp: new Date().toISOString(),
+      puzzle_id: puzzle?.id,
+      intake_triggered: shouldIntake,
+    });
+    if (shouldIntake) {
+      handlePuzzleFailed();
+    }
+    boardApi.current?.showSolution();
   }
 
   const handlePuzzleEnd = useCallback(() => {
@@ -479,6 +569,24 @@ export default function PuzzlesPage() {
                 </div>
               </div>
 
+              {woodpeckerNotice && (
+                <div
+                  role="status"
+                  aria-live="polite"
+                  className="flex items-start justify-between gap-3 rounded-xl border border-amber-300/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100"
+                >
+                  <span>{woodpeckerNotice}</span>
+                  <button
+                    type="button"
+                    aria-label="Dismiss notification"
+                    onClick={() => setWoodpeckerNotice(null)}
+                    className="shrink-0 text-lg leading-none text-amber-100/70 transition hover:text-amber-100"
+                  >
+                    ×
+                  </button>
+                </div>
+              )}
+
               <div className="grid grid-cols-2 gap-3">
                 {puzzleEnded ? (
                   <>
@@ -516,7 +624,7 @@ export default function PuzzlesPage() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => boardApi.current?.showSolution()}
+                      onClick={handleShowSolution}
                       className={`${CARD_CLASS} flex h-14 items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5`}
                     >
                       <EyeIcon />
