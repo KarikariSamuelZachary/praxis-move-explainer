@@ -1,3 +1,5 @@
+import logging
+import time
 from typing import Optional
 from uuid import UUID
 
@@ -16,6 +18,7 @@ from core.fsrs import (
 )
 
 router = APIRouter()
+log = logging.getLogger(__name__)
 
 VALID_SOURCE_REASONS = {
     "wrong_answer",
@@ -46,6 +49,7 @@ def _get_user_id(request: Request) -> str:
 
 @router.post("/entries")
 def add_entry(request: Request, body: AddEntryBody, conn=Depends(get_db)):
+    entry_started = time.perf_counter()
     user_id = _get_user_id(request)
     puzzle_id = body.puzzle_id.strip()
     theme = body.theme.strip()
@@ -88,6 +92,12 @@ def add_entry(request: Request, body: AddEntryBody, conn=Depends(get_db)):
         )
         existing = cur.fetchone()
         if existing is not None:
+            log.info(
+                "[WOODPECKER_PROFILE] phase=entry_result outcome=duplicate_puzzle "
+                "puzzle_id=%s duration_ms=%.2f",
+                puzzle_id,
+                (time.perf_counter() - entry_started) * 1000,
+            )
             return {"skipped": True, "reason": "duplicate_puzzle", "entry": existing}
 
         # Daily entry cap for free users
@@ -102,6 +112,13 @@ def add_entry(request: Request, body: AddEntryBody, conn=Depends(get_db)):
         )
         daily_count = cur.fetchone()["total"]
         if daily_count >= 10:
+            log.info(
+                "[WOODPECKER_PROFILE] phase=entry_result outcome=daily_cap_reached "
+                "puzzle_id=%s daily_count=%s duration_ms=%.2f",
+                puzzle_id,
+                daily_count,
+                (time.perf_counter() - entry_started) * 1000,
+            )
             return {"skipped": True, "reason": "daily_cap_reached"}
 
         # Active queue cap for free users
@@ -116,6 +133,13 @@ def add_entry(request: Request, body: AddEntryBody, conn=Depends(get_db)):
         )
         active_count = cur.fetchone()["total"]
         if active_count >= 20:
+            log.info(
+                "[WOODPECKER_PROFILE] phase=entry_result outcome=active_cap_reached "
+                "puzzle_id=%s active_count=%s duration_ms=%.2f",
+                puzzle_id,
+                active_count,
+                (time.perf_counter() - entry_started) * 1000,
+            )
             return {"skipped": True, "reason": "active_cap_reached"}
 
         cur.execute(
@@ -149,6 +173,13 @@ def add_entry(request: Request, body: AddEntryBody, conn=Depends(get_db)):
         )
         row = cur.fetchone()
     conn.commit()
+
+    log.info(
+        "[WOODPECKER_PROFILE] phase=entry_result outcome=inserted "
+        "puzzle_id=%s duration_ms=%.2f",
+        puzzle_id,
+        (time.perf_counter() - entry_started) * 1000,
+    )
 
     return row
 
