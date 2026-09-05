@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * BoardShell — reusable walnut-frame chessboard shell shared by the
+ * BoardShell - reusable walnut-frame chessboard shell shared by the
  * Repertoire build/train pages so their board looks and feels
  * identical to the puzzles-page board (src/components/board/ChessBoard.tsx)
  * and the train/opponent-prep board.
@@ -16,7 +16,7 @@
  *   * Click-to-move with hint dots/rings (squareRenderer). When a square
  *     is selected, legal moves are computed via chess.js from the
  *     current `position` FEN and rendered as dots (empty targets) or
- *     rings (captures) — same UX as the puzzles board.
+ *     rings (captures) - same UX as the puzzles board.
  *   * Promotion dialog. When a pawn is dragged/clicked to the last rank,
  *     the dialog appears and the move only resolves once the user picks
  *     a piece. The shell leaves the dragged piece snapped back during
@@ -24,11 +24,11 @@
  *     move with the chosen promotion via `onMove`.
  *
  * What it does NOT own (controlled by the parent):
- *   * The `position` FEN — the parent passes it; the shell just renders
+ *   * The `position` FEN - the parent passes it; the shell just renders
  *     it. After a drag/click the shell calls `onMove` and trusts the
  *     parent to update `position`. The shell resets its transient
  *     selection state whenever `position` changes.
- *   * "Last-move" highlights — the shell accepts an optional
+ *   * "Last-move" highlights - the shell accepts an optional
  *     `squareStyles` prop the parent can use to mark squares (e.g. the
  *     last-move from/to pair). The shell itself only paints selection
  *     dot/ring hints; if the parent wants highlights, it passes them in.
@@ -37,7 +37,7 @@
  *   * The puzzles board has its own in-file copy of this same visual +
  *     interaction markup. The shell here is the clean-room extraction
  *     of that markup, with puzzle-specific state (game rotation,
- *     expected-move comparison, opponent reply scheduling) removed —
+ *     expected-move comparison, opponent reply scheduling) removed -
  *     those are the puzzle page's job. Both files render the same
  *     walnut frame, the same notation colors, the same hint dot/ring
  *     geometry, the same promotion dialog. Repertoire pages use this
@@ -72,12 +72,12 @@ const Chessboard = dynamic(
 
 // Normalize a (possibly 4-field) FEN into a full 6-field FEN chess.js
 // will accept. repertoire_positions stores FENs normalized to 4 fields
-// (board, side, castling, en-passant — see services/repertoire_service.py's
+// (board, side, castling, en-passant - see services/repertoire_service.py's
 // `_normalize_fen`), so the train flow passes 4-field values here.
 // chess.js STRICTLY requires six space-delimited fields (its validator
 // throws `Invalid FEN: must contain six space-delimited fields` on a
 // 4-field string), so we append neutral halfmove=0 / fullmove=1 rather
-// than rely on chess.js to fill them — which it does NOT.
+// than rely on chess.js to fill them - which it does NOT.
 function normalizeFenForChess(fen: string): string {
   const parts = fen.trim().split(/\s+/).filter(Boolean);
   if (parts.length >= 6) return parts.slice(0, 6).join(' ');
@@ -151,7 +151,7 @@ export default function BoardShell({
   // chess.js instance keyed off `position`. Recomputed on each position
   // change so the legal-move hint dots stay consistent with the board
   // the user is looking at. We wrap in try/catch because chess.js's
-  // constructor throws on malformed FENs — the shell renders an empty
+  // constructor throws on malformed FENs - the shell renders an empty
   // 8x8 board in that case rather than crashing the page.
   const game = useMemo(() => {
     try {
@@ -169,8 +169,8 @@ export default function BoardShell({
   // Reset selection whenever the position changes. The React-recommended
   // "adjust some state when a prop changes" pattern (store the prior
   // value as state, compare during render, call the other setters if
-  // it differs — see https://react.dev/reference/react/useState#storing-
-  // information-from-previous-renders) — explicit because the new
+  // it differs - see https://react.dev/reference/react/useState#storing-
+  // information-from-previous-renders) - explicit because the new
   // strict `react-hooks/refs` lint rule disallows touching refs in
   // render. Doing the reset inline during render (NOT in an effect)
   // means the next commit paints the cleared state on the first try;
@@ -189,7 +189,7 @@ export default function BoardShell({
 
   // Hint dots/rings for the legal destinations of the selected piece.
   // Empty map when nothing is selected (so the squareRenderer renders
-  // the unmodified squares — the children render normally).
+  // the unmodified squares - the children render normally).
   const hintSquares = useMemo<Record<string, 'dot' | 'ring'>>(() => {
     if (!selectedSquare) return {};
     try {
@@ -210,7 +210,7 @@ export default function BoardShell({
 
   // Selection-driven square highlight (the orange tint on the
   // selected square) merged with any external highlights the parent
-  // passes via `squareStyles`. The parent's styles win on conflict —
+  // passes via `squareStyles`. The parent's styles win on conflict -
   // its intent (e.g. an accepted-move green) is more specific than the
   // shell's generic selection tint.
   const mergedSquareStyles = useMemo<Record<string, React.CSSProperties>>(
@@ -311,7 +311,7 @@ export default function BoardShell({
       if (isLegal) {
         if (isPromotionMove(selectedSquare, square)) {
           setMoveToPromote({ source: selectedSquare, target: square });
-          // Don't deselect — keep the source highlighted while the
+          // Don't deselect - keep the source highlighted while the
           // dialog is open so the user has visual continuity.
         } else {
           const accepted = onMove(selectedSquare, square, undefined);
