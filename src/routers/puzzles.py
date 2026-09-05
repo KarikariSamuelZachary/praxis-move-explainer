@@ -188,6 +188,7 @@ def get_puzzle_by_id(
     conn=Depends(get_db),
 ):
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        query_started = time.perf_counter()
         cur.execute(
             """
             SELECT id, fen, moves, rating, themes, game_url
@@ -197,6 +198,12 @@ def get_puzzle_by_id(
             (puzzle_id,),
         )
         row = cur.fetchone()
+        log.info(
+            "[PUZZLE_PROFILE] phase=query_execution query=puzzle_by_id duration_ms=%.2f puzzle_id=%s found=%s",
+            (time.perf_counter() - query_started) * 1000,
+            puzzle_id,
+            row is not None,
+        )
 
     if row is None:
         raise HTTPException(status_code=404, detail="Puzzle not found")
