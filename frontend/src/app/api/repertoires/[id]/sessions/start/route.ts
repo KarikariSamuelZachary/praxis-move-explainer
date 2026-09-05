@@ -2,13 +2,13 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 
 /**
- * /api/repertoires/{id}/sessions/start — proxy to the FastAPI backend.
+ * /api/repertoires/{id}/sessions/start - proxy to the FastAPI backend.
  *
  * The Train flow's config modal posts here when the user confirms
  * their scope selection. The backend returns the freshly-inserted
  * `repertoire_training_sessions` row plus the list of
  * `RepertoirePosition` rows the client should now present in order
- * (a server-side mutation — this is NOT a preview endpoint, so the
+ * (a server-side mutation - this is NOT a preview endpoint, so the
  * modal must not call it just to display a count).
  *
  * Empty-set handling lives at the source: the backend returns
