@@ -22,7 +22,7 @@ import { useRouter } from 'next/navigation';
  * The whole page is one client component because every control is
  * interactive (search input, color checkboxes, sort dropdown, create
  * modal, delete confirmation). There is no useful server-rendered
- * phase — the initial list IS the first paint, and auth/user id flow
+ * phase - the initial list IS the first paint, and auth/user id flow
  * through the proxy middleware on the API side (see src/proxy.ts).
  *
  * Pattern parity with Train / Woodpecker pages:
@@ -42,7 +42,7 @@ import { useRouter } from 'next/navigation';
  *   * Session start / complete flow.
  *   * The "Add positions" flow on the detail page.
  *   * The board thumbnail here deliberately renders the STANDARD
- *     STARTING POSITION — fetching a real per-repertoire position is
+ *     STARTING POSITION - fetching a real per-repertoire position is
  *     the detail page's job. Doing it here would couple the list to
  *     a per-row query we don't need yet.
  */
@@ -61,13 +61,13 @@ const Chessboard = dynamic(
 );
 
 // CARD_CLASS is duplicated from train/page.tsx / woodpecker/page.tsx
-// (those files declare it locally too — there is no shared card
+// (those files declare it locally too - there is no shared card
 // module yet, and inventing one for a single page is out of scope).
 // Keep in sync if any of those pages change.
 const CARD_CLASS =
   'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
 
-// Lighter card variant for list cards — the page background already
+// Lighter card variant for list cards - the page background already
 // carries the dark wood grain, so a card-on-card overlay reads as a
 // "raised board" rather than another dark slab. Mirrors the card
 // styling on the reference image (a subtly lighter rounded panel on
