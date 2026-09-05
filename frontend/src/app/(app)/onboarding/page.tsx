@@ -95,7 +95,7 @@ export default function OnboardingPage() {
   // The middleware (proxy.ts) already redirects users who have a skill
   // level away from /onboarding, so by the time we render here the
   // form is safe to show immediately. This background check is only a
-  // safety net against a race (e.g. the lookup landed mid-redirect) —
+  // safety net against a race (e.g. the lookup landed mid-redirect) -
   // it must never block the UI with a spinner.
   useEffect(() => {
     let cancelled = false;
@@ -143,7 +143,7 @@ export default function OnboardingPage() {
   return (
     <div className="h-[calc(100vh-3rem)] overflow-y-auto text-white [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
       <div className="flex min-h-full flex-col items-center justify-center px-4 py-8">
-        {/* Praxis logo — the same KnightMark + gold wordmark the app nav
+        {/* Praxis logo - the same KnightMark + gold wordmark the app nav
             and landing page use (TopNav.tsx:77-78, LandingNav.tsx:62-65). */}
         <div className="mb-6 flex items-center gap-3">
           <KnightMark className="h-10 w-8" />
