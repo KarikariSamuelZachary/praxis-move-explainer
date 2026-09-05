@@ -2,11 +2,11 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 
 /**
- * /api/repertoires/{id} — proxy to the FastAPI backend.
+ * /api/repertoires/{id} - proxy to the FastAPI backend.
  *
  * Same auth + forwarding shape as src/app/api/repertoires/route.ts
  * (see that file for the rationale). Exposes GET (single-repertoire
- * fetch for the detail page's header — name/color — so a direct link
+ * fetch for the detail page's header - name/color - so a direct link
  * or a cold refresh doesn't depend on the LIST endpoint's cached
  * data) and DELETE (list-page removal). PUT/PATCH aren't part of this
  * surface yet.
