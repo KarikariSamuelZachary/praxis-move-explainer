@@ -183,7 +183,7 @@ export default function AnalysisPanel({
         )}
       </div>
 
-      {/* Movement buttons — bottom strip of the card cut into 4 wooden boxes */}
+      {/* Movement buttons - bottom strip of the card cut into 4 wooden boxes */}
       <div className="grid grid-cols-4 gap-1.5">
         <button
           type="button"
