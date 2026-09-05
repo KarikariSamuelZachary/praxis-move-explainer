@@ -20,7 +20,7 @@ const cinzel = Cinzel({
 });
 
 export const metadata: Metadata = {
-  title: "Praxis — Train Like Masters",
+  title: "Praxis - Train Like Masters",
   description:
     "Praxis is your all-in-one chess training workspace. 5.8 million puzzles, powerful game review, and Woodpecker spaced repetition.",
 };
