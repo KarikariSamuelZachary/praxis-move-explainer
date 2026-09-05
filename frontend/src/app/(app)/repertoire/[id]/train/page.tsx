@@ -1,22 +1,22 @@
 'use client';
 
 /**
- * Repertoire Train flow — mounted at /repertoire/{id}/train.
+ * Repertoire Train flow - mounted at /repertoire/{id}/train.
  *
  * Replaces the prior detail-page stub (Train button used to push here
- * but there was no page.tsx at this route — Next.js would 404). Three
+ * but there was no page.tsx at this route - Next.js would 404). Three
  * view phases, all on one client page:
  *
- *   1. CONFIG — modal-floating over the repertoire header showing
+ *   1. CONFIG - modal-floating over the repertoire header showing
  *      scope (main_lines_only toggle) and the position count that
  *      WILL be trained (read from GET /positions, never from
- *      /sessions/start — starting a session is a real mutation, not
+ *      /sessions/start - starting a session is a real mutation, not
  *      a preview). "Train" button posts /sessions/start; on 200 we
  *      transition to SESSION; on the backend's 400 "no positions to
  *      train for this mode" we render the detail string inline in
  *      the modal rather than navigating anywhere.
  *
- *   2. SESSION — quiz screen: one stored position at a time. The
+ *   2. SESSION - quiz screen: one stored position at a time. The
  *      board shows the position's FEN (owner-to-move). The user
  *      drags a legal move; we compare UCI vs the stored
  *      position.move field client-side, fire
@@ -29,7 +29,7 @@
  *      client tallies counters from its own UCI comparison. A WRONG
  *      move stays on the same position for a retry (bumping only the
  *      incorrect counter); a CORRECT move advances. The session
- *      therefore cannot be stranded by app logic — every path either
+ *      therefore cannot be stranded by app logic - every path either
  *      advances or clearly stays with feedback. But "advance anyway"
  *      must not become "lie about what was recorded": a /review that
  *      returned non-2xx OR threw bumps `reviewFailureCount`, and a
@@ -37,25 +37,25 @@
  *      couldn't be recorded…") so a string of silent failures can't
  *      produce a session that looks entirely normal to the user but is
  *      entirely unrecorded server-side. We do NOT try to reconcile
- *      which individual /review calls succeeded — that doesn't map
+ *      which individual /review calls succeeded - that doesn't map
  *      cleanly to a useful UI. A single binary success/failure state
  *      for the whole session's completion is what we surface instead.
  *      Hint clicks also count as incorrect (revealing the answer isn't
  *      solving it).
  *
- *   3. DONE — completion view: final score, link back to the
+ *   3. DONE - completion view: final score, link back to the
  *      repertoire detail page. Two visible variants keyed off
  *      `completeFailure` (set true when the /complete POST returned
  *      non-2xx OR threw):
- *        * recorded  — "Session complete" + score + the implicit
+ *        * recorded  - "Session complete" + score + the implicit
  *          promise that this counts toward Times Trained / Last
  *          Score on the list page (which the backend's
  *          completed_at-NOT-NULL row feeds).
- *        * unrecorded — "Session couldn't be recorded" + the same
+ *        * unrecorded - "Session couldn't be recorded" + the same
  *          local score (the user did attempt N positions; we don't
  *          hide that) + an explicit note that this attempt WON'T
  *          count toward Times Trained / Last Score. The DB row at
- *          this point is completed_at=NULL, positions_correct=0 —
+ *          this point is completed_at=NULL, positions_correct=0 -
  *          the user has to know that, not be told "complete".
  *
  * Scope decisions enforced here (NOT in the detail page or anywhere
@@ -66,7 +66,7 @@
  *     depth-range, no train-as-opponent. Per the project's earlier
  *     decision.
  *   * The hint button is a no-op (visible "not yet available"
- *     message) — there is no hint source anywhere in the schema, so
+ *     message) - there is no hint source anywhere in the schema, so
  *     the reference's "Show hint" affordance is honored visually but
  *     not fabricated.
  *   * The "opponent's last move" prompt prefix from reference-5
@@ -254,7 +254,7 @@ export default function RepertoireTrainPage({
   const [reviewPending, setReviewPending] = useState(false);
   const [completePending, setCompletePending] = useState(false);
   const [hintMessage, setHintMessage] = useState<string | null>(null);
-  // Transient wrong-attempt feedback ("Incorrect — try again"). The
+  // Transient wrong-attempt feedback ("Incorrect - try again"). The
   // session no longer advances on a wrong move, so the user needs an
   // explicit signal the attempt was registered and rejected.
   const [attemptFeedback, setAttemptFeedback] = useState<string | null>(null);
@@ -265,7 +265,7 @@ export default function RepertoireTrainPage({
   // Keyed by position row id: the position that ALREADY registered its
   // single "incorrect" (from a wrong move OR a hint click). Any later
   // wrong move or hint on the SAME position must not add another
-  // incorrect — only the first miss counts. Resetting is implicit:
+  // incorrect - only the first miss counts. Resetting is implicit:
   // the value is compared against the current position's id, which
   // changes when the session advances.
   const incorrectCountedPosRef = useRef<string | null>(null);
@@ -279,17 +279,17 @@ export default function RepertoireTrainPage({
   // session that looks entirely normal but is entirely unrecorded
   // server-side.)
   //
-  // `reviewFailureCount` — number of positions in the current
+  // `reviewFailureCount` - number of positions in the current
   // session whose /review POST returned non-2xx OR threw. Drives a
   // non-blocking banner under the board that appears as soon as the
   // count is > 0 and persists for the rest of the session. Reset to
   // 0 in handleStart when a new session begins.
   //
-  // `completeFailure` — set true in the final /complete fetch's
+  // `completeFailure` - set true in the final /complete fetch's
   // failure branch (non-2xx OR throw); false on success. The DONE
   // render reads this to pick "Session complete" vs "Session
   // couldn't be recorded" + the note about Times Trained / Last
-  // Score. It is a SINGLE binary signal for the WHOLE session — we
+  // Score. It is a SINGLE binary signal for the WHOLE session - we
   // do not attempt to reconcile which individual /review calls
   // succeeded (per the task: doesn't map cleanly to a useful UI;
   // the session-level recorded-or-not is what the DB can answer).
@@ -298,11 +298,11 @@ export default function RepertoireTrainPage({
 
   // `shownAtRef` records the wall-clock time the current position was
   // displayed. Reset on each position advance. Read by the /review
-  // POST to compute time_taken_ms (per the task spec — elapsed time
+  // POST to compute time_taken_ms (per the task spec - elapsed time
   // since this position was shown). useRef avoids re-renders on read.
   const shownAtRef = useRef<number>(Date.now());
 
-  // Quiz items: EVERY owner-side row is its own quiz item — one per
+  // Quiz items: EVERY owner-side row is its own quiz item - one per
   // saved move, even when several moves share the same position FEN
   // (e.g. both e4 AND f4 stored against the start position). Deduping
   // by FEN used to collapse diverging branches into a single item and
@@ -322,7 +322,7 @@ export default function RepertoireTrainPage({
   const completedCount = currentIdx; // # of positions fully attempted
 
   // Board orientation is FIXED to the repertoire owner's color for
-  // the whole session — even when the quiz reaches an opponent ply,
+  // the whole session - even when the quiz reaches an opponent ply,
   // the board keeps the owner's viewpoint and the user drags the
   // opposite-color piece from that same angle.
   const boardOrientation: 'white' | 'black' =
@@ -346,7 +346,7 @@ export default function RepertoireTrainPage({
           setColor(item.color);
         }
       } catch {
-        // Silent — header falls back to "Repertoire".
+        // Silent - header falls back to "Repertoire".
       }
     })();
     return () => {
@@ -355,7 +355,7 @@ export default function RepertoireTrainPage({
   }, [id]);
 
   // --- Position count fetch (the count the config modal shows).
-  // GET /positions returns EVERY stored row for this repertoire —
+  // GET /positions returns EVERY stored row for this repertoire -
   // BOTH owner and opponent rows now (the writer persists every ply).
   // Training quizzes only the OWNER's moves, so the count we display
   // filters to owner-side rows via the FEN's side-to-move field.
@@ -382,7 +382,7 @@ export default function RepertoireTrainPage({
         const rows = (await res.json()) as RepertoirePositionRow[];
         if (!cancelled && Array.isArray(rows)) {
           // Train quizzes OWNER positions only (one item per stored
-          // owner move — diverging moves at the same FEN are all
+          // owner move - diverging moves at the same FEN are all
           // trained, not deduped away), with the opponent's stored
           // reply auto-played on the board. Match that here so the
           // modal's "Positions that will be trained" matches what the
@@ -441,7 +441,7 @@ export default function RepertoireTrainPage({
       setCorrectCount(0);
       setIncorrectCount(0);
       setAutoMoveFen(null);
-      // Reset the recording-honesty state for the new session —
+      // Reset the recording-honesty state for the new session -
       // a previous session's /review failures or /complete failure
       // must not bleed into the new one's banner / DONE framing.
       setReviewFailureCount(0);
@@ -459,7 +459,7 @@ export default function RepertoireTrainPage({
 
   // --- Quiz attempt handler. "Accept either move": a position with
   // several saved branches counts the attempt correct when the played
-  // UCI matches ANY row stored at this position's FEN — the session
+  // UCI matches ANY row stored at this position's FEN - the session
   // quizzed the POSITION, not one specific branch. The /review POST
   // is fired against the MATCHING row's id (the branch actually
   // played) so the FSRS scheduling update lands on the right row.
@@ -486,11 +486,11 @@ export default function RepertoireTrainPage({
 
       setReviewPending(true);
       // Fire the /review FSRS recording in the BACKGROUND. It must NOT
-      // gate the move feedback / reply animation — awaiting the HTTP
+      // gate the move feedback / reply animation - awaiting the HTTP
       // round-trip on every move is what makes the flow feel laggy.
       // The promise still surfaces failures (non-2xx or throw) into
       // `reviewFailureCount` so the recording-honesty banner appears.
-      // NOTE: the URL has no `/review` suffix — the Next.js proxy
+      // NOTE: the URL has no `/review` suffix - the Next.js proxy
       // route lives at /api/repertoires/positions/[position_id] and
       // its POST handler appends `/review` when forwarding to the
       // backend (see src/app/api/repertoires/positions/[position_id]/
@@ -513,7 +513,7 @@ export default function RepertoireTrainPage({
             // Surface the backend detail to the console for debugging;
             // the /complete tally at the end is the authoritative
             // correctness record. Bump `reviewFailureCount` so the
-            // banner under the board appears — the user has to know
+            // banner under the board appears - the user has to know
             // this attempt's FSRS update didn't land, not see it
             // silently swallowed.
             const body = (await res.json().catch(() => ({}))) as ApiError;
@@ -524,19 +524,19 @@ export default function RepertoireTrainPage({
             setReviewFailureCount((c) => c + 1);
           }
         } catch (err) {
-          // Thrown fetch (network unreachable / DNS failure / etc.) —
+          // Thrown fetch (network unreachable / DNS failure / etc.) -
           // same treatment as a non-2xx: log + bump the counter so
           // the in-session banner appears.
           console.warn('Review POST threw:', err);
           setReviewFailureCount((c) => c + 1);
         }
       })();
-      // Tally. A WRONG move stays on the SAME position for a retry —
+      // Tally. A WRONG move stays on the SAME position for a retry -
       // it only bumps the incorrect counter (and fires /review above
       // with solved_correctly=false). Only a CORRECT move advances.
       if (!correct) {
         // Only the FIRST miss on this position adds an incorrect
-        // (subsequent wrong moves — or hint clicks — on the same
+        // (subsequent wrong moves - or hint clicks - on the same
         // position don't stack). The session still stays on the
         // position for a retry regardless.
         if (incorrectCountedPosRef.current !== currentPosition.id) {
@@ -544,7 +544,7 @@ export default function RepertoireTrainPage({
           incorrectCountedPosRef.current = currentPosition.id;
         }
         shownAtRef.current = Date.now();
-        setAttemptFeedback('Incorrect — try again.');
+        setAttemptFeedback('Incorrect - try again.');
         window.setTimeout(() => setAttemptFeedback(null), 3000);
         setReviewPending(false);
         return;
@@ -578,17 +578,17 @@ export default function RepertoireTrainPage({
         // line's last position and the session appeared stuck. The
         // applyUci EP-strip makes the reply FEN equal to the next
         // same-line item's stored FEN, so clearing the overlay does
-        // not hide the opponent's last move — the next item shows the
+        // not hide the opponent's last move - the next item shows the
         // same position.
         setAutoMoveFen(null);
         if (isFinalItem) {
-          // Last quiz item attempted — call /complete and transition.
+          // Last quiz item attempted - call /complete and transition.
           // Build the FINAL tally at call time (not from state
           // closures) so the value we send matches the visible
           // counters.
           const finalCorrect = correctCount + 1;
           setCompletePending(true);
-          // Default to "recorded" — flipped to true on any failure
+          // Default to "recorded" - flipped to true on any failure
           // path below. Either way, the catch / !ok blocks set
           // completeFailed and the finally transitions to DONE; the
           // DONE render reads `completeFailure` to pick the honest
@@ -632,13 +632,13 @@ export default function RepertoireTrainPage({
           };
           if (sameLine) {
             // The reply already left the board AT the next item's
-            // position — nothing more to animate, just hand off.
+            // position - nothing more to animate, just hand off.
             handoff();
             return;
           }
           // LINE SWITCH: the next item belongs to a different line.
-          // Replay the new line from the START position — all its
-          // stored plies, both colors, ~450ms each — so the user sees
+          // Replay the new line from the START position - all its
+          // stored plies, both colors, ~450ms each - so the user sees
           // the sideline develop, then stop AT the position where it
           // becomes their turn (a slightly longer hold before the
           // input unlocks).
@@ -654,7 +654,7 @@ export default function RepertoireTrainPage({
               handoff();
             }, (path.length - 1) * 250 + 450);
           } else {
-            // Unreachable target (shouldn't happen — the target is a
+            // Unreachable target (shouldn't happen - the target is a
             // stored row reachable from start by construction); fall
             // back to a plain handoff.
             handoff();
@@ -662,7 +662,7 @@ export default function RepertoireTrainPage({
         }
       };
       if (!afterUser) {
-        // Shouldn't happen — handleDrop validated the move — but if
+        // Shouldn't happen - handleDrop validated the move - but if
         // chess.js refused it just advance without a reply.
         doAdvance();
         return;
@@ -726,7 +726,7 @@ export default function RepertoireTrainPage({
       } catch {
         return false;
       }
-      // Fire and forget — handleAttempt owns its own pending flag
+      // Fire and forget - handleAttempt owns its own pending flag
       // and counters; we just kick it off and accept the drop
       // visually.
       void handleAttempt(nextUci);
@@ -736,20 +736,20 @@ export default function RepertoireTrainPage({
   );
 
   // --- Hint button handler. Shows the SAN of one correct move at
-  // the current position AND costs one incorrect — revealing the
+  // the current position AND costs one incorrect - revealing the
   // answer means the position can't also count as solved unaided.
   // Any saved move at this FEN counts as
   // correct (the "accept either move" rule), so we pick the current
-  // quiz row's stored move — its SAN is computed from the position's
+  // quiz row's stored move - its SAN is computed from the position's
   // FEN + UCI via chess.js. Falls back to the raw UCI if chess.js
-  // can't parse the move (stale/corrupt row — shouldn't happen).
+  // can't parse the move (stale/corrupt row - shouldn't happen).
   const handleShowHint = useCallback(() => {
     if (!currentPosition) {
       setHintMessage('No position to hint.');
       window.setTimeout(() => setHintMessage(null), 3000);
       return;
     }
-    // A hint costs ONE incorrect per position — once this position has
+    // A hint costs ONE incorrect per position - once this position has
     // already registered its incorrect (from a wrong move or a prior
     // hint), further hint clicks add nothing.
     if (incorrectCountedPosRef.current !== currentPosition.id) {
@@ -781,7 +781,7 @@ export default function RepertoireTrainPage({
   const configCountLabel = useMemo(() => {
     if (totalPositionCount === null) return null;
     if (mainLinesOnly) {
-      // Toggle on: show "up to N" — the actual filtered count would
+      // Toggle on: show "up to N" - the actual filtered count would
       // require running classify_repertoire_lines client-side (no
       // equivalent helper exists; the backend does this server-side
       // during /sessions/start). The "up to" prefix makes the upper
@@ -800,7 +800,7 @@ export default function RepertoireTrainPage({
   if (phase === 'config') {
     return (
       <div className="relative h-[calc(100vh-3rem)] w-full overflow-y-auto px-4 py-4 text-white sm:px-6 sm:py-6 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
-        {/* Back button — top-left, sits above the centered card so
+        {/* Back button - top-left, sits above the centered card so
             it doesn't drag the card off-center. */}
         <button
           type="button"
@@ -811,7 +811,7 @@ export default function RepertoireTrainPage({
           <SearchBackIcon />
         </button>
 
-        {/* Centered config card — horizontally + vertically centered
+        {/* Centered config card - horizontally + vertically centered
             over the walnut backdrop so the modal reads as the focal
             point once the page is entered. */}
         <div className="flex min-h-full items-center justify-center py-12">
@@ -907,7 +907,7 @@ export default function RepertoireTrainPage({
                 </div>
               )}
 
-              {/* Footer actions — matches the reference's
+              {/* Footer actions - matches the reference's
                   "Additional training settings" + "Cancel" layout,
                   with the settings link collapsed to a static label
                   (out of scope for v1). */}
@@ -935,7 +935,7 @@ export default function RepertoireTrainPage({
   if (phase === 'done') {
     const total = quizItems.length;
     // Wrong moves (and hint clicks) no longer advance the session, so
-    // correctCount always ends at `total` — the honest score is
+    // correctCount always ends at `total` - the honest score is
     // ACCURACY: correct solves over total attempts (retries + hints
     // included in the denominator via incorrectCount).
     const attemptTotal = correctCount + incorrectCount;
@@ -943,7 +943,7 @@ export default function RepertoireTrainPage({
       attemptTotal > 0 ? Math.round((correctCount / attemptTotal) * 100) : 0;
     return (
       <div className="relative h-[calc(100vh-3rem)] w-full overflow-y-auto px-4 py-4 text-white sm:px-6 sm:py-6 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
-        {/* Back button — top-left, sits above the centered card. */}
+        {/* Back button - top-left, sits above the centered card. */}
         <button
           type="button"
           onClick={handleBackToDetail}
@@ -963,7 +963,7 @@ export default function RepertoireTrainPage({
                   : 'Session complete'}
               </h2>
               {/* On recording failure we still show the local score
-                  (the user DID attempt N positions — hiding it would
+                  (the user DID attempt N positions - hiding it would
                   be its own lie of omission) but add a one-line note
                   that explicitly drops the implication that this
                   attempt counts toward the list page's Times Trained
@@ -974,7 +974,7 @@ export default function RepertoireTrainPage({
                   NOT be reflected there and we say so. */}
               {completeFailure && (
                 <p className="text-sm text-red-300" role="status">
-                  Your progress wasn&apos;t saved — this attempt won&apos;t
+                  Your progress wasn&apos;t saved - this attempt won&apos;t
                   count toward Times Trained or Last Score.
                 </p>
               )}
@@ -989,7 +989,7 @@ export default function RepertoireTrainPage({
               {/* If a string of /review failures hit during the
                   session AND /complete also failed, surface a count
                   here too so the user knows it wasn't one cosmic
-                  ray — a flaky connection produced N unpersisted
+                  ray - a flaky connection produced N unpersisted
                   FSRS updates and the session tally didn't land
                   either. Cheap to include; only renders when
                   relevant. */}
@@ -1027,11 +1027,11 @@ export default function RepertoireTrainPage({
   return (
     <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-[10px] pt-6 text-white lg:overflow-hidden lg:px-10 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
       {/*
-        Session layout — mirrored from the build page (ReviewShell) so a
+        Session layout - mirrored from the build page (ReviewShell) so a
         user moving between the two routes sees no board-size jump.
         Import panel (left) carries only the back button (the build
         page's name + Train button chrome is intentionally omitted
-        here — the train flow has nothing to author or label). Board
+        here - the train flow has nothing to author or label). Board
         panel (center) holds the quiz board. Analysis panel (right)
         holds the "White to move / What's your move?" prompt card with
         counters + hint.
@@ -1050,7 +1050,7 @@ export default function RepertoireTrainPage({
         boardPanel={
           <div className="relative mx-auto aspect-square w-full max-w-[calc(100vh-70px)]">
             {/*
-              Board — the current position's FEN is 4-field (matches
+              Board - the current position's FEN is 4-field (matches
               `_normalize_fen` server-side); react-chessboard only
               reads the first FEN field for piece placement, so the
               4-field value renders fine. BoardShell wraps it with
@@ -1105,7 +1105,7 @@ export default function RepertoireTrainPage({
                   })()}
                 </p>
 
-                {/* Wrong-attempt feedback — a rejected move keeps the
+                {/* Wrong-attempt feedback - a rejected move keeps the
                     user on this position, so say so explicitly. */}
                 {attemptFeedback && (
                   <p
@@ -1143,7 +1143,7 @@ export default function RepertoireTrainPage({
                   </div>
                 </div>
 
-                {/* Hint button — no-op with visible "not yet available"
+                {/* Hint button - no-op with visible "not yet available"
                     message, per the task: no hint source in the schema,
                     so we honor the reference-5 affordance visually but
                     don't fabricate content. */}
@@ -1164,7 +1164,7 @@ export default function RepertoireTrainPage({
                   </p>
                 )}
 
-                {/* Recording-honesty banner — appears as soon as ANY
+                {/* Recording-honesty banner - appears as soon as ANY
                     /review call in this session has failed (non-2xx OR
                     thrown) and persists for the rest of the session.
                     Non-blocking: the user can still drag the next move
@@ -1176,7 +1176,7 @@ export default function RepertoireTrainPage({
                     className="flex items-center gap-2 rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-2 text-xs text-red-300"
                   >
                     <span>
-                      Some attempts couldn&apos;t be recorded — your
+                      Some attempts couldn&apos;t be recorded - your
                       session may not be fully saved. ({reviewFailureCount}/
                       {currentIdx + (reviewPending ? 0 : 1)} so far.)
                     </span>
