@@ -2,14 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 
 /**
- * /api/repertoires — thin proxy to the FastAPI backend.
+ * /api/repertoires - thin proxy to the FastAPI backend.
  *
  * Pattern parity with the rest of the Next.js route handlers
  * (src/app/api/woodpecker/{entries,queue,attempts}/route.ts and the
  * train / puzzles / user / import siblings):
  *   * Resolve the backend URL from BACKEND_API_URL (default
  *     http://localhost:8000) and forward `X-Internal-Secret` +
- *     `X-Clerk-User-Id` on every request — the FastAPI routers read
+ *     `X-Clerk-User-Id` on every request - the FastAPI routers read
  *     the latter via their `_get_user_id(request)` helper.
  *   * Pass the request body through verbatim for POST.
  *   * Stream the response body back with the same status, statusText,
