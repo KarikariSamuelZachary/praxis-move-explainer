@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 
 /**
- * /api/repertoires/suggestions — proxy to the FastAPI backend's
+ * /api/repertoires/suggestions - proxy to the FastAPI backend's
  * Stockfish move-suggestion endpoint.
  *
  * GET with a `fen` query parameter. The backend runs Stockfish multi-PV
