@@ -491,7 +491,7 @@ export default function WoodpeckerPage() {
                         feedback === 'correct' ? 'text-emerald-200' : 'text-rose-200'
                       }`}
                     >
-                      {feedback === 'correct' ? 'Nice — keep going' : 'Logged for review'}
+                      {feedback === 'correct' ? 'Nice - keep going' : 'Logged for review'}
                     </h2>
                   </div>
                 ) : (
@@ -533,13 +533,13 @@ export default function WoodpeckerPage() {
                     <div className="flex items-baseline justify-between">
                       <span className="text-white/40">Rating</span>
                       <span className="font-semibold text-[#f7e5c6]">
-                        {currentPuzzle?.rating ?? '—'}
+                        {currentPuzzle?.rating ?? '-'}
                       </span>
                     </div>
                     <div className="flex items-baseline justify-between">
                       <span className="text-white/40">Puzzle</span>
                       <span className="font-mono text-xs text-white/60">
-                        {currentPuzzle?.id ?? '—'}
+                        {currentPuzzle?.id ?? '-'}
                       </span>
                     </div>
                     {currentEntry?.source_reason && (
