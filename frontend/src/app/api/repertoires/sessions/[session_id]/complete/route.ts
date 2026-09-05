@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 
 /**
- * /api/repertoires/sessions/{session_id}/complete — proxy to the FastAPI
+ * /api/repertoires/sessions/{session_id}/complete - proxy to the FastAPI
  * backend.
  *
  * The Train flow posts here once, after the last position in the
