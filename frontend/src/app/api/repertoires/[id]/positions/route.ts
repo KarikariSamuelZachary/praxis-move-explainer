@@ -2,15 +2,15 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 
 /**
- * /api/repertoires/{id}/positions — proxy to the FastAPI backend.
+ * /api/repertoires/{id}/positions - proxy to the FastAPI backend.
  *
  * Same path serves GET (list stored positions, for the detail page's
  * "My saved moves" hydration) and POST (persist a drag-and-drop move)
- * — Next.js dispatches by method just like FastAPI does server-side.
+ * - Next.js dispatches by method just like FastAPI does server-side.
  *
  * The backend has parallel methods: GET /api/repertoires/{id}/positions
  * (added alongside the existing POST for the detail page fix; reads
- * every stored row without filtering by `due` — that's for /queue)
+ * every stored row without filtering by `due` - that's for /queue)
  * and POST /api/repertoires/{id}/positions (pre-existing upsert).
  *
  * Pattern parity with src/app/api/woodpecker/{entries,queue,attempts}/route.ts:
