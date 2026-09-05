@@ -1,5 +1,5 @@
 @AGENTS.md
-# Praxis — Claude Code Reference
+# Praxis - Claude Code Reference
 
 ## Project Overview
 Chess training web app. AI-powered puzzle training, game review, 
@@ -79,7 +79,7 @@ src/               FastAPI backend
   `.text-gold`, `.bg-moss`, ... classes). Add new landing colors there,
   not in `@theme`.
 - Animations: gsap + ScrollTrigger + Lenis (installed deps). Respect
-  prefers-reduced-motion — every animated component has a static fallback.
+  prefers-reduced-motion - every animated component has a static fallback.
 
 ## Environment Variables
 ### Vercel (frontend)
@@ -125,7 +125,7 @@ UPSTASH_REDIS_REST_TOKEN
 - Clerk session token not yet forwarded to FastAPI.
   Needed for per-user data tracking.
 
-### 2026-06-23 — Onboarding "Saving…" hang + missing user rows (Clerk webhook misrouted)
+### 2026-06-23 - Onboarding "Saving…" hang + missing user rows (Clerk webhook misrouted)
 
 **Symptom:** After sign-up, user lands on `/onboarding`, selects a
 skill level, clicks **Start Training**. Button switches to "Saving…"
@@ -142,7 +142,7 @@ synced to PostgreSQL. The onboarding POST handler hits the
 which can fail silently if the row state is unexpected, leaving the
 frontend stuck on "Saving…".
 
-**Fix (no code changes — Clerk dashboard only):**
+**Fix (no code changes - Clerk dashboard only):**
 1. Clerk Dashboard → Webhooks → set Endpoint URL to
    `https://<your-backend-domain>/webhooks/clerk`
 2. Confirm `user.created` is in the subscribed events list.
@@ -152,13 +152,13 @@ frontend stuck on "Saving…".
 
 **Why the frontend button gets stuck:** `handleSubmit` in
 `frontend/src/app/(app)/onboarding/page.tsx:59-74` never calls
-`setSubmitting(false)` on the success path — only on `catch`. If
+`setSubmitting(false)` on the success path - only on `catch`. If
 the navigation fails or the middleware redirects back, the page
 unmount doesn't clear `submitting=true` and the button stays on
 "Saving…". (Independent of the webhook bug; worth fixing later.)
 
 **Verification query:** `SELECT COUNT(*) FROM users WHERE
-skill_level IS NULL;` — should grow by 1 per new sign-up after the
+skill_level IS NULL;` - should grow by 1 per new sign-up after the
 webhook is fixed.
 
 **Diagnostic path used (for future reference):**
@@ -167,7 +167,7 @@ webhook is fixed.
 - Cross-checked by querying the `users` table directly via
   `psql "$DATABASE_URL"`.
 
-### 2026-06-23 — DB connection mismatch (local `.env` ≠ DigitalOcean)
+### 2026-06-23 - DB connection mismatch (local `.env` ≠ DigitalOcean)
 
 **Symptom:** After fixing the webhook URL, backend logs showed
 `POST /webhooks/clerk 200 OK` and `POST /onboarding/skill-level
@@ -175,7 +175,7 @@ webhook is fixed.
 0 rows. Frontend still stuck on /onboarding.
 
 **Root cause:** `frontend/CLAUDE.md` says Samuel handles env vars
-himself — and the **deployed** FastAPI backend on DigitalOcean has
+himself - and the **deployed** FastAPI backend on DigitalOcean has
 its own `DATABASE_URL` set in the DO dashboard's environment
 variables. The local `/home/iaminspiredbro/my_projects/praxis-move-explainer/.env`
 file has a **different** `DATABASE_URL` (likely local dev or
@@ -207,14 +207,14 @@ SELECT current_database(), inet_server_addr(), current_user;
 1. Query the production DB directly using the DO DATABASE_URL:
    `psql "<the-prod-DATABASE_URL-from-DO-dashboard>"`
 2. Or align the local `.env` `DATABASE_URL` with prod for
-   debugging (but never commit this — keep prod secrets in DO
+   debugging (but never commit this - keep prod secrets in DO
    only).
 
 **Open question still pending (as of 2026-06-23 end of session):**
 Even after aligning the DB, the page is still stuck on /onboarding
 and `GET /api/puzzles` is not firing after `POST
 /onboarding/skill-level`. Three possibilities to check tomorrow:
-1. Webhook event type might not be `user.created` — handler
+1. Webhook event type might not be `user.created` - handler
    returns `{"status": "ignored"}` (200) for non-creation events.
    Check Clerk Dashboard → Webhooks → Messages → event type.
 2. The `frontend/src/app/(app)/onboarding/page.tsx:59-74`
