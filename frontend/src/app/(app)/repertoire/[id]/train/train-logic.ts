@@ -2,7 +2,7 @@ import { Chess, type Square } from 'chess.js';
 
 // Pure, framework-free helpers for the repertoire Train session. Kept in
 // their own module (no React, no Next.js) so they can be unit-tested
-// against synthetic repertoires — the session walker depends on these
+// against synthetic repertoires - the session walker depends on these
 // invariants holding.
 
 export type RepertoireColor = 'white' | 'black';
@@ -60,7 +60,7 @@ export function applyUci(fen4: string, uci: string): string | null {
 
 // Reconstruct the sequence of positions from the standard start to a
 // target FEN, stepping through the session's stored (fen, move) rows
-// (BFS over the stored edges — a diverging repertoire can offer several
+// (BFS over the stored edges - a diverging repertoire can offer several
 // moves at one FEN). Returns a list of normalized FENs starting at the
 // start position and ending AT the target. Empty list if the target is
 // unreachable from the start via the stored rows.
@@ -94,7 +94,7 @@ export function findLinePath(
   return [];
 }
 
-// Quiz items: EVERY owner-side row is its own quiz item — one per saved
+// Quiz items: EVERY owner-side row is its own quiz item - one per saved
 // move, even when several moves share the same position FEN (e.g. both
 // e4 AND f4 stored against the start position). Deduping by FEN used to
 // collapse diverging branches into a single item and silently dropped
