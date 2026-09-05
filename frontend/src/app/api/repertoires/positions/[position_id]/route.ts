@@ -2,12 +2,12 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 
 /**
- * /api/repertoires/positions/{position_id} — proxy to the FastAPI
+ * /api/repertoires/positions/{position_id} - proxy to the FastAPI
  * backend.
  *
  * Two methods share this URL:
  *
- *   * DELETE — the detail page's "My saved moves" trash icon calls
+ *   * DELETE - the detail page's "My saved moves" trash icon calls
  *     this to remove a single stored position. The backend enforces
  *     the 404/403 ownership pattern (via _load_owned_position_for_update,
  *     the same JOIN-to-repertoires pre-check review_position uses)
@@ -16,7 +16,7 @@ import { auth } from '@clerk/nextjs/server';
  *     is forwarded verbatim so the client can surface it as the
  *     user-facing prompt.
  *
- *   * POST /review — the Train flow calls this once per position
+ *   * POST /review - the Train flow calls this once per position
  *     during a session with `{solved_correctly: bool, time_taken_ms:
  *     number}`. The endpoint is NOT session-aware (the client tallies
  *     `positions_correct` itself across /review responses and reports
@@ -26,7 +26,7 @@ import { auth } from '@clerk/nextjs/server';
  *     Both methods are kept here because the backend keys both by the
  *     same `{position_id}` path segment.
  *
- * No GET/PUT here — that surface lives at the sibling
+ * No GET/PUT here - that surface lives at the sibling
  * /api/repertoires/{id}/positions route, which is keyed by repertoire
  * id, not by position id.
  *
