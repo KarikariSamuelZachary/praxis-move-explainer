@@ -355,7 +355,7 @@ export default function ChessBoardComponent({
       setHighlightSquares({
         [targetSquare]: { backgroundColor: 'rgba(239, 68, 68, 0.5)' },
       });
-      setWrongMoveMessage('Not the best move — try again');
+      setWrongMoveMessage('Not the best move - try again');
 
       const scheduledPuzzleKey = puzzleKeyRef.current;
 
