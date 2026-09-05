@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 
 /**
- * GET /api/repertoires/{id}/gaps — proxy to the FastAPI backend.
+ * GET /api/repertoires/{id}/gaps - proxy to the FastAPI backend.
  *
  * Pattern parity with src/app/api/woodpecker/{entries,queue,attempts}/route.ts:
  * forward X-Internal-Secret + X-Clerk-User-Id, stream the response
@@ -11,7 +11,7 @@ import { auth } from '@clerk/nextjs/server';
  *
  * IMPORTANT: the upstream `/gaps` endpoint analyzes the WHOLE
  * repertoire in one call (it hits Lichess Explorer per stored
- * position) — the page mounts this ONCE on load and filters the
+ * position) - the page mounts this ONCE on load and filters the
  * cached gaps locally per navigation. Do not refactor this into a
  * per-position variant; see the page's "Other moves" section for
  * the rationale.
