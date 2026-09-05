@@ -82,7 +82,7 @@ export default function BoardPanel({
 
   // Adjust the animation step during render whenever the toggle flips, so the
   // board immediately shows the played move being taken back (undo) and then
-  // — after a short delay — the best move being played.
+  // - after a short delay - the best move being played.
   if (showBestMove && bestStep === 'off') {
     setBestStep('undo');
   } else if (!showBestMove && bestStep !== 'off') {
@@ -116,8 +116,8 @@ export default function BoardPanel({
     : null;
 
   // Evaluation bar: position score from White's perspective (positive =
-  // White better). Only the winning side's half fills — it grows outward from
-  // the centre divider — while the losing side stays empty.
+  // White better). Only the winning side's half fills - it grows outward from
+  // the centre divider - while the losing side stays empty.
   const evalCp = currentMove?.eval_cp ?? 0;
   const advantage = Math.min(
     1,
