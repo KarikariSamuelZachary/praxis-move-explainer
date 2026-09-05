@@ -251,7 +251,7 @@ export default function OpponentPrepPage() {
   // Uses preferred_time_control when present (the recency-weighted most-
   // common bucket); falls back to the first key of the distribution when
   // only the distribution is available. Empty string leaves the dropdown
-  // unselected (the mockup's "—" placeholder).
+  // unselected (the mockup's "-" placeholder).
   useEffect(() => {
     if (selectedProfile?.preferred_time_control) {
       setTimeControl(selectedProfile.preferred_time_control);
@@ -263,7 +263,7 @@ export default function OpponentPrepPage() {
     }
   }, [selectedProfile]);
 
-  // The right card no longer shows a per-move log — the mockup replaces
+  // The right card no longer shows a per-move log - the mockup replaces
   // it with three aggregate sections (Openings / Traps / Time Control).
   // The latest bot move's SAN still surfaces in the StatusStrip via the
   // `lastMove` API response, so we don't need a derived `moveHistory`
@@ -626,7 +626,7 @@ function ProfileCard({
   loadError: string | null;
 }) {
   const displayName = profile?.opponent_username ?? 'No opponent';
-  const initials = (profile?.opponent_username ?? '—')
+  const initials = (profile?.opponent_username ?? '-')
     .replace(/[^A-Za-z0-9]/g, '')
     .slice(0, 2)
     .toUpperCase();
@@ -749,7 +749,7 @@ function PlayingStylePill({
           {style}
         </span>
       ) : (
-        <span className="text-xs text-[#f7e5c6]/40">—</span>
+        <span className="text-xs text-[#f7e5c6]/40">-</span>
       )}
     </section>
   );
@@ -785,7 +785,7 @@ function TimeControlSelect({
           className="h-11 w-full cursor-pointer appearance-none rounded-2xl border border-black/50 bg-black/60 pl-9 pr-9 text-sm text-white outline-none transition hover:border-emerald-400/30 focus:border-[#10b981]/60 focus:ring-2 focus:ring-[#10b981]/20 disabled:pointer-events-none disabled:opacity-50"
         >
           {options.length === 0 ? (
-            <option value="">—</option>
+            <option value="">-</option>
           ) : (
             options.map((option) => (
               <option key={option} value={option}>
@@ -856,7 +856,7 @@ function OpeningsLostAgainst({
 }: {
   openings: { name: string; loss_percentage: number; games: number }[];
 }) {
-  // Top 5 by descending loss% — the API already sorts this way, but
+  // Top 5 by descending loss% - the API already sorts this way, but
   // re-sort defensively in case a caller ever hand-builds the array.
   const top = [...openings]
     .sort((a, b) => b.loss_percentage - a.loss_percentage)
