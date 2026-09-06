@@ -177,26 +177,6 @@ function TrashIcon() {
   );
 }
 
-function CloudOffIcon() {
-  return (
-    <svg
-      className="h-4 w-4"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.6"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M2.27 14.5A4.49 4.49 0 0 0 7 21h11a3.5 3.5 0 0 0 3.45-4.1" />
-      <path d="M5.7 5.7A5 5 0 0 1 19 9.5" />
-      <path d="M8.5 8.5a5 5 0 0 0 7 7" />
-      <path d="m2 2 20 20" />
-    </svg>
-  );
-}
-
 function CloseIcon() {
   return (
     <svg
@@ -372,10 +352,6 @@ function RepertoireCard({ repertoire, onDelete }: RepertoireCardProps) {
           )}
         </dl>
 
-        <div className="mt-3 flex items-center gap-1.5 text-xs text-[#a79b8a]/90">
-          <CloudOffIcon />
-          <span>Not backed up</span>
-        </div>
       </div>
 
       <button
