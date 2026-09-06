@@ -31,6 +31,46 @@ const ICON_MARGIN_PERCENT = 0.5;
 const SQUARE_PERCENT = 100 / 8;
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
+const EVAL_CAP_PAWNS = 7;
+const EVAL_CURVE_SCALE_PAWNS = 2.25;
+const EVAL_BAR_TRANSITION = 'height 420ms cubic-bezier(0.22, 1, 0.36, 1)';
+
+type EvaluationBarState = {
+  whitePercent: number;
+  blackPercent: number;
+  label: string;
+  isMate: boolean;
+};
+
+function getEvaluationBarState(move: GameReviewMove | null): EvaluationBarState {
+  const rawEvalCp = move?.eval_cp ?? 0;
+  const evalCp = Number.isFinite(rawEvalCp) ? rawEvalCp : 0;
+  const evalMate = move?.eval_mate;
+
+  if (typeof evalMate === 'number' && Number.isFinite(evalMate)) {
+    const whiteWins = evalMate > 0 || (evalMate === 0 && evalCp >= 0);
+    return {
+      whitePercent: whiteWins ? 100 : 0,
+      blackPercent: whiteWins ? 0 : 100,
+      label: `${whiteWins ? '' : '-'}M${Math.abs(evalMate)}`,
+      isMate: true,
+    };
+  }
+
+  // The API's eval_cp is centipawns. Convert to pawns before applying the
+  // visual curve, then cap the curve's input so extreme scores saturate.
+  const evalPawns = evalCp / 100;
+  const cappedEval = Math.max(-EVAL_CAP_PAWNS, Math.min(EVAL_CAP_PAWNS, evalPawns));
+  const advantage = Math.tanh(cappedEval / EVAL_CURVE_SCALE_PAWNS);
+  const whitePercent = 50 + advantage * 50;
+
+  return {
+    whitePercent,
+    blackPercent: 100 - whitePercent,
+    label: `${evalPawns >= 0 ? '+' : ''}${evalPawns.toFixed(2)}`,
+    isMate: false,
+  };
+}
 
 function getDestinationSquare(san: string, color: 'white' | 'black'): string {
   const s = san.replace(/[!?+#]+$/, '').replace(/=[QRBN]$/, '');
@@ -114,47 +154,45 @@ export default function BoardPanel({
   const bestIconCoords = showBestIcon
     ? squareToPercent(bestMoveUci.slice(2, 4), orientation)
     : null;
-
-  // Evaluation bar: position score from White's perspective (positive =
-  // White better). Only the winning side's half fills - it grows outward from
-  // the centre divider - while the losing side stays empty.
-  const evalCp = currentMove?.eval_cp ?? 0;
-  const advantage = Math.min(
-    1,
-    2 / (1 + Math.exp(-Math.abs(evalCp) * 0.00368208)) - 1,
-  );
-  const whiteFillPct = evalCp > 0 ? advantage * 50 : 0;
-  const blackFillPct = evalCp < 0 ? advantage * 50 : 0;
-  const evalLabel =
-    Math.abs(evalCp) < 0.05
-      ? '0.0'
-      : `${evalCp > 0 ? '+' : ''}${Math.abs(evalCp).toFixed(1)}`;
+  const evaluationBar = getEvaluationBarState(currentMove);
 
   return (
-    <div className="mx-auto flex w-full max-w-[calc(100vh-70px)] items-center gap-3">
+    <div className="relative mx-auto aspect-square w-full max-w-[calc(100vh-70px)]">
       {hasGame && (
         <div
           aria-hidden
-          className="flex w-3.5 shrink-0 flex-col items-center gap-1 self-stretch"
+          className="absolute right-full top-0 mr-3 flex h-full w-8 flex-col items-center gap-1"
         >
-          <div className="relative w-full flex-1 overflow-hidden rounded-full border border-black/50 bg-[#404040] shadow-[0_2px_8px_rgba(0,0,0,0.5)]">
-            <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-white/20" />
+          <div className="relative w-3.5 flex-1 overflow-hidden rounded-[3px] border border-black/70 bg-[#111111] shadow-[0_2px_8px_rgba(0,0,0,0.65),inset_0_0_0_1px_rgba(255,255,255,0.12)]">
             <div
-              className="absolute inset-x-0 bg-[#101010] transition-all duration-300"
-              style={{ bottom: '50%', height: `${blackFillPct}%` }}
+              className="absolute inset-x-0 top-0 bg-[#171717]"
+              style={{
+                height: `${evaluationBar.blackPercent}%`,
+                transition: EVAL_BAR_TRANSITION,
+              }}
             />
             <div
-              className="absolute inset-x-0 bg-[#f0f0f0] transition-all duration-300"
-              style={{ top: '50%', height: `${whiteFillPct}%` }}
+              className="absolute inset-x-0 bottom-0 bg-[#f4f4f4]"
+              style={{
+                height: `${evaluationBar.whitePercent}%`,
+                transition: EVAL_BAR_TRANSITION,
+              }}
             />
+            <div className="absolute inset-x-0 top-1/2 h-px -translate-y-1/2 bg-black/35" />
           </div>
-          <span className="font-mono text-[10px] leading-none text-white/70">
-            {evalLabel}
+          <span
+            className={`min-w-8 rounded border px-0.5 py-0.5 text-center font-mono text-[10px] font-semibold leading-none shadow-[0_2px_5px_rgba(0,0,0,0.45)] ${
+              evaluationBar.isMate
+                ? 'border-amber-300/50 bg-[#2a1c0d] text-amber-200'
+                : 'border-white/15 bg-black/65 text-white/85'
+            }`}
+          >
+            {evaluationBar.label}
           </span>
         </div>
       )}
 
-      <div className="relative aspect-square flex-1">
+      <div className="relative h-full w-full">
         <div
           className="h-full w-full"
           style={{
