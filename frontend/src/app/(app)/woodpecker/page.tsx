@@ -63,6 +63,15 @@ function XCircleIcon({ className = 'h-5 w-5' }: { className?: string }) {
   );
 }
 
+function SettingsIcon() {
+  return (
+    <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24">
+      <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0L6.2 6.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
 function ProgressCells({ completed, total }: { completed: number; total: number }) {
   return (
     <div className="flex w-full gap-1.5">
@@ -120,7 +129,9 @@ export default function WoodpeckerPage() {
   const [error, setError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<Feedback>('idle');
   const [autoAdvance, setAutoAdvance] = useState(true);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [completedCount, setCompletedCount] = useState(0);
+  const settingsRef = useRef<HTMLDivElement>(null);
 
   const currentEntry = queue?.[currentIndex] ?? null;
   const currentPuzzle = currentEntry ? puzzles[currentEntry.puzzle_id] : null;
@@ -232,6 +243,26 @@ export default function WoodpeckerPage() {
   useEffect(() => {
     loadQueue();
   }, [loadQueue]);
+
+  useEffect(() => {
+    if (!isSettingsOpen) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (settingsRef.current && !settingsRef.current.contains(event.target as Node)) {
+        setIsSettingsOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsSettingsOpen(false);
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isSettingsOpen]);
 
   useEffect(() => {
     startTimeRef.current = Date.now();
@@ -380,7 +411,7 @@ export default function WoodpeckerPage() {
             <div className={`${CARD_CLASS} w-full max-w-md p-8 text-center shadow-2xl shadow-black/30`}>
               <h2 className="mb-2 text-2xl font-bold text-[#f7e5c6]">Puzzle unavailable</h2>
               <p className="mb-6 text-white/60">
-                This review's puzzle couldn't be loaded. Skip it to continue your session.
+                This review&apos;s puzzle couldn&apos;t be loaded. Skip it to continue your session.
               </p>
               <div className="flex justify-center gap-3">
                 <button
@@ -457,12 +488,96 @@ export default function WoodpeckerPage() {
                     apiRef={boardApi}
                   />
                 </div>
+
+                <div ref={settingsRef} className="absolute right-2 top-2 z-30 xl:left-full xl:right-auto xl:top-0 xl:ml-[2px]">
+                  <button
+                    type="button"
+                    onClick={() => setIsSettingsOpen((open) => !open)}
+                    className={`relative flex h-7 w-7 items-center justify-center rounded-md border text-[#f0e0c0] transition hover:scale-105 active:scale-95 ${
+                      isSettingsOpen
+                        ? 'border-[#d9b87c]/70 text-[#f7e5c6]'
+                        : 'border-black/60 hover:border-[#d9b87c]/45'
+                    }`}
+                    style={{
+                      borderRadius: '4px',
+                      background:
+                        'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.webp)',
+                      backgroundSize: 'cover',
+                      backgroundPosition: 'center',
+                      boxShadow:
+                        '0 0 0 2px #1a0a02, inset 0 2px 0 rgba(255,200,100,0.12), inset 0 -2px 0 rgba(0,0,0,0.5), 0 4px 12px rgba(0,0,0,0.5)',
+                    }}
+                    aria-label="Woodpecker settings"
+                    aria-haspopup="dialog"
+                    aria-expanded={isSettingsOpen}
+                    title="Woodpecker settings"
+                  >
+                    <SettingsIcon />
+                  </button>
+
+                  {isSettingsOpen && (
+                    <div
+                      role="dialog"
+                      aria-label="Woodpecker settings"
+                      className="absolute right-0 top-full mt-2 w-60 rounded-xl border border-[#d9b87c]/30 bg-[#1b120d]/95 p-3 text-white shadow-[0_18px_42px_rgba(0,0,0,0.52),inset_0_1px_0_rgba(255,255,255,0.08)] backdrop-blur-xl"
+                    >
+                      <div className="flex items-center justify-between border-b border-white/10 pb-2">
+                        <span className="text-[10px] font-bold uppercase tracking-[0.24em] text-[#f7e5c6]/65">
+                          Review settings
+                        </span>
+                        <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-[#37be7e]">
+                          {autoAdvance ? 'Auto' : 'Manual'}
+                        </span>
+                      </div>
+
+                      <div className="mt-3 flex items-center justify-between gap-4">
+                        <div>
+                          <div className="text-sm font-semibold text-[#f7e5c6]">Auto-advance</div>
+                          <div className="mt-1 text-[11px] leading-4 text-white/45">
+                            Continue after the review ends
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setAutoAdvance((enabled) => !enabled)}
+                          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                            autoAdvance ? 'bg-[#10b981]' : 'bg-white/15'
+                          }`}
+                          aria-pressed={autoAdvance}
+                          aria-label="Toggle auto-advance"
+                        >
+                          <span
+                            className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                              autoAdvance ? 'translate-x-5' : 'translate-x-0.5'
+                            }`}
+                          />
+                        </button>
+                      </div>
+
+                      {!autoAdvance && feedback !== 'idle' && (
+                        <button
+                          type="button"
+                          onClick={handleNextClick}
+                          className="mt-3 w-full rounded-lg bg-emerald-500 py-2.5 text-sm font-semibold text-white shadow-lg shadow-emerald-950/40 transition hover:bg-emerald-400"
+                        >
+                          Next Review
+                        </button>
+                      )}
+
+                      <div className="mt-3 border-t border-white/10 pt-2 text-[10px] text-white/40">
+                        {autoAdvance
+                          ? 'Next review loads after a short pause.'
+                          : 'Use Next Review when you are ready.'}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             </section>
 
             {/* ============== RIGHT CARD ============== */}
             <section className="hidden min-h-0 min-w-0 xl:block">
-              <div className={`${CARD_CLASS} flex h-full w-full flex-col justify-between p-6 shadow-2xl shadow-black/25`}>
+              <div className={`${CARD_CLASS} flex h-fit w-full flex-col gap-5 p-5 shadow-2xl shadow-black/25`}>
                 {/* Top: result banner (after move) OR "your move" header */}
                 {showResult ? (
                   <div
@@ -512,7 +627,7 @@ export default function WoodpeckerPage() {
                   </div>
                 )}
 
-                {/* Middle: puzzle details */}
+                {/* Puzzle details */}
                 <div className="flex flex-col gap-5">
                   <div>
                     <div className="text-[11px] font-bold uppercase tracking-[0.25em] text-white/40">
@@ -536,12 +651,6 @@ export default function WoodpeckerPage() {
                         {currentPuzzle?.rating ?? '-'}
                       </span>
                     </div>
-                    <div className="flex items-baseline justify-between">
-                      <span className="text-white/40">Puzzle</span>
-                      <span className="font-mono text-xs text-white/60">
-                        {currentPuzzle?.id ?? '-'}
-                      </span>
-                    </div>
                     {currentEntry?.source_reason && (
                       <div className="flex items-baseline justify-between">
                         <span className="text-white/40">Added because</span>
@@ -550,44 +659,9 @@ export default function WoodpeckerPage() {
                         </span>
                       </div>
                     )}
-                  </div>
-                </div>
-
-                {/* Bottom: auto-advance toggle */}
-                <div>
-                  <div className="flex items-center justify-between rounded-xl border border-white/10 bg-black/25 px-4 py-3">
-                    <div className="flex flex-col">
-                      <span className="text-sm font-semibold text-white/80">Auto-advance</span>
-                      <span className="mt-0.5 text-[11px] text-white/40">
-                        Move to the next review automatically
-                      </span>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setAutoAdvance((v) => !v)}
-                      className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-                        autoAdvance ? 'bg-emerald-500' : 'bg-white/15'
-                      }`}
-                      aria-pressed={autoAdvance}
-                      aria-label="Toggle auto-advance"
-                    >
-                      <span
-                        className={`inline-block h-5 w-5 transform rounded-full bg-white shadow transition-transform ${
-                          autoAdvance ? 'translate-x-5' : 'translate-x-0.5'
-                        }`}
-                      />
-                    </button>
-                  </div>
-
-                  {!autoAdvance && feedback !== 'idle' && (
-                    <button
-                      onClick={handleNextClick}
-                      className="mt-4 w-full rounded-lg bg-emerald-500 py-2.5 text-sm font-semibold text-white shadow-lg shadow-emerald-950/40 transition hover:bg-emerald-400"
-                    >
-                      Next Review
-                    </button>
-                  )}
                 </div>
+
               </div>
             </section>
           </div>
