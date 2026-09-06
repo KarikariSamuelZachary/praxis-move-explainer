@@ -213,9 +213,13 @@ class StockfishEngine:
 
         # Convert score to centipawns from the requested side's perspective.
         if score:
-            cp_score = self._score_to_centipawns(score, pov if pov is not None else board.turn)
+            score_pov = pov if pov is not None else board.turn
+            normalized_score = score.pov(score_pov)
+            mate = normalized_score.mate() if normalized_score.is_mate() else None
+            cp_score = self._score_to_centipawns(score, score_pov)
         else:
             cp_score = 0
+            mate = None
 
         # Extract best move and convert to UCI/SAN
         if pv:
@@ -229,7 +233,8 @@ class StockfishEngine:
         return Evaluation(
             score_cp=cp_score,
             best_move_uci=best_move_uci,
-            best_move_san=best_move_san
+            best_move_san=best_move_san,
+            mate=mate,
         )
 
     def suggest(
