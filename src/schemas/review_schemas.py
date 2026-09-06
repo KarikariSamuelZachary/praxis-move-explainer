@@ -33,6 +33,7 @@ class ReviewMoveResponse(BaseModel):
     classification: MoveClassification
     cp_loss: int
     eval_cp: float = 0
+    eval_mate: Optional[int] = None
     best_move_san: Optional[str] = None
     best_move_uci: Optional[str] = None
     explanation: Optional[ReviewExplanation] = None
