@@ -110,6 +110,7 @@ class GameAnalyzer:
             score_cp=-eval_after.score_cp,
             best_move_uci=eval_after.best_move_uci,
             best_move_san=eval_after.best_move_san,
+            mate=-eval_after.mate if eval_after.mate is not None else None,
         )
         eval_drop_cp = eval_before.score_cp - eval_after_for_mover.score_cp
 
@@ -153,6 +154,7 @@ class GameAnalyzer:
                 "classification": "book",
                 "cp_loss": 0,
                 "eval_cp": 0.0,
+                "eval_mate": None,
                 "best_move_san": None,
                 "best_move_uci": None,
             }
@@ -198,6 +200,9 @@ class GameAnalyzer:
                     eval_after.score_cp if move_color == "black" else -eval_after.score_cp,
                     1,
                 ),
+                "eval_mate": (
+                    eval_after.mate if move_color == "black" else -eval_after.mate
+                ) if eval_after.mate is not None else None,
                 "best_move_san": (
                     eval_before.best_move_san
                     if eval_before.best_move_san and eval_before.best_move_san != "(none)"
