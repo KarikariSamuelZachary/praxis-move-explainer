@@ -57,6 +57,7 @@ export interface GameReviewMove {
   classification: MoveClassification;
   cp_loss: number;
   eval_cp: number;
+  eval_mate?: number | null;
   best_move_san?: string | null;
   best_move_uci?: string | null;
   explanation?: {
