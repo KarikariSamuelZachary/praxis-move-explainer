@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import Optional
 
 @dataclass
 class Position:
@@ -11,6 +12,7 @@ class Evaluation:
     score_cp:float
     best_move_uci:str
     best_move_san:str
+    mate: Optional[int] = None
 
 @dataclass
 class Mistake:
