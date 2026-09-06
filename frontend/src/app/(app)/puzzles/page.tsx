@@ -120,6 +120,15 @@ function NextIcon() {
   );
 }
 
+function SettingsIcon() {
+  return (
+    <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24">
+      <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0L6.2 6.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
 export default function PuzzlesPage() {
   const boardApi = useRef<BoardApi | null>(null);
   const [puzzles, setPuzzles] = useState<Puzzle[]>([]);
@@ -131,6 +140,8 @@ export default function PuzzlesPage() {
     totalTime: 0,
   });
   const [puzzleEnded, setPuzzleEnded] = useState(false);
+  const [autoAdvance, setAutoAdvance] = useState(true);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [currentRating, setCurrentRating] = useState<number | null>(null);
   const [reviewsDue, setReviewsDue] = useState<number | null>(null);
   const [woodpeckerNotice, setWoodpeckerNotice] = useState<string | null>(null);
@@ -139,9 +150,48 @@ export default function PuzzlesPage() {
   const hasScoredAttemptRef = useRef(false);
   const fetchingMoreRef = useRef(false);
   const stuckAtEndRef = useRef(false);
+  const advanceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const settingsRef = useRef<HTMLDivElement>(null);
   const birdRef = useRef<HTMLImageElement>(null);
   const prevReviewsDueRef = useRef<number | null>(null);
   const peckTlRef = useRef<gsap.core.Timeline | null>(null);
+
+  const clearAdvanceTimeout = useCallback(() => {
+    if (advanceTimeoutRef.current) {
+      clearTimeout(advanceTimeoutRef.current);
+      advanceTimeoutRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!isSettingsOpen) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (settingsRef.current && !settingsRef.current.contains(event.target as Node)) {
+        setIsSettingsOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsSettingsOpen(false);
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isSettingsOpen]);
+
+  useEffect(() => {
+    if (!autoAdvance) {
+      clearAdvanceTimeout();
+    }
+  }, [autoAdvance, clearAdvanceTimeout]);
+
+  useEffect(() => {
+    return () => clearAdvanceTimeout();
+  }, [currentIndex, clearAdvanceTimeout]);
 
   // Peck the woodpecker whenever the reviews-due count climbs (a puzzle
   // just entered the Woodpecker queue). Mirrors the landing-page twitch.
@@ -439,7 +489,8 @@ export default function PuzzlesPage() {
     }
   }
 
-  function handleNextPuzzle() {
+  const handleNextPuzzle = useCallback(() => {
+    clearAdvanceTimeout();
     if (currentIndex + 1 < puzzles.length) {
       setPuzzleEnded(false);
       setCurrentIndex((prev) => prev + 1);
@@ -449,7 +500,7 @@ export default function PuzzlesPage() {
       stuckAtEndRef.current = true;
       prefetchPuzzles();
     }
-  }
+  }, [clearAdvanceTimeout, currentIndex, prefetchPuzzles, puzzles.length]);
 
   function handleShowSolution() {
     // Treat revealing the solution before a recorded solve like the existing
@@ -470,12 +521,18 @@ export default function PuzzlesPage() {
 
   const handlePuzzleEnd = useCallback(() => {
     setPuzzleEnded(true);
-  }, []);
+    if (autoAdvance) {
+      clearAdvanceTimeout();
+      advanceTimeoutRef.current = setTimeout(handleNextPuzzle, 1500);
+    }
+  }, [autoAdvance, clearAdvanceTimeout, handleNextPuzzle]);
 
   const handlePlayAgain = useCallback(() => {
+    clearAdvanceTimeout();
+    stuckAtEndRef.current = false;
     boardApi.current?.resetPuzzle();
     setPuzzleEnded(false);
-  }, []);
+  }, [clearAdvanceTimeout]);
 
   const currentPuzzle = puzzles[currentIndex];
   const displayedThemes = currentPuzzle?.themes?.slice(0, 4) ?? [];
@@ -500,9 +557,9 @@ export default function PuzzlesPage() {
             </div>
           </div>
         ) : currentPuzzle ? (
-          <div className="grid items-start justify-center gap-6 xl:grid-cols-[18rem_minmax(0,calc(100vh-70px))_22rem]">
+          <div className="grid items-start gap-6 xl:grid-cols-[20rem_minmax(0,1fr)_22rem]">
             {/* ============== LEFT: WOODPECKER CARD + SESSION STATS ============== */}
-            <section className="order-2 mt-[24px] flex flex-col space-y-5 xl:order-none">
+            <section className="order-2 mt-6 flex flex-col space-y-6 xl:order-none">
               <div className={`${CARD_CLASS} mx-auto w-full max-w-[400px] p-5 shadow-2xl shadow-black/25 xl:max-w-none`}>
                 <Image ref={birdRef} src="/woodpecker-bird-v2.webp" alt="" width={160} height={160} className="mx-auto h-[160px] w-[160px] shrink-0 object-contain" />
                 <div className="mt-0 text-center">
@@ -537,7 +594,7 @@ export default function PuzzlesPage() {
 
             {/* ============== CENTER: CHESSBOARD ============== */}
             <section className="order-1 overflow-visible xl:order-none">
-              <div className="relative mx-auto mt-[24px] w-full max-w-[calc(100vh-70px)]">
+              <div className="relative mx-auto mt-6 w-full max-w-[calc(100vh-70px)]">
                 <div className="w-full">
                   <ChessBoard
                     puzzle={currentPuzzle}
@@ -548,11 +605,85 @@ export default function PuzzlesPage() {
                     apiRef={boardApi}
                   />
                 </div>
+
+                <div ref={settingsRef} className="absolute right-2 top-2 z-30 xl:left-full xl:right-auto xl:top-0 xl:ml-[2px]">
+                  <button
+                    type="button"
+                    onClick={() => setIsSettingsOpen((open) => !open)}
+                    className={`relative flex h-7 w-7 items-center justify-center rounded-md border text-[#f0e0c0] transition hover:scale-105 active:scale-95 ${
+                      isSettingsOpen
+                        ? 'border-[#d9b87c]/70 text-[#f7e5c6]'
+                        : 'border-black/60 hover:border-[#d9b87c]/45'
+                    }`}
+                    style={{
+                      borderRadius: '4px',
+                      background:
+                        'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.webp)',
+                      backgroundSize: 'cover',
+                      backgroundPosition: 'center',
+                      boxShadow:
+                        '0 0 0 2px #1a0a02, inset 0 2px 0 rgba(255,200,100,0.12), inset 0 -2px 0 rgba(0,0,0,0.5), 0 4px 12px rgba(0,0,0,0.5)',
+                    }}
+                    aria-label="Puzzle settings"
+                    aria-haspopup="dialog"
+                    aria-expanded={isSettingsOpen}
+                    title="Puzzle settings"
+                  >
+                    <SettingsIcon />
+                  </button>
+
+                  {isSettingsOpen && (
+                    <div
+                      role="dialog"
+                      aria-label="Puzzle settings"
+                      className="absolute right-0 top-full mt-2 w-60 rounded-xl border border-[#d9b87c]/30 bg-[#1b120d]/95 p-3 text-white shadow-[0_18px_42px_rgba(0,0,0,0.52),inset_0_1px_0_rgba(255,255,255,0.08)] backdrop-blur-xl"
+                    >
+                      <div className="flex items-center justify-between border-b border-white/10 pb-2">
+                        <span className="text-[10px] font-bold uppercase tracking-[0.24em] text-[#f7e5c6]/65">
+                          Puzzle settings
+                        </span>
+                        <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-[#37be7e]">
+                          {autoAdvance ? 'Auto' : 'Manual'}
+                        </span>
+                      </div>
+
+                      <div className="mt-3 flex items-center justify-between gap-4">
+                        <div>
+                          <div className="text-sm font-semibold text-[#f7e5c6]">Auto-advance</div>
+                          <div className="mt-1 text-[11px] leading-4 text-white/45">
+                            Continue after the puzzle ends
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setAutoAdvance((enabled) => !enabled)}
+                          className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                            autoAdvance ? 'bg-[#10b981]' : 'bg-white/15'
+                          }`}
+                          aria-pressed={autoAdvance}
+                          aria-label="Toggle auto-advance"
+                        >
+                          <span
+                            className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                              autoAdvance ? 'translate-x-5' : 'translate-x-0.5'
+                            }`}
+                          />
+                        </button>
+                      </div>
+
+                      <div className="mt-3 border-t border-white/10 pt-2 text-[10px] text-white/40">
+                        {autoAdvance
+                          ? 'Next puzzle loads after a short pause.'
+                          : 'Use Next Puzzle when you are ready.'}
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             </section>
 
             {/* ============== RIGHT: STATUS CARD + ACTIONS ============== */}
-            <section className="order-3 mx-auto mt-[24px] flex w-full max-w-[420px] flex-col space-y-5 xl:order-none xl:max-w-none">
+            <section className="order-3 mx-auto mt-6 flex w-full max-w-[420px] flex-col space-y-6 xl:order-none xl:max-w-none">
               <div className={`${CARD_CLASS} p-6 shadow-2xl shadow-black/25`}>
                 <div className="flex items-center gap-2.5">
                   <span className={`inline-block h-2.5 w-2.5 rounded-full ${sideToMoveLabel === 'White' ? 'bg-white' : 'bg-zinc-800 ring-1 ring-white/40'}`} />
