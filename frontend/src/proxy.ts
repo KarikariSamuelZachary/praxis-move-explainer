@@ -50,6 +50,14 @@ async function getSkillLevel(
 }
 
 export default clerkMiddleware(async (auth, req) => {
+  console.log("[MW_HIT]", {
+    timestamp: new Date().toISOString(),
+    pathname: req.nextUrl.pathname,
+    purpose: req.headers.get("purpose"),
+    secFetchMode: req.headers.get("sec-fetch-mode"),
+    secFetchDest: req.headers.get("sec-fetch-dest"),
+  });
+
   if (isProtectedRoute(req)) {
     await auth.protect();
   }
@@ -62,6 +70,11 @@ export default clerkMiddleware(async (auth, req) => {
   }
 
   const route = isOnboardingRoute(req) ? "onboarding" : "puzzles";
+  console.log("[MW_BACKEND_CALL]", {
+    timestamp: new Date().toISOString(),
+    pathname: req.nextUrl.pathname,
+    route,
+  });
   const skillLevel = await getSkillLevel(userId, route);
 
   if (isAppRoute(req) && !skillLevel) {
