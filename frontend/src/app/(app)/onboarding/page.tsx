@@ -99,14 +99,33 @@ export default function OnboardingPage() {
   // it must never block the UI with a spinner.
   useEffect(() => {
     let cancelled = false;
+    const startedAt = Date.now();
+
+    console.log('[TIMING] onboarding skill-level fetch start', {
+      timestamp: new Date(startedAt).toISOString(),
+    });
+
     fetch('/api/onboarding/skill-level', { cache: 'no-store' })
-      .then((res) => (res.ok ? res.json() : null))
+      .then((res) => {
+        console.log('[TIMING] onboarding skill-level fetch resolved', {
+          timestamp: new Date().toISOString(),
+          elapsed_ms: Date.now() - startedAt,
+          status: res.status,
+        });
+        return res.ok ? res.json() : null;
+      })
       .then((data) => {
         if (!cancelled && data?.skill_level) {
           router.replace('/puzzles');
         }
       })
-      .catch(() => {});
+      .catch((error) => {
+        console.log('[TIMING] onboarding skill-level fetch failed', {
+          timestamp: new Date().toISOString(),
+          elapsed_ms: Date.now() - startedAt,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
     return () => {
       cancelled = true;
     };

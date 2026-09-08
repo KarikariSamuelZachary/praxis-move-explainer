@@ -5,9 +5,18 @@ const isProtectedRoute = createRouteMatcher(["/puzzles(.*)", "/review(.*)", "/wo
 const isAppRoute = createRouteMatcher(["/puzzles(.*)", "/review(.*)", "/woodpecker(.*)", "/train(.*)", "/repertoire(.*)"]);
 const isOnboardingRoute = createRouteMatcher(["/onboarding(.*)"]);
 
-async function getSkillLevel(userId: string): Promise<string | null> {
+async function getSkillLevel(
+  userId: string,
+  route: "onboarding" | "puzzles",
+): Promise<string | null> {
   const backendApiUrl = process.env.BACKEND_API_URL ?? "http://localhost:8000";
   const internalSecret = process.env.INTERNAL_SECRET ?? "";
+  const startedAt = Date.now();
+
+  console.log("[TIMING] proxy skill-level fetch start", {
+    timestamp: new Date(startedAt).toISOString(),
+    route,
+  });
 
   try {
     const res = await fetch(`${backendApiUrl}/onboarding/skill-level`, {
@@ -18,10 +27,24 @@ async function getSkillLevel(userId: string): Promise<string | null> {
         "X-Clerk-User-Id": userId,
       },
     });
+
+    console.log("[TIMING] proxy skill-level fetch resolved", {
+      timestamp: new Date().toISOString(),
+      elapsed_ms: Date.now() - startedAt,
+      route,
+      status: res.status,
+    });
+
     if (!res.ok) return null;
     const data = await res.json();
     return data.skill_level ?? null;
-  } catch {
+  } catch (error) {
+    console.log("[TIMING] proxy skill-level fetch failed", {
+      timestamp: new Date().toISOString(),
+      elapsed_ms: Date.now() - startedAt,
+      route,
+      error: error instanceof Error ? error.message : String(error),
+    });
     return null;
   }
 }
@@ -38,7 +61,8 @@ export default clerkMiddleware(async (auth, req) => {
     return NextResponse.next();
   }
 
-  const skillLevel = await getSkillLevel(userId);
+  const route = isOnboardingRoute(req) ? "onboarding" : "puzzles";
+  const skillLevel = await getSkillLevel(userId, route);
 
   if (isAppRoute(req) && !skillLevel) {
     return NextResponse.redirect(new URL("/onboarding", req.url));
