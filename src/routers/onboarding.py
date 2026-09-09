@@ -56,7 +56,10 @@ def set_skill_level(request: Request, body: SkillLevelBody, conn=Depends(get_db)
         # If a stale row exists for the same email but an old clerk_id
         # (account deleted + recreated in Clerk), reclaim it under the
         # new clerk_id before the upsert. This avoids a UNIQUE(email)
-        # collision on insert and preserves any non-skill columns.
+        # collision on insert and preserves any non-skill columns. The
+        # migration configures every users(clerk_id) foreign key with
+        # ON UPDATE CASCADE so existing child rows follow this identity
+        # rename atomically with the users row.
         if email:
             cur.execute(
                 """
