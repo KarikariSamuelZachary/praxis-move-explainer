@@ -67,7 +67,7 @@ def run_migrations():
                 """
                 CREATE TABLE IF NOT EXISTS woodpecker_entries (
                     id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    user_id       TEXT NOT NULL REFERENCES users(clerk_id),
+                    user_id       TEXT NOT NULL REFERENCES users(clerk_id) ON UPDATE CASCADE,
                     puzzle_id     TEXT NOT NULL,
                     theme         TEXT NOT NULL,
                     added_at      TIMESTAMP DEFAULT NOW(),
@@ -153,7 +153,7 @@ def run_migrations():
                 """
                 CREATE TABLE IF NOT EXISTS tactical_rating_history (
                     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    user_id     TEXT NOT NULL REFERENCES users(clerk_id),
+                    user_id     TEXT NOT NULL REFERENCES users(clerk_id) ON UPDATE CASCADE,
                     old_rating  INT NOT NULL,
                     new_rating  INT NOT NULL,
                     change      INT NOT NULL,
@@ -193,7 +193,7 @@ def run_migrations():
                 """
                 CREATE TABLE IF NOT EXISTS repertoires (
                     id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    user_id     TEXT NOT NULL REFERENCES users(clerk_id) ON DELETE CASCADE,
+                    user_id     TEXT NOT NULL REFERENCES users(clerk_id) ON DELETE CASCADE ON UPDATE CASCADE,
                     name        TEXT NOT NULL,
                     color       TEXT NOT NULL CHECK (color IN ('white', 'black')),
                     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -389,7 +389,7 @@ def run_migrations():
                 """
                 CREATE TABLE IF NOT EXISTS opponent_import_jobs (
                     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    requested_by_user_id TEXT NOT NULL REFERENCES users(clerk_id),
+                    requested_by_user_id TEXT NOT NULL REFERENCES users(clerk_id) ON UPDATE CASCADE,
                     status              TEXT NOT NULL DEFAULT 'queued'
                                         CHECK (status IN ('queued', 'running', 'completed', 'failed')),
                     lichess_username    TEXT,
@@ -418,7 +418,7 @@ def run_migrations():
                 """
                 CREATE TABLE IF NOT EXISTS opponent_games (
                     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    requested_by_user_id TEXT NOT NULL REFERENCES users(clerk_id),
+                    requested_by_user_id TEXT NOT NULL REFERENCES users(clerk_id) ON UPDATE CASCADE,
                     import_job_id       UUID REFERENCES opponent_import_jobs(id) ON DELETE SET NULL,
                     provider            TEXT NOT NULL CHECK (provider IN ('lichess', 'chesscom')),
                     opponent_username   TEXT NOT NULL,
@@ -446,7 +446,7 @@ def run_migrations():
                 CREATE TABLE IF NOT EXISTS opponent_repertoire_moves (
                     id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                     opponent_game_id     UUID NOT NULL REFERENCES opponent_games(id) ON DELETE CASCADE,
-                    requested_by_user_id TEXT NOT NULL REFERENCES users(clerk_id),
+                    requested_by_user_id TEXT NOT NULL REFERENCES users(clerk_id) ON UPDATE CASCADE,
                     provider             TEXT NOT NULL CHECK (provider IN ('lichess', 'chesscom')),
                     opponent_username    TEXT NOT NULL,
                     position_key         TEXT NOT NULL,
@@ -495,7 +495,7 @@ def run_migrations():
                 """
                 CREATE TABLE IF NOT EXISTS opponent_analysis_jobs (
                     id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    requested_by_user_id TEXT NOT NULL REFERENCES users(clerk_id),
+                    requested_by_user_id TEXT NOT NULL REFERENCES users(clerk_id) ON UPDATE CASCADE,
                     provider             TEXT NOT NULL CHECK (provider IN ('lichess', 'chesscom')),
                     opponent_username    TEXT NOT NULL,
                     status               TEXT NOT NULL DEFAULT 'idle'
@@ -513,7 +513,7 @@ def run_migrations():
                 """
                 CREATE TABLE IF NOT EXISTS opponent_game_analysis (
                     id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    requested_by_user_id TEXT NOT NULL REFERENCES users(clerk_id),
+                    requested_by_user_id TEXT NOT NULL REFERENCES users(clerk_id) ON UPDATE CASCADE,
                     provider             TEXT NOT NULL CHECK (provider IN ('lichess', 'chesscom')),
                     opponent_username    TEXT NOT NULL,
                     game_id              UUID NOT NULL REFERENCES opponent_games(id) ON DELETE CASCADE,
@@ -534,7 +534,7 @@ def run_migrations():
                 """
                 CREATE TABLE IF NOT EXISTS opponent_game_blunders (
                     id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    requested_by_user_id TEXT NOT NULL REFERENCES users(clerk_id),
+                    requested_by_user_id TEXT NOT NULL REFERENCES users(clerk_id) ON UPDATE CASCADE,
                     provider             TEXT NOT NULL CHECK (provider IN ('lichess', 'chesscom')),
                     opponent_username    TEXT NOT NULL,
                     game_id              UUID NOT NULL REFERENCES opponent_games(id) ON DELETE CASCADE,
@@ -574,7 +574,7 @@ def run_migrations():
                 """
                 CREATE TABLE IF NOT EXISTS opponent_profile_snapshots (
                     id                       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    requested_by_user_id     TEXT NOT NULL REFERENCES users(clerk_id) ON DELETE CASCADE,
+                    requested_by_user_id     TEXT NOT NULL REFERENCES users(clerk_id) ON DELETE CASCADE ON UPDATE CASCADE,
                     provider                 TEXT NOT NULL CHECK (provider IN ('lichess', 'chesscom')),
                     opponent_username        TEXT NOT NULL,
                     game_count               INTEGER NOT NULL DEFAULT 0,
@@ -602,7 +602,7 @@ def run_migrations():
                 """
                 CREATE TABLE IF NOT EXISTS user_games (
                     id                  UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    user_id             TEXT NOT NULL REFERENCES users(clerk_id),
+                    user_id             TEXT NOT NULL REFERENCES users(clerk_id) ON UPDATE CASCADE,
                     provider            TEXT CHECK (provider IN ('lichess', 'chesscom', 'pgn')),
                     source_username     TEXT,
                     game_url            TEXT NOT NULL DEFAULT '',
@@ -631,7 +631,7 @@ def run_migrations():
                 """
                 CREATE TABLE IF NOT EXISTS weakness_profile_jobs (
                     id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-                    requested_by_user_id  TEXT NOT NULL REFERENCES users(clerk_id),
+                    requested_by_user_id  TEXT NOT NULL REFERENCES users(clerk_id) ON UPDATE CASCADE,
                     source_type           TEXT NOT NULL CHECK (source_type IN ('opponent', 'user')),
                     provider              TEXT,
                     opponent_username     TEXT,
@@ -655,7 +655,7 @@ def run_migrations():
                 CREATE TABLE IF NOT EXISTS weakness_profile_moves (
                     id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
                     profile_job_id        UUID NOT NULL REFERENCES weakness_profile_jobs(id) ON DELETE CASCADE,
-                    requested_by_user_id  TEXT NOT NULL REFERENCES users(clerk_id),
+                    requested_by_user_id  TEXT NOT NULL REFERENCES users(clerk_id) ON UPDATE CASCADE,
                     source_type           TEXT NOT NULL CHECK (source_type IN ('opponent', 'user')),
                     source_game_id        UUID,
                     game_url              TEXT NOT NULL DEFAULT '',
@@ -689,6 +689,107 @@ def run_migrations():
                     ON weakness_profile_moves(profile_job_id, cp_loss DESC)
                 """
             )
+
+            # A Clerk account can be deleted and recreated with the same
+            # email address. The onboarding reconciliation path then renames
+            # users.clerk_id. Every FK that stores that identity must cascade
+            # the key update; otherwise PostgreSQL's default NO ACTION rule
+            # rejects the rename as soon as any child row exists. The
+            # migration is idempotent so existing databases get the same
+            # behavior as fresh installs.
+            user_fk_cascade_migrations = (
+                ("woodpecker_entries", "woodpecker_entries_user_id_fkey", "user_id", ""),
+                (
+                    "tactical_rating_history",
+                    "tactical_rating_history_user_id_fkey",
+                    "user_id",
+                    "",
+                ),
+                ("repertoires", "repertoires_user_id_fkey", "user_id", "ON DELETE CASCADE"),
+                (
+                    "opponent_import_jobs",
+                    "opponent_import_jobs_requested_by_user_id_fkey",
+                    "requested_by_user_id",
+                    "",
+                ),
+                (
+                    "opponent_games",
+                    "opponent_games_requested_by_user_id_fkey",
+                    "requested_by_user_id",
+                    "",
+                ),
+                (
+                    "opponent_repertoire_moves",
+                    "opponent_repertoire_moves_requested_by_user_id_fkey",
+                    "requested_by_user_id",
+                    "",
+                ),
+                (
+                    "opponent_analysis_jobs",
+                    "opponent_analysis_jobs_requested_by_user_id_fkey",
+                    "requested_by_user_id",
+                    "",
+                ),
+                (
+                    "opponent_game_analysis",
+                    "opponent_game_analysis_requested_by_user_id_fkey",
+                    "requested_by_user_id",
+                    "",
+                ),
+                (
+                    "opponent_game_blunders",
+                    "opponent_game_blunders_requested_by_user_id_fkey",
+                    "requested_by_user_id",
+                    "",
+                ),
+                (
+                    "opponent_profile_snapshots",
+                    "opponent_profile_snapshots_requested_by_user_id_fkey",
+                    "requested_by_user_id",
+                    "ON DELETE CASCADE",
+                ),
+                ("user_games", "user_games_user_id_fkey", "user_id", ""),
+                (
+                    "weakness_profile_jobs",
+                    "weakness_profile_jobs_requested_by_user_id_fkey",
+                    "requested_by_user_id",
+                    "",
+                ),
+                (
+                    "weakness_profile_moves",
+                    "weakness_profile_moves_requested_by_user_id_fkey",
+                    "requested_by_user_id",
+                    "",
+                ),
+            )
+            for table_name, constraint_name, column_name, delete_clause in user_fk_cascade_migrations:
+                cur.execute(
+                    f"""
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1
+                            FROM information_schema.referential_constraints rc
+                            JOIN information_schema.table_constraints tc
+                              ON tc.constraint_schema = rc.constraint_schema
+                             AND tc.constraint_name = rc.constraint_name
+                            WHERE tc.constraint_schema = current_schema()
+                              AND tc.table_name = '{table_name}'
+                              AND tc.constraint_name = '{constraint_name}'
+                              AND rc.update_rule = 'CASCADE'
+                        ) THEN
+                            ALTER TABLE {table_name}
+                                DROP CONSTRAINT IF EXISTS {constraint_name};
+                            ALTER TABLE {table_name}
+                                ADD CONSTRAINT {constraint_name}
+                                FOREIGN KEY ({column_name})
+                                REFERENCES users(clerk_id)
+                                {delete_clause}
+                                ON UPDATE CASCADE;
+                        END IF;
+                    END $$;
+                    """
+                )
 
             # --- puzzles -----------------------------------------------------
             # The puzzles table is seeded out-of-band (see praxis_subset.csv /
