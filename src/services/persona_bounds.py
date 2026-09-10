@@ -107,6 +107,37 @@ def engine_trust(engine_norm_cp: float, max_cp_drop: float = 75.0) -> float:
     This is a genuine exponential (NOT a linear ramp, NOT a step function).
     The only discontinuity is the intentional hard-reject step from ~0.02 to
     exactly 0.0 at the -max_cp_drop boundary.
+
+    KNOWN LIMITATION -- MATE-SCORE NORM DISTORTION (named known gap)
+    ---------------------------------------------------------------
+    engine_norm_cp only means what this curve assumes it means when BOTH
+    compared scores are real centipawn scores. StockfishEngine.suggest()
+    coerces every mate score to +/-10000 with mate distance erased
+    (_score_to_centipawns), so whenever the engine's best candidate is a
+    mate, the norms this function consumes degenerate in two ways:
+
+      * every non-mate candidate gets an absurd norm with no chess meaning
+        (e.g. 10000 - 2493 = -7507 -- "centipawns" and "moves to mate" are
+        not commensurable). This is currently HARMLESS BY ACCIDENT, not by
+        design: the hard clamp returns exactly 0.0 for norm <=
+        -max_cp_drop, so the persona bias is exactly 0 and the candidate's
+        final score stays its raw norm. But the guarantee is an accident of
+        this curve's SHAPE: garbage norms like -7507 are only inert because
+        they sit far past the hard-reject boundary. If max_cp_drop were
+        ever raised dramatically or the curve reshaped, these garbage norms
+        would start interacting with the trust math in untested ways.
+      * two mate-scored candidates at DIFFERENT mate distances both read
+        10000, so both sit at norm 0 with FULL trust -- the persona
+        tie-breaks what is objectively a strictly faster mate. This edge
+        case is untested (no test pins it), and a style bias choosing
+        between "mate in 1" and "mate in 4" would be the worst kind of
+        reorder.
+
+    If this is ever revisited, the fix is mate-distance-aware norm handling
+    (decode mate-in-n and rank mates in a separate tier ordered by n, or map
+    mate scores onto a bounded, monotonic cp-equivalent) or a separate
+    scoring tier for mate-adjacent positions at the reranker call site.
+    No static fix is attempted here -- documentation only.
     """
     if engine_norm_cp >= 0.0:
         return 1.0
