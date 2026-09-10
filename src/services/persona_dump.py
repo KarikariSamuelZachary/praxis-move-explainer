@@ -16,6 +16,11 @@ Output is one table per (fixture, strength) pair:
     sacrifice_signal, volatility),
   * the attack/defense subcomponents from the debug dict.
 
+Candidates are listed in canonicalize_by_score() order (strict descending
+score_cp), NOT raw MultiPV search order: Stockfish's own list order is not
+guaranteed cp-sorted at adjacent ranks, and this dump's row order should
+be trustworthy for a human eyeballing norm gaps.
+
 Strength levels:
   * "full"     -> no configure_strength() call (fresh engine = full strength).
   * "elo-1800" -> configure_strength(engine.engine, elo=1800).
@@ -40,6 +45,7 @@ from engines.stockfish_engine import StockfishEngine, configure_strength
 from services.persona_bounds import game_phase
 from services.persona_features import compute_style_scores
 from services.persona_fixtures import FIXTURES
+from services.persona_weights import canonicalize_by_score
 
 # multipv width. 5 gives a readable spread of near-best candidates without
 # drowning the reviewer in tail moves that a persona could never plausibly
@@ -69,7 +75,9 @@ def _dump_fixture(engine, fixture, label):
     print(f"  FEN: {fixture['fen']}")
     print("-" * 100)
 
-    suggestions = engine.suggest(board, num_moves=NUM_MOVES, time_limit=TIME_LIMIT)
+    suggestions = canonicalize_by_score(
+        engine.suggest(board, num_moves=NUM_MOVES, time_limit=TIME_LIMIT)
+    )
     if not suggestions:
         print("  (no candidate moves returned)")
         return
