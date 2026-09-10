@@ -402,12 +402,15 @@ def _sacrifice_concession(
 
     A moved piece counts as hung when it is attacked by the enemy and not
     defended by the mover, EXCEPT for the check-gated "king-stab" case: if the
-    move gives CHECK, captured strictly cheaper material than the moved piece,
-    and the moved piece lands on a square the ENEMY KING attacks, the enemy
-    king's attack overrides any friendly piece defense (the Greek-gift
-    signature -- a king "recapture" cannot be dealt with like a normal piece
-    attacker). The check gate is what keeps a safely defended, non-checking
-    pawn grab (e.g. Bxg7) from being mislabeled as a sacrifice.
+    move gives CHECK (but is not CHECKMATE), captured strictly cheaper material
+    than the moved piece, and the moved piece lands on a square the ENEMY KING
+    attacks, the enemy king's attack overrides any friendly piece defense (the
+    Greek-gift signature -- a king "recapture" cannot be dealt with like a
+    normal piece attacker). The check gate is what keeps a safely defended,
+    non-checking pawn grab (e.g. Bxg7) from being mislabeled as a sacrifice;
+    the mate gate is what keeps a mating queen capture (e.g. Qxg7#) out -- a
+    mating move takes no risk (the game is already decided), so it is not a
+    gamble and not a sacrifice in the sense this signal captures.
 
     Documented limitations:
       * SEE depth is 1: a piece defended by a single own piece is treated as
@@ -453,6 +456,7 @@ def _sacrifice_concession(
         piece_value = _PIECE_VALUE.get(piece.piece_type, 0)
         king_stab = (
             board_after.is_check()
+            and not board_after.is_checkmate()
             and captured_value < piece_value
             and enemy_king_square is not None
             and enemy_king_square in enemy_attackers
