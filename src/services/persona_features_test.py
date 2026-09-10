@@ -189,6 +189,71 @@ def test_clear_ray_adjacency():
     print("  [PASS] clear-ray adjacency: adjacent aligned squares count; blocked/non-aligned do not")
 
 
+def test_sacrifice_gate_matrix():
+    # Every sacrifice-gate behavior established in the review rounds, as one
+    # permanent matrix on real fixture positions (see _sacrifice_concession's
+    # docstring for the rule and its documented limitations).
+    cases = [
+        ("r1bq1rk1/pppnbppp/8/4P1N1/3P4/3B4/PPP2PPP/RNBQ1RK1 w - - 0 1", "d3h7", 1.0,
+         "Bxh7+: check-gated king-stab (check + piece-for-pawn + king-adjacent)"),
+        ("r1bqkb1r/ppp2ppp/2n5/3np1N1/2B5/8/PPPP1PPP/RNBQK2R w KQkq - 0 6", "g5f7", 1.0,
+         "Nxf7 (Fried Liver): genuinely en prise, undefended -> threshold=2 fires"),
+        ("6k1/5ppp/4p3/5n2/3N4/8/8/6K1 w - - 0 1", "d4f5", 0.0,
+         "Nxf5 even trade: concession=0 despite the hung knight (regression)"),
+        ("r1bq1rk1/pppnbppp/8/4P1N1/3P4/3B4/PPP2PPP/RNBQ1RK1 w - - 0 1", "g5h7", 0.0,
+         "Nxh7: no check -> king-stab gate closed -> ACCEPTED false negative"),
+        ("5rk1/5ppp/7Q/5N2/8/8/5PPP/6K1 w - - 0 1", "h6g7", 0.0,
+         "Qxg7# mate: checkmate is excluded from the king-stab (mate gate)"),
+    ]
+    for fen, uci, expected, why in cases:
+        scores, debug = _scores(fen, uci)
+        assert scores.sacrifice_signal == expected, (debug["move_san"], expected)
+        print(f"    {debug['move_san']:<7} sac={scores.sacrifice_signal:.1f}  ({why})")
+    print("  [PASS] sacrifice-gate matrix: 2 fire, 2 correctly silent, mate gated")
+
+
+def test_pinned_known_gaps():
+    # PINNED KNOWN GAPS -- these assert the CURRENT, accepted behavior so any
+    # future edit that changes it is a conscious decision, not an accident.
+    #
+    # GAP 1 (safe grab): a DEFENDED piece-for-pawn capture on a
+    # king-controlled square WITHOUT check must stay silent. The check gate
+    # on king-stab exists precisely to keep this from false-positiving.
+    scores, debug = _scores("6k1/6pp/8/4B3/8/8/6Q1/6K1 w - - 0 1", "e5g7")
+    assert scores.sacrifice_signal == 0.0, debug["sacrifice"]
+    assert debug["sacrifice"]["hung_value"] == 0
+    print("    Bxg7 (defended by Qg2, king controls g7, no check): sac=0.0")
+    #
+    # GAP 2 (COMPENSATION-BLINDNESS, named in persona_features.py): an
+    # UNDEFENDED piece-for-pawn capture with no compensation is flagged as a
+    # sacrifice. Threshold=2 + the no-lookahead contract cannot tell a real
+    # gamble from material thrown away for nothing; closing that requires
+    # looking past the single move (same category as initiative_proxy).
+    scores, debug = _scores("4k3/5p2/8/6N1/8/8/8/4K3 w - - 0 1", "g5f7")
+    assert scores.sacrifice_signal == 1.0, debug["sacrifice"]
+    assert debug["sacrifice"]["concession"] == 2
+    print("    Nxf7 (undefended, no check, no compensation): sac=1.0  [COMPENSATION-BLINDNESS pin]")
+    print("  [PASS] both documented gaps behave exactly as documented")
+
+
+def test_compute_style_scores_deterministic():
+    # The extractor is a pure function of (board_before, move): running it
+    # twice must produce identical StyleScores AND debug dicts. No engine,
+    # no time, no hidden state -- any divergence would be a real bug.
+    cases = [
+        ("r1bq1rk1/pppnbppp/8/4P1N1/3P4/3B4/PPP2PPP/RNBQ1RK1 w - - 0 1", "d3h7"),
+        ("5rk1/5ppp/7Q/5N2/8/8/5PPP/6K1 w - - 0 1", "h6g7"),
+        ("r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4", "e1g1"),
+    ]
+    for fen, uci in cases:
+        board = chess.Board(fen)
+        move = chess.Move.from_uci(uci)
+        s1, d1 = compute_style_scores(board, move)
+        s2, d2 = compute_style_scores(board, move)
+        assert s1 == s2 and d1 == d2, uci
+    print("  [PASS] compute_style_scores is deterministic (pure function)")
+
+
 def main() -> int:
     print("=== Running persona feature-extractor tests ===")
     tests = [
@@ -202,6 +267,9 @@ def main() -> int:
         test_castling_improves_safety,
         test_endgame_active_king,
         test_clear_ray_adjacency,
+        test_sacrifice_gate_matrix,
+        test_pinned_known_gaps,
+        test_compute_style_scores_deterministic,
     ]
     for test in tests:
         try:
