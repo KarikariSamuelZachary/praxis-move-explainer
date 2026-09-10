@@ -8,6 +8,7 @@ import glob
 import logging
 import os
 import shutil
+from threading import Lock
 from typing import Optional
 from schemas.models import Evaluation
 
@@ -177,6 +178,11 @@ class StockfishEngine:
         self.stockfish_path = resolve_stockfish_path(stockfish_path)
         self.depth = depth
         self.engine: Optional[chess.engine.SimpleEngine] = None
+        # Serializes analyse() calls on this instance. python-chess's
+        # SimpleEngine submits UCI commands from whatever thread calls it
+        # without a command-level lock, so two concurrent callers would
+        # interleave UCI writes on one protocol and corrupt responses.
+        self._call_lock = Lock()
 
     def __enter__(self):
         self.start()
@@ -203,10 +209,11 @@ class StockfishEngine:
             raise RuntimeError("Engine not started. Use context manager or call start()")
 
         effective_depth = depth_limit if depth_limit is not None else self.depth
-        info = self.engine.analyse(
-            board,
-            chess.engine.Limit(time=self.FAST_ANALYSIS_TIME, depth=effective_depth),
-        )
+        with self._call_lock:
+            info = self.engine.analyse(
+                board,
+                chess.engine.Limit(time=self.FAST_ANALYSIS_TIME, depth=effective_depth),
+            )
 
         score = info.get("score")
         pv = info.get("pv", [])
@@ -270,11 +277,12 @@ class StockfishEngine:
         requested = max(1, min(num_moves, legal_count))
         analysis_time = time_limit if time_limit is not None else self.FAST_ANALYSIS_TIME
 
-        infos = self.engine.analyse(
-            board,
-            chess.engine.Limit(time=analysis_time),
-            multipv=requested,
-        )
+        with self._call_lock:
+            infos = self.engine.analyse(
+                board,
+                chess.engine.Limit(time=analysis_time),
+                multipv=requested,
+            )
 
         suggestions = []
         for info in infos:
@@ -303,3 +311,72 @@ class StockfishEngine:
     def is_blunder(self, eval_before: Evaluation, eval_after: Evaluation, threshold: float = 100) -> bool:
         eval_drop = eval_before.score_cp - eval_after.score_cp
         return eval_drop >= threshold
+
+
+# --- Long-lived singleton (used by the sparring safety check) ---------------
+#
+# The sparring move endpoint previously spawned a fresh Stockfish subprocess
+# per request (`with StockfishEngine():`), paying process spawn + UCI
+# handshake on EVERY move (~0.3-0.7s) before the two 0.1s evaluations even
+# started. A process-lifetime singleton removes that per-move cost. The
+# instance lock above keeps concurrent request threads from interleaving
+# UCI commands; they simply queue behind each other's analyse() calls.
+
+_stockfish: Optional[StockfishEngine] = None
+_stockfish_lifecycle_lock = Lock()
+
+
+def start_stockfish_singleton() -> StockfishEngine:
+    """Start the long-lived Stockfish used by the sparring safety check.
+
+    Idempotent: returns the existing singleton when it already has a live
+    subprocess. Raises if the engine cannot be spawned so callers (startup
+    logging, request paths) can degrade loudly instead of silently.
+    """
+    global _stockfish
+    with _stockfish_lifecycle_lock:
+        if _stockfish is not None and _stockfish.engine is not None:
+            return _stockfish
+        instance = StockfishEngine()
+        instance.start()  # raises on failure BEFORE we publish the global
+        _stockfish = instance
+        return _stockfish
+
+
+def get_stockfish_singleton() -> StockfishEngine:
+    """Return the long-lived Stockfish, starting it on first use."""
+    global _stockfish
+    if _stockfish is None:
+        return start_stockfish_singleton()
+    return _stockfish
+
+
+def reset_stockfish_singleton() -> None:
+    """Drop the long-lived Stockfish after a failure.
+
+    Best-effort `quit()` so a still-alive subprocess doesn't leak; any
+    exception is swallowed because the caller is already handling a failed
+    evaluate() — the next sparring request simply starts a fresh subprocess.
+    """
+    global _stockfish
+    with _stockfish_lifecycle_lock:
+        instance = _stockfish
+        _stockfish = None
+    if instance is not None:
+        try:
+            instance.close()
+        except Exception:  # noqa: BLE001 -- reset path must never raise
+            pass
+
+
+def close_stockfish_singleton() -> None:
+    """Quit the long-lived Stockfish (app shutdown). Best-effort, no raise."""
+    global _stockfish
+    with _stockfish_lifecycle_lock:
+        instance = _stockfish
+        _stockfish = None
+    if instance is not None:
+        try:
+            instance.close()
+        except Exception:  # noqa: BLE001 -- shutdown must never raise
+            pass
