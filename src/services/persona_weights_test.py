@@ -11,25 +11,48 @@ PART 1 unit tests (normalization):
     actual positions, not just synthetic numbers
 
 PART 2/3 unit tests (weights + phase gating):
-  * both persona scores bounded to [-1, 1]
+  * all persona scores bounded to [-1, 1]
   * Attacker and Sacrificer correlate on Bxh7+ (both positive, sacrificer
     heavier) but DIVERGE on a non-sacrificial direct attack (Qxg7#: mate-gated
     sac=0.0 -> attacker stays high, sacrificer low)
   * phase damping touches ONLY the king-zone-pressure attack subcomponents;
     sacrifice/volatility/concrete tactical events pass through untouched
+  * Defender: defense_gain dominates with NEGATIVE style penalties (attack/
+    sacrifice mildly, volatility more), so its final clamp is load-bearing;
+    sign agreement with defense_gain's established signs on the four
+    defense-sign fixtures; defense-side phase damping zeroes the STATIC
+    features (king_zone_defense, pawn_shield) while concrete deltas and king
+    mobility survive; on the near-equal fixture the Defender promotes the
+    quiet rook activation (Re1) that both other personas leave demoted
+  * Positional: PURE PENALTY persona (no positive anchor -- the argued
+    design decision is pinned in persona_weights.py's weight block): a
+    perfectly quiet move scores exactly 0,     sharpness is penalized
+    (volatility dominant, attack_gain strong, sacrifice incremental,
+    defense 0), the de-escalation credit is provably self-limiting, and the
+    clamp is VESTIGIAL (practical range [-0.78, 0], unlike Defender's);
+    sharp tops score lower under Positional than under all three other
+    personas; on the near-equal fixture Positional's ranking equals cp
+    order (zero bias on all-quiet candidates) with an asserted pairwise
+    flip against each of the other three personas
   * end-to-end: the same StyleScores score lower under Attacker in a bare
     king-and-pawn endgame (phase 1.0) than in the opening (phase 0.0)
 
 PART 4 integration (engine, print-only):
-  full pipeline on 4 fixtures (the 3 required + active endgame king as a
-  phase-gating sanity check): suggest() -> canonicalize_by_score() ->
-  compute_style_scores() -> attacker_score()/sacrificer_score() ->
-  persona_adjusted_score(real engine_norm_cp, real game_phase), i.e.
+  full pipeline on the sacrifice fixtures (obvious sacrifice + sharp
+  tactical: do Defender/Positional correctly NOT promote the sacrifice-
+  heavy top candidate?), the quiet positional middlegame fixture (built
+  FOR Positional; all-quiet candidates -> expected cp-order fallback),
+  the near-equal mixed-style fixture (persona reorder comparison) and
+  active endgame king (phase-gating sanity check):
+  suggest() -> canonicalize_by_score() -> compute_style_scores() ->
+  attacker_score()/sacrificer_score()/defender_score()/positional_score()
+  -> persona_adjusted_score(real engine_norm_cp, real game_phase), i.e.
   final = norm + PERSONA_BIAS_CP (=100) * bounded_bias, demotion-floored
-  at -75, with the engine/Attacker/Sacrificer orderings printed side by
-  side. The ENGINE order is canonicalize_by_score()'s strict
-  cp-descending order, so "(unchanged)" can only mean the persona
-  contributed nothing -- never that the list needed re-sorting anyway.
+  at -75, with the engine/Attacker/Sacrificer/Defender/Positional
+  orderings printed side by side. The ENGINE order is
+  canonicalize_by_score()'s strict cp-descending order, so "(unchanged)"
+  can only mean the persona contributed nothing -- never that the list
+  needed re-sorting anyway.
 
 Run with: cd src && ../venv/bin/python services/persona_weights_test.py
 """
@@ -51,12 +74,15 @@ from services.persona_features import (
 from services.persona_fixtures import FIXTURES
 from services.persona_weights import (
     PERSONA_BIAS_CP,
+    _defender_phase_damped_scores,
     _phase_damped_scores,
     _squash_signed,
     attacker_score,
     canonicalize_by_score,
+    defender_score,
     normalize_style_scores,
     persona_adjusted_score,
+    positional_score,
     sacrificer_score,
 )
 
@@ -84,6 +110,27 @@ def _synthetic(kzp=0.0, kaa=0.0, checks=0.0, open_lines=0.0, esc=0.0,
         initiative_proxy=0.0,
         attack_sub=AttackGainSub(kzp, kaa, checks, open_lines, esc),
         defense_sub=DefenseGainSub(0.0, 0.0, 0.0, 0.0, 0.0),
+    )
+
+
+def _synthetic_def(epr=0.0, kzd=0.0, blk=0.0, shd=0.0, mob=0.0,
+                   kzp=0.0, sac=0.0, vol=0.0):
+    """Hand-built StyleScores with CONSISTENT defense subcomponents.
+
+    Unlike _synthetic (whose defense subs stay zero, fine for attack-side
+    tests), the Defender DAMPS king_zone_defense/pawn_shield and REBUILDS
+    defense_gain as sum(defense_sub) -- so a defense-side unit test must
+    set the SUBS, not just the aggregate, or the rebuild would zero it.
+    """
+    defense_gain = epr + kzd + blk + shd + mob
+    return StyleScores(
+        attack_gain=kzp,
+        defense_gain=defense_gain,
+        sacrifice_signal=sac,
+        volatility=vol,
+        initiative_proxy=0.0,
+        attack_sub=AttackGainSub(kzp, 0.0, 0.0, 0.0, 0.0),
+        defense_sub=DefenseGainSub(epr, kzd, blk, shd, mob),
     )
 
 
@@ -367,6 +414,337 @@ def test_persona_ordering_differentiation_deterministic():
     print("  [PASS] sacrificer prefers the real sacrifice over the queen sortie")
 
 
+def test_defender_scores_bounded():
+    # Bounded to [-1, 1] on ordinary inputs...
+    board = chess.Board()
+    s = _synthetic_def(epr=2.0, blk=1.0, mob=1.0, kzp=2.0, vol=0.5)
+    d = defender_score(s, board)
+    assert -1.0 <= d <= 1.0, d
+    # ...and at the EXTREMES the final clamp is LOAD-BEARING for the Defender
+    # (negative style weights -> affine, not convex, combination): a maximal
+    # defense score must clamp to exactly 1, and a maximally defense-hated
+    # sharp move to exactly -1. (These would exceed the range unclamped:
+    # ~+1.2 and ~-1.24.)
+    s_max = _synthetic_def(mob=100.0)
+    assert defender_score(s_max, board) == 1.0
+    s_min = _synthetic_def(epr=-100.0, kzp=20.0)
+    assert defender_score(s_min, board) == -1.0
+    print(f"    ordinary: {d:+.4f} | extremes clamp to exactly +/-1 (clamp is load-bearing)")
+    print("  [PASS] defender bounded to [-1, 1]; clamp enforced at the extremes")
+
+
+def test_defender_fixture_signs():
+    # SIGN AGREEMENT with defense_gain's established signs on the same four
+    # fixtures the earlier suites pin (persona_features's design list +
+    # test_real_fixture_values): castling weakly positive, Be2 block strongly
+    # positive, Kf1 negative, Bb2 development exactly 0.
+    #
+    # NOTE ON "CLEARLY POSITIVE" ON CASTLING: the extractor itself emits
+    # defense_gain = +0.01 there (pawn_shield +1.00 vs king_mobility -1.0
+    # nearly cancel -- the extractor's documented design). No weighting can
+    # amplify what the extractor does not emit, so the honest expectation is
+    # sign agreement (> 0), not a large magnitude; Be2 is the fixture that
+    # demonstrates "clearly positive".
+    #
+    # FLIP-RISK COMMENT (required): the Defender's NEGATIVE attack/vol/sac
+    # terms are the only thing that could fight defense_gain's sign. On
+    # these four fixtures the combined penalties are -0.000 (castling: atk 0,
+    # vol 0), -0.015 (Be2: atk +1.0, vol 0.11), -0.013 (Kf1: vol 0.13) and
+    # -0.032 (Bb2: atk +4.8, vol 0.16) against defense terms of +0.001 /
+    # +0.336 / -0.325 / 0.000 -- no flips. In general the attack term alone
+    # would need tanh(atk/14) > 24x tanh(def/14) to flip a candidate
+    # (defense < ~0.6 raw AND attack > ~+17 raw; see the weight-block
+    # comment) -- the "attacking move dressed as defense" case, where the
+    # mild dislike is INTENDED. Bb2 is the benign version: a quiet
+    # developing move with a small attack swing lands slightly negative
+    # (near 0), which is exactly the Defender's stated preference for calm
+    # over development-with-sharpness.
+    cases = [
+        # (label, fen, uci, def_sign_expectation, defender assertion)
+        ("castling O-O", "r1bqk1nr/pppp1ppp/2n5/2b1p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 4",
+         "e1g1", "positive(weak)", "gt0"),
+        ("defensive Be2 block", "4r1k1/5ppp/8/8/8/8/5PPP/4KB2 w - - 0 1",
+         "f1e2", "positive(strong)", "gt025"),
+        ("Kf1 walks into open e-file", "4rrk1/5ppp/8/8/8/8/5PPP/6K1 w - - 0 1",
+         "g1f1", "negative", "lt_neg025"),
+        ("Bb2 develops, defends nothing", "6k1/pppppppp/8/8/8/8/P1PPPPPP/2B2RK1 w - - 0 1",
+         "c1b2", "zero", "le0"),
+    ]
+    for label, fen, uci, def_sign, assertion in cases:
+        board = chess.Board(fen)
+        scores, _ = compute_style_scores(board, chess.Move.from_uci(uci))
+        d = defender_score(scores, board)
+        sign_ok = (
+            (def_sign.startswith("positive") and scores.defense_gain > 0)
+            or (def_sign == "negative" and scores.defense_gain < 0)
+            or (def_sign == "zero" and scores.defense_gain == 0.0)
+        )
+        assert sign_ok, (label, scores.defense_gain)
+        if assertion == "gt0":
+            assert d > 0.0, (label, d)
+        elif assertion == "gt025":
+            assert d > 0.25, (label, d)
+        elif assertion == "lt_neg025":
+            assert d < -0.25, (label, d)
+        elif assertion == "le0":
+            assert d <= 0.0, (label, d)
+        print(f"    {label:<28} def={scores.defense_gain:+6.2f} -> defender={d:+.4f}  [{def_sign}]")
+    print("  [PASS] defender signs agree with defense_gain's established signs on all four")
+
+
+def test_defender_phase_gating_real_position():
+    # REAL position ("active endgame king"), NOT synthetic scores, with THREE
+    # nonzero defense subcomponents (kzd +0.021, shd -1.00, mob +3.0). The
+    # Defender's damping decisions imply: the STATIC subs (king_zone_defense,
+    # pawn_shield) go to zero at phase 1 while the concrete deltas and king
+    # mobility survive untouched. Here that means the shelter "penalty"
+    # (shd -1.00, correct-for-endgame noise the fixture documents) VANISHES
+    # while the +3.0 king activation keeps full weight -> the expected
+    # direction is defender score RISING from phase 0 to phase 1.
+    fen = "4k3/8/8/8/8/8/4P3/4K3 w - - 0 1"
+    board = chess.Board(fen)
+    scores, _ = compute_style_scores(board, chess.Move.from_uci("e1d2"))
+    phase = game_phase(board)
+    assert abs(phase - 1.0) < 1e-9, phase
+    d_end = defender_score(scores, board)
+    d_open = defender_score(scores, chess.Board())  # same scores, phase 0
+    assert d_end > d_open, (d_open, d_end)
+    # Sub-level pinning of the damping decisions:
+    damped = _defender_phase_damped_scores(scores, phase)
+    assert damped.defense_sub.king_zone_defense == 0.0   # static -> damped
+    assert damped.defense_sub.pawn_shield == 0.0         # static -> damped
+    assert damped.defense_sub.enemy_pressure_reduction == 0.0  # was already 0
+    assert damped.defense_sub.line_blocking == 0.0             # was already 0
+    assert damped.defense_sub.king_mobility == scores.defense_sub.king_mobility  # NEVER damped
+    assert damped.defense_gain == damped.defense_sub.king_mobility  # rebuilt invariant
+    # At phase 0 nothing is damped and the originals survive (pure function).
+    undamped = _defender_phase_damped_scores(scores, 0.0)
+    assert undamped.defense_sub == scores.defense_sub
+    assert undamped.defense_gain == scores.defense_gain
+    assert undamped.attack_sub == scores.attack_sub
+    print(f"    Kd2 endgame (phase {phase:.2f}): defender phase0={d_open:+.4f} -> phase1={d_end:+.4f}"
+          " (shield penalty removed, mobility survives)")
+    # CONTRAST print (no assert): the Be2 block's defense mass sits in
+    # UNDAMPED subs (epr +2.00, blk 1.0), so phase damping barely moves it
+    # (def +4.06 -> +4.01) -- concrete defense survives deep into the
+    # endgame, exactly per the taxonomy.
+    be2 = chess.Board("4r1k1/5ppp/8/8/8/8/5PPP/4KB2 w - - 0 1")
+    be2_scores, _ = compute_style_scores(be2, chess.Move.from_uci("f1e2"))
+    d_be2 = defender_score(be2_scores, be2)
+    d_be2_open = defender_score(be2_scores, chess.Board())
+    print(f"    Be2 block (phase {game_phase(be2):.2f}): defender phase0={d_be2_open:+.4f}"
+          f" -> real={d_be2:+.4f} (barely moves: its defense is concrete, not static)")
+    print("  [PASS] defense-side phase gating: static subs damp, deltas + mobility survive")
+
+
+def test_defender_differentiation_on_near_equal():
+    # Requirement: on the near-equal fixture, Defender must produce a
+    # genuinely different ranking from BOTH Attacker and Sacrificer.
+    # Deterministic setup mirroring test_persona_adjusted_score_real_flip_on_
+    # near_equal: REAL scores (pure extractor) + FIXED engine-relative gaps
+    # that fixture actually produced across runs (Qd2 best; Ne5 -12; a4 -5;
+    # Re1 -6; Qd3 -8).
+    fen = "rnbq1rk1/ppp1ppbp/5np1/3p4/3P1B2/2N2NP1/PPP1PPBP/R2Q1RK1 w - - 0 1"
+    board = chess.Board(fen)
+
+    def all_personas(uci):
+        scores, _ = compute_style_scores(board, chess.Move.from_uci(uci))
+        return (
+            attacker_score(scores, board),
+            sacrificer_score(scores, board),
+            defender_score(scores, board),
+        )
+
+    a_qd2, s_qd2, d_qd2 = all_personas("d1d2")
+    a_ne5, s_ne5, d_ne5 = all_personas("f3e5")
+    a_a4, s_a4, d_a4 = all_personas("a2a4")
+    a_re1, s_re1, d_re1 = all_personas("f1e1")
+    a_qd3, s_qd3, d_qd3 = all_personas("d1d3")
+
+    # The swing candidate is Re1: it vacates f1 (tiny coverage loss) but
+    # FREES the king's f1 square (+1 mobility) -> small POSITIVE defender
+    # score, while Attacker and Sacrificer both score it exactly 0.
+    assert d_re1 > 0.0, d_re1
+    assert a_re1 == 0.0 and s_re1 == 0.0
+    # And Ne5 (the only sharp candidate): Attacker actively likes it,
+    # Defender mildly dislikes it -- a genuine SIGN divergence.
+    assert a_ne5 > 0.0 > d_ne5, (a_ne5, d_ne5)
+
+    fD_qd2 = persona_adjusted_score(0.0, d_qd2, 0.0)
+    fD_ne5 = persona_adjusted_score(-12.0, d_ne5, 0.0)
+    fD_a4 = persona_adjusted_score(-5.0, d_a4, 0.0)
+    fD_re1 = persona_adjusted_score(-6.0, d_re1, 0.0)
+    fD_qd3 = persona_adjusted_score(-8.0, d_qd3, 0.0)
+    # Defender's ranking: Re1 PROMOTED past a4 (engine rank #3 -> #2), Ne5
+    # demoted to LAST. HONEST LIMIT, pinned deliberately: Re1's +7.54 raw
+    # preference is attenuated by trust(-6) = 0.731 to +5.5cp -- 0.5cp SHORT
+    # of the 6cp gap -- so it does NOT overtake the engine best Qd2. (The
+    # trust curve is doing its job: a 6cp-worse move cannot be promoted on a
+    # 0.075-strength persona signal alone.)
+    assert fD_qd2 > fD_re1 > fD_a4 > fD_qd3 > fD_ne5, (
+        fD_qd2, fD_re1, fD_a4, fD_qd3, fD_ne5,
+    )
+    # Same candidates, OPPOSITE orderings under the other two personas --
+    # a different pairwise flip against EACH of them:
+    #   vs Attacker:    Ne5-vs-Re1 is flipped (Attacker: sharp move above
+    #                   the rook; Defender: rook activation above sharpness)
+    #   vs Sacrificer:  a4-vs-Re1 is flipped (Sacrificer keeps engine order,
+    #                   Defender promotes the rook activation)
+    fA_ne5 = persona_adjusted_score(-12.0, a_ne5, 0.0)
+    fA_re1 = persona_adjusted_score(-6.0, a_re1, 0.0)
+    fS_ne5 = persona_adjusted_score(-12.0, s_ne5, 0.0)
+    fS_re1 = persona_adjusted_score(-6.0, s_re1, 0.0)
+    fS_a4 = persona_adjusted_score(-5.0, s_a4, 0.0)
+    assert fA_ne5 > fA_re1, (fA_ne5, fA_re1)   # Attacker: sharp move above the rook
+    assert fS_a4 > fS_re1, (fS_a4, fS_re1)     # Sacrificer: engine order kept
+    assert fD_ne5 < fD_re1, (fD_ne5, fD_re1)   # Defender: rook activation above sharpness
+    assert fD_re1 > fD_a4, (fD_re1, fD_a4)     # Defender: the pairwise flip vs Sacrificer
+    print(f"    Re1: A={a_re1:+.4f} S={s_re1:+.4f} D={d_re1:+.4f}"
+          " -> only the DEFENDER gives it a positive bias (+5.5cp after trust)")
+    print(f"    Ne5: A={a_ne5:+.4f} vs D={d_ne5:+.4f} (sign divergence on the sharp candidate)")
+    print(f"    Defender order:   Qd2 {fD_qd2:+.2f} > Re1 {fD_re1:+.2f} > a4 {fD_a4:+.2f}"
+          f" > Qd3 {fD_qd3:+.2f} > Ne5 {fD_ne5:+.2f}  (Re1 #3 -> #2; 0.5cp short of Qd2)")
+    print(f"    Attacker order:   Qd2 > Ne5 {fA_ne5:+.2f} > a4 > Re1 {fA_re1:+.2f} > Qd3 (knife-edge)")
+    print(f"    Sacrificer order: Qd2 > a4 {fS_a4:+.2f} > Qd3 > Re1 {fS_re1:+.2f} > Ne5 {fS_ne5:+.2f}")
+    print("  [PASS] Defender ranking differs from both Attacker and Sacrificer"
+          " (Re1/a4 reorder + Ne5-vs-Re1 flipped)")
+
+
+def test_positional_scores_bounded():
+    # Bounded to [-1, 1] on ordinary and extreme inputs. With all-negative
+    # weights the practical range is ~[-0.78, 0]: the theoretical floor of
+    # -0.80 requires ALL THREE inputs maxed AND attack_gain's tanh to
+    # SATURATE (|atk| >= ~266 -- absurd), and the theoretical +0.20 ceiling
+    # (pure de-escalation) is unreachable because a big attack DROP raises
+    # volatility at a rate that always outweighs the credit. So the clamp is
+    # VESTIGIAL here -- unlike the Defender, where it is load-bearing.
+    # (Checked: it is not needed.)
+    board = chess.Board()
+    s = _synthetic(kzp=8.0, kaa=2.0, checks=1.0, open_lines=1.0, esc=1.0,
+                   vol=0.5, sac=1.0)
+    p_sharp = positional_score(s, board)
+    assert -1.0 <= p_sharp <= 1.0 and p_sharp < 0.0
+    # Perfectly quiet move -> EXACTLY 0 (the neutral anchor this persona
+    # lacks by design; a pin, not an accident).
+    p_quiet = positional_score(_synthetic(), board)
+    assert p_quiet == 0.0, p_quiet
+    # Extreme sharpness (absurd inputs): approaches but does NOT cross -1.
+    s_max = _synthetic(kzp=200.0, vol=1.0, sac=1.0)
+    p_extreme = positional_score(s_max, board)
+    assert -1.0 <= p_extreme < 0.0, p_extreme
+    # De-escalation co-firing proof: attack_gain -8 forces volatility >= 1/3
+    # (the pressure-swing term |delta|/6 feeds the average), and the vol
+    # penalty rate (0.48/18 per raw point) always exceeds the atk credit rate
+    # (0.20/14) -- so the "reward retreats" loophole is closed by construction.
+    s_deesc = _synthetic(kzp=-8.0, vol=1.0 / 3.0)
+    assert positional_score(s_deesc, board) < 0.0
+    print(f"    sharp: {p_sharp:+.4f} | quiet: {p_quiet:+.4f} (exact 0 anchor) | "
+          f"extreme: {p_extreme:+.4f} (no clamp hit)")
+    print(f"    de-escalator (atk -8, vol 1/3): {positional_score(s_deesc, board):+.4f} (net penalty)")
+    print("  [PASS] positional bounded; clamp is vestigial; quiet == exactly 0")
+
+
+def test_positional_fixture_contrasts():
+    # REAL fixtures, no engine: Positional must score the SHARP top
+    # candidates (Bxh7+, Nxf7) lower than ALL THREE existing personas do,
+    # score the perfect-quiet castling move at exactly 0, and penalize
+    # development-with-threat (Bb2).
+    board = chess.Board(GREEK_FEN)
+    scores, _ = compute_style_scores(board, chess.Move.from_uci("d3h7"))
+    a, x, d, p = (attacker_score(scores, board), sacrificer_score(scores, board),
+                  defender_score(scores, board), positional_score(scores, board))
+    assert p < d < 0.0 < a and p < 0.0 < x, (a, x, d, p)
+    print(f"    Bxh7+: A={a:+.4f} S={x:+.4f} D={d:+.4f} P={p:+.4f} (P lowest by far)")
+
+    board2 = chess.Board("r1bqkb1r/ppp2ppp/2n5/3np1N1/2B5/8/PPPP1PPP/RNBQK2R w KQkq - 0 6")
+    scores2, _ = compute_style_scores(board2, chess.Move.from_uci("g5f7"))
+    a2, x2, d2, p2 = (attacker_score(scores2, board2), sacrificer_score(scores2, board2),
+                      defender_score(scores2, board2), positional_score(scores2, board2))
+    assert p2 < d2 < 0.0 < a2 and p2 < 0.0 < x2, (a2, x2, d2, p2)
+    print(f"    Nxf7:  A={a2:+.4f} S={x2:+.4f} D={d2:+.4f} P={p2:+.4f} (P lowest by far)")
+
+    board3 = chess.Board(ITALIAN_FEN)
+    scores3, _ = compute_style_scores(board3, chess.Move.from_uci("e1g1"))
+    p3 = positional_score(scores3, board3)
+    assert p3 == 0.0, p3  # castling: atk 0, vol 0, sac 0 -> the exact quiet anchor
+    print(f"    O-O quiet anchor: P={p3:+.4f} (exact 0, like all fully-quiet moves)")
+
+    board4 = chess.Board("6k1/pppppppp/8/8/8/8/P1PPPPPP/2B2RK1 w - - 0 1")
+    scores4, _ = compute_style_scores(board4, chess.Move.from_uci("c1b2"))
+    p4 = positional_score(scores4, board4)
+    assert p4 < 0.0, p4  # development that also creates threats is not "quiet"
+    print(f"    Bb2 develop-with-threat: P={p4:+.4f} (penalized, unlike D's ~0)")
+    print("  [PASS] positional contrasts: sharp tops lowest of all four personas")
+
+
+def test_positional_differentiation_on_near_equal():
+    # Requirement: on the near-equal fixture, Positional must produce a
+    # genuinely different ranking from all three existing personas -- OR the
+    # honest reason it coincides. Deterministic setup (real scores + the
+    # same fixed gaps as the other tests: Qd2 best; Ne5 -12; a4 -5; Re1 -6;
+    # Qd3 -8). HONEST MECHANISM, stated up front: all five candidates are
+    # quiet except Ne5/Qd3, and Re1/a4/Qd2 have ZERO positional signal (no
+    # sharpness to penalize, defense weighted 0) -> they tie at exactly 0
+    # and Positional's ranking FALLS BACK TO CP ORDER. It differs from each
+    # persona via an asserted pairwise flip, not by adding a new preference.
+    fen = "rnbq1rk1/ppp1ppbp/5np1/3p4/3P1B2/2N2NP1/PPP1PPBP/R2Q1RK1 w - - 0 1"
+    board = chess.Board(fen)
+
+    def all_personas(uci):
+        scores, _ = compute_style_scores(board, chess.Move.from_uci(uci))
+        return (
+            attacker_score(scores, board),
+            sacrificer_score(scores, board),
+            defender_score(scores, board),
+            positional_score(scores, board),
+        )
+
+    a_qd2, s_qd2, d_qd2, p_qd2 = all_personas("d1d2")
+    a_ne5, s_ne5, d_ne5, p_ne5 = all_personas("f3e5")
+    a_a4, s_a4, d_a4, p_a4 = all_personas("a2a4")
+    a_re1, s_re1, d_re1, p_re1 = all_personas("f1e1")
+    a_qd3, s_qd3, d_qd3, p_qd3 = all_personas("d1d3")
+
+    # The "no opinion on quiet moves" property, pinned: zero sharpness in,
+    # exactly zero out -- Positional expresses NOTHING on a4/Re1/Qd2.
+    assert p_qd2 == 0.0 and p_a4 == 0.0 and p_re1 == 0.0
+    # Only the sharp candidates get penalized.
+    assert p_ne5 < p_qd3 < 0.0, (p_ne5, p_qd3)
+
+    fP_qd2 = persona_adjusted_score(0.0, p_qd2, 0.0)
+    fP_ne5 = persona_adjusted_score(-12.0, p_ne5, 0.0)
+    fP_a4 = persona_adjusted_score(-5.0, p_a4, 0.0)
+    fP_re1 = persona_adjusted_score(-6.0, p_re1, 0.0)
+    fP_qd3 = persona_adjusted_score(-8.0, p_qd3, 0.0)
+    # Positional's ranking == cp order (the honest fallback), with the two
+    # sharp candidates pushed further down.
+    assert fP_qd2 > fP_a4 > fP_re1 > fP_qd3 > fP_ne5, (
+        fP_qd2, fP_a4, fP_re1, fP_qd3, fP_ne5,
+    )
+    # And it still differs from EACH persona via a pairwise flip:
+    #   vs Attacker:   Ne5-vs-Re1 flipped (Attacker: sharp above rook)
+    #   vs Sacrificer: Qd3-vs-Re1 is flipped (Sacrificer's small positive
+    #                  bias lifts Qd3 above Re1; Positional's penalty sinks
+    #                  Qd3 below it)
+    #   vs Defender:   a4-vs-Re1 is flipped (Defender promotes Re1 past a4)
+    fA_ne5 = persona_adjusted_score(-12.0, a_ne5, 0.0)
+    fA_re1 = persona_adjusted_score(-6.0, a_re1, 0.0)
+    fS_qd3 = persona_adjusted_score(-8.0, s_qd3, 0.0)
+    fS_re1 = persona_adjusted_score(-6.0, s_re1, 0.0)
+    fD_re1 = persona_adjusted_score(-6.0, d_re1, 0.0)
+    fD_a4 = persona_adjusted_score(-5.0, d_a4, 0.0)
+    assert fA_ne5 > fA_re1 and fP_re1 > fP_ne5, (fA_ne5, fA_re1, fP_re1, fP_ne5)
+    assert fS_qd3 > fS_re1 and fP_re1 > fP_qd3, (fS_qd3, fS_re1, fP_re1, fP_qd3)
+    assert fD_re1 > fD_a4 and fP_a4 > fP_re1, (fD_re1, fD_a4, fP_a4, fP_re1)
+    print(f"    sharp-candidate penalties: Ne5 P={p_ne5:+.4f}, Qd3 P={p_qd3:+.4f};"
+          " quiet candidates all P=+0.0000 (fallback to cp order)")
+    print(f"    Positional order:   Qd2 {fP_qd2:+.2f} > a4 {fP_a4:+.2f} > Re1 {fP_re1:+.2f}"
+          f" > Qd3 {fP_qd3:+.2f} > Ne5 {fP_ne5:+.2f}  (= engine order)")
+    print(f"    pairwise flips: Ne5/Re1 vs Attacker; Qd3/Re1 vs Sacrificer; a4/Re1 vs Defender")
+    print("  [PASS] Positional differs from all three personas"
+          " (cp-order fallback + asserted pairwise flip vs each)")
+
+
 def test_canonicalize_by_score_fixes_multipv_order():
     # MOCKED suggest() output (deterministic, no live engine): modeled
     # directly on the real inversion observed in game 0 move 10 of the
@@ -405,9 +783,15 @@ def test_canonicalize_by_score_fixes_multipv_order():
 # --- PART 4: end-to-end integration (engine, print-only) ----------------------
 NUM_MOVES = 5
 TIME_LIMIT = 0.3
+# Sacrifice fixtures first (Defender/Positional must NOT promote the
+# sacrifice-heavy top candidate there), then the fixture built FOR
+# Positional ("quiet positional middlegame" -- all-quiet candidates:
+# expected Positional fallback to cp order), the near-equal reorder
+# comparison fixture and the endgame phase-gating sanity check.
 INTEGRATION_FIXTURES = [
     "obvious sacrifice",
     "sharp tactical no quiet alternative",
+    "quiet positional middlegame",
     "near-equal candidates mixed style",
     "active endgame king",
 ]
@@ -431,45 +815,62 @@ def _run_integration_fixture(engine, fixture):
         norm_cp = s["score_cp"] - best
         a = attacker_score(scores, board)
         x = sacrificer_score(scores, board)
+        d = defender_score(scores, board)
+        p = positional_score(scores, board)
         final_a = persona_adjusted_score(norm_cp, a, phase)
         final_s = persona_adjusted_score(norm_cp, x, phase)
+        final_d = persona_adjusted_score(norm_cp, d, phase)
+        final_p = persona_adjusted_score(norm_cp, p, phase)
         rows.append({
             "san": s["san"], "cp": s["score_cp"], "norm": norm_cp,
             "atk": scores.attack_gain, "def": scores.defense_gain,
             "sac": scores.sacrifice_signal, "vol": scores.volatility,
-            "a": a, "x": x, "d_a": final_a - norm_cp, "d_s": final_s - norm_cp,
+            "a": a, "x": x, "d": d, "p": p,
+            "d_a": final_a - norm_cp, "d_s": final_s - norm_cp,
+            "d_d": final_d - norm_cp, "d_p": final_p - norm_cp,
             "final_a": final_a, "final_s": final_s,
+            "final_d": final_d, "final_p": final_p,
         })
 
-    print("=" * 118)
+    print("=" * 166)
     print(f"FIXTURE: {fixture['name']}   phase={phase:.2f}")
     print(f"  {fixture['description']}")
     print(f"  FEN: {fixture['fen']}")
     if resorted:
         print("  (note: raw MultiPV order was not cp-sorted; ENGINE order below is canonicalized)")
     header = (f"   {'#':>2} {'move':<7} {'cp':>6} {'norm':>6} {'atk':>7} {'def':>7} "
-              f"{'sac':>4} {'vol':>5} {'A':>8} {'S':>8} {'dA_cp':>7} {'dS_cp':>7} "
-              f"{'finalA':>9} {'finalS':>9}")
+              f"{'sac':>4} {'vol':>5} {'A':>8} {'S':>8} {'D':>8} {'P':>8} "
+              f"{'dA_cp':>7} {'dS_cp':>7} {'dD_cp':>7} {'dP_cp':>7} "
+              f"{'finalA':>9} {'finalS':>9} {'finalD':>9} {'finalP':>9}")
     print(header)
     print("  " + "-" * (len(header) - 2))
-    print("  (A/S = raw persona scores in [-1,1]; dA_cp/dS_cp = applied bias in"
+    print("  (A/S/D/P = raw persona scores in [-1,1]; d*_cp = applied bias in"
           " CENTIPAWNS = PERSONA_BIAS_CP*bias; final = norm + d, demotion-floored at -75)")
     for i, r in enumerate(rows):
         print(f"   {i + 1:>2} {r['san']:<7} {r['cp']:>6} {r['norm']:>6} "
               f"{r['atk']:>+7.2f} {r['def']:>+7.2f} {r['sac']:>4.1f} {r['vol']:>5.2f} "
-              f"{r['a']:>+8.4f} {r['x']:>+8.4f} {r['d_a']:>+7.2f} {r['d_s']:>+7.2f} "
-              f"{r['final_a']:>+9.2f} {r['final_s']:>+9.2f}")
+              f"{r['a']:>+8.4f} {r['x']:>+8.4f} {r['d']:>+8.4f} {r['p']:>+8.4f} "
+              f"{r['d_a']:>+7.2f} {r['d_s']:>+7.2f} {r['d_d']:>+7.2f} {r['d_p']:>+7.2f} "
+              f"{r['final_a']:>+9.2f} {r['final_s']:>+9.2f} {r['final_d']:>+9.2f} {r['final_p']:>+9.2f}")
 
     att_idx = sorted(range(len(rows)), key=lambda i: (-rows[i]["final_a"], i))
     sac_idx = sorted(range(len(rows)), key=lambda i: (-rows[i]["final_s"], i))
+    def_idx = sorted(range(len(rows)), key=lambda i: (-rows[i]["final_d"], i))
+    pos_idx = sorted(range(len(rows)), key=lambda i: (-rows[i]["final_p"], i))
     eng = " > ".join(rows[i]["san"] for i in range(len(rows)))
     att = " > ".join(rows[i]["san"] for i in att_idx)
     sac = " > ".join(rows[i]["san"] for i in sac_idx)
+    dfn = " > ".join(rows[i]["san"] for i in def_idx)
+    pos = " > ".join(rows[i]["san"] for i in pos_idx)
     print(f"  ENGINE order:     {eng}")
     mark_a = "  (unchanged)" if att == eng else ""
     mark_s = "  (unchanged)" if sac == eng else ""
+    mark_d = "  (unchanged)" if dfn == eng else ""
+    mark_p = "  (unchanged)" if pos == eng else ""
     print(f"  ATTACKER order:   {att}{mark_a}")
     print(f"  SACRIFICER order: {sac}{mark_s}")
+    print(f"  DEFENDER order:   {dfn}{mark_d}")
+    print(f"  POSITIONAL order: {pos}{mark_p}")
     print()
 
 
@@ -495,6 +896,13 @@ def main() -> int:
         test_persona_adjusted_score_real_flip_on_near_equal,
         test_phase_gating_on_real_mate_position,
         test_persona_ordering_differentiation_deterministic,
+        test_defender_scores_bounded,
+        test_defender_fixture_signs,
+        test_defender_phase_gating_real_position,
+        test_defender_differentiation_on_near_equal,
+        test_positional_scores_bounded,
+        test_positional_fixture_contrasts,
+        test_positional_differentiation_on_near_equal,
         test_canonicalize_by_score_fixes_multipv_order,
     ]
     for test in tests:
