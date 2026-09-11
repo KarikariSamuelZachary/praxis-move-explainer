@@ -1,5 +1,6 @@
 """
-Persona weight vectors (Attacker + Sacrificer) for the Engine Sparring reranker.
+Persona weight vectors (Attacker + Sacrificer + Defender + Positional) for
+the Engine Sparring reranker.
 
 This module sits BETWEEN the shared feature extractor (persona_features.py,
 which produces StyleScores) and the bounding gate (persona_bounds.py, whose
@@ -13,19 +14,23 @@ bounded_persona_bias() consumes this module's output). It provides:
     raw list returned by StockfishEngine.suggest() into strict descending
     score_cp order, because MultiPV search order is not guaranteed to be
     cp-sorted (see the function's docstring for the observed inversions).
-  * attacker_score() / sacrificer_score(): the first two persona weight
-    presets. Each applies phase gating internally (per the ARCHITECTURE NOTE
-    in persona_bounds.py), then normalizes, then takes the weighted sum of
-    the normalized fields. Both return a single raw_persona_score float in
-    [-1, 1], ready for bounded_persona_bias(raw, engine_norm_cp, phase).
+  * attacker_score() / sacrificer_score() / defender_score() /
+    positional_score(): the four persona weight presets. Each applies phase
+    gating internally (per the ARCHITECTURE NOTE in persona_bounds.py), then
+    normalizes, then takes the weighted sum of the normalized fields. Each
+    returns a single raw_persona_score float in [-1, 1], ready for
+    bounded_persona_bias(raw, engine_norm_cp, phase).
 
-Defender and Positional personas are deliberately NOT built here (later
-task). This module must not modify persona_features.py or persona_bounds.py.
+All four planned personas (Attacker, Sacrificer, Defender, Positional) now
+exist here. Positional is structurally DIFFERENT from the other three: it
+has no positive anchor at all (pure penalty persona -- see its weight block
+for the argued design decision). This module must not modify
+persona_features.py or persona_bounds.py.
 
 NOTE ON SIGNATURES: the task sketch showed one-argument weight functions,
 but PART 3 requires game_phase(board) to be applied INSIDE the persona
-weight functions (persona_bounds.py's architecture note), so both take the
-board as a second parameter and call game_phase(board) themselves.
+weight functions (persona_bounds.py's architecture note), so all of them
+take the board as a second parameter and call game_phase(board) themselves.
 
 WHY canonicalize_by_score() LIVES HERE (input-adapter placement)
 ================================================================
@@ -82,7 +87,8 @@ keeps the two directly comparable.
 
 PHASE GATING -- what is damped and what is not (see _phase_damped_scores)
 ========================================================================
-game_phase(board) (persona_bounds.py) runs INSIDE both persona functions --
+game_phase(board) (persona_bounds.py) runs INSIDE all four persona
+functions --
 that is why they take the board as their second argument. persona_bounds.py
 pins this: bounded_persona_bias() only sees the final aggregate, so it
 cannot selectively damp king-pressure terms, and damping the whole
@@ -116,14 +122,99 @@ NOT DAMPED:
     endgame, not less.
   * sacrifice_signal -- a piece sac in an endgame is still a sacrifice.
   * volatility -- captures/checks/swings stay meaningful in any phase.
-  * defense_sub.* -- both personas built here weight defense_gain at 0.0,
-    so defense-side damping would be a no-op for them; it is deferred to the
-    Defender persona task rather than implemented speculatively.
+  * defense_sub.* -- not damped on the ATTACK-side path: Attacker and
+    Sacrificer weight defense_gain at 0.0, so defense-side damping would be
+    a no-op for them, and _phase_damped_scores therefore leaves defense
+    untouched. The Defender (below) is the first persona that weights
+    defense_sub nonzero, so IT owns the defense-side damping decisions --
+    see _defender_phase_damped_scores and the defense-side entries here.
 
 The damping is applied to the RAW subcomponents BEFORE aggregation and
-normalization (that is what the architecture note requires), and attack_gain
-is rebuilt as the sum of the damped subcomponents so the documented
-invariant attack_gain == sum(attack_sub) keeps holding.
+normalization (that is what the architecture note requires), and the
+aggregates are rebuilt from the damped subcomponents so the documented
+invariants attack_gain == sum(attack_sub) and defense_gain ==
+sum(defense_sub) keep holding.
+
+DEFENSE-SIDE PHASE GATING -- the Defender's per-subcomponent decisions
+=======================================================================
+The Defender weights defense_sub components nonzero, so phase damping had to
+be decided for EACH defense subcomponent on its own logic. The resulting
+taxonomy is NOT a mirror of the attack side (the attack side damps its two
+king-zone PRESSURE readings; the defense side splits differently):
+
+  DAMPED (STATIC shelter/coverage features -- what the position around my
+  king LOOKS like, regardless of whether anything threatens it):
+  * defense_sub.king_zone_defense -- delta of the friendly coverage of the
+    mover's own king zone. A STATIC feature: friendly pieces cover the
+    king's ring whether or not anything is attacking it, so unlike the
+    pressure deltas it does NOT self-limit when the enemy force leaves the
+    board. Residual coverage is anti-endgame advice -- it rewards parking
+    pieces next to their own king instead of using them, and in king-and-
+    pawn endings defense is handled by the king itself. Damped for the same
+    reason attack-side king_zone_pressure is damped: what remains of a
+    zone-coverage reading in thin material converts poorly into real
+    defense.
+  * defense_sub.pawn_shield -- delta of the pawn shelter in front of the
+    king. Mostly self-limiting (no pawns near the king -> no shield), but
+    its RESIDUAL meaning is "protection from heavy-piece attack", and the
+    attacking force that makes shelter worth having is exactly what leaves
+    the board as phase rises. A surviving shield pawn still helps a little
+    against a remaining rook or queen, so it decays linearly rather than
+    being gated off.
+
+  NOT DAMPED (concrete delta/event features, plus the king-skill term):
+  * defense_sub.enemy_pressure_reduction -- a DELTA: how much enemy
+    pressure on the mover's own king zone the move removes. Self-limiting
+    by construction (when the enemy has no pressure, before - after is
+    exactly 0), so it needs no artificial damping; and when pressure DOES
+    exist in an endgame (a rook or queen hovering over the king), removing
+    it is the core of endgame defense -- dodging checks and escaping nets
+    is precisely what this measures. Same class as attack-side checks: a
+    concrete event, not a pressure reading.
+  * defense_sub.line_blocking -- an enemy slider's ray to the mover's king
+    SQUARE that exists before the move and is blocked after: a concrete
+    tactical event (it requires an actual ray to exist), the exact mirror
+    of attack-side checks. It also self-limits (blocking needs a piece),
+    and thin-material mating nets are delivered through lines, so a block
+    is as valuable at phase 1 as at phase 0.
+  * defense_sub.king_mobility -- the king's available-squares delta. This
+    one points the OPPOSITE way from the attack-side damped terms: king
+    activity is arguably the single most important endgame skill (the
+    active king decides king-and-pawn endings, offensively AND
+    defensively), so its value RISES with phase. The linear (1 - phase)
+    damping factor can only shrink a signal, never amplify it, so the
+    correct in-mechanism implementation of "more valuable in the endgame"
+    is to never damp it at all. A true phase-dependent AMPLIFICATION of
+    king_mobility would need a mechanism the current damping factor cannot
+    express; noted as a possible future refinement (same spirit as
+    game_phase's smoothstep note).
+
+  The Defender inherits the attack-side damping decisions verbatim by
+  building on _phase_damped_scores() (it weights attack_gain, so the same
+  king-pressure components must damp for it too).
+
+POSITIONAL PHASE GATING -- pure reuse, no third damping function
+=================================================================
+Positional weights defense_gain at 0.0 (see its weight block), so the
+Defender's defense-side damping is irrelevant to it; and its nonzero terms
+(volatility, attack_gain, sacrifice_signal) are exactly the components
+_phase_damped_scores already governs: the attack-side kzp/kaa damping
+applies to its attack_gain term, while sacrifice_signal and volatility are
+conventionally never damped ("a piece sac in an endgame is still a
+sacrifice"; "captures/checks/swings stay meaningful in any phase"). No
+third damping function is created for it -- reuse over reinvention.
+
+The one genuinely debatable case is ENDGAME VOLATILITY: in an endgame,
+captures and checks are often the CORRECT moves (a winning capture in a
+K+P ending is not "sharpness"), so penalizing volatility at full weight at
+phase 1 could make a positional bot demote a routine winning trade that
+sits near-equal with a quiet alternative. The existing convention is kept
+for consistency (and because engine_trust caps the damage), and this is
+recorded as a first-pass limitation to revisit: if endgame sparring shows
+the persona refusing routine trades, a phase-dependent volatility damping
+would be the fix -- and that WOULD be a case where Positional needs
+different subcomponent damping decisions than the existing functions
+provide, justifying a new damping function at that point.
 
 UNIT RECONCILIATION -- persona bias vs engine centipawns
 ========================================================
@@ -268,6 +359,42 @@ def _phase_damped_scores(scores: StyleScores, phase: float) -> StyleScores:
     )
 
 
+def _defender_phase_damped_scores(scores: StyleScores, phase: float) -> StyleScores:
+    """Defender-side phase damping: the attack-side decisions from
+    _phase_damped_scores are inherited VERBATIM (the Defender weights
+    attack_gain, so the same king-pressure-derived components must damp for
+    it too), and the DEFENSE-side decisions documented in the module
+    docstring's "DEFENSE-SIDE PHASE GATING" section are applied on top:
+
+      damped (static shelter/coverage): king_zone_defense, pawn_shield
+      not damped (delta/event + king skill): enemy_pressure_reduction,
+          line_blocking, king_mobility
+
+    defense_gain is rebuilt from the damped defense subcomponents to
+    preserve the invariant defense_gain == sum(defense_sub). The input
+    `scores` object is never mutated.
+    """
+    damped = _phase_damped_scores(scores, phase)
+    damp = 1.0 - phase
+    damped_defense_sub = replace(
+        damped.defense_sub,
+        king_zone_defense=damped.defense_sub.king_zone_defense * damp,
+        pawn_shield=damped.defense_sub.pawn_shield * damp,
+    )
+    damped_defense_gain = (
+        damped_defense_sub.enemy_pressure_reduction
+        + damped_defense_sub.king_zone_defense
+        + damped_defense_sub.line_blocking
+        + damped_defense_sub.pawn_shield
+        + damped_defense_sub.king_mobility
+    )
+    return replace(
+        damped,
+        defense_sub=damped_defense_sub,
+        defense_gain=damped_defense_gain,
+    )
+
+
 # --- Attacker weights (first pass; tuned in a later step) ---------------------
 # attack_gain      0.70 : dominant by definition -- the persona exists to pick
 #                        maximum king pressure. 0.70 rather than ~1.0 so that a
@@ -358,6 +485,298 @@ def sacrificer_score(scores: StyleScores, board: chess.Board) -> float:
         + _SACRIFICER_W_VOLATILITY * n["volatility"]
         + _SACRIFICER_W_DEFENSE * n["defense_gain"]
         + _SACRIFICER_W_INITIATIVE * n["initiative_proxy"]
+    )
+    return max(-1.0, min(1.0, total))
+
+
+# --- Defender weights (first pass; tuned in a later step) ---------------------
+# defense_gain     1.20 : dominant by definition -- the persona exists to pick
+#                        maximum king safety, so defense_gain must dominate
+#                        every other term by at least an order of magnitude in
+#                        effect. The weight exceeds 1.0 BY DESIGN: the attack/
+#                        sacrifice/volatility terms below are PENALTIES
+#                        (negative weights), and the weights-must-sum-to-1.0
+#                        constraint forces the positive term to carry their
+#                        combined magnitude (1.20 - 0.05 - 0.05 - 0.10 = 1.00).
+#                        Concretely, a defense_gain of +4 raw (the Be2 block
+#                        fixture scores +4.06) yields ~0.33 of persona score,
+#                        while the strongest realistic combined penalty
+#                        (sacrifice + max volatility + big attack swing) costs
+#                        at most ~0.2 -- real defense always outvotes the
+#                        style aversions.
+# attack_gain     -0.05 : mildly negative -- a defensive-minded player
+#                        actively prefers calmer positions and does not value
+#                        gratuitous threats, even good ones. This is a
+#                        DELIBERATE asymmetry with the other two personas'
+#                        0.0 on their non-dominant gain: Attacker/Sacrificer
+#                        keep defense at 0.0 because a move can "block a
+#                        check AND create a threat" and must not be punished
+#                        for the threat side. The mirror argument ("a move
+#                        can tuck the king away AND threaten") is weaker for
+#                        the Defender, whose IDENTITY is avoiding sharpness;
+#                        the magnitude stays at tie-breaker scale so it can
+#                        never demote genuinely defensive play: sign-flipping
+#                        a candidate via the attack term alone would require
+#                        tanh(atk/14) > 24x tanh(def/14) -- i.e. defense_gain
+#                        under ~0.6 raw (no real defensive content) AND
+#                        attack_gain beyond ~+17 raw (near the documented +20
+#                        ceiling, ignoring the other negative terms). That is
+#                        the "attacking move dressed as defense" case, where
+#                        the mild dislike IS the persona, not a bug.
+# sacrifice_signal -0.05 : mildly negative -- unlike Attacker/Sacrificer's
+#                        small POSITIVE weights, the Defender should not
+#                        reward gambling material: a sacrifice hands the
+#                        opponent compensation and sharpens the game, the
+#                        opposite of the persona's goal. Kept at tie-breaker
+#                        scale, and deliberately smaller than one might
+#                        intuit because sacrifice and volatility OVERLAP (a
+#                        real sacrifice is almost always also volatile: a
+#                        capture plus a pressure swing), so a large sac
+#                        penalty would double-count the same sharpness that
+#                        the volatility term already penalizes.
+# volatility      -0.10 : negative, the sign-flipped mirror of Attacker's
+#                        +0.20 at half strength -- captures, checks and big
+#                        pressure swings are exactly the sharpness a
+#                        defensive player avoids. Volatility gets the
+#                        LARGEST of the three penalties because it is the
+#                        broadest sharpness signal (it fires on sharp QUIET
+#                        moves too, e.g. double attacks, where the sacrifice
+#                        and attack terms are silent).
+# initiative_proxy 0.00 : no signal exists (always 0.0 by design in
+#                        persona_features; would require lookahead).
+# Weights sum to exactly 1.0 (1.20 - 0.05 - 0.05 - 0.10 = 1.00), BUT with
+# negative weights the weighted sum is an AFFINE combination, not a convex
+# one, so the [-1, 1] output range is NOT automatic: the raw total can reach
+# about +/-1.6 in adversarial combinations (max defense vs max
+# attack/sacrifice/volatility). The final clamp to [-1, 1] is therefore
+# LOAD-BEARING for this persona, where it is vestigial safety for
+# Attacker/Sacrificer.
+_DEFENDER_W_DEFENSE = 1.20
+_DEFENDER_W_ATTACK = -0.05
+_DEFENDER_W_SACRIFICE = -0.05
+_DEFENDER_W_VOLATILITY = -0.10
+_DEFENDER_W_INITIATIVE = 0.0
+
+
+def defender_score(scores: StyleScores, board: chess.Board) -> float:
+    """Defender persona raw score in [-1, 1] (bounded_persona_bias input).
+
+    `board` is the position BEFORE the move (the same position the scores
+    were computed on); it is used only for game_phase(). Phase gating uses
+    the Defender's own defense-side damping decisions
+    (_defender_phase_damped_scores) on top of the inherited attack-side
+    decisions. NOTE: because this persona's style weights are negative, the
+    final clamp is load-bearing (not vestigial) -- see the weight-block
+    comment.
+    """
+    phase = game_phase(board)
+    n = normalize_style_scores(_defender_phase_damped_scores(scores, phase))
+    total = (
+        _DEFENDER_W_DEFENSE * n["defense_gain"]
+        + _DEFENDER_W_ATTACK * n["attack_gain"]
+        + _DEFENDER_W_SACRIFICE * n["sacrifice_signal"]
+        + _DEFENDER_W_VOLATILITY * n["volatility"]
+        + _DEFENDER_W_INITIATIVE * n["initiative_proxy"]
+    )
+    return max(-1.0, min(1.0, total))
+
+
+# --- Positional weights (first-pass magnitudes calibrated at s = 0.80;
+#     see CALIBRATION below) ---------------------------------------------------
+#
+# DESIGN DECISION -- PURE PENALTY PERSONA, NO POSITIVE ANCHOR (question (a),
+# chosen over (b) after explicit consideration)
+#
+# The other three personas each have a StyleScores field that is a genuine
+# POSITIVE signal for their identity (attack_gain, sacrifice_signal,
+# defense_gain). Positional has no equivalent: "prefers quiet, sound moves"
+# is the ABSENCE of what the others want, not a feature the extractor
+# measures. The alternative (b) -- manufacturing a positive "quietness"
+# anchor -- was considered and REJECTED on three grounds:
+#
+#   1. 1 - volatility (the obvious quietness candidate) re-expresses
+#      negated volatility with extra steps: score = w*(1 - vol) + ... is
+#      algebraically a constant w plus the existing penalty terms. The
+#      constant is NOT harmless: it enters the final ranking as
+#      B * w * trust(norm), which varies PER CANDIDATE with engine trust --
+#      i.e. the persona would hand every quiet move a trust-gated flat
+#      bonus, and at w = 0.3 that is ~+23cp of pull for a quiet move only
+#      5cp below the engine's best (100 * 0.3 * trust(-5) = 23.1) -- far
+#      stronger than any real anchor in this codebase (Defender's real
+#      fixtures max out near +0.33 of score). The persona would flip from
+#      tie-breaker to routine engine-overrider, contradicting its purpose.
+#   2. Quietness is also INVARIENT to whether the quiet move improves the
+#      position or does nothing: engine cp already ranks those, so a
+#      quietness reward adds no information the eval does not carry --
+#      unlike defense_gain (+4 on the Be2 fixture), which is a concrete
+#      event family the eval does not style-weight.
+#   3. The static defense subcomponents (pawn_shield, king_zone_defense)
+#      ARE positional-ish ("structure around my king"), but reaching them
+#      would mean splitting defense_gain into static vs reactive parts --
+#      a new damping/selection mechanism -- and the result would be a
+#      weaker Defender clone. Positional's distinction from Defender is
+#      exactly that Defender PREFERS safety events while Positional only
+#      AVOIDS sharpness events; blurring that costs both identities.
+#
+# ROLE CONSEQUENCE, STATED AND DEFENDED: with all-negative weights every
+# candidate scores in ([-0.8, 0] -- so positional_score's role is RELATIVE
+# ("least sharp among the engine's already-good options") and it can never
+# become a strong positive biasing force the way defense_gain = +4 does for
+# Defender. This is the CORRECT behavior, not a flaw: a Positional bot's
+# whole point is "nudge toward the quietest of the engine's already-good
+# options, never override anything". Its only possible ACTION at rerank
+# time is demotion of sharpness (trust already guarantees it can never
+# rescue a bad move; pure penalties additionally guarantee it can never
+# push a sharp move up). And it degrades gracefully: when ALL candidates
+# are fully quiet, every score ties at exactly 0 and the ranking falls
+# back to cp order -- the engine's preference among genuinely-equal quiet
+# moves is as good as any invented positional tiebreak.
+#
+# WEIGHTS (calibrated at s = 0.80 of the first-pass magnitudes,
+# ratio-preserving -- they no longer sum to a round number BY DESIGN; a
+# perfectly quiet move still scores exactly 0.0, the neutral anchor this
+# persona lacks by design):
+#
+# CALIBRATION -- WHY THE MAGNITUDES ARE 0.8x THE FIRST PASS (measured, not
+# re-argued). The first pass (vol -0.60 / atk -0.25 / sac -0.15) was set by
+# magnitude reasoning alone. A follow-up measurement harness (fine numeric
+# scan over a 3-run live-engine sweep) found that at s = 1.0 the persona's
+# demotion of the sharp top candidate EXCEEDED what the two
+# no-quiet-alternative fixtures can absorb -- a fixture built to show that
+# no quiet alternative legitimately exists must not have one manufactured
+# by a persona bias, the same "cannot conjure a quiet alternative" guarantee
+# the other three personas already hold:
+#   * obvious sacrifice (Bxh7+ vs Nxh7, 31cp draw): demotion 40.77cp vs an
+#     allowed maximum of 36.15cp -> over by 4.61cp;
+#   * sharp tactical no quiet alternative (Nxf7 vs d4, 31cp draw): demotion
+#     35.44cp vs an allowed maximum of 31.00cp -> over by 4.44cp.
+# The exact inertness boundary for those canonical draws is
+#     s* = gap / (100 * (|P_sharp| - |P_quiet| * trust(-gap)))
+# = 31/35.61 = 0.8704 (obvious sacrifice binds; sharp tactical 0.8747), so
+# s = 1.0 sat ~15% PAST it. Worse, the reorder was NOT a stable property of
+# the weights: candidate gaps jittered 11-69cp run-to-run from normal
+# MultiPV noise (P values are bit-identical across runs; only the gaps
+# move), so at s = 1.0 whether either fixture reorders on a given run is
+# close to a coin flip around the ~31-36cp gap region.
+# s = 0.80 keeps every relative structure of the design below EXACTLY (all
+# three weights scale by the same factor, so the self-limiting ratio and
+# the ordering arguments are untouched) and buys real slack against the
+# canonical draws: demotions 32.62cp / 28.35cp against allowed maxima
+# 35.12cp / 31.00cp -> ~2.5cp of headroom on both, instead of negative
+# headroom. It also stays well below the measured up-side boundary: the
+# first NEW reorder in a currently-inert fixture appeared at s ~1.05-1.25
+# (tiny-gap draws), defensive consolidating held to s ~3.1-3.7, and
+# castling was inert all the way to the s = 4 probe ceiling.
+# HONEST LIMIT, recorded rather than glossed: no fixed s > 0 is inert for
+# EVERY gap draw -- as the drawn gap shrinks, trust(-g) -> 1 and the
+# boundary s*(g) -> 0, so a sub-28cp draw (observed once: 22cp) still
+# reorders at s = 0.80. s = 0.80 therefore SHRINKS the coin-flip window (a
+# reorder now needs a drawn gap under ~28cp, versus under ~36cp at
+# s = 1.0) rather than closing it; closing it fully would take s -> 0
+# (killing the persona) or a mechanism change, which is a separate
+# decision.
+#
+# volatility      -0.48 : the dominant NEGATIVE term -- the negated mirror of
+#                         Attacker's +0.70 anchor more than of its +0.20
+#                         side-weight: for Positional, avoiding sharpness IS
+#                         the identity, so volatility carries the persona the
+#                         way attack_gain carries Attacker's. Volatility is
+#                         also the BROADEST sharpness signal (it fires on
+#                         sharp quiet moves -- double attacks, big swings --
+#                         where sacrifice is silent and attack_gain small),
+#                         which is exactly the "complications a positional
+#                         player avoids".
+# attack_gain     -0.20 : negative -- Positional actively avoids creating
+#                         threats, even good ones; this is the SAME question
+#                         Defender faced but answered DIFFERENTLY on its own
+#                         terms: for Defender, attack-hate was a vestigial
+#                         tie-breaker bolted onto a positive anchor (-0.05);
+#                         for Positional, anti-threat is close to the CORE
+#                         identity, so the term is 4x stronger. A side effect
+#                         of the negative weight is a small CREDIT for
+#                         de-escalating moves (attack_gain < 0) -- intended,
+#                         and provably self-limiting: dropping attack
+#                         pressure requires a king-zone pressure swing of the
+#                         same magnitude, which raises volatility via its
+#                         pressure-swing term (|delta|/6, averaged) at an
+#                         effective rate (0.48/18 = 0.027 per raw point)
+#                         that always EXCEEDS the credit rate (0.20/14 =
+#                         0.014; the same 1.87x ratio as the first pass --
+#                         uniform scaling preserves it) -- so a pure
+#                         de-escalator is always net-negative and the
+#                         theoretical +0.20 credit ceiling is unreachable in
+#                         real positions (verified: atk -8 implies vol >= 1/3
+#                         -> net -0.057, not +0.103).
+# sacrifice_signal -0.12 : negative -- a sacrifice is definitionally not
+#                         quiet. Smaller than the volatility term and than
+#                         one might intuit because sacrifice and volatility
+#                         OVERLAP (a real sac is almost always a capture plus
+#                         a pressure swing); this weight prices only the
+#                         INCREMENTAL gamble aspect (handing the opponent
+#                         compensation) beyond what volatility already
+#                         charges for the same move's sharpness.
+# defense_gain     0.00 : decided EXPLICITLY, not defaulted. Zero, NOT small
+#                         positive and NOT mildly negative:
+#                           * positive would make Positional a weaker
+#                             Defender (their distinction is precisely
+#                             Defender-prefers / Positional-only-avoids);
+#                           * the dominant real content of defense_gain is
+#                             REACTIVE (the Be2 fixture: epr +2.00, blk +1.0
+#                             of its +4.06) -- emergency play is the opposite
+#                             of the calm, proactive improvement this
+#                             persona means; when defense is FORCED the
+#                             engine already ranks it first and trust
+#                             handles it;
+#                           * negative ("very active defense is also not
+#                             quiet") would double-punish sharpness through
+#                             a second door (sharpness is already fully
+#                             priced by vol/atk/sac) and would penalize
+#                             castling (defense +0.01) and king-tucking for
+#                             no stylistic reason -- those moves are already
+#                             scored 0.0 (perfectly quiet) here, which is
+#                             the correct positional verdict.
+# initiative_proxy 0.00 : no signal exists (always 0.0 by design in
+#                         persona_features; would require lookahead).
+# RANGE NOTE: all weights <= 0 and the inputs' signs bound the total to
+# (-0.80, +0.20] in theory -- but the positive side requires attack_gain
+# deep negative WITH volatility near zero, which cannot co-occur (see the
+# attack_gain entry), and the negative side needs all three inputs at their
+# extremes at once, so the practical range is [-0.78, 0] (documented attack
+# ceiling +20 -> tanh(20/14) = 0.891: -0.48 - 0.20*0.891 - 0.12 = -0.778).
+# The final clamp to [-1, 1] is therefore FULLY VESTIGIAL safety for this
+# persona: the -0.80 theoretical floor is approached only at absurd tanh
+# saturation (|attack_gain| >= ~266 with volatility 1.0 AND sacrifice 1.0)
+# and the +0.20 theoretical ceiling is unreachable, so the clamp cannot
+# bind on EITHER side at any real or synthetic input -- UNLIKE the
+# Defender, whose clamp is load-bearing.
+_POSITIONAL_W_VOLATILITY = -0.48
+_POSITIONAL_W_ATTACK = -0.20
+_POSITIONAL_W_SACRIFICE = -0.12
+_POSITIONAL_W_DEFENSE = 0.0
+_POSITIONAL_W_INITIATIVE = 0.0
+
+
+def positional_score(scores: StyleScores, board: chess.Board) -> float:
+    """Positional persona raw score in [-1, 1] (bounded_persona_bias input).
+
+    PURE PENALTY persona (no positive anchor -- see the weight-block comment
+    for the argued design decision): scores live in ~[-0.8, 0], 0.0 == a
+    perfectly quiet move, and the persona's only rerank action is demoting
+    sharpness among the engine's already-good options.
+
+    `board` is the position BEFORE the move (the same position the scores
+    were computed on); it is used only for game_phase(). Phase gating reuses
+    _phase_damped_scores (attack side) only -- defense is weighted 0.0, so
+    the Defender's defense-side damping is irrelevant here.
+    """
+    phase = game_phase(board)
+    n = normalize_style_scores(_phase_damped_scores(scores, phase))
+    total = (
+        _POSITIONAL_W_VOLATILITY * n["volatility"]
+        + _POSITIONAL_W_ATTACK * n["attack_gain"]
+        + _POSITIONAL_W_SACRIFICE * n["sacrifice_signal"]
+        + _POSITIONAL_W_DEFENSE * n["defense_gain"]
+        + _POSITIONAL_W_INITIATIVE * n["initiative_proxy"]
     )
     return max(-1.0, min(1.0, total))
 
