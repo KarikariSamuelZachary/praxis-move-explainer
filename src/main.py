@@ -12,8 +12,12 @@ from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from core.database import init_db
 from core.migrations import run_migrations
-from engines.maia_engine import close_maia3, start_maia3
-from engines.stockfish_engine import STOCKFISH_CANDIDATE_PATHS
+from engines.maia_engine import close_maia3, start_maia3, verify_maia3_patch
+from engines.stockfish_engine import (
+    STOCKFISH_CANDIDATE_PATHS,
+    close_stockfish_singleton,
+    start_stockfish_singleton,
+)
 from routers import import_games, maia_debug, onboarding, puzzles, repertoire, review, train, user, webhooks, woodpecker
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -107,6 +111,14 @@ def startup():
     try:
         start_maia3()
         log.info("Maia-3 engine started successfully")
+        # Warm the model with one throwaway inference. The engine process
+        # was just spawned; the first `go` still pays one-time model-load
+        # latency inside the subprocess, which would otherwise land on the
+        # user's first out-of-book sparring move. verify_maia3_patch()
+        # issues exactly that throwaway call and doubles as a policy-patch
+        # self-test (it logs at ERROR if the patch chain is broken).
+        if verify_maia3_patch():
+            log.info("Maia-3 prewarm inference OK")
     except Exception as exc:  # noqa: BLE001
         # log.exception → ERROR level + full traceback. This is the loud
         # signal that replaces the previous swallowed warning. Downstream
@@ -114,10 +126,21 @@ def startup():
         # Maia, not a confusing generic failure.
         log.exception("Maia-3 engine failed to start at boot: %s", exc)
 
+    # Stockfish singleton for the sparring safety check. Spawning it at
+    # boot keeps the process spawn + UCI handshake off the per-move request
+    # path; a boot failure here is non-fatal because the request path can
+    # still start the engine lazily (get_stockfish_singleton).
+    try:
+        engine = start_stockfish_singleton()
+        log.info("Stockfish singleton started from: %s", engine.stockfish_path)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Stockfish singleton failed to start at boot: %s", exc)
+
 
 @app.on_event("shutdown")
 def shutdown():
     close_maia3()
+    close_stockfish_singleton()
 
 # --- Routers ---
 app.include_router(onboarding.router, prefix="/onboarding")
