@@ -1,6 +1,7 @@
 import logging
 import time
 from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
 from typing import Any, Dict, Iterable, Optional
 
 from psycopg2.extras import Json, RealDictCursor
@@ -28,6 +29,29 @@ _REPERTOIRE_EXECUTOR = ThreadPoolExecutor(
     max_workers=2,
     thread_name_prefix="opponent-repertoire",
 )
+
+# Opponents whose corpus is being indexed by the background executor right
+# now, keyed by (requested_by_user_id, provider, lowercased username). The
+# sparring move path consults this to skip its inline ensure instead of
+# re-indexing the same corpus on the request thread.
+_REPERTOIRE_INDEXING_INFLIGHT: set[tuple[str, str, str]] = set()
+_REPERTOIRE_INFLIGHT_LOCK = Lock()
+
+
+def is_repertoire_indexing_inflight(
+    *,
+    requested_by_user_id: str,
+    provider: str,
+    opponent_username: str,
+) -> bool:
+    """True while run_opponent_repertoire_index is indexing this opponent."""
+    key = (
+        requested_by_user_id,
+        provider,
+        (opponent_username or "").strip().lower(),
+    )
+    with _REPERTOIRE_INFLIGHT_LOCK:
+        return key in _REPERTOIRE_INDEXING_INFLIGHT
 
 
 def _normalize_username(username: Optional[str]) -> Optional[str]:
@@ -329,6 +353,23 @@ def run_opponent_repertoire_index(
     conn = database.connection_pool.getconn()
     processed = 0
     total_games = 0
+
+    # Advertise which opponents are being indexed right now so the sparring
+    # move path can SKIP its inline ensure_opponent_repertoire() instead of
+    # duplicating this PGN-replay work on the request thread (it would block
+    # the user's first move behind the same corpus we are already indexing
+    # in the background). Keys are added before the work and dropped in the
+    # finally block.
+    inflight_keys = {
+        (
+            requested_by_user_id,
+            provider,
+            (opponent_username or "").strip().lower(),
+        )
+        for provider, opponent_username in opponents
+    }
+    with _REPERTOIRE_INFLIGHT_LOCK:
+        _REPERTOIRE_INDEXING_INFLIGHT.update(inflight_keys)
     try:
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
@@ -398,6 +439,8 @@ def run_opponent_repertoire_index(
             exc,
         )
     finally:
+        with _REPERTOIRE_INFLIGHT_LOCK:
+            _REPERTOIRE_INDEXING_INFLIGHT.difference_update(inflight_keys)
         duration_ms = (time.perf_counter() - started) * 1000
         log.info(
             "[IMPORT_PROFILE] phase=repertoire_insert games=%d "
