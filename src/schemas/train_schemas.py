@@ -271,21 +271,61 @@ class SparringMoveResponse(BaseModel):
     best_move_san: Optional[str] = None
 
 
+class SparringWarmupRequest(BaseModel):
+    # Session-start precomputation: precomputes the opponent's style profile
+    # and exploitable traps into the sparring hot-path cache so the FIRST
+    # out-of-book Maia move isn't slowed by the corpus-replay cache miss.
+    # Same time_control semantics as SparringMoveRequest (the cache key is
+    # per-TC, so the warmup must use the exact TC label the moves will use).
+    provider: Literal["lichess", "chesscom"]
+    opponent_username: str = Field(..., min_length=1, max_length=100)
+    time_control: Optional[str] = Field(None, max_length=20)
+
+
+class SparringWarmupResponse(BaseModel):
+    warmed: bool
+    already_warm: bool
+    opponent_elo: int
+
+
+# The Engine Sparring persona choices as a schema-layer Literal. REDECLARED
+# here rather than importing services.persona_reranker.PersonaType: no module
+# under src/schemas/ imports from services/ or engines/ (checked: zero
+# existing occurrences) -- the schema layer is pure Pydantic contracts with
+# no service dependencies, and importing a service enum would invert that
+# layering. Drift between this Literal and PersonaType's values is pinned by
+# a test in routers/train_engine_sparring_test.py (get_args == enum values).
+PersonaName = Literal["attacker", "sacrificer", "defender", "positional"]
+
+
 class EngineSparringMoveRequest(BaseModel):
     # Strength-control fields for the Stockfish-based Engine Sparring mode.
     # This is a SEPARATE feature from the Maia-based Opponent Preparation
     # flow (SparringMoveRequest above): there is no provider /
     # opponent_username / time_control here -- the user picks a Stockfish
-    # strength directly instead of importing an opponent.
+    # strength and a persona instead of importing an opponent.
     #
     # The valid Elo range is deliberately NOT hardcoded in this schema. It is
     # read at request time from the bundled Stockfish binary's advertised
     # UCI_Elo min/max (via engines.stockfish_engine.configure_strength), so a
     # Stockfish upgrade cannot drift the schema out of sync. Both fields are
     # optional; when both are None (or omitted) the engine plays at full
-    # strength. Move-generation fields (fen, bot_color) are added when the
-    # persona re-ranker lands -- this task is scoped strictly to strength
-    # control, so only the strength fields live here for now.
+    # strength.
+    #
+    # Move-generation fields, mirroring SparringMoveRequest's stateless
+    # pattern exactly: the frontend owns the game (chess.js) and sends the
+    # CURRENT position's FEN on every request; there is no server-side
+    # session. `fen` uses the same length bounds as SparringMoveRequest.fen,
+    # and `bot_color` the same Literal, so the two move endpoints accept
+    # identically-shaped positions.
+    fen: str = Field(..., min_length=1, max_length=200)
+    bot_color: Literal["white", "black"]
+    # Which persona re-ranks the engine's candidates. The string values match
+    # services.persona_reranker.PersonaType exactly (see PersonaName above);
+    # an unknown name is rejected by Pydantic at parse time (422) before the
+    # endpoint runs -- the service layer's resolve_persona() remains as the
+    # loud second gate for non-HTTP callers.
+    persona: PersonaName
     target_elo: Optional[int] = Field(
         None,
         description=(
@@ -301,6 +341,33 @@ class EngineSparringMoveRequest(BaseModel):
             "omitted, or as a fallback on builds that don't advertise UCI_Elo."
         ),
     )
+
+
+class EngineSparringMoveResponse(BaseModel):
+    # The persona's chosen move plus the transparency numbers the Sparring UI
+    # shows. Where SparringMoveResponse surfaces `cp_loss` (how much the
+    # safety check's blunder gate cost the chosen move vs the engine's best),
+    # this response surfaces the persona rerank directly:
+    #   * engine_score_cp  -- the chosen move's RAW engine score (suggest()'s
+    #     score_cp, side-to-move POV, mate coerced to +/-10000);
+    #   * engine_norm_cp   -- that score minus the engine's best candidate's
+    #     score (<= 0; 0 == the persona played the engine's own best move);
+    #   * persona_final_cp -- the persona-adjusted ranking number the move
+    #     was actually selected by (norm + 100*bias, trust-decayed,
+    #     demotion-floored at -75) -- the "what did style cost/gain"
+    #     figure.
+    #   * best_move_uci/best_move_san -- the engine's own top choice, present
+    #     ONLY when it differs from the chosen move (null when the persona
+    #     picked the engine's actual best, same spirit as
+    #     SparringMoveResponse's optional best_move fields).
+    move_uci: str
+    move_san: str
+    persona: PersonaName
+    engine_score_cp: int
+    engine_norm_cp: float
+    persona_final_cp: float
+    best_move_uci: Optional[str] = None
+    best_move_san: Optional[str] = None
 
 
 class OpponentDataClearResponse(BaseModel):
