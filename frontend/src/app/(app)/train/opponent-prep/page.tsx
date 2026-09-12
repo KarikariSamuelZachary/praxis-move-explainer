@@ -75,6 +75,11 @@ type ApiErrorResponse = {
   error?: string;
 };
 
+type Premove = {
+  from: string;
+  to: string;
+};
+
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
 const woodBoxStyle: React.CSSProperties = {
@@ -195,6 +200,7 @@ export default function OpponentPrepPage() {
   const [lastMove, setLastMove] = useState<SparringMoveResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
+  const [premove, setPremove] = useState<Premove | null>(null);
   const [timeControl, setTimeControl] = useState<string>('');
   const gameRef = useRef(game);
   const botMoveInFlightRef = useRef(false);
@@ -276,6 +282,40 @@ export default function OpponentPrepPage() {
     !gameOver &&
     (game.turn() === 'w' ? 'white' : 'black') === humanColor;
 
+  // Premoving: while the bot is on the move the user may commit a move that
+  // is played automatically (when still legal) the moment it becomes their
+  // turn, so sparring keeps a bullet-like rhythm.
+  const canPremove = isStarted && !gameOver && !humanCanMove;
+  const humanPieceColor = humanColor === 'white' ? 'w' : 'b';
+
+  // Probe position with the turn flipped to the human. Used to validate
+  // premove shapes and show target hints while the bot is to move. Null
+  // whenever the human is on turn (normal play) or the game is not running.
+  const premoveProbeGame = useMemo<Chess | null>(() => {
+    if (!canPremove) {
+      return null;
+    }
+    try {
+      const parts = game.fen().split(' ');
+      parts[1] = humanPieceColor;
+      return new Chess(parts.join(' '));
+    } catch {
+      return null;
+    }
+  }, [canPremove, game, humanPieceColor]);
+
+  const premoveSan = useMemo<string | null>(() => {
+    if (!premove || !premoveProbeGame) {
+      return null;
+    }
+    try {
+      const probe = new Chess(premoveProbeGame.fen());
+      return probe.move({ from: premove.from, to: premove.to, promotion: 'q' })?.san ?? null;
+    } catch {
+      return null;
+    }
+  }, [premove, premoveProbeGame]);
+
   const requestBotMove = useCallback(async () => {
     if (!selectedProfile || botMoveInFlightRef.current || gameRef.current.isGameOver()) {
       return;
@@ -320,6 +360,42 @@ export default function OpponentPrepPage() {
     }
   }, [botColor, selectedProfile, timeControl]);
 
+  // Play a stored premove as soon as it becomes the human's turn. Premoves
+  // that stopped being legal (the bot blocked the path, captured the piece
+  // or delivered check) are discarded, matching lichess/chess.com behaviour.
+  useEffect(() => {
+    if (!premove) {
+      return;
+    }
+    if (!isStarted || gameOver) {
+      setPremove(null);
+      return;
+    }
+
+    const turnColor = game.turn() === 'w' ? 'white' : 'black';
+    if (turnColor !== humanColor) {
+      return;
+    }
+
+    setPremove(null);
+
+    const nextGame = new Chess(game.fen());
+    let move: ReturnType<typeof nextGame.move> | null = null;
+    try {
+      move = nextGame.move({ from: premove.from, to: premove.to, promotion: 'q' });
+    } catch {
+      move = null;
+    }
+
+    if (move) {
+      setGame(nextGame);
+      setLastMove(null);
+      setMessage(null);
+      setStatus('ready');
+      setSelectedSquare(null);
+    }
+  }, [game, gameOver, humanColor, isStarted, premove]);
+
   useEffect(() => {
     if (!isStarted || !selectedProfile || gameOver || isThinking || status === 'error') {
       return;
@@ -339,6 +415,25 @@ export default function OpponentPrepPage() {
     setMessage(null);
     setStatus('ready');
     setSelectedSquare(null);
+    setPremove(null);
+
+    // Fire-and-forget session warmup: while the user plays their first
+    // moves, the backend indexes any missing repertoire rows and
+    // precomputes the opponent's style/traps profile, so the first
+    // (out-of-book) Maia reply is served from cache instead of paying a
+    // multi-second corpus-replay miss. Failures are intentionally ignored
+    // — the move endpoint degrades gracefully and retries the cache itself.
+    if (selectedProfile) {
+      void fetch('/api/train/sparring-warmup', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          provider: selectedProfile.provider,
+          opponent_username: selectedProfile.opponent_username,
+          time_control: timeControl || undefined,
+        }),
+      }).catch(() => {});
+    }
   }
 
   function resetGame() {
@@ -348,6 +443,7 @@ export default function OpponentPrepPage() {
     setMessage(null);
     setStatus('ready');
     setSelectedSquare(null);
+    setPremove(null);
     botMoveInFlightRef.current = false;
     setIsThinking(false);
   }
@@ -385,6 +481,37 @@ export default function OpponentPrepPage() {
     return true;
   }
 
+  // Validate a premove against the turn-flipped probe position. Allows any
+  // pseudo-legal shape for the human's pieces (including captures, castling
+  // and promotions, which auto-queen) but rejects self-captures.
+  function trySetPremove(from: string, to: string): boolean {
+    if (!canPremove || !premoveProbeGame || from === to) {
+      return false;
+    }
+
+    const fromPiece = gameRef.current.get(from as Square);
+    if (!fromPiece || fromPiece.color !== humanPieceColor) {
+      return false;
+    }
+
+    const toPiece = gameRef.current.get(to as Square);
+    if (toPiece && toPiece.color === fromPiece.color) {
+      return false;
+    }
+
+    try {
+      const isLegalShape = premoveProbeGame
+        .moves({ square: from as Square, verbose: true })
+        .some((move) => move.to === to);
+      if (isLegalShape) {
+        setPremove({ from, to });
+      }
+      return isLegalShape;
+    } catch {
+      return false;
+    }
+  }
+
   function handleDrop({
     sourceSquare,
     targetSquare,
@@ -395,35 +522,75 @@ export default function OpponentPrepPage() {
     if (!targetSquare) {
       return false;
     }
-    return tryMove(sourceSquare, targetSquare);
+
+    if (humanCanMove) {
+      return tryMove(sourceSquare, targetSquare);
+    }
+
+    if (trySetPremove(sourceSquare, targetSquare)) {
+      setSelectedSquare(null);
+      return true;
+    }
+
+    return false;
+  }
+
+  function handleSquareRightClick() {
+    setPremove(null);
   }
 
   function handleSquareClick({ square }: { piece: { pieceType: string } | null; square: string }) {
-    if (!humanCanMove) {
+    if (humanCanMove) {
+      const clickedPiece = gameRef.current.get(square as Square);
+      const isOwnPiece = clickedPiece?.color === gameRef.current.turn();
+
+      if (!selectedSquare) {
+        setSelectedSquare(isOwnPiece ? square : null);
+        return;
+      }
+
+      if (selectedSquare === square) {
+        setSelectedSquare(null);
+        return;
+      }
+
+      const sourcePiece = gameRef.current.get(selectedSquare as Square);
+      const legalMove = gameRef.current
+        .moves({ square: selectedSquare as Square, verbose: true })
+        .some((move) => move.to === square);
+
+      if (legalMove && sourcePiece) {
+        tryMove(selectedSquare, square);
+        return;
+      }
+
+      setSelectedSquare(isOwnPiece ? square : null);
+      return;
+    }
+
+    if (!canPremove) {
       setSelectedSquare(null);
       return;
     }
 
     const clickedPiece = gameRef.current.get(square as Square);
-    const isOwnPiece = clickedPiece?.color === gameRef.current.turn();
+    const isOwnPiece = clickedPiece?.color === humanPieceColor;
 
-    if (!selectedSquare) {
-      setSelectedSquare(isOwnPiece ? square : null);
+    // Clicking the destination of an existing premove cancels it.
+    if (premove && square === premove.to) {
+      setPremove(null);
       return;
     }
 
-    if (selectedSquare === square) {
+    // Clicking the origin of an existing premove re-opens it for editing.
+    if (premove && square === premove.from) {
+      setPremove(null);
+      setSelectedSquare(square);
+      return;
+    }
+
+    if (selectedSquare && selectedSquare !== square && trySetPremove(selectedSquare, square)) {
       setSelectedSquare(null);
-      return;
-    }
-
-    const sourcePiece = gameRef.current.get(selectedSquare as Square);
-    const legalMove = gameRef.current
-      .moves({ square: selectedSquare as Square, verbose: true })
-      .some((move) => move.to === square);
-
-    if (legalMove && sourcePiece) {
-      tryMove(selectedSquare, square);
       return;
     }
 
@@ -431,26 +598,35 @@ export default function OpponentPrepPage() {
   }
 
   const highlightSquares = useMemo<Record<string, React.CSSProperties>>(() => {
-    if (!selectedSquare) return {};
-    return {
-      [selectedSquare]: { backgroundColor: 'rgba(255, 170, 0, 0.35)' },
-    };
-  }, [selectedSquare]);
+    const squares: Record<string, React.CSSProperties> = {};
+    if (premove) {
+      const premoveStyle = { backgroundColor: 'rgba(56, 189, 248, 0.4)' };
+      squares[premove.from] = premoveStyle;
+      squares[premove.to] = premoveStyle;
+    }
+    if (selectedSquare) {
+      squares[selectedSquare] = { backgroundColor: 'rgba(255, 170, 0, 0.35)' };
+    }
+    return squares;
+  }, [premove, selectedSquare]);
 
   const hintSquares = useMemo<Record<string, 'dot' | 'ring'>>(() => {
-    if (!selectedSquare) return {};
+    const sourceGame = humanCanMove ? game : premoveProbeGame;
+    if (!selectedSquare || !sourceGame) {
+      return {};
+    }
     try {
-      const legalMoves = game.moves({ square: selectedSquare as Square, verbose: true });
+      const legalMoves = sourceGame.moves({ square: selectedSquare as Square, verbose: true });
       const hints: Record<string, 'dot' | 'ring'> = {};
       for (const move of legalMoves) {
-        const targetPiece = game.get(move.to as Square);
+        const targetPiece = sourceGame.get(move.to as Square);
         hints[move.to] = targetPiece ? 'ring' : 'dot';
       }
       return hints;
     } catch {
       return {};
     }
-  }, [game, selectedSquare]);
+  }, [game, humanCanMove, premoveProbeGame, selectedSquare]);
 
   const squareRenderer = useCallback<SquareRenderer>(
     ({ square, children }) => {
@@ -553,15 +729,19 @@ export default function OpponentPrepPage() {
                   options={{
                     position: game.fen() === new Chess().fen() ? START_FEN : game.fen(),
                     boardOrientation: humanColor,
-                    allowDragging: humanCanMove,
+                    allowDragging: humanCanMove || canPremove,
                     canDragPiece: ({ piece }) => {
-                      if (!humanCanMove) {
+                      if (humanCanMove) {
+                        return piece.pieceType[0] === gameRef.current.turn();
+                      }
+                      if (!canPremove) {
                         return false;
                       }
-                      return piece.pieceType[0] === gameRef.current.turn();
+                      return piece.pieceType[0] === humanPieceColor;
                     },
                     onPieceDrop: handleDrop,
                     onSquareClick: handleSquareClick,
+                    onSquareRightClick: handleSquareRightClick,
                     squareRenderer,
                     boardStyle: {
                       width: '100%',
@@ -608,6 +788,7 @@ export default function OpponentPrepPage() {
               message={message}
               gameOver={gameOver && isStarted}
               isStarted={isStarted}
+              premoveSan={premoveSan}
               onReset={resetGame}
               canReset={isStarted}
             />
@@ -1047,6 +1228,7 @@ function StatusStrip({
   message,
   gameOver,
   isStarted,
+  premoveSan,
   onReset,
   canReset,
 }: {
@@ -1056,6 +1238,7 @@ function StatusStrip({
   message: string | null;
   gameOver: boolean;
   isStarted: boolean;
+  premoveSan: string | null;
   onReset: () => void;
   canReset: boolean;
 }) {
@@ -1077,6 +1260,11 @@ function StatusStrip({
         {lastMove && !gameOver && (
           <span className="truncate text-[11px] text-[#f7e5c6]/65">
             {lastMove.move_san}
+          </span>
+        )}
+        {premoveSan && !gameOver && (
+          <span className="shrink-0 rounded-full border border-sky-400/30 bg-sky-400/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-sky-200">
+            Premove {premoveSan}
           </span>
         )}
       </div>
