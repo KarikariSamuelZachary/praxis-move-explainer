@@ -8,8 +8,14 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Qu
 from core import database
 from core.rate_limit import limit_by_clerk_user_id
 from engines.maia_engine import MaiaUnavailableError, get_maia3, is_maia_available
-from engines.stockfish_engine import StockfishEngine
+from engines.stockfish_engine import (
+    StockfishEngine,
+    get_stockfish_singleton,
+    reset_stockfish_singleton,
+)
 from schemas.train_schemas import (
+    EngineSparringMoveRequest,
+    EngineSparringMoveResponse,
     OpponentAnalysisStatusResponse,
     OpponentDataClearResponse,
     OpponentImportJobResponse,
@@ -20,15 +26,19 @@ from schemas.train_schemas import (
     OpponentProfileResponse,
     SparringMoveRequest,
     SparringMoveResponse,
+    SparringWarmupRequest,
+    SparringWarmupResponse,
     WeaknessProfileJobResponse,
     WeaknessProfileRequest,
     WeaknessProfileStartResponse,
 )
+from services.persona_reranker import best_persona_move, rerank_moves
 from services.opponent_game_analysis import get_opponent_analysis_status
 from services.opponent_import import (
     clear_opponent_data,
     create_opponent_import_job,
     get_opponent_import_job,
+    is_repertoire_indexing_inflight,
     run_opponent_import_job,
 )
 from services.opponent_repertoire import (
@@ -279,6 +289,22 @@ _sparring_style_traps_cache: dict[
     tuple[float, Optional[Dict[str, Any]], Optional[set], bool],
 ] = {}
 
+# --- ensure_opponent_repertoire throttle (sparring hot path) ---------------
+#
+# The sparring endpoint calls ensure_opponent_repertoire() on EVERY move.
+# Its anti-join query scans the user's whole game list for that opponent,
+# which is wasted work on every move after the first (import jobs already
+# index games in the background; new rows only appear when a new import
+# finishes). This in-process TTL gate runs the ensure at most once per
+# opponent+TC per TTL window; a fresh import doesn't need the endpoint to
+# notice it faster than this because ensure also runs as part of the
+# import job itself.
+_SPARRING_ENSURE_REPERTOIRE_TTL_SECONDS = 60
+_sparring_ensure_repertoire_cache: dict[
+    tuple[str, str, str],
+    float,
+] = {}
+
 
 def _sparring_style_traps_cache_key(
     requested_by_user_id: str,
@@ -325,6 +351,89 @@ def _invalidate_style_traps_cache(
         k for k in _sparring_style_traps_cache if k[0] == requested_by_user_id
     ]:
         _sparring_style_traps_cache.pop(key, None)
+
+
+def _warm_sparring_style_traps_cache(
+    *,
+    requested_by_user_id: str,
+    provider: str,
+    opponent_username: str,
+    time_control: Optional[str] = None,
+) -> bool:
+    """Precompute the opponent's style profile + exploitable traps and fill
+    `_sparring_style_traps_cache` so the first OUT-OF-BOOK sparring move of
+    a session doesn't pay the ~2.4s compute_opponent_style corpus replay.
+
+    Mirrors the miss-path semantics of get_sparring_move's inline block:
+    failures store nothing (the request path retries and degrades to
+    unbiased Maia), and traps are only computed when the style profile is
+    `sufficient`. Returns True when the entry is warm afterwards.
+    """
+    cache_key = _sparring_style_traps_cache_key(
+        requested_by_user_id, provider, opponent_username, time_control
+    )
+    cached_entry = _sparring_style_traps_cache.get(cache_key)
+    if cached_entry is not None and (
+        time.time() - cached_entry[0] < _SPARRING_STYLE_TRAPS_TTL_SECONDS
+    ):
+        return True
+    if cached_entry is not None:
+        _sparring_style_traps_cache.pop(cache_key, None)
+
+    try:
+        style = compute_opponent_style(
+            requested_by_user_id=requested_by_user_id,
+            provider=provider,
+            opponent_username=opponent_username,
+            sparring_time_control=time_control,
+        )
+    except Exception as exc:  # noqa: BLE001 -- intentionally broad
+        log.warning(
+            "sparring warmup: compute_opponent_style failed for %s/%s — "
+            "leaving cache cold. Underlying: %s",
+            provider, opponent_username, exc,
+        )
+        return False
+
+    traps = None
+    traps_ok = False
+    if style and style.get("sufficient"):
+        try:
+            if database.connection_pool is None:
+                raise RuntimeError("Database connection pool is not initialized")
+            conn = database.connection_pool.getconn()
+            try:
+                traps = compute_exploitable_traps(
+                    conn,
+                    requested_by_user_id=requested_by_user_id,
+                    provider=provider,
+                    opponent_username=opponent_username,
+                    sparring_time_control=time_control,
+                )
+            finally:
+                database.connection_pool.putconn(conn)
+            traps_ok = True
+        except Exception as exc:  # noqa: BLE001
+            log.warning(
+                "sparring warmup: compute_exploitable_traps failed for %s/%s "
+                "— style will still be served warm. Underlying: %s",
+                provider, opponent_username, exc,
+            )
+            traps = None
+            traps_ok = False
+
+    _sparring_style_traps_cache[cache_key] = (
+        time.time(),
+        style,
+        traps if traps_ok else None,
+        traps_ok,
+    )
+    log.info(
+        "sparring warmup: style/traps cached for %s/%s style_sufficient=%s "
+        "traps_ok=%s",
+        provider, opponent_username, bool(style and style.get("sufficient")), traps_ok,
+    )
+    return True
 
 
 def _chesscom_profile_cached(username: str) -> Optional[Dict[str, Any]]:
@@ -465,11 +574,34 @@ def get_sparring_move(
     if opponent_elo is None:
         raise HTTPException(status_code=404, detail="Opponent profile not found")
 
-    ensure_opponent_repertoire(
-        requested_by_user_id=clerk_id,
-        provider=body.provider,
-        opponent_username=body.opponent_username,
+    ensure_key = (
+        clerk_id,
+        body.provider,
+        (body.opponent_username or "").strip().lower(),
     )
+    now = time.time()
+    if (
+        ensure_key not in _sparring_ensure_repertoire_cache
+        or now - _sparring_ensure_repertoire_cache[ensure_key]
+        >= _SPARRING_ENSURE_REPERTOIRE_TTL_SECONDS
+    ):
+        if is_repertoire_indexing_inflight(
+            requested_by_user_id=clerk_id,
+            provider=body.provider,
+            opponent_username=body.opponent_username,
+        ):
+            # The background import job is indexing this corpus right now;
+            # running ensure here would re-index the same games on the
+            # request thread and stall the move. Skip WITHOUT caching the
+            # throttle so the next move retries once indexing completes.
+            pass
+        else:
+            ensure_opponent_repertoire(
+                requested_by_user_id=clerk_id,
+                provider=body.provider,
+                opponent_username=body.opponent_username,
+            )
+            _sparring_ensure_repertoire_cache[ensure_key] = now
 
     repertoire_choice = pick_repertoire_move(
         requested_by_user_id=clerk_id,
@@ -815,21 +947,29 @@ def get_sparring_move(
         raise HTTPException(status_code=502, detail="Engine returned an illegal move")
 
     try:
-        with StockfishEngine() as stockfish:
-            eval_before = stockfish.evaluate(board, pov=bot_color)
-            candidate_board = board.copy(stack=False)
-            candidate_board.push(candidate_move)
-            eval_after = stockfish.evaluate(candidate_board, pov=bot_color)
-            cp_loss = max(0, round(eval_before.score_cp - eval_after.score_cp))
+        # Long-lived singleton (booted at startup) instead of a fresh
+        # Stockfish subprocess per move — spawning + UCI handshake cost
+        # ~0.3-0.7s on EVERY move before either evaluation even started.
+        stockfish = get_stockfish_singleton()
+        eval_before = stockfish.evaluate(board, pov=bot_color)
+        candidate_board = board.copy(stack=False)
+        candidate_board.push(candidate_move)
+        eval_after = stockfish.evaluate(candidate_board, pov=bot_color)
+        cp_loss = max(0, round(eval_before.score_cp - eval_after.score_cp))
 
-            if cp_loss >= body.catastrophic_loss_cp and eval_before.best_move_uci:
-                stockfish_move = chess.Move.from_uci(eval_before.best_move_uci)
-                if stockfish_move in board.legal_moves:
-                    candidate_move = stockfish_move
-                    move_uci = eval_before.best_move_uci
-                    move_san = eval_before.best_move_san
-                    source = "correcting_blunder"
+        if cp_loss >= body.catastrophic_loss_cp and eval_before.best_move_uci:
+            stockfish_move = chess.Move.from_uci(eval_before.best_move_uci)
+            if stockfish_move in board.legal_moves:
+                candidate_move = stockfish_move
+                move_uci = eval_before.best_move_uci
+                move_san = eval_before.best_move_san
+                source = "correcting_blunder"
     except Exception as exc:  # noqa: BLE001
+        # The singleton handle may be dead (mid-session engine crash) or in
+        # an unknown state after a failed/timeout analyse — drop it so the
+        # next request starts a fresh subprocess instead of retrying into a
+        # poisoned engine.
+        reset_stockfish_singleton()
         log.exception("Sparring move safety check failed")
         raise HTTPException(status_code=502, detail=f"Stockfish safety check failed: {exc}") from exc
 
@@ -842,4 +982,214 @@ def get_sparring_move(
         cp_loss=cp_loss,
         best_move_uci=eval_before.best_move_uci,
         best_move_san=eval_before.best_move_san,
+    )
+
+
+@router.post(
+    "/train/sparring-warmup",
+    response_model=SparringWarmupResponse,
+)
+def warm_sparring_session(
+    body: SparringWarmupRequest,
+    request: Request,
+    _: None = Depends(limit_by_clerk_user_id(limit=10, window=60)),
+):
+    """Session-start precomputation for the Opponent Prep sparring flow.
+
+    Called (fire-and-forget) by the frontend when the user presses Start
+    Game. While the user plays their first moves, this endpoint:
+      1. indexes any not-yet-indexed repertoire games (cheap no-op when the
+         import job already indexed them), and
+      2. precomputes the opponent's style profile + exploitable traps into
+         `_sparring_style_traps_cache`, so the first OUT-OF-BOOK Maia move
+         of the session is served from cache instead of paying the
+         ~2.4s corpus-replay miss.
+
+    Best-effort: style/traps failures return warmed=False (the move path
+    degrades to unbiased Maia and retries on the next out-of-book move).
+    """
+    clerk_id = request.headers.get("X-Clerk-User-Id")
+    if not clerk_id:
+        raise HTTPException(status_code=400, detail="Missing X-Clerk-User-Id header")
+
+    opponent_elo = get_opponent_rating(
+        requested_by_user_id=clerk_id,
+        provider=body.provider,
+        opponent_username=body.opponent_username,
+    )
+    if opponent_elo is None:
+        raise HTTPException(status_code=404, detail="Opponent profile not found")
+
+    # Index any missing repertoire entries up front — same call the move
+    # endpoint makes, just moved here so the user's first move never waits
+    # behind a fresh corpus indexing. Skipped (without caching the throttle)
+    # while the background import job is indexing this corpus — duplicating
+    # that PGN replay here would block this request and slow the warmup.
+    if not is_repertoire_indexing_inflight(
+        requested_by_user_id=clerk_id,
+        provider=body.provider,
+        opponent_username=body.opponent_username,
+    ):
+        ensure_opponent_repertoire(
+            requested_by_user_id=clerk_id,
+            provider=body.provider,
+            opponent_username=body.opponent_username,
+        )
+        ensure_key = (
+            clerk_id,
+            body.provider,
+            (body.opponent_username or "").strip().lower(),
+        )
+        _sparring_ensure_repertoire_cache[ensure_key] = time.time()
+
+    cache_key = _sparring_style_traps_cache_key(
+        clerk_id, body.provider, body.opponent_username, body.time_control
+    )
+    cached_entry = _sparring_style_traps_cache.get(cache_key)
+    already_warm = cached_entry is not None and (
+        time.time() - cached_entry[0] < _SPARRING_STYLE_TRAPS_TTL_SECONDS
+    )
+    warmed = _warm_sparring_style_traps_cache(
+        requested_by_user_id=clerk_id,
+        provider=body.provider,
+        opponent_username=body.opponent_username,
+        time_control=body.time_control,
+    )
+
+    return SparringWarmupResponse(
+        warmed=warmed,
+        already_warm=already_warm,
+        opponent_elo=opponent_elo,
+    )
+
+
+@router.post(
+    "/train/engine-sparring-move",
+    response_model=EngineSparringMoveResponse,
+)
+def get_engine_sparring_move(
+    body: EngineSparringMoveRequest,
+    request: Request,
+    # 15/60 vs sparring-move's 20/60: every request here pays a FRESH
+    # Stockfish subprocess spawn + UCI handshake (~0.3-0.7s) plus a
+    # MultiPV-5 search, where the Maia path after warmup is a cached dict
+    # lookup + one ~0.2s model inference. 15/min still sustains a move
+    # every 4s (comfortably above any sparring cadence, premoves included)
+    # while bounding concurrent subprocess spawning per user.
+    _: None = Depends(limit_by_clerk_user_id(limit=15, window=60)),
+):
+    """Stateless Engine Sparring move request: persona-reranked Stockfish.
+
+    Mirrors get_sparring_move's shape wherever the mechanics transfer from
+    Maia to Stockfish (stateless FEN-in/move-out, no DB session -- the
+    frontend owns the game exactly like the Opponent Prep page does):
+
+      * FEN parse failure -> 400 (same message as sparring-move).
+      * Not the bot's turn -> 409 (the same integrity check sparring-move
+        applies -- the one real safeguard against a malformed game state;
+        reused verbatim).
+      * Unknown/invalid strength -> 400. configure_strength() validates
+        target_elo/skill_level against the bundled binary's ADVERTISED UCI
+        option range and raises ValueError; that is mapped to a clear 400
+        here instead of surfacing as an unhandled 500. (An invalid persona
+        name cannot reach this handler at all: the schema's Literal rejects
+        it at parse time with 422.)
+      * Terminal position (checkmate/stalemate) -> 409. NOTE this is a
+        deliberate DIVERGENCE from sparring-move, which has no game-over
+        handling at all: a terminal FEN sent there falls through Maia and
+        surfaces as an accidental `502 Engine returned an illegal move`.
+        rerank_moves() detects terminals cleanly (returns []), so this
+        endpoint can fail with a precise, client-actionable 409 instead of
+        an engine-looking failure. 409 (not 400/422) because the request is
+        well-formed -- the CLIENT state is terminal, the same class of
+        state conflict as the bot's-turn check above.
+      * Engine failure -> 502 (get_sparring_move's code for Stockfish
+        failures). reset_stockfish_singleton() is deliberately NOT called:
+        persona_reranker spawns a PRIVATE engine per call and closes it via
+        its context manager, so no shared engine state can be poisoned and
+        the next request is automatically fresh. Calling the reset here
+        would actually kill the SAFETY CHECK's shared singleton for no
+        reason.
+      * No warmup endpoint: warm_sparring_session precomputes
+        opponent-corpus artifacts (repertoire indexing + style/traps
+        caches). Engine Sparring has no corpus to precompute and no
+        reusable long-lived engine to prewarm (fresh-per-call by design
+        for strength isolation), so there is nothing to warm.
+
+    The reranker exposes the ENGINE's own best choice only indirectly (the
+    row with engine_norm_cp == 0), so this endpoint uses rerank_moves()
+    rather than best_persona_move(): it needs both the persona's pick AND
+    the canonical engine-best row to populate
+    EngineSparringMoveResponse.best_move_* (present only when they differ).
+    """
+    clerk_id = request.headers.get("X-Clerk-User-Id")
+    if not clerk_id:
+        raise HTTPException(status_code=400, detail="Missing X-Clerk-User-Id header")
+
+    try:
+        board = chess.Board(body.fen)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid FEN") from exc
+
+    bot_color = chess.WHITE if body.bot_color == "white" else chess.BLACK
+    if board.turn != bot_color:
+        raise HTTPException(status_code=409, detail="It is not the bot's turn")
+
+    try:
+        ranked = rerank_moves(
+            board,
+            body.persona,
+            elo=body.target_elo,
+            skill_level=body.skill_level,
+        )
+    except ValueError as exc:
+        # configure_strength()'s strict strength validation (out-of-range or
+        # wrong-typed elo/skill_level). resolve_persona()'s unknown-persona
+        # ValueError would also land here on direct service calls, but the
+        # HTTP path cannot reach it (the schema Literal rejects first).
+        raise HTTPException(
+            status_code=400, detail=f"Invalid engine strength: {exc}"
+        ) from exc
+    except Exception as exc:  # noqa: BLE001
+        # Spawn failure (binary missing), UCI protocol death mid-analysis,
+        # engine crash -- all per-call with a private engine, so nothing to
+        # reset: the next request spawns fresh automatically. Typed 502,
+        # matching get_sparring_move's Stockfish-failure convention.
+        log.exception("Engine Sparring Stockfish failure")
+        raise HTTPException(
+            status_code=502,
+            detail=f"Engine Sparring Stockfish failure: {exc}",
+        ) from exc
+
+    if not ranked:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "The game is over at this position "
+                "(checkmate or stalemate) -- no move to make"
+            ),
+        )
+
+    chosen = ranked[0]
+    engine_best_rows = [row for row in ranked if row["engine_norm_cp"] == 0.0]
+    engine_best = engine_best_rows[0] if engine_best_rows else None
+    # On an engine score TIE several rows share norm 0; the engine itself
+    # has no single "best" among them, so reporting the first persona-sorted
+    # tied row is as faithful as the data gets.
+    best_move_uci = (
+        engine_best["uci"] if engine_best and engine_best["uci"] != chosen["uci"] else None
+    )
+    best_move_san = (
+        engine_best["san"] if best_move_uci is not None else None
+    )
+
+    return EngineSparringMoveResponse(
+        move_uci=chosen["uci"],
+        move_san=chosen["san"],
+        persona=body.persona,
+        engine_score_cp=chosen["score_cp"],
+        engine_norm_cp=chosen["engine_norm_cp"],
+        persona_final_cp=chosen["persona_final_cp"],
+        best_move_uci=best_move_uci,
+        best_move_san=best_move_san,
     )
