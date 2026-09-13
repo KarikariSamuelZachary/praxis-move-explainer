@@ -169,7 +169,7 @@ function PersonaStartDialog({ persona, onClose, onStart }: PersonaStartDialogPro
             })}
           </div>
           <p className="mt-1.5 text-[11px] leading-snug text-[#f7e5c6]/40">
-            Personas play the same style on either side — pick whichever color you prefer.
+            Personas play the same style on either side. Pick whichever color you prefer.
           </p>
         </div>
 
