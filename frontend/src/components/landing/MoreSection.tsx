@@ -28,11 +28,10 @@ const PILLARS = [
     title: 'Endgames',
     copy: 'Master fundamental endgames through focused, position-based practice.',
     icon: (
-      <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" strokeWidth="1.4" className="h-12 w-12">
-        <path d="M16 10V6h4v2h3V6h4v2h3V6h4v4l-2 3v11l2 2H16l2-2V13l-2-3z" />
-        <path d="M16 26h16" />
-        <path d="M18 32h12" />
-        <path d="M14 38h20v4H14v-4z" />
+      <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" className="h-12 w-12">
+        <circle cx="24" cy="10" r="5" />
+        <path d="M20 15h8c0 5 2 9 5 14H15c3-5 5-9 5-14z" />
+        <path d="M13 32h22M10 40h28" />
       </svg>
     ),
   },
