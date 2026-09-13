@@ -68,6 +68,7 @@ type Phase = 'idle' | 'typing' | 'loading' | 'playing' | 'analysis' | 'done';
 
 export default function ReviewDemo() {
   const rootRef = useRef<HTMLDivElement>(null);
+  const pgnRef = useRef<HTMLDivElement>(null);
   const evalRef = useRef<HTMLSpanElement>(null);
   const sparkRef = useRef<SVGPathElement>(null);
   const timersRef = useRef<ReturnType<typeof setTimeout>[]>([]);
@@ -80,6 +81,13 @@ export default function ReviewDemo() {
   const [typedExplanation, setTypedExplanation] = useState('');
   const [visibleRows, setVisibleRows] = useState(0);
   const [currentMoveIndex, setCurrentMoveIndex] = useState<number | null>(null);
+
+  useEffect(() => {
+    const pgnViewport = pgnRef.current;
+    if (pgnViewport) {
+      pgnViewport.scrollTop = pgnViewport.scrollHeight;
+    }
+  }, [typedPgn]);
 
   const clearAll = useCallback(() => {
     timersRef.current.forEach(clearTimeout);
@@ -256,12 +264,16 @@ export default function ReviewDemo() {
           <div className="mb-3 text-xs font-semibold uppercase tracking-[0.2em] text-wood-mute">
             Import Game
           </div>
-          <div className="min-h-[120px] flex-1 rounded-md border border-white/10 bg-black/40 p-3 font-mono text-[11px] leading-5 text-emerald-100/80">
+          <div
+            ref={pgnRef}
+            className="h-[120px] flex-none overflow-y-auto rounded-md border border-white/10 bg-black/40 p-3 font-mono text-[11px] leading-5 text-emerald-100/80 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+          >
             {typedPgn}
             {phase === 'typing' && (
               <span className="ml-0.5 inline-block h-3.5 w-[7px] animate-pulse bg-moss-bright align-middle" />
             )}
           </div>
+          <div className="flex-1" />
           <button
             type="button"
             tabIndex={-1}
