@@ -83,13 +83,13 @@ function ModeCardView({ mode, onCta }: { mode: ModeCard; onCta: () => void }) {
       />
 
       <div className="relative">
-        <h3 className="whitespace-pre-line font-display text-2xl font-semibold leading-tight text-[#f7e5c6]">
+        <h3 className="whitespace-pre-line font-display text-2xl font-semibold tracking-wide text-gold-bright">
           {mode.title}
         </h3>
         {mode.title === 'Engine Sparring' && <PersonaStrip />}
       </div>
 
-      <p className="relative mt-3 text-sm leading-relaxed text-white/70">{mode.description}</p>
+      <p className="relative mt-4 max-w-xs text-sm leading-7 text-wood-mute">{mode.description}</p>
 
       <div className="relative flex-1" />
 
