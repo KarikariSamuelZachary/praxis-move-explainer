@@ -7,11 +7,12 @@ import { KnightMark } from '@/components/layout/KnightMark';
 
 const LINKS = [
   { label: 'Puzzles', hash: '#puzzles' },
+  { label: 'Train', hash: '#train' },
   { label: 'Game Review', hash: '#review' },
   { label: 'Woodpecker', hash: '#woodpecker' },
   { label: 'Repertoire', hash: '#more' },
   { label: 'Openings', hash: '#more' },
-  { label: 'Community', hash: '#more' },
+  { label: 'Endgames', hash: '#more' },
 ];
 
 type LandingNavProps = {
