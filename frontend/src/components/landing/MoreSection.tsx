@@ -25,14 +25,14 @@ const PILLARS = [
     ),
   },
   {
-    title: 'Community',
-    copy: 'Connect with players, share games, and grow together.',
+    title: 'Endgames',
+    copy: 'Master fundamental endgames through focused, position-based practice.',
     icon: (
       <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" strokeWidth="1.4" className="h-12 w-12">
-        <circle cx="17" cy="17" r="6" />
-        <circle cx="33" cy="20" r="4.5" />
-        <path d="M6 38c0-6 5-10 11-10s11 4 11 10" />
-        <path d="M30 31c4 1 8 4 8 8" />
+        <path d="M16 10V6h4v2h3V6h4v2h3V6h4v4l-2 3v11l2 2H16l2-2V13l-2-3z" />
+        <path d="M16 26h16" />
+        <path d="M18 32h12" />
+        <path d="M14 38h20v4H14v-4z" />
       </svg>
     ),
   },
