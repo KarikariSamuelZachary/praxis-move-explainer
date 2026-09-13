@@ -11,6 +11,7 @@ import LandingNav from './LandingNav';
 import RailNav from './RailNav';
 import Hero from './Hero';
 import PuzzlesSection from './PuzzlesSection';
+import TrainSection from './TrainSection';
 import ReviewSection from './ReviewSection';
 import WoodpeckerSection from './WoodpeckerSection';
 import MoreSection from './MoreSection';
@@ -158,6 +159,7 @@ export default function LandingPage() {
           onExplore={() => scrollToSection('#puzzles')}
         />
         <PuzzlesSection />
+        <TrainSection onStartTraining={openSignUp} />
         <ReviewSection />
         <WoodpeckerSection onStartReview={openSignUp} />
         <MoreSection />
