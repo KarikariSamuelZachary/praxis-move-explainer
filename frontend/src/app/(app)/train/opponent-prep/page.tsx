@@ -422,7 +422,7 @@ export default function OpponentPrepPage() {
     // precomputes the opponent's style/traps profile, so the first
     // (out-of-book) Maia reply is served from cache instead of paying a
     // multi-second corpus-replay miss. Failures are intentionally ignored
-    // — the move endpoint degrades gracefully and retries the cache itself.
+    // The move endpoint degrades gracefully and retries the cache itself.
     if (selectedProfile) {
       void fetch('/api/train/sparring-warmup', {
         method: 'POST',
