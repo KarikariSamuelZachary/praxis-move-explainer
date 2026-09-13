@@ -19,6 +19,23 @@ Fixtures (all required by the spec):
   7. king move into the open      -> defense_gain < 0 (safety NOT improved)
   8. castling                     -> defense_gain > 0 (safety improved)
   9. endgame with active king     -> king_mobility > 0
+ 10. defended-pawn gambit offers  -> sacrifice_signal == 1.0 via the NEW
+                                    gambit-offer path (Danish 3.c3,
+                                    Smith-Morra 3.c3, BDG 4.f3 -- the three
+                                    real positions from the gambit
+                                    investigation; the en-prise path stays at
+                                    concession=0 on all three, so these pin
+                                    the new path specifically)
+ 11. gambit-offer controls        -> equal-material opening tension (French
+                                    2...d5), a LEVEL-material undefended
+                                    offer (King's Gambit 2.f4 -- the known
+                                    out-of-scope false negative), and a
+                                    down-material ENDGAME tension (opening
+                                    gate) all stay 0.0
+ 12. pinned false-positive class  -> a position statically IDENTICAL to the
+                                    Danish shape but reached without any
+                                    gambit fires -- the detector's
+                                    intent-blindness gap, pinned as accepted
 
 Run with: cd src && ../venv/bin/python services/persona_features_test.py
 """
@@ -37,6 +54,16 @@ def _scores(fen, uci):
     move = chess.Move.from_uci(uci)
     assert board.is_legal(move), f"illegal move {uci} in {fen}"
     return compute_style_scores(board, move)
+
+
+def _position_before_and_move(san_moves):
+    """Build a position by playing SAN from the start, returning the position
+    BEFORE the final move plus that final move (legality guaranteed by
+    python-chess; the same construction the gambit investigation used)."""
+    board = chess.Board()
+    for san in san_moves[:-1]:
+        board.push_san(san)
+    return board, board.parse_san(san_moves[-1])
 
 
 def _dump(scores, debug):
@@ -158,6 +185,120 @@ def test_endgame_active_king():
     print("  [PASS] endgame active king: king_mobility>0 (king centralizes)")
 
 
+def test_gambit_offer_defended_pawn_fires():
+    # The three REAL gambit positions from the investigation report. Each
+    # offers a DEFENDED pawn into pawn-vs-pawn tension, so the en-prise path
+    # scores concession=0 on all three (measured: hung=0, captured=0) -- the
+    # signal must come from the NEW gambit-offer path, and these assertions
+    # pin exactly that (old path silent AND new path fired AND signal 1.0).
+    # Material at each offer moment: mover 38 vs opponent 39 (already down a
+    # pawn, locked in by the earlier never-recaptured capture); the offered
+    # pawn is defended (bxc3 / bxc3 / gxf3 recaptures all exist).
+    cases = [
+        (["e4", "e5", "d4", "exd4", "c3"],
+         "Danish Gambit 3.c3 (offers the d4 pawn; after ...dxc3 bxc3 the "
+         "mover is 37 vs 38 -- down a pawn with compensation)"),
+        (["e4", "c5", "d4", "cxd4", "c3"],
+         "Smith-Morra 3.c3 (same shape as the Danish)"),
+        (["d4", "d5", "e4", "dxe4", "Nc3", "Nf6", "f3"],
+         "BDG 4.f3 (offers the e4 pawn via f3; after ...exf3 the mover is "
+         "down a pawn -- and this is Stockfish's own #1 move here)"),
+    ]
+    for san_moves, label in cases:
+        board, move = _position_before_and_move(san_moves)
+        assert board.is_valid(), (label, board.status())
+        scores, debug = compute_style_scores(board, move)
+        g = debug["gambit_offer"]
+        assert debug["sacrifice"]["concession"] == 0, (label, debug["sacrifice"])
+        assert g["fired"] is True, (label, g)
+        assert g["quiet_pawn_push"] and g["pawn_tension"] and g["defended_offer"]
+        assert g["mover_behind"] and g["opening_gate"]
+        assert g["mover_material"] < g["enemy_material"], (label, g)
+        assert scores.sacrifice_signal == 1.0, (label, scores.sacrifice_signal)
+        print(f"    {label}")
+        print(f"      old-path concession=0 (pawn defended); gambit path fired: "
+              f"mover={g['mover_material']} enemy={g['enemy_material']}")
+    print("  [PASS] defended-pawn gambit offers fire via the new path "
+          "(3 real gambits, old path verified silent)")
+
+
+def test_gambit_offer_no_fire_equal_material():
+    # French 1.e4 e6 2.d4 d5: ...d5 creates the same pawn-vs-pawn tension
+    # (e4 pawn attacks d5, d5 is defended by Qd8), but the mover is NOT
+    # behind in material (39 vs 39) -- condition (d) must keep it silent.
+    # This is the key false-positive class for the new path.
+    board, move = _position_before_and_move(["e4", "e6", "d4", "d5"])
+    scores, debug = compute_style_scores(board, move)
+    g = debug["gambit_offer"]
+    assert g["quiet_pawn_push"] is True, g
+    assert g["pawn_tension"] is True, g
+    assert g["defended_offer"] is True, g
+    assert g["mover_behind"] is False, g
+    assert scores.sacrifice_signal == 0.0, scores.sacrifice_signal
+    print("  [PASS] equal-material opening tension (French ...d5) stays silent")
+
+
+def test_gambit_offer_no_fire_level_material_offer():
+    # King's Gambit 2.f4: a genuine UNDEFENDED pawn offer (e5 pawn attacks
+    # f4), but the mover is NOT behind in material at the offer moment
+    # (39 vs 39) AND the offer is undefended (no recapture exists). This is
+    # the known threshold-class false negative, explicitly OUT OF SCOPE for
+    # the gambit-offer path -- conditions (c) and (d) must both keep it
+    # silent here.
+    board, move = _position_before_and_move(["e4", "e5", "f4"])
+    scores, debug = compute_style_scores(board, move)
+    g = debug["gambit_offer"]
+    assert g["pawn_tension"] is True, g
+    assert g["defended_offer"] is False, g
+    assert g["mover_behind"] is False, g
+    assert scores.sacrifice_signal == 0.0, scores.sacrifice_signal
+    print("  [PASS] level-material undefended offer (KG 2.f4) stays silent "
+          "(documented out-of-scope false negative)")
+
+
+def test_gambit_offer_no_fire_endgame():
+    # Down-material ENDGAME pawn tension: same shape as the gambits (quiet
+    # pawn push, enemy-pawn tension, defended offer, mover behind) but the
+    # opening gate (non-pawn material floor) must block it -- a down-material
+    # endgame pawn break is routine technique, not gambling. White (2 pawns:
+    # b2+c2 vs Black's d4+a7+h7 = 3) is behind; c3 is defended by b2, so the
+    # OPENING GATE is the specific blocker this test isolates.
+    board = chess.Board("4k3/p6p/8/8/3p4/8/1PP5/4K3 w - - 0 1")
+    move = chess.Move.from_uci("c2c3")
+    scores, debug = compute_style_scores(board, move)
+    g = debug["gambit_offer"]
+    assert g["quiet_pawn_push"] is True, g
+    assert g["pawn_tension"] is True, g
+    assert g["defended_offer"] is True, g
+    assert g["mover_behind"] is True, g
+    assert g["opening_gate"] is False, g
+    assert scores.sacrifice_signal == 0.0, scores.sacrifice_signal
+    print("  [PASS] down-material endgame tension blocked by the opening gate")
+
+
+def test_gambit_offer_pinned_false_positive_class():
+    # PINNED KNOWN FALSE-POSITIVE CLASS (intent-blindness): this position is
+    # statically IDENTICAL in shape to the Danish -- quiet pawn push c2-c3
+    # into an enemy-pawn (d4) tension, c3 defended, mover behind in material,
+    # opening phase -- but the material deficit came from whatever happened
+    # earlier, NOT from a gambit offer. P -> P' cannot see the deficit's
+    # origin, so the signal fires here, and that is ACCEPTED and pinned:
+    # any future edit that silences this case is a conscious design change,
+    # not an accident.
+    board = chess.Board("rnbqkbnr/ppp2ppp/8/8/3p4/8/PPP2PPP/R1Q1KBNR w - - 0 1")
+    move = chess.Move.from_uci("c2c3")
+    scores, debug = compute_style_scores(board, move)
+    g = debug["gambit_offer"]
+    assert g["quiet_pawn_push"] is True, g
+    assert g["pawn_tension"] is True, g
+    assert g["defended_offer"] is True, g
+    assert g["mover_behind"] is True, g
+    assert g["opening_gate"] is True, g
+    assert scores.sacrifice_signal == 1.0, scores.sacrifice_signal
+    print("  [PASS] pinned false-positive class: gambit-shaped-but-not-gambit "
+          "fires (intent-blindness, accepted)")
+
+
 def test_clear_ray_adjacency():
     # REGRESSION for the _has_clear_ray adjacency bug: two ALIGNED but ADJACENT
     # squares (nothing strictly between them) must count as a clear ray.
@@ -266,6 +407,11 @@ def main() -> int:
         test_king_move_into_open_not_safer,
         test_castling_improves_safety,
         test_endgame_active_king,
+        test_gambit_offer_defended_pawn_fires,
+        test_gambit_offer_no_fire_equal_material,
+        test_gambit_offer_no_fire_level_material_offer,
+        test_gambit_offer_no_fire_endgame,
+        test_gambit_offer_pinned_false_positive_class,
         test_clear_ray_adjacency,
         test_sacrifice_gate_matrix,
         test_pinned_known_gaps,
