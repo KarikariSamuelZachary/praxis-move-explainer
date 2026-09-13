@@ -16,28 +16,28 @@ export const PERSONAS: Persona[] = [
     name: 'Attacker',
     icon: '/persona-attacker.webp',
     tone: 'amber',
-    description: 'Hunts for king pressure — favors checks, threats, and forcing lines.',
+    description: 'Hunts for king pressure, favoring checks, threats, and forcing lines.',
   },
   {
     key: 'sacrificer',
     name: 'Sacrificer',
     icon: '/persona-sacrificer.webp',
     tone: 'purple',
-    description: 'Loves a good gamble — trades material for initiative and danger.',
+    description: 'Loves a good gamble, trading material for initiative and danger.',
   },
   {
     key: 'defender',
     name: 'Defender',
     icon: '/persona-defender.webp',
     tone: 'blue',
-    description: 'Plays it safe — prioritizes king safety and solid consolidation.',
+    description: 'Plays it safe, prioritizing king safety and solid consolidation.',
   },
   {
     key: 'positional',
     name: 'Positional',
     icon: '/persona-positional.webp',
     tone: 'emerald',
-    description: 'Avoids complications — sticks to quiet, sound, controlled play.',
+    description: 'Avoids complications, sticking to quiet, sound, controlled play.',
   },
 ];
 
