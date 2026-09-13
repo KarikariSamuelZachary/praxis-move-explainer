@@ -63,7 +63,7 @@ export default function CtaSection({ onSignUp }: CtaSectionProps) {
         </div>
 
         <div className="absolute inset-x-0 bottom-0 z-10">
-          <div className="mx-auto flex w-full max-w-[1400px] flex-col items-center gap-4 px-5 py-6 sm:px-8">
+          <div className="mx-auto flex w-full max-w-[1400px] flex-col items-center gap-4 px-5 pt-6 pb-10 sm:px-8">
             <div className="flex items-center justify-center gap-5">
               <a href="/privacy" className="text-xs text-wood-mute/70 transition hover:text-gold-bright">
                 Privacy
