@@ -306,6 +306,7 @@ export default function ReviewDemo() {
                   id: 'review-demo-board',
                   position: fen,
                   allowDragging: false,
+                  showNotation: false,
                   darkSquareStyle: {
                     backgroundImage: 'url(/walnut-dark.webp)',
                     backgroundSize: '110% 110%',
