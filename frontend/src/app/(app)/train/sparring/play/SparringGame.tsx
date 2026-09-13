@@ -144,7 +144,7 @@ export default function SparringGame({
         let retryable = true;
 
         if (response.status === 429) {
-          errorMessage = 'Rate limited — wait a few seconds, then retry.';
+          errorMessage = 'Rate limited. Wait a few seconds, then retry.';
         } else if (response.status === 409 && /game is (already )?over/i.test(detail ?? '')) {
           retryable = false;
         }
@@ -475,13 +475,13 @@ function describeGameEnd(game: Chess): string | null {
     return `${winner} wins by checkmate`;
   }
   if (game.isStalemate()) {
-    return 'Stalemate — draw';
+    return 'Stalemate, draw';
   }
   if (game.isInsufficientMaterial()) {
-    return 'Insufficient material — draw';
+    return 'Insufficient material, draw';
   }
   if (game.isThreefoldRepetition()) {
-    return 'Threefold repetition — draw';
+    return 'Threefold repetition, draw';
   }
   if (game.isDraw()) {
     return 'Draw';
