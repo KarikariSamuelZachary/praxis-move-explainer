@@ -44,6 +44,26 @@ player blunder" consumer, whereas this is a style feature that must FIND
 sacrifices, so the local threshold is 2 (admitting minor-piece-for-pawn). See
 `_sacrifice_concession()` for the exact rule (including the check-gated
 "king-stab" special case) and its documented limitations.
+
+DEFENDED-PAWN GAMBIT OFFERS -- the second sacrifice_signal path
+===============================================================
+The en-prise proxy above is structurally blind to one important class: a
+pawn offered into pawn-vs-pawn tension while DEFENDED (Danish Gambit 3.c3,
+Smith-Morra 3.c3, Blackmar-Diemer 4.f3). The recapture that makes the pawn
+"safe" in P' is exactly what completes the gambit's material loss one
+exchange later, and that loss was locked in by an EARLIER capture (e.g.
+2...exd4), so no single P -> P' comparison can price it. Measured at all
+three positions: hung=0, captured=0, concession=0, while the mover is
+ALREADY a pawn down (38 vs 39).
+
+`_gambit_offer_concession()` (below, next to _sacrifice_concession) is a
+second, INDEPENDENT signal path for exactly this shape -- quiet pawn push +
+enemy-pawn tension + defended offer + mover already behind in material +
+opening-phase gate -- OR-ed into sacrifice_signal by compute_style_scores().
+The en-prise path, its SACRIFICE_THRESHOLD, and its pinned gate matrix are
+untouched. See the function's docstring for the shape's justification, its
+P -> P' compliance argument, why it deliberately uses NO exchange-value
+(SEE) gate, and its own named limitations.
 """
 from dataclasses import dataclass
 from typing import Dict, Tuple
@@ -89,6 +109,21 @@ _VOL_PRESSURE_REF = 6.0
 # used to admit the canonical minor-piece-for-pawn class (Greek gift / Fried
 # Liver). Even trades and favorable captures (net <= 0) still score 0.0.
 SACRIFICE_THRESHOLD = 2
+
+# --- defended-pawn gambit-offer gate constants --------------------------------
+# The gambit-offer path (_gambit_offer_concession) is an OPENING-shape
+# detector: a side already behind in material offering a pawn into pawn-vs-
+# pawn tension. The opening gate is expressed as a floor on the board's total
+# non-pawn material (both sides; kings/pawns excluded, opponent_style values):
+#
+#     npm >= (1 - 0.25) * 62 = 46.5
+#
+# i.e. the same boundary as persona_bounds.game_phase() <= 0.25. Reimplemented
+# LOCALLY (not imported) because this module's documented layering forbids a
+# persona_features -> persona_bounds dependency, and the gate needs only the
+# raw material count, not the normalized phase.
+_STARTING_NON_PAWN_MATERIAL = 62.0
+_GAMBIT_OPENING_NPM_FLOOR = 46.5
 
 
 @dataclass
@@ -139,7 +174,9 @@ class DefenseGainSub:
 #   sacrifice_signal  : [0, 1], binary. 1.0 iff the move leaves >=
 #                       SACRIFICE_THRESHOLD (LOCAL constant = 2) material en
 #                       prise net of what it captured, or is a check-gated
-#                       "king-stab" (see _sacrifice_concession). 0.0 otherwise.
+#                       "king-stab" (see _sacrifice_concession), OR the
+#                       defended-pawn gambit-offer shape fires (see
+#                       _gambit_offer_concession). 0.0 otherwise.
 #   volatility        : [0, 1], higher = more tactically volatile (capture /
 #                       check / big pressure swing). Always in [0, 1] by
 #                       construction (three normalized inputs averaged).
@@ -428,6 +465,11 @@ def _sacrifice_concession(
         stab that IS a real sacrifice (e.g. Nxh7 when nothing defends h7) is
         deliberately missed: a conservative false negative accepted over a
         false positive on a safely defended move.
+
+    SCOPE NOTE: this function is UNCHANGED by the defended-pawn gambit work:
+    it remains purely the en-prise/king-stab path. The separate gambit-offer
+    shape detector lives in _gambit_offer_concession() and is OR-ed into
+    sacrifice_signal by compute_style_scores().
     """
     mover = board_before.turn
     enemy = not mover
@@ -467,6 +509,165 @@ def _sacrifice_concession(
 
     concession = max(0, hung_value - captured_value)
     return hung_value, captured_value, concession
+
+
+def _non_pawn_material_total(board: chess.Board) -> float:
+    """Total material of queens/rooks/bishops/knights on the board (both
+    sides; kings and pawns excluded), using opponent_style._PIECE_VALUE.
+
+    Local opening-gate input for _gambit_offer_concession(). Deliberately a
+    LOCAL reimplementation of the quantity persona_bounds.game_phase() is
+    built on: this module's documented layering forbids importing
+    persona_bounds, and the gate only needs the raw material count, not the
+    normalized phase.
+    """
+    total = 0.0
+    for piece in board.piece_map().values():
+        if piece.piece_type in (chess.PAWN, chess.KING):
+            continue
+        total += _PIECE_VALUE.get(piece.piece_type, 0)
+    return total
+
+
+def _gambit_offer_concession(
+    board_before: chess.Board, move: chess.Move, board_after: chess.Board
+) -> Tuple[bool, dict]:
+    """DEFENDED-PAWN GAMBIT-OFFER detector -- the second sacrifice_signal
+    path (OR-ed into it in compute_style_scores; the en-prise path above is
+    untouched).
+
+    WHY THIS EXISTS (measured in the gambit investigation): the en-prise path
+    prices only material that is attacked AND undefended in P'. A pawn
+    offered into pawn-vs-pawn tension while DEFENDED (Danish 3.c3, Smith-Morra
+    3.c3, Blackmar-Diemer 4.f3) therefore scores concession=0: the recapture
+    that makes the pawn "safe" is exactly what completes the gambit's
+    material loss one exchange later. That loss is invisible to a single
+    P -> P' comparison BY CONSTRUCTION -- it was locked in by the earlier,
+    never-recaptured capture (e.g. 2...exd4), not by this move. Measured at
+    all three positions: hung=0, captured=0, concession=0, while the mover is
+    ALREADY a pawn down (38 vs 39; after the tension resolves, e.g.
+    ...dxc3 bxc3, the mover is 37 vs 38 -- still down exactly that
+    pre-existing pawn, whichever piece recaptures).
+
+    THE SHAPE (all five conditions must hold, evaluated in P'):
+      a. QUIET PAWN PUSH: the moved piece is a pawn and the move captures
+         nothing (captures and piece offers belong to the en-prise path).
+      b. PAWN TENSION: the landed square is attacked by an enemy PAWN -- the
+         pawn-vs-pawn tension of every classical pawn gambit.
+      c. DEFENDED OFFER: the mover has at least one defender of the landed
+         square in P' (a recapture exists). This is the task's titular
+         "defended pawn offer" shape and also the scope boundary: an
+         UNDEFENDED pawn offer is the threshold-class gap
+         (concession=1 < SACRIFICE_THRESHOLD=2), explicitly out of scope and
+         pinned by test as a known false negative.
+      d. MOVER ALREADY BEHIND IN MATERIAL. This is the load-bearing
+         discriminator, and it is why the intuitive "the only recapture must
+         be a piece" test is NOT used: measured on the real positions, pawn
+         recaptures EXIST in all three (bxc3, bxc3, gxf3) AND do not rescue
+         the material -- the deficit is pre-existing and untouched by the
+         recapture choice. "Down material and offering more tension" is the
+         static, P'-visible core of the gambit shape; the recapture choice
+         is not.
+      e. OPENING GATE: total non-pawn material >= _GAMBIT_OPENING_NPM_FLOOR
+         (the local, layering-preserving stand-in for game_phase() <= ~0.25).
+         Gambits are an opening phenomenon; a down-material endgame pawn
+         break is routine technique, not gambling.
+
+    WHY THERE IS NO EXCHANGE-VALUE (SEE) GATE: a square-SEE condition
+    ("the offer must not LOSE the capturer material") was considered and
+    DROPPED after analysis, because it is vacuous or misleading for this
+    shape class. Under correct optimal-stopping SEE semantics, a
+    pawn-initiated capture of a pawn can never net the capturer below 0: his
+    committed piece is the pawn itself, worth exactly what he captured, so
+    the worst case is the even pawn-for-pawn trade after which he stops --
+    the gate would never bind. Under naive forced-recapture SEE semantics it
+    instead produces false negatives keyed to the MOVER's recapturer piece
+    values (e.g. a pawn defended only by a queen reads "poisoned" although
+    the trade is dead even). The gambit shape needs no exchange valuation:
+    the defended-offer + tension + already-behind combination IS the
+    signature. (Piece-offer exchanges, where initiation commits a piece
+    worth MORE than its target, are a different class -- and already the
+    en-prise path's job.)
+
+    P -> P' COMPLIANCE: every condition reads only board_before/board_after.
+    No opponent reply is evaluated, nothing assumes the opponent captures,
+    no search, no history, no simulated exchange of any kind.
+
+    KNOWN LIMITATIONS (named, accepted; several pinned by test):
+      * INTENT-BLINDNESS: the material deficit in (d) may come from earlier
+        BLUNDERS rather than a gambit, and the mover may simply be executing
+        a normal opening plan while down material. The signal reads
+        "gambit-shaped play while material is conceded", not intent -- the
+        same category of gap as the en-prise path's compensation-blindness.
+        A position statically identical to the Danish shape but reached
+        without any gambit fires, and this is pinned by test as an accepted
+        false-positive class.
+      * PIN blindness: a statically "available" enemy pawn capture may be
+        legally impossible (pinned pawn); the tension can then never
+        resolve, yet the signal fires. No pin detection is attempted.
+      * The defender in (c) is not quality-checked: a recapture that would
+        itself be immediately losing is still "a defender" statically (the
+        en-prise path's SEE-depth-1 limitation applies here too).
+      * FALSE NEGATIVES by design: offers made while material is LEVEL are
+        not detected (King's Gambit 2.f4: 39 vs 39 at the offer moment --
+        the threshold-class gap, explicitly OUT OF SCOPE here and pinned by
+        test); UNDEFENDED offers are not detected (threshold class, same
+        scope decision); piece-offer gambits are the en-prise path's job;
+        the opening gate deliberately blocks late-game equivalents.
+      * En passant cannot occur (a quiet pawn push is never en passant);
+        promotion-squares tensions are not specially modeled.
+
+    Returns (fired, debug) where `debug` exposes every condition's value for
+    tuning, mirroring the module's other debug dicts.
+    """
+    mover = board_before.turn
+    enemy = not mover
+
+    moved_piece = board_before.piece_at(move.from_square)
+    quiet_pawn_push = (
+        moved_piece is not None
+        and moved_piece.piece_type == chess.PAWN
+        and not board_before.is_capture(move)
+    )
+
+    pawn_tension = False
+    defended_offer = False
+    if quiet_pawn_push:
+        pawn_tension = any(
+            (attacker_piece := board_after.piece_at(attacker_square)) is not None
+            and attacker_piece.piece_type == chess.PAWN
+            for attacker_square in board_after.attackers(enemy, move.to_square)
+        )
+        if pawn_tension:
+            defended_offer = bool(board_after.attackers(mover, move.to_square))
+
+    mover_material = _material_for_color(board_after, mover)
+    enemy_material = _material_for_color(board_after, enemy)
+    mover_behind = mover_material < enemy_material
+
+    opening_gate = (
+        _non_pawn_material_total(board_after) >= _GAMBIT_OPENING_NPM_FLOOR
+    )
+
+    fired = (
+        quiet_pawn_push
+        and pawn_tension
+        and defended_offer
+        and mover_behind
+        and opening_gate
+    )
+
+    debug = {
+        "fired": fired,
+        "quiet_pawn_push": quiet_pawn_push,
+        "pawn_tension": pawn_tension,
+        "defended_offer": defended_offer,
+        "mover_material": mover_material,
+        "enemy_material": enemy_material,
+        "mover_behind": mover_behind,
+        "opening_gate": opening_gate,
+    }
+    return fired, debug
 
 
 def compute_style_scores(
@@ -551,10 +752,20 @@ def compute_style_scores(
     )
 
     # --- sacrifice_signal --------------------------------------------------
+    # TWO independent paths, OR-ed: the original static en-prise concession
+    # (UNTOUCHED -- piece sacrifices, king-stabs, even-trade exclusion) and
+    # the defended-pawn gambit-offer shape detector (see
+    # _gambit_offer_concession), which the en-prise path is structurally
+    # blind to because the offered pawn is DEFENDED in P'.
     hung_value, captured_value, concession = _sacrifice_concession(
         board_before, move, board_after
     )
-    sacrifice_signal = 1.0 if concession >= SACRIFICE_THRESHOLD else 0.0
+    gambit_fired, gambit_debug = _gambit_offer_concession(
+        board_before, move, board_after
+    )
+    sacrifice_signal = 1.0 if (
+        concession >= SACRIFICE_THRESHOLD or gambit_fired
+    ) else 0.0
 
     # --- volatility --------------------------------------------------------
     # Three inputs, each normalized to [0, 1] BEFORE combining:
@@ -639,6 +850,7 @@ def compute_style_scores(
             "concession": concession,
             "signal": sacrifice_signal,
         },
+        "gambit_offer": gambit_debug,
         "volatility": {
             "material_swing_norm": material_swing_norm,
             "king_pressure_swing": king_pressure_swing,
