@@ -21,11 +21,33 @@ Parts:
   6. FEN normalization: board-identical FENs differing ONLY in move counters
      both hit the same index entry (the counters are stripped from the key).
   7. multi-match selection: at the asset's real two-offer transposition
-     (Van Geet Damhaug/Warsteiner), forced rolls across 200 seeded trials
-     only ever return one of the two real offers, and both occur; a
-     constructed position with one offer + one declined continuation
-     returns only the offer; a position whose matches are ALL continuations
-     returns None with ZERO rolls (no probability check burned).
+      (Van Geet Damhaug/Warsteiner), forced rolls across 200 seeded trials
+      only ever return one of the two real offers, and both occur; a
+      constructed position with one offer + one declined continuation
+      returns only the offer; a position whose matches are ALL continuations
+      returns None with ZERO rolls (no probability check burned).
+  8. steering index integrity: built only from offer-kind entries, every
+      offer entry appears exactly once as an is_offer member at its own
+      stored position, keys are 4-field normalized FENs.
+  9. steering variety (the monotony bug steer_to_gambit exists to fix):
+      after 1.e4 the responder pool has exactly ONE black offer (Duras
+      Gambit -- the old always-1...f5 behavior), while steer_to_gambit
+      across 600 seeded trials returns >= 10 DISTINCT black first moves,
+      all legal, every picked line black-offered (the persona never steers
+      the opponent into their own gambit), with Duras still reachable.
+  10. steering follows the line: after 1.e4 Nf6 2.e5 the steered move is
+      a black-offered book continuation (e.g. the Alekhine gambit Nd5);
+      after 1.e4 f5 2.exf5 (offer landed) steering is out of book -> None
+      with ZERO rolls (persona hands back to the reranker).
+  11. steering at an offer square: uniform over ALL compatible lines --
+      the King's Gambit offer (2.f4) occurs but does not exclusively win
+      (>= 5 distinct moves across 600 trials); failed roll -> None (one
+      roll burned); out-of-range probability raises BEFORE any roll even
+      out of book; probability=0.0 never offers; no-candidate positions
+      never roll.
+  12. white-persona steering variety: at the game's start the pool is ALL
+      white-offered lines (218), giving >= 10 distinct first moves across
+      600 seeded trials, every picked line white-offered.
 
 Run with: cd src && ../venv/bin/python services/gambit_book_test.py
 """
@@ -40,7 +62,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import chess
 
 import services.gambit_book as gambit_book
-from services.gambit_book import maybe_play_gambit
+from services.gambit_book import maybe_play_gambit, steer_to_gambit
 
 
 def _load_entries() -> list[dict]:
@@ -366,6 +388,242 @@ def test_modern_gambits_findable_alien_and_martian():
           " positions")
 
 
+def test_steering_index_integrity():
+    entries = _load_entries()
+    offer_entries = [e for e in entries if e["offer"]]
+    index = gambit_book.load_gambit_steering_index()
+    # Keys are exactly 4-field normalized FENs (the shared convention).
+    for key in index:
+        assert len(key.split()) == 4, key
+    # Every member comes from an OFFER-kind entry (continuations are never
+    # steerable) and every offer entry appears EXACTLY ONCE as an is_offer
+    # member, at its own stored position, with its own uci.
+    offer_members = [m for bucket in index.values() for m in bucket if m["is_offer"]]
+    assert len(offer_members) == len(offer_entries), (
+        len(offer_members), len(offer_entries)
+    )
+    for member in (m for bucket in index.values() for m in bucket):
+        assert member["entry"]["offer"] is True, member["entry"]["name"]
+        if member["is_offer"]:
+            assert member["uci"] == member["entry"]["uci"], member
+            assert (
+                gambit_book._normalized_position_key(member["entry"]["fen"])
+                == next(k for k, b in index.items() if member in b)
+            ), member["entry"]["name"]
+    print(f"    steering index: {len(index)} keys, "
+          f"{sum(len(v) for v in index.values())} members, "
+          f"{len(offer_members)} is_offer members == {len(offer_entries)} offers")
+    print("  [PASS] steering index: offer entries only, one is_offer member each")
+
+
+def test_steering_variety_vs_e4():
+    # THE bug steer_to_gambit exists to fix: after 1.e4 the responder-only
+    # pool is exactly ONE black offer (Duras Gambit, 1...f5), so the old
+    # maybe_play_gambit behavior opened 1...f5 in EVERY game. Steering must
+    # spread over the black-offered 1.e4 lines instead: >= 10 distinct
+    # first moves across 600 forced trials, all legal, all picked lines
+    # black-offered, with Duras (f7f5) still reachable.
+    board = chess.Board()
+    board.push_san("e4")
+    key = gambit_book._normalized_position_key(board)
+
+    # Premise: the old responder sees exactly one offer here.
+    offers = [e for e in gambit_book.load_gambit_index().get(key, [])
+              if e["offer"]]
+    assert len(offers) == 1 and offers[0]["uci"] == "f7f5", offers
+    assert offers[0]["name"] == "Duras Gambit", offers[0]["name"]
+
+    # Premise: the steering bucket is much bigger and 1 offer + 100 steers.
+    bucket = gambit_book.load_gambit_steering_index()[key]
+    assert len(bucket) > 10, len(bucket)
+    assert sum(m["is_offer"] for m in bucket) == 1
+
+    original_roll, original_pick = gambit_book._roll, gambit_book._pick
+    picked = []
+    try:
+        gambit_book._roll = lambda: 0.0  # forced success
+        def recording_pick(pool):
+            member = original_pick(pool)
+            picked.append(member)
+            return member
+        gambit_book._pick = recording_pick
+        random.seed(20260915)
+        seen_moves, seen_names = set(), set()
+        for _ in range(600):
+            result = steer_to_gambit(board, probability=1.0)
+            assert result is not None
+            assert chess.Move.from_uci(result["uci"]) in board.legal_moves, result
+            member = picked[-1]
+            # The persona (black here) never steers a white-offered gambit.
+            assert member["entry"]["fen"].split()[1] == "b", member
+            assert result["gambit_name"] == member["entry"]["name"]
+            assert result["san"], result  # live-computed san present
+            seen_moves.add(result["uci"])
+            seen_names.add(result["gambit_name"])
+        assert len(seen_moves) >= 10, sorted(seen_moves)
+        assert "f7f5" in seen_moves, sorted(seen_moves)  # Duras reachable
+        print(f"    bucket {len(bucket)} members -> 600 trials: "
+              f"{len(seen_moves)} distinct first moves, "
+              f"{len(seen_names)} distinct gambit names, f5 present")
+        print("    sample moves:", sorted(seen_moves)[:8], "...")
+    finally:
+        gambit_book._roll, gambit_book._pick = original_roll, original_pick
+    print("  [PASS] steering variety vs 1.e4 (>= 10 first moves, Duras"
+          " reachable, black-offered only)")
+
+
+def test_steering_follows_line_and_hands_back():
+    # Following a steered line: 1.e4 Nf6 2.e5 -> the persona plays a
+    # black-offered book continuation (an Alekhine-family gambit move).
+    board = chess.Board()
+    for san in ("e4", "Nf6", "e5"):
+        board.push_san(san)
+    original_pick = gambit_book._pick
+    picked = []
+
+    def recording_pick(pool):
+        member = original_pick(pool)
+        picked.append(member)
+        return member
+
+    original_roll = gambit_book._roll
+    gambit_book._roll = lambda: 0.0
+    gambit_book._pick = recording_pick
+    try:
+        result = steer_to_gambit(board, probability=1.0)
+        assert result is not None, "steered line must continue after 2.e5"
+        assert chess.Move.from_uci(result["uci"]) in board.legal_moves
+        assert picked[-1]["entry"]["fen"].split()[1] == "b", picked[-1]
+        print(f"    after 1.e4 Nf6 2.e5 -> {result['gambit_name']}: {result['san']}")
+    finally:
+        gambit_book._roll, gambit_book._pick = original_roll, original_pick
+
+    # Offer landed -> steering is over: after 1.e4 f5 2.exf5 there is
+    # nothing steerable -> None with ZERO rolls (reranker takes over).
+    board = chess.Board()
+    for san in ("e4", "f5", "exf5"):
+        board.push_san(san)
+    key = gambit_book._normalized_position_key(board)
+    assert key not in gambit_book.load_gambit_steering_index(), (
+        "post-offer position unexpectedly steerable -- premise changed"
+    )
+    rolls = []
+    gambit_book._roll = lambda: rolls.append(1) or 0.0
+    try:
+        assert steer_to_gambit(board, probability=1.0) is None
+        assert rolls == [], rolls
+    finally:
+        gambit_book._roll = original_roll
+    print("    after 1.e4 f5 2.exf5 -> None, zero rolls (reranker takes over)")
+    print("  [PASS] steering follows lines; hands back to the reranker"
+          " after the offer")
+
+
+def test_steering_offer_square_and_probability():
+    # At an offer square the pool is ALL compatible lines (uniform): the
+    # King's Gambit offer 2.f4 occurs across forced trials but does not
+    # exclusively win. Plus the probability contract: failed roll -> None
+    # (one roll burned), out-of-range raises BEFORE any roll, 0.0 never
+    # offers, 1.0 always offers.
+    board = chess.Board(
+        "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
+    )
+    original_roll = gambit_book._roll
+    try:
+        gambit_book._roll = lambda: 0.0  # forced success
+        random.seed(20260915)
+        seen = set()
+        for _ in range(600):
+            result = steer_to_gambit(board, probability=1.0)
+            assert result is not None
+            seen.add(result["uci"])
+        assert "f2f4" in seen, sorted(seen)  # the KG offer is reachable
+        assert len(seen) >= 5, sorted(seen)  # ...but does not win by default
+        print(f"    KG offer square: {len(seen)} distinct moves across 600"
+              f" trials, f4 included: {sorted(seen)}")
+
+        # Failed roll at an in-book position -> None, exactly one roll.
+        rolls = []
+        gambit_book._roll = lambda: rolls.append(1) or 0.99
+        assert steer_to_gambit(board, probability=0.17) is None
+        assert rolls == [1], rolls
+        print("    roll=0.99 >= 0.17 -> None (one roll burned at an in-book"
+              " steerable position)")
+
+        # probability validation BEFORE the lookup: out-of-book position,
+        # invalid probability -> ValueError with zero rolls.
+        rolls = []
+        gambit_book._roll = lambda: rolls.append(1) or 0.0
+        closed = chess.Board()
+        for san in ("e4", "e5", "Nf3", "Nc6", "Bb5", "a6", "Ba4", "Nf6",
+                    "O-O", "Be7", "Re1", "b5", "Bb3", "d6", "c3", "O-O"):
+            closed.push_san(san)
+        assert (gambit_book._normalized_position_key(closed)
+                not in gambit_book.load_gambit_steering_index())
+        for bad in (-0.1, 1.5):
+            try:
+                steer_to_gambit(closed, probability=bad)
+                raise AssertionError(f"probability={bad} did not raise")
+            except ValueError as exc:
+                assert "probability" in str(exc)
+        assert rolls == [], rolls
+        print("    probability=-0.1 / 1.5 -> ValueError before any roll")
+
+        # 0.0: even a 0.0 roll cannot pass; 1.0: always steers/offers.
+        gambit_book._roll = lambda: rolls.append(1) or 0.0
+        assert steer_to_gambit(board, probability=0.0) is None
+        assert len(rolls) == 1, rolls
+        gambit_book._roll = lambda: rolls.append(1) or 0.99999
+        result = steer_to_gambit(board, probability=1.0)
+        assert result is not None, result
+        print(f"    probability=0.0 -> never offers; probability=1.0 ->"
+              f" always ({result['gambit_name']} {result['san']})")
+    finally:
+        gambit_book._roll = original_roll
+    print("  [PASS] offer-square uniformity + probability contract")
+
+
+def test_steering_white_first_move_variety():
+    # Persona = White at the game's start: the pool is ALL white-offered
+    # lines (no color leaks: every picked entry is white-offered), and
+    # steering yields >= 10 distinct first moves across 600 forced trials.
+    board = chess.Board()
+    key = gambit_book._normalized_position_key(board)
+    bucket = gambit_book.load_gambit_steering_index()[key]
+    assert len(bucket) > 10, len(bucket)
+    assert all(m["entry"]["fen"].split()[1] == "w" for m in bucket), (
+        "initial-position pool must be white-offered lines only"
+    )
+    assert not any(m["is_offer"] for m in bucket), (
+        "no gambit offers on move 1 for White in the asset"
+    )
+
+    original_roll, original_pick = gambit_book._roll, gambit_book._pick
+    picked = []
+    try:
+        gambit_book._roll = lambda: 0.0
+        def recording_pick(pool):
+            member = original_pick(pool)
+            picked.append(member)
+            return member
+        gambit_book._pick = recording_pick
+        random.seed(20260915)
+        seen_moves = set()
+        for _ in range(600):
+            result = steer_to_gambit(board, probability=1.0)
+            assert result is not None
+            assert chess.Move.from_uci(result["uci"]) in board.legal_moves
+            assert picked[-1]["entry"]["fen"].split()[1] == "w", picked[-1]
+            seen_moves.add(result["uci"])
+        assert len(seen_moves) >= 10, sorted(seen_moves)
+        print(f"    initial pool {len(bucket)} members -> 600 trials: "
+              f"{len(seen_moves)} distinct first moves")
+        print("    sample:", sorted(seen_moves)[:8], "...")
+    finally:
+        gambit_book._roll, gambit_book._pick = original_roll, original_pick
+    print("  [PASS] white-persona steering variety at the game's start")
+
+
 def main() -> int:
     print("=== gambit book bypass tests ===")
     for test in (
@@ -378,6 +636,11 @@ def main() -> int:
         test_multi_match_selection_on_real_transposition,
         test_multi_match_excludes_continuations,
         test_modern_gambits_findable_alien_and_martian,
+        test_steering_index_integrity,
+        test_steering_variety_vs_e4,
+        test_steering_follows_line_and_hands_back,
+        test_steering_offer_square_and_probability,
+        test_steering_white_first_move_variety,
     ):
         try:
             test()
