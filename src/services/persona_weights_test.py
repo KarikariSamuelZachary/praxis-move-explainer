@@ -34,6 +34,17 @@ PART 2/3 unit tests (weights + phase gating):
     personas; on the near-equal fixture Positional's ranking equals cp
     order (zero bias on all-quiet candidates) with an asserted pairwise
     flip against each of the other three personas
+  * Gambiter: DERIVED persona (literal 0.7 Attacker + 0.3 Sacrificer blend,
+    recomputed from the parents' LIVE constants so a parent retune can
+    never drift it silently); the blend identity g == 0.7*A + 0.3*S holds
+    EXACTLY wherever the clamps are vestigial (asserted to 1e-12); on the
+    sharp top candidates of the two sacrifice fixtures it lands strictly
+    between the parent scores (real numbers printed); on the near-equal
+    fixture its ranking is genuinely unique among all five personas
+    (Qd2 > Qd3 > Ne5 > a4 > Re1 -- the only persona putting Qd3 second);
+    on the quiet positional fixture it coincides with cp order with the
+    coincidence QUANTIFIED (h6/a5/a6 score exactly 0; Bb6/Kh8's biases are
+    1.5/0.7cp after trust, far short of the 2-4cp gaps)
   * end-to-end: the same StyleScores score lower under Attacker in a bare
     king-and-pawn endgame (phase 1.0) than in the opening (phase 0.0)
 
@@ -46,13 +57,13 @@ PART 4 integration (engine, print-only):
   active endgame king (phase-gating sanity check):
   suggest() -> canonicalize_by_score() -> compute_style_scores() ->
   attacker_score()/sacrificer_score()/defender_score()/positional_score()
-  -> persona_adjusted_score(real engine_norm_cp, real game_phase), i.e.
-  final = norm + PERSONA_BIAS_CP (=100) * bounded_bias, demotion-floored
-  at -75, with the engine/Attacker/Sacrificer/Defender/Positional
-  orderings printed side by side. The ENGINE order is
-  canonicalize_by_score()'s strict cp-descending order, so "(unchanged)"
-  can only mean the persona contributed nothing -- never that the list
-  needed re-sorting anyway.
+   -> persona_adjusted_score(real engine_norm_cp, real game_phase), i.e.
+   final = norm + PERSONA_BIAS_CP (=100) * bounded_bias, demotion-floored
+   at -75, with the engine/Attacker/Sacrificer/Defender/Positional/Gambiter
+   orderings printed side by side. The ENGINE order is
+   canonicalize_by_score()'s strict cp-descending order, so "(unchanged)"
+   can only mean the persona contributed nothing -- never that the list
+   needed re-sorting anyway.
 
 Run with: cd src && ../venv/bin/python services/persona_weights_test.py
 """
@@ -74,12 +85,28 @@ from services.persona_features import (
 from services.persona_fixtures import FIXTURES
 from services.persona_weights import (
     PERSONA_BIAS_CP,
+    _GAMBITER_W_ATTACK,
+    _GAMBITER_W_DEFENSE,
+    _GAMBITER_W_INITIATIVE,
+    _GAMBITER_W_SACRIFICE,
+    _GAMBITER_W_VOLATILITY,
+    _ATTACKER_W_ATTACK,
+    _ATTACKER_W_DEFENSE,
+    _ATTACKER_W_INITIATIVE,
+    _ATTACKER_W_SACRIFICE,
+    _ATTACKER_W_VOLATILITY,
+    _SACRIFICER_W_ATTACK,
+    _SACRIFICER_W_DEFENSE,
+    _SACRIFICER_W_INITIATIVE,
+    _SACRIFICER_W_SACRIFICE,
+    _SACRIFICER_W_VOLATILITY,
     _defender_phase_damped_scores,
     _phase_damped_scores,
     _squash_signed,
     attacker_score,
     canonicalize_by_score,
     defender_score,
+    gambiter_score,
     normalize_style_scores,
     persona_adjusted_score,
     positional_score,
@@ -745,6 +772,225 @@ def test_positional_differentiation_on_near_equal():
           " (cp-order fallback + asserted pairwise flip vs each)")
 
 
+def test_gambiter_weights_are_the_declared_blend():
+    # The weight block claims Gambiter is literally 0.7*Attacker +
+    # 0.3*Sacrificer. This is asserted against the parents' LIVE constants,
+    # not trusted: if either parent's vector is retuned, this fails and
+    # forces a conscious re-blend instead of silent drift.
+    blend_attack = 0.7 * _ATTACKER_W_ATTACK + 0.3 * _SACRIFICER_W_ATTACK
+    blend_vol = 0.7 * _ATTACKER_W_VOLATILITY + 0.3 * _SACRIFICER_W_VOLATILITY
+    blend_sac = 0.7 * _ATTACKER_W_SACRIFICE + 0.3 * _SACRIFICER_W_SACRIFICE
+    blend_def = 0.7 * _ATTACKER_W_DEFENSE + 0.3 * _SACRIFICER_W_DEFENSE
+    blend_init = 0.7 * _ATTACKER_W_INITIATIVE + 0.3 * _SACRIFICER_W_INITIATIVE
+    for label, got, want in (
+        ("attack_gain", _GAMBITER_W_ATTACK, blend_attack),
+        ("volatility", _GAMBITER_W_VOLATILITY, blend_vol),
+        ("sacrifice_signal", _GAMBITER_W_SACRIFICE, blend_sac),
+        ("defense_gain", _GAMBITER_W_DEFENSE, blend_def),
+        ("initiative_proxy", _GAMBITER_W_INITIATIVE, blend_init),
+    ):
+        assert abs(got - want) < 1e-12, (label, got, want)
+    print(f"    recomputed from LIVE parent constants: "
+          f"attack {blend_attack:.4f} vol {blend_vol:.4f} sac {blend_sac:.4f} "
+          f"def {blend_def:.4f} init {blend_init:.4f}")
+    assert abs(_GAMBITER_W_ATTACK - 0.55) < 1e-12
+    assert abs(_GAMBITER_W_VOLATILITY - 0.17) < 1e-12
+    assert abs(_GAMBITER_W_SACRIFICE - 0.28) < 1e-12
+    assert _GAMBITER_W_DEFENSE == 0.0 and _GAMBITER_W_INITIATIVE == 0.0
+    total = (_GAMBITER_W_ATTACK + _GAMBITER_W_VOLATILITY
+             + _GAMBITER_W_SACRIFICE + _GAMBITER_W_DEFENSE + _GAMBITER_W_INITIATIVE)
+    assert abs(total - 1.0) < 1e-12, total
+    assert all(w >= 0.0 for w in (_GAMBITER_W_ATTACK, _GAMBITER_W_VOLATILITY,
+                                  _GAMBITER_W_SACRIFICE, _GAMBITER_W_DEFENSE,
+                                  _GAMBITER_W_INITIATIVE))
+    print(f"    declared literals hit (0.55/0.17/0.28/0/0); sum={total!r}; all non-negative")
+    print("  [PASS] Gambiter weights are the exact 0.7/0.3 blend, sum 1.0, non-negative")
+
+
+def test_gambiter_scores_bounded_and_clamp_vestigial():
+    # Bounded on ordinary inputs...
+    board = chess.Board()
+    s = _synthetic(kzp=8.0, kaa=2.0, checks=1.0, open_lines=1.0, esc=1.0,
+                   vol=0.5, sac=1.0)
+    g = gambiter_score(s, board)
+    assert -1.0 <= g <= 1.0, g
+    # ...and the clamp is VESTIGIAL (not load-bearing) at the extremes: the
+    # theoretical bound of |total| is exactly 0.55+0.17+0.28 = 1.0 with all
+    # inputs at their endpoints, and attack_gain's tanh never reaches 1.0
+    # below raw ~+266, so even an absurd input cannot push the total past
+    # the range. Proven here by asserting the output equals the UNCLAMPED
+    # analytic value and lies strictly inside (-1, 1) on both extremes.
+    extreme_pos = _synthetic(kzp=200.0, vol=1.0, sac=1.0)
+    extreme_neg = _synthetic(kzp=-200.0, vol=1.0, sac=1.0)
+    for label, s_ext in (("max-sharp", extreme_pos), ("max-anti-sharp", extreme_neg)):
+        got = gambiter_score(s_ext, board)
+        phase = game_phase(board)
+        n = normalize_style_scores(_phase_damped_scores(s_ext, phase))
+        unclamped = (
+            _GAMBITER_W_ATTACK * n["attack_gain"]
+            + _GAMBITER_W_VOLATILITY * n["volatility"]
+            + _GAMBITER_W_SACRIFICE * n["sacrifice_signal"]
+            + _GAMBITER_W_DEFENSE * n["defense_gain"]
+            + _GAMBITER_W_INITIATIVE * n["initiative_proxy"]
+        )
+        assert got == unclamped, (label, got, unclamped)  # clamp did NOT bind
+        assert -1.0 < got < 1.0, (label, got)
+        print(f"    {label}: got={got:+.15f} == unclamped total (no clamp hit)")
+    # Blend identity holds wherever all three clamps are vestigial (both
+    # parents' clamps are vestigial for the same reason): g == 0.7a + 0.3s.
+    a = attacker_score(extreme_pos, board)
+    x = sacrificer_score(extreme_pos, board)
+    g2 = gambiter_score(extreme_pos, board)
+    assert abs(g2 - (0.7 * a + 0.3 * x)) < 1e-12, (a, x, g2)
+    print(f"    blend identity at the extreme: G={g2:+.12f} == 0.7*A({a:+.15f})"
+          f" + 0.3*S({x:+.15f}) (|err| < 1e-12)")
+    print("  [PASS] gambiter bounded on ordinary + extreme inputs; clamp verified vestigial")
+
+
+def test_gambiter_blend_between_attacker_and_sacrificer():
+    # REAL fixtures, sharp top candidates: the blend must land strictly
+    # between the two parent scores -- and, since both parents and the
+    # blend consume the SAME normalized inputs, the identity
+    # g == 0.7*a + 0.3*s must hold EXACTLY (no clamp binds on any of the
+    # three). Reported with real numbers per the task.
+    cases = [
+        ("obvious sacrifice", GREEK_FEN, "Bxh7+", "d3h7"),
+        ("obvious sacrifice", GREEK_FEN, "Nxh7", "g5h7"),
+        ("sharp tactical no quiet alternative",
+         "r1bqkb1r/ppp2ppp/2n5/3np1N1/2B5/8/PPPP1PPP/RNBQK2R w KQkq - 0 6",
+         "Nxf7", "g5f7"),
+        ("sharp tactical no quiet alternative",
+         "r1bqkb1r/ppp2ppp/2n5/3np1N1/2B5/8/PPPP1PPP/RNBQK2R w KQkq - 0 6",
+         "Qh5", "d1h5"),
+    ]
+    for fname, fen, san, uci in cases:
+        board = chess.Board(fen)
+        scores, _ = compute_style_scores(board, chess.Move.from_uci(uci))
+        a = attacker_score(scores, board)
+        x = sacrificer_score(scores, board)
+        g = gambiter_score(scores, board)
+        exact = 0.7 * a + 0.3 * x
+        assert abs(g - exact) < 1e-12, (fname, san, g, exact)
+        lo, hi = min(a, x), max(a, x)
+        assert lo <= g <= hi, (fname, san, a, x, g)
+        if a != x:
+            assert lo < g < hi, (fname, san, a, x, g)
+        print(f"    {fname:<36} {san:<5} A={a:+.6f} S={x:+.6f} G={g:+.6f}"
+              f" (identity exact to 1e-12; strictly between the parents)")
+    print("  [PASS] blend lands between attacker_score and sacrificer_score"
+          " on all four sharp candidates (exact linear identity)")
+
+
+def test_gambiter_differentiation_on_near_equal():
+    # Requirement: on the near-equal fixture, Gambiter must produce a
+    # genuinely different ranking from ALL FOUR existing personas -- or the
+    # honest reason it coincides. Deterministic setup (real extractor scores
+    # + the same fixed engine-relative gaps the other differentiation tests
+    # use: Qd2 best; Ne5 -12; a4 -5; Re1 -6; Qd3 -8). The real numbers: the
+    # two sharp-ish candidates (Ne5, Qd3) get small positive blended scores
+    # (Ne5 G=+0.1722, Qd3 G=+0.0971) while the quiet ones score exactly 0,
+    # so Gambiter promotes BOTH past the quiet a4/Re1 but the blend's
+    # attenuated biases never reach the engine best -> a UNIQUE ranking
+    # (Qd2 > Qd3 > Ne5 > a4 > Re1; the only persona with Qd3 second).
+    fen = "rnbq1rk1/ppp1ppbp/5np1/3p4/3P1B2/2N2NP1/PPP1PPBP/R2Q1RK1 w - - 0 1"
+    board = chess.Board(fen)
+
+    def all_five(uci):
+        scores, _ = compute_style_scores(board, chess.Move.from_uci(uci))
+        return (
+            attacker_score(scores, board),
+            sacrificer_score(scores, board),
+            defender_score(scores, board),
+            positional_score(scores, board),
+            gambiter_score(scores, board),
+        )
+
+    gaps = {"d1d2": 0.0, "f3e5": -12.0, "a2a4": -5.0, "f1e1": -6.0, "d1d3": -8.0}
+    sans = {"d1d2": "Qd2", "f3e5": "Ne5", "a2a4": "a4", "f1e1": "Re1", "d1d3": "Qd3"}
+    finals = {}
+    finals_by_key = {"A": {}, "S": {}, "D": {}, "P": {}, "G": {}}
+    for uci, gap in gaps.items():
+        a, x, d, p, g = all_five(uci)
+        for key, score in (("A", a), ("S", x), ("D", d), ("P", p), ("G", g)):
+            finals_by_key[key][sans[uci]] = persona_adjusted_score(gap, score, 0.0)
+        finals[sans[uci]] = (a, x, d, p, g)
+
+    g_order = sorted(
+        sans.values(),
+        key=lambda san: -finals_by_key["G"][san],
+    )
+    others = {key: sorted(sans.values(), key=lambda s: -finals_by_key[key][s])
+              for key in ("A", "S", "D", "P")}
+    # Genuinely different from ALL FOUR:
+    assert g_order == ["Qd2", "Qd3", "Ne5", "a4", "Re1"], g_order
+    for key in ("A", "S", "D", "P"):
+        assert g_order != others[key], (key, g_order, others[key])
+    # The blend linearity carries through the rerank: same gap -> same
+    # trust -> final_G == 0.7*final_A + 0.3*final_S exactly per candidate.
+    for san in sans.values():
+        want = 0.7 * finals_by_key["A"][san] + 0.3 * finals_by_key["S"][san]
+        assert abs(finals_by_key["G"][san] - want) < 1e-9, (san, finals_by_key["G"][san], want)
+    # And a decisive pairwise flip against each persona, with real numbers:
+    #   vs Attacker:   Qd2/Qd3 flipped (Attacker's Qd3 bias is the 8.07cp
+    #                  knife-edge that outranks the engine best; Gambiter's
+    #                  attenuated blend (G_Qd3 = +0.0971 -> 6.2cp pull) does
+    #                  NOT reach it, so the engine best stays on top)
+    #   vs Sacrificer: Qd3/a4 flipped (Sacrificer keeps a4 above Qd3;
+    #                  Gambiter promotes Qd3 past it)
+    #   vs Defender:   Ne5/Re1 flipped (Defender sinks the sharp candidate
+    #                  to last; Gambiter promotes it past the rook)
+    #   vs Positional: Ne5/a4 flipped for the same reason
+    fG, fA, fS, fD, fP = (finals_by_key[k] for k in ("G", "A", "S", "D", "P"))
+    assert fA["Qd3"] > fA["Qd2"] and fG["Qd2"] > fG["Qd3"], (fA["Qd3"], fA["Qd2"], fG)
+    assert fS["a4"] > fS["Qd3"] and fG["Qd3"] > fG["a4"], (fS["a4"], fS["Qd3"], fG)
+    assert fD["Re1"] > fD["Ne5"] and fG["Ne5"] > fG["Re1"], (fD["Re1"], fD["Ne5"], fG)
+    assert fP["a4"] > fP["Ne5"] and fG["Ne5"] > fG["a4"], (fP["a4"], fP["Ne5"], fG)
+    for key in ("A", "S", "D", "P", "G"):
+        order = sorted(sans.values(), key=lambda s: -finals_by_key[key][s])
+        print(f"    {key} order: " + " > ".join(f"{s}({finals_by_key[key][s]:+.2f})"
+                                                for s in order))
+    print("    Gambiter ranking is UNIQUE among the five personas"
+          " (Qd2 > Qd3 > Ne5 > a4 > Re1); pairwise flip asserted vs each")
+    print("  [PASS] Gambiter's near-equal ranking differs from all four existing personas")
+
+
+def test_gambiter_quiet_positional_fallback():
+    # Requirement (quiet positional middlegame fixture): Gambiter must
+    # produce a genuinely different ranking from all four personas OR the
+    # honest reason it coincides -- explained with real numbers. This is the
+    # coincidence case, quantified: three of the five candidates (h6, a5,
+    # a6) are PERFECTLY quiet (atk 0, vol 0, sac 0) -> exactly-zero persona
+    # scores -> zero bias; the other two (Bb6, Kh8) carry only tiny blended
+    # biases whose trust-attenuated pull (1.53cp / 0.74cp at the fixture's
+    # real gaps) is far short of the 2-4cp engine gaps -> the ranking FALLS
+    # BACK TO CP ORDER, coinciding with Attacker/Sacrificer/Positional and
+    # differing from Defender (whose bigger defense score on Kh8 DOES
+    # promote it -- the saved-harness divergence).
+    fen = "r1bq1rk1/ppp2ppp/2np1n2/2b1p3/2B1P3/2PP1N2/PP3PPP/RNBQ1RK1 b - - 0 1"
+    board = chess.Board(fen)
+    saved_gaps = {"h6": 0.0, "a5": -12.0, "a6": -16.0, "Bb6": -18.0, "Kh8": -18.0}
+    finals_g, finals_d = {}, {}
+    for san, gap in saved_gaps.items():
+        scores, _ = compute_style_scores(board, board.parse_san(san))
+        g = gambiter_score(scores, board)
+        d = defender_score(scores, board)
+        finals_g[san] = persona_adjusted_score(gap, g, game_phase(board))
+        finals_d[san] = persona_adjusted_score(gap, d, game_phase(board))
+        if san in ("h6", "a5", "a6"):
+            assert g == 0.0, (san, g)  # perfectly quiet -> exactly zero blend
+        else:
+            print(f"    {san}: G={g:+.6f} -> bias pull "
+                  f"{(finals_g[san] - gap):+.2f}cp vs the {abs(gap - saved_gaps['a6']):.0f}cp gap to a6"
+                  f" (cannot flip; final {finals_g[san]:+.2f})")
+    order_g = sorted(saved_gaps, key=lambda s: -finals_g[s])
+    assert order_g == ["h6", "a5", "a6", "Bb6", "Kh8"], order_g
+    print(f"    Gambiter order: " + " > ".join(f"{s}({finals_g[s]:+.2f})" for s in order_g)
+          + "  == cp order (coincides with A/S/P)")
+    print(f"    Defender order: " + " > ".join(f"{s}({finals_d[s]:+.2f})" for s in sorted(saved_gaps, key=lambda s: -finals_d[s])))
+    print("  [PASS] Gambiter coincides with cp order on the all-quiet fixture,"
+          " with the coincidence quantified (0-score anchors + sub-2cp pulls)")
+
+
 def test_canonicalize_by_score_fixes_multipv_order():
     # MOCKED suggest() output (deterministic, no live engine): modeled
     # directly on the real inversion observed in game 0 move 10 of the
@@ -817,60 +1063,68 @@ def _run_integration_fixture(engine, fixture):
         x = sacrificer_score(scores, board)
         d = defender_score(scores, board)
         p = positional_score(scores, board)
+        g = gambiter_score(scores, board)
         final_a = persona_adjusted_score(norm_cp, a, phase)
         final_s = persona_adjusted_score(norm_cp, x, phase)
         final_d = persona_adjusted_score(norm_cp, d, phase)
         final_p = persona_adjusted_score(norm_cp, p, phase)
+        final_g = persona_adjusted_score(norm_cp, g, phase)
         rows.append({
             "san": s["san"], "cp": s["score_cp"], "norm": norm_cp,
             "atk": scores.attack_gain, "def": scores.defense_gain,
             "sac": scores.sacrifice_signal, "vol": scores.volatility,
-            "a": a, "x": x, "d": d, "p": p,
+            "a": a, "x": x, "d": d, "p": p, "g": g,
             "d_a": final_a - norm_cp, "d_s": final_s - norm_cp,
             "d_d": final_d - norm_cp, "d_p": final_p - norm_cp,
+            "d_g": final_g - norm_cp,
             "final_a": final_a, "final_s": final_s,
-            "final_d": final_d, "final_p": final_p,
+            "final_d": final_d, "final_p": final_p, "final_g": final_g,
         })
 
-    print("=" * 166)
+    print("=" * 200)
     print(f"FIXTURE: {fixture['name']}   phase={phase:.2f}")
     print(f"  {fixture['description']}")
     print(f"  FEN: {fixture['fen']}")
     if resorted:
         print("  (note: raw MultiPV order was not cp-sorted; ENGINE order below is canonicalized)")
     header = (f"   {'#':>2} {'move':<7} {'cp':>6} {'norm':>6} {'atk':>7} {'def':>7} "
-              f"{'sac':>4} {'vol':>5} {'A':>8} {'S':>8} {'D':>8} {'P':>8} "
-              f"{'dA_cp':>7} {'dS_cp':>7} {'dD_cp':>7} {'dP_cp':>7} "
-              f"{'finalA':>9} {'finalS':>9} {'finalD':>9} {'finalP':>9}")
+              f"{'sac':>4} {'vol':>5} {'A':>8} {'S':>8} {'D':>8} {'P':>8} {'G':>8} "
+              f"{'dA_cp':>7} {'dS_cp':>7} {'dD_cp':>7} {'dP_cp':>7} {'dG_cp':>7} "
+              f"{'finalA':>9} {'finalS':>9} {'finalD':>9} {'finalP':>9} {'finalG':>9}")
     print(header)
     print("  " + "-" * (len(header) - 2))
-    print("  (A/S/D/P = raw persona scores in [-1,1]; d*_cp = applied bias in"
+    print("  (A/S/D/P/G = raw persona scores in [-1,1]; d*_cp = applied bias in"
           " CENTIPAWNS = PERSONA_BIAS_CP*bias; final = norm + d, demotion-floored at -75)")
     for i, r in enumerate(rows):
         print(f"   {i + 1:>2} {r['san']:<7} {r['cp']:>6} {r['norm']:>6} "
               f"{r['atk']:>+7.2f} {r['def']:>+7.2f} {r['sac']:>4.1f} {r['vol']:>5.2f} "
-              f"{r['a']:>+8.4f} {r['x']:>+8.4f} {r['d']:>+8.4f} {r['p']:>+8.4f} "
-              f"{r['d_a']:>+7.2f} {r['d_s']:>+7.2f} {r['d_d']:>+7.2f} {r['d_p']:>+7.2f} "
-              f"{r['final_a']:>+9.2f} {r['final_s']:>+9.2f} {r['final_d']:>+9.2f} {r['final_p']:>+9.2f}")
+              f"{r['a']:>+8.4f} {r['x']:>+8.4f} {r['d']:>+8.4f} {r['p']:>+8.4f} {r['g']:>+8.4f} "
+              f"{r['d_a']:>+7.2f} {r['d_s']:>+7.2f} {r['d_d']:>+7.2f} {r['d_p']:>+7.2f} {r['d_g']:>+7.2f} "
+              f"{r['final_a']:>+9.2f} {r['final_s']:>+9.2f} {r['final_d']:>+9.2f} "
+              f"{r['final_p']:>+9.2f} {r['final_g']:>+9.2f}")
 
     att_idx = sorted(range(len(rows)), key=lambda i: (-rows[i]["final_a"], i))
     sac_idx = sorted(range(len(rows)), key=lambda i: (-rows[i]["final_s"], i))
     def_idx = sorted(range(len(rows)), key=lambda i: (-rows[i]["final_d"], i))
     pos_idx = sorted(range(len(rows)), key=lambda i: (-rows[i]["final_p"], i))
+    gam_idx = sorted(range(len(rows)), key=lambda i: (-rows[i]["final_g"], i))
     eng = " > ".join(rows[i]["san"] for i in range(len(rows)))
     att = " > ".join(rows[i]["san"] for i in att_idx)
     sac = " > ".join(rows[i]["san"] for i in sac_idx)
     dfn = " > ".join(rows[i]["san"] for i in def_idx)
     pos = " > ".join(rows[i]["san"] for i in pos_idx)
+    gam = " > ".join(rows[i]["san"] for i in gam_idx)
     print(f"  ENGINE order:     {eng}")
     mark_a = "  (unchanged)" if att == eng else ""
     mark_s = "  (unchanged)" if sac == eng else ""
     mark_d = "  (unchanged)" if dfn == eng else ""
     mark_p = "  (unchanged)" if pos == eng else ""
+    mark_g = "  (unchanged)" if gam == eng else ""
     print(f"  ATTACKER order:   {att}{mark_a}")
     print(f"  SACRIFICER order: {sac}{mark_s}")
     print(f"  DEFENDER order:   {dfn}{mark_d}")
     print(f"  POSITIONAL order: {pos}{mark_p}")
+    print(f"  GAMBITER order:   {gam}{mark_g}")
     print()
 
 
@@ -903,6 +1157,11 @@ def main() -> int:
         test_positional_scores_bounded,
         test_positional_fixture_contrasts,
         test_positional_differentiation_on_near_equal,
+        test_gambiter_weights_are_the_declared_blend,
+        test_gambiter_scores_bounded_and_clamp_vestigial,
+        test_gambiter_blend_between_attacker_and_sacrificer,
+        test_gambiter_differentiation_on_near_equal,
+        test_gambiter_quiet_positional_fallback,
         test_canonicalize_by_score_fixes_multipv_order,
     ]
     for test in tests:
