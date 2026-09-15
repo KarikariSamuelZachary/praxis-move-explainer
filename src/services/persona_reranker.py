@@ -42,7 +42,7 @@ resolve_persona():
   * Input is normalized (stripped, lowercased) so "ATTACKER" and " attacker "
     are accepted; anything else is rejected. Normalization is deliberate and
     documented -- it is NOT silent defaulting.
-  * Extension: adding a 5th persona means adding one Enum member, one dict
+  * Extension: adding a persona means adding one Enum member, one dict
     entry, and nothing else. The dict (not a match statement) is the single
     dispatch point.
 
@@ -92,6 +92,7 @@ from services.persona_weights import (
     canonicalize_by_score,
     defender_score,
     attacker_score,
+    gambiter_score,
     positional_score,
     persona_adjusted_score,
     sacrificer_score,
@@ -105,6 +106,7 @@ class PersonaType(str, Enum):
     SACRIFICER = "sacrificer"
     DEFENDER = "defender"
     POSITIONAL = "positional"
+    GAMBITER = "gambiter"
 
 
 # The single dispatch point. One entry per PersonaType; adding a persona means
@@ -114,6 +116,7 @@ _PERSONA_SCORERS: dict[PersonaType, Callable] = {
     PersonaType.SACRIFICER: sacrificer_score,
     PersonaType.DEFENDER: defender_score,
     PersonaType.POSITIONAL: positional_score,
+    PersonaType.GAMBITER: gambiter_score,
 }
 
 
