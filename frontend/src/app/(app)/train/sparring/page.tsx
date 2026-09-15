@@ -6,6 +6,7 @@ import { useRouter } from 'next/navigation';
 
 import {
   PERSONAS,
+  UPCOMING_PERSONAS,
   TIERS,
   type Persona,
   type PersonaKey,
@@ -20,12 +21,20 @@ const TONE_HOVER_BORDER: Record<Persona['tone'], string> = {
   purple: 'hover:border-purple-400/40',
   blue: 'hover:border-blue-400/40',
   emerald: 'hover:border-emerald-400/40',
+  orange: 'hover:border-orange-400/40',
 };
 
 const CARD_CLASS =
   'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
 
-const TILE_CLASS = `group relative flex w-28 cursor-pointer flex-col items-center gap-2 rounded-2xl border border-black/50 p-3 backdrop-blur-sm transition duration-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#efd9a7] motion-safe:hover:-translate-y-1 motion-safe:active:scale-95 [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]`;
+// Tile width is owned by the grid (equal columns); the tile fills its cell.
+const TILE_CLASS = `group relative flex w-full cursor-pointer flex-col items-center gap-2 rounded-2xl border border-black/50 p-3 backdrop-blur-sm transition duration-300 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#efd9a7] motion-safe:hover:-translate-y-1 motion-safe:active:scale-95 [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]`;
+
+// Section titles mirror the Praxis logo's typography (font-display, bold,
+// wide letter-spacing) one size step down (text-lg vs the logo's text-xl),
+// centered; Personas and Bots share the exact same style.
+const SECTION_LABEL_CLASS =
+  'block text-center font-display text-lg font-bold uppercase tracking-[0.16em] text-[#f7e5c6]/60';
 
 const OPTION_SELECTED_CLASS = 'bg-[#f7e5c6] text-[#241206]';
 
@@ -211,7 +220,7 @@ function PersonaTile({
         alt=""
         width={192}
         height={192}
-        sizes="(min-width: 640px) 128px, 112px"
+        sizes="(min-width: 1024px) 186px, (min-width: 640px) 139px, 157px"
         draggable={false}
         className="h-14 w-14 select-none object-contain transition-transform duration-500 motion-safe:group-hover:scale-[1.05] sm:h-16 sm:w-16"
       />
@@ -219,6 +228,31 @@ function PersonaTile({
         {persona.name}
       </span>
     </button>
+  );
+}
+
+// Coming-soon slot for a planned persona: same grid footprint as a live
+// tile, but non-interactive and visually muted.
+function UpcomingPersonaTile({ name, description }: { name: string; description: string }) {
+  return (
+    <div
+      title={description}
+      aria-label={`${name} persona (coming soon)`}
+      className="relative flex w-full cursor-default flex-col items-center gap-2 rounded-2xl border border-dashed border-[#f7e5c6]/15 bg-black/30 p-3"
+    >
+      <div
+        className="flex h-14 w-14 items-center justify-center rounded-full border border-dashed border-[#f7e5c6]/15 text-lg font-semibold text-[#f7e5c6]/25 sm:h-16 sm:w-16"
+        aria-hidden
+      >
+        ?
+      </div>
+      <span className="font-display text-xs font-semibold text-[#f7e5c6]/40 sm:text-sm">
+        {name}
+      </span>
+      <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-[#f7e5c6]/30">
+        Coming soon
+      </span>
+    </div>
   );
 }
 
@@ -238,21 +272,36 @@ export default function EngineSparringPage() {
   return (
     <div className="relative h-[calc(100vh-3rem)] w-full overflow-y-auto overflow-x-hidden px-6 py-6 text-white lg:px-12 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
       <div className="mx-auto flex h-full max-w-[1600px] flex-col">
-        {/* Fixed-width slots in a left-aligned row: three more persona tiles
-            will be appended to this same row later (eventual 7-slot row).
-            The tiles must never resize, re-center, or shift when that
-            happens -- the space to their right stays empty for now. */}
-        <section
-          aria-label="Sparring personas"
-          className="flex flex-wrap content-start items-start gap-3 sm:gap-4"
-        >
-          {PERSONAS.map((persona) => (
-            <PersonaTile
-              key={persona.key}
-              persona={persona}
-              onSelect={setActivePersona}
-            />
-          ))}
+        {/* ROW 1 -- the eight personas: five live + three planned slots.
+            On lg+ the row is an EXACT 8-equal-column grid, so the row is
+            always completely filled with uniform spacing: each tile is
+            (containerWidth - 7*gap) / 8 wide, where containerWidth is
+            min(viewport - 96px, 1600px). Smaller screens step down to 4 and
+            2 columns so tiles stay tappable. Bot tiles will live on their
+            own labeled row below this one once they exist. */}
+        <section aria-label="Sparring personas">
+          <span className={SECTION_LABEL_CLASS}>Personas</span>
+          <div className="mt-2 grid grid-cols-2 gap-3 sm:grid-cols-4 sm:gap-4 lg:grid-cols-8">
+            {PERSONAS.map((persona) => (
+              <PersonaTile
+                key={persona.key}
+                persona={persona}
+                onSelect={setActivePersona}
+              />
+            ))}
+            {UPCOMING_PERSONAS.map((persona) => (
+              <UpcomingPersonaTile
+                key={persona.name}
+                name={persona.name}
+                description={persona.description}
+              />
+            ))}
+          </div>
+        </section>
+
+        {/* ROW 2 -- reserved for sparring bots. */}
+        <section aria-label="Sparring bots" className="mt-6">
+          <span className={SECTION_LABEL_CLASS}>Bots</span>
         </section>
       </div>
 
