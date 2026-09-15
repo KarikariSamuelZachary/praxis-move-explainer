@@ -10,10 +10,40 @@ It consults the FEN-keyed classical-gambit lookup table
 for its provenance and validation) and, with probability `probability`,
 returns one gambit offer for the CURRENT position. It returns None when
 there is nothing to offer or the roll fails. It is deliberately
-PERSONA-AGNOSTIC and never touches the reranker: Engine Sparring's
-Sacrificer wires it in at the SACRIFICER_OFFER_PROBABILITY rate, and a
-future Gambiter persona reuses this exact function with probability=1.0
-(always-in-book).
+PERSONA-AGNOSTIC and never touches the reranker.
+
+STEERING (why the endpoint calls steer_to_gambit, not this function)
+===================================================================
+maybe_play_gambit() is a pure RESPONDER: it can only return a gambit when
+the live position is ALREADY an offer square of the book. From the game's
+start that makes opening variety structurally impossible: the position
+after 1.e4 has exactly ONE black-offered entry in the whole asset (Duras
+Gambit, 1...f5), so every Sacrificer/Gambiter game vs 1.e4 opened with the
+same f5, and 302 of the 345 offer positions have a pool of exactly one
+anyway. The fix is steer_to_gambit(): a SECOND index built by replaying
+every offer entry's full PGN ply by ply, so the persona can pick a random
+gambit line compatible with the game so far and WALK toward its offer:
+
+  * At each persona turn, the candidate pool is every offer-kind entry
+    whose line passes through the CURRENT normalized position with the
+    entry's offer still AHEAD of (or exactly at) this ply, AND whose
+    offerer color is the side to move (the persona never steers the
+    opponent into a gambit). One member is picked UNIFORMLY AT RANDOM --
+    an offer playable right now is simply one candidate among the lines
+    (it must NOT exclusively win: after 1.e4 the lone move-1 Duras offer
+    would otherwise crowd out the other 100 lines and reproduce the same
+    f5 every game -- the exact monotony steering exists to fix). A
+    consequence, accepted by design: at an offer square the persona may
+    steer PAST the available offer toward a different, later gambit.
+  * The picked member's move is played. When the opponent leaves the
+    line, the lookup simply finds whatever other lines pass through the
+    new position (or nothing, falling through to the reranker).
+  * After the offer lands, the entry's later plies are NOT indexed: the
+    persona is done steering and returns to the persona reranker.
+
+The probability semantics are identical to maybe_play_gambit's (validate
+before lookup; one roll, only when a pool exists). Sacrificer and Gambiter
+both call steer_to_gambit at their (equal) rate constants.
 
 LOOKUP NORMALIZATION (the load-bearing detail)
 ==============================================
@@ -64,6 +94,7 @@ outside [0, 1] is a programming error and raises ValueError loudly.
 """
 import json
 import random
+import re
 from pathlib import Path
 from typing import Optional, Union
 
@@ -178,10 +209,12 @@ def maybe_play_gambit(
         positions never consume randomness and `probability` means
         exactly "share of in-book-offer positions that get offered".
 
-    Reusability contract (for the future Gambiter persona): this function
-    never calls rerank_moves() or any persona scoring, and reads nothing but
-    `board` -- with probability=1.0 it becomes the pure "always play the
-    book's offer" primitive, with no Sacrificer-specific logic to strip.
+    Reusability contract: this function never calls rerank_moves() or any
+    persona scoring, and reads nothing but `board` -- with probability=1.0
+    it becomes the pure "always play the book's offer" primitive. NOTE the
+    Engine Sparring endpoint now uses steer_to_gambit() (a superset of this
+    lookup that also steers pre-offer lines -- see the module docstring);
+    this function remains the pure responder primitive.
     """
     if not 0.0 <= probability <= 1.0:
         raise ValueError(
@@ -214,6 +247,148 @@ def maybe_play_gambit(
     return {
         "uci": entry["uci"],
         "san": entry["san"],
+        "gambit_name": entry["name"],
+        "eco": entry["eco"],
+        "pgn": entry["pgn"],
+    }
+
+
+# ---------------------------------------------------------------------------
+# STEERING: the ply-index that gives the personas opening variety.
+#
+# maybe_play_gambit() above only ever answers at positions that are ALREADY
+# offer squares. From the game's start that collapses to a single gambit:
+# the position after 1.e4 has exactly ONE black-offered entry in the whole
+# asset (Duras Gambit, 1...f5) -- so Sacrificer/Gambiter always opened 1...f5
+# vs 1.e4, and 302 of the 345 offer positions are singleton pools anyway.
+# steer_to_gambit() fixes this by steering: at each persona turn it picks a
+# random gambit line that is still REACHABLE from the live position and plays
+# that line's next move, walking the game toward its randomly chosen offer.
+# ---------------------------------------------------------------------------
+
+# Built once, on first use (same idempotence contract as _GAMBIT_INDEX).
+_STEERING_INDEX: Optional[dict[str, list[dict]]] = None
+
+
+def _pgn_plies(pgn: str) -> list[str]:
+    """SAN tokens of a book line, move numbers stripped.
+
+    Same tokenization as scripts/validate_gambit_openings.parse_pgn_moves
+    ("1." / "1..." are move numbers, everything else is a SAN token).
+    """
+    return [tok for tok in pgn.split() if not re.fullmatch(r"\d+\.*", tok)]
+
+
+def load_gambit_steering_index() -> dict[str, list[dict]]:
+    """Normalized position key -> steering candidates along gambit lines.
+
+    Built once from the same validated asset by REPLAYING every offer-kind
+    entry's full PGN (not just its endpoint, which is what the responder
+    index keys): for each ply position the entry's line passes through
+    BEFORE its offer -- with the offerer's color to move there -- one
+    candidate {"entry", "uci", "is_offer"} is indexed, plus one
+    is_offer=True member at the entry's own offer square. Post-offer plies
+    are never indexed (steering ends once the offer has landed). The
+    candidate's "uci" is the move to play AT THAT POSITION (the line's next
+    move; for is_offer members the entry's own offer move), so a lookup
+    returns a move that is legal by construction for the color to move.
+
+    Loud failure on drift: an offer entry whose stored FEN does not lie on
+    its own PGN raises ValueError during the build (the asset's committed
+    validator guarantees this never fires for the shipped file).
+    """
+    global _STEERING_INDEX
+    if _STEERING_INDEX is None:
+        index: dict[str, list[dict]] = {}
+        entries = [e for bucket in load_gambit_index().values() for e in bucket]
+        for entry in entries:
+            if not entry["offer"]:
+                continue
+            offerer = entry["fen"].split()[1]
+            offer_key = _normalized_position_key(entry["fen"])
+            board = chess.Board()
+            found_offer = False
+            for san in _pgn_plies(entry["pgn"]):
+                key = _normalized_position_key(board.fen())
+                if key == offer_key:
+                    # The offer itself, playable at exactly this position.
+                    index.setdefault(key, []).append(
+                        {"entry": entry, "uci": entry["uci"], "is_offer": True}
+                    )
+                    found_offer = True
+                    break
+                if key.split()[1] == offerer:
+                    # Pre-offer ply where the persona is to move: a legal
+                    # steering move toward this entry's future offer.
+                    move = board.parse_san(san)
+                    index.setdefault(key, []).append(
+                        {"entry": entry, "uci": move.uci(), "is_offer": False}
+                    )
+                board.push_san(san)
+            if not found_offer:
+                raise ValueError(
+                    f"gambit book entry {entry['name']!r}: stored offer "
+                    f"position {offer_key!r} is not on its own pgn line"
+                )
+        _STEERING_INDEX = index
+    return _STEERING_INDEX
+
+
+def steer_to_gambit(
+    board: chess.Board,
+    probability: float = SACRIFICER_OFFER_PROBABILITY,
+) -> Optional[dict]:
+    """Maybe return a gambit-book move for `board`, steering toward a random
+    gambit line; else None.
+
+    Same dict contract as maybe_play_gambit
+    ({"uci", "san", "gambit_name", "eco", "pgn"}), same probability
+    semantics (validate before lookup; ONE roll, only when a pool exists),
+    same defensive legality guard -- but with the steering pool rule (see
+    the module docstring):
+
+      * candidates = offer-kind entries whose line passes through the
+        current normalized position with the offer still ahead of (or at)
+        this ply, whose offerer is the side to move;
+      * ONE candidate is picked uniformly at random and its move played --
+        offer-now candidates do NOT outrank pre-offer steering lines (a
+        lone move-1 offer would otherwise repeat the same opening every
+        game, the monotony steering exists to fix);
+      * out-of-book positions return None WITHOUT burning the roll.
+
+    On a steer, "gambit_name"/"eco"/"pgn" name the line being steered
+    toward (the offer may still be several plies away); "san" is computed
+    live from `board`. Coherence note: the endpoint is FEN-only (no move
+    history, no session seed), so no cross-turn commitment is possible --
+    when several lines share the current position the persona may switch
+    between them, but only ever among lines passing through the exact
+    position, so every book move remains positionally coherent.
+    """
+    if not 0.0 <= probability <= 1.0:
+        raise ValueError(
+            f"probability must be within [0, 1]; got {probability!r}"
+        )
+
+    bucket = load_gambit_steering_index().get(_normalized_position_key(board))
+    if not bucket:
+        # Nothing steerable here (out of book, or every passing line has
+        # already made its offer) -- no probability check burned.
+        return None
+
+    if _roll() >= probability:
+        return None
+
+    member = _pick(bucket)
+    move = chess.Move.from_uci(member["uci"])
+    if move not in board.legal_moves:
+        # Same defensive guard as maybe_play_gambit: a corrupted book must
+        # degrade to "no book move", never to an illegal move.
+        return None
+
+    entry = member["entry"]
+    return {
+        "uci": member["uci"],
+        "san": board.san(move),
         "gambit_name": entry["name"],
         "eco": entry["eco"],
         "pgn": entry["pgn"],
