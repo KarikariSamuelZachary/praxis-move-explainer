@@ -3,7 +3,7 @@ Live test harness for the production reranker entrypoint
 (src/services/persona_reranker.py).
 
 PART 1 (no engine) -- persona-selector validation:
-  * all four persona names resolve to the right PersonaType members
+  * all five persona names resolve to the right PersonaType members
   * normalization: case/whitespace variants accepted ("ATTACKER", " Defender ")
   * PersonaType passthrough
   * invalid names raise ValueError NAMING the bad value and the valid choices
@@ -62,6 +62,7 @@ from services.persona_weights import (
     attacker_score,
     canonicalize_by_score,
     defender_score,
+    gambiter_score,
     persona_adjusted_score,
     positional_score,
     sacrificer_score,
@@ -139,7 +140,7 @@ def test_selector_validation():
         assert "must be a PersonaType or string" in str(exc), exc
     else:
         raise AssertionError("non-string persona did not raise")
-    print("    all 4 names resolve; case/whitespace normalized;")
+    print("    all 5 names resolve; case/whitespace normalized;")
     print("    'wizard'/''/7 rejected with ValueError naming valid choices")
     print("  [PASS] selector validation: loud, specific, no silent defaults")
 
@@ -285,6 +286,7 @@ def test_deterministic_equivalence(captures):
         PersonaType.SACRIFICER: sacrificer_score,
         PersonaType.DEFENDER: defender_score,
         PersonaType.POSITIONAL: positional_score,
+        PersonaType.GAMBITER: gambiter_score,
     }
     try:
         for fixture_name in LIVE_FIXTURES:
@@ -303,7 +305,7 @@ def test_deterministic_equivalence(captures):
     finally:
         _unpatch_suggest()
     print("  [PASS] rerank_moves output EXACTLY equals the Part 4 harness"
-          " pipeline on identical inputs (12 fixture/persona pairs)")
+          " pipeline on identical inputs (15 fixture/persona pairs)")
 
 
 def test_live_orders_and_regression(captures):
