@@ -1,6 +1,6 @@
-export type PersonaKey = 'attacker' | 'sacrificer' | 'defender' | 'positional';
+export type PersonaKey = 'attacker' | 'sacrificer' | 'defender' | 'positional' | 'gambiter';
 
-export type Tone = 'amber' | 'purple' | 'blue' | 'emerald';
+export type Tone = 'amber' | 'purple' | 'blue' | 'emerald' | 'orange';
 
 export type Persona = {
   key: PersonaKey;
@@ -39,6 +39,13 @@ export const PERSONAS: Persona[] = [
     tone: 'emerald',
     description: 'Avoids complications, sticking to quiet, sound, controlled play.',
   },
+  {
+    key: 'gambiter',
+    name: 'Gambiter',
+    icon: '/persona-gambiter.webp',
+    tone: 'orange',
+    description: 'Opens with the book\'s gambit whenever one is available, then hunts king threats.',
+  },
 ];
 
 export type TierKey = 'club' | 'expert' | 'master' | 'grandmaster';
@@ -58,6 +65,30 @@ export const TIERS: Tier[] = [
 ];
 
 export type PlayColor = 'white' | 'black';
+
+// Planned personas, rendered as coming-soon placeholders. These are NOT in
+// PERSONAS (and must not be): they have no backend PersonaType/weight vector
+// yet, so starting a game with them would be rejected by the API. They only
+// reserve their slot in the eight-tile persona row.
+export type UpcomingPersona = {
+  name: string;
+  description: string;
+};
+
+export const UPCOMING_PERSONAS: UpcomingPersona[] = [
+  {
+    name: 'Endgamer',
+    description: 'Trades into clean endgames and converts with precise technique.',
+  },
+  {
+    name: 'Brilliant',
+    description: 'Finds the brilliant lines: sound sacrifices the engine itself calls best.',
+  },
+  {
+    name: 'Swindler',
+    description: 'Refuses to lose, swindling lost positions with traps and counterplay.',
+  },
+];
 
 export function isPersonaKey(value: unknown): value is PersonaKey {
   return PERSONAS.some((persona) => persona.key === value);
