@@ -33,11 +33,18 @@ Parts:
       called); the book check runs ONLY for persona="sacrificer".
   11. Gambiter's book-first HARD bypass (parallel block, probability=1.0):
       the same in-book position returns the book move directly
-      (maybe_play_gambit called with EXACTLY 1.0 -- not the Sacrificer rate)
+      (steer_to_gambit called with EXACTLY 1.0 -- not the Sacrificer rate)
       and rerank_moves is provably NOT called; a gambiter request at an
       out-of-book position falls through to the normal pipeline using
       gambiter_score (rerank_moves called with persona="gambiter").
       Sacrificer's tests and probability are completely unaffected.
+
+  The book lookup behind both blocks is steer_to_gambit() -- the STEERING
+  superset of maybe_play_gambit: at each persona turn it picks UNIFORMLY
+  among ALL gambit lines whose offer is still ahead of (or exactly at) the
+  current position and plays that line's next move, so fresh games open
+  with varied gambits instead of the same 1...f5 vs 1.e4 every time
+  (services/gambit_book.py module docstring, STEERING section).
 
 Run with: cd src && ../venv/bin/python routers/train_engine_sparring_test.py
 """
@@ -243,7 +250,7 @@ def test_best_move_differs_and_valueerror_mapping():
     # surface in best_move_uci/san. Also proves the endpoint calls
     # rerank_moves (not best_persona_move), and maps a service ValueError to
     # 400. The gambit-book check is patched to None so the Sacrificer persona
-    # request here is deterministic regardless of the live 17% roll and of
+    # request here is deterministic regardless of the live offer roll and of
     # future book content at this fixture position.
     canned = [
         {"uci": "e2e4", "san": "e4", "score_cp": 30, "engine_norm_cp": -7.0,
@@ -252,7 +259,7 @@ def test_best_move_differs_and_valueerror_mapping():
          "persona_score": -0.3, "persona_final_cp": -30.0},
     ]
     original = train_router_module.rerank_moves
-    original_book = train_router_module.maybe_play_gambit
+    original_book = train_router_module.steer_to_gambit
     calls = []
 
     def fake_rerank(board, persona, elo=None, skill_level=None):
@@ -263,7 +270,7 @@ def test_best_move_differs_and_valueerror_mapping():
         raise ValueError("elo must be in [1320, 3190]; got 100")
 
     try:
-        train_router_module.maybe_play_gambit = (
+        train_router_module.steer_to_gambit = (
             lambda board, probability=SACRIFICER_OFFER_PROBABILITY: None
         )
         train_router_module.rerank_moves = fake_rerank
@@ -305,12 +312,12 @@ def test_best_move_differs_and_valueerror_mapping():
         print("    service ValueError -> 400 'Invalid engine strength: ...'")
     finally:
         train_router_module.rerank_moves = original
-        train_router_module.maybe_play_gambit = original_book
+        train_router_module.steer_to_gambit = original_book
     print("  [PASS] best_move-differs branch + ValueError->400 mapping")
 
 
 def test_gambit_book_bypass_skips_reranker():
-    # persona=sacrificer at a REAL in-book position, with maybe_play_gambit
+    # persona=sacrificer at a REAL in-book position, with steer_to_gambit
     # forced to return the real King's Gambit entry: the endpoint must
     # return the book move DIRECTLY -- gambit_book populated, numeric fields
     # at the documented "engine bypassed" sentinels, best_move_* null -- and
@@ -325,10 +332,10 @@ def test_gambit_book_bypass_skips_reranker():
         rerank_calls.append(args)
         raise AssertionError("rerank_moves must NOT run on a book hit")
 
-    original_book = train_router_module.maybe_play_gambit
+    original_book = train_router_module.steer_to_gambit
     original_rerank = train_router_module.rerank_moves
     try:
-        train_router_module.maybe_play_gambit = fake_book
+        train_router_module.steer_to_gambit = fake_book
         train_router_module.rerank_moves = spy_rerank
         client = _make_client()
         response = client.post(
@@ -357,17 +364,17 @@ def test_gambit_book_bypass_skips_reranker():
         board = chess.Board(GAMBIT_POSITION_FEN)
         assert chess.Move.from_uci(data["move_uci"]) in board.legal_moves
         print(f"    book hit -> 200, move f2f4 straight from the book: {data}")
-        print(f"    maybe_play_gambit called once with probability="
+        print(f"    steer_to_gambit called once with probability="
               f"{SACRIFICER_OFFER_PROBABILITY} (live offer rate);"
               " rerank_moves NOT called (spy recorded nothing)")
     finally:
-        train_router_module.maybe_play_gambit = original_book
+        train_router_module.steer_to_gambit = original_book
         train_router_module.rerank_moves = original_rerank
     print("  [PASS] book hit bypasses the reranker end-to-end through HTTP")
 
 
 def test_gambit_book_none_falls_through_to_pipeline():
-    # maybe_play_gambit returns None (roll failed or out of book) -> the
+    # steer_to_gambit returns None (roll failed or nothing steerable) -> the
     # EXISTING pipeline runs exactly as before: rerank_moves called, canned
     # persona pick returned, gambit_book null.
     canned = [
@@ -384,10 +391,10 @@ def test_gambit_book_none_falls_through_to_pipeline():
         rerank_calls.append(persona)
         return [dict(row) for row in canned]
 
-    original_book = train_router_module.maybe_play_gambit
+    original_book = train_router_module.steer_to_gambit
     original_rerank = train_router_module.rerank_moves
     try:
-        train_router_module.maybe_play_gambit = fake_book
+        train_router_module.steer_to_gambit = fake_book
         train_router_module.rerank_moves = fake_rerank
         client = _make_client()
         response = client.post(
@@ -408,17 +415,17 @@ def test_gambit_book_none_falls_through_to_pipeline():
         assert book_calls == [(GAMBIT_POSITION_FEN, SACRIFICER_OFFER_PROBABILITY)], book_calls
         assert rerank_calls == ["sacrificer"], rerank_calls
         print(f"    book None -> pipeline pick Nc3 returned: {data}")
-        print("    maybe_play_gambit called (once, live offer rate); "
+        print("    steer_to_gambit called (once, live offer rate); "
               "rerank_moves called")
     finally:
-        train_router_module.maybe_play_gambit = original_book
+        train_router_module.steer_to_gambit = original_book
         train_router_module.rerank_moves = original_rerank
     print("  [PASS] book miss falls through to the unchanged pipeline")
 
 
 def test_gambit_book_sacrificer_only():
     # The book check is Sacrificer-only: the same in-book position with
-    # persona=attacker must NOT touch maybe_play_gambit at all, and the
+    # persona=attacker must NOT touch steer_to_gambit at all, and the
     # normal pipeline must run.
     book_calls, rerank_calls = [], []
 
@@ -433,10 +440,10 @@ def test_gambit_book_sacrificer_only():
             "persona_score": 0.1, "persona_final_cp": 10.0,
         }]
 
-    original_book = train_router_module.maybe_play_gambit
+    original_book = train_router_module.steer_to_gambit
     original_rerank = train_router_module.rerank_moves
     try:
-        train_router_module.maybe_play_gambit = spy_book
+        train_router_module.steer_to_gambit = spy_book
         train_router_module.rerank_moves = fake_rerank
         client = _make_client()
         response = client.post(
@@ -457,7 +464,7 @@ def test_gambit_book_sacrificer_only():
         print("    persona=attacker at an in-book position: gambit book NOT"
               " consulted (spy recorded nothing); reranker ran")
     finally:
-        train_router_module.maybe_play_gambit = original_book
+        train_router_module.steer_to_gambit = original_book
         train_router_module.rerank_moves = original_rerank
     print("  [PASS] gambit-book check is Sacrificer-only (Sacrificer wiring)")
 
@@ -466,8 +473,8 @@ def test_gambiter_book_bypass_skips_reranker():
     # Gambiter's book-first HARD bypass, mirroring the Sacrificer test
     # above: same in-book position, but the fake records the probability so
     # the test can prove it was called with EXACTLY 1.0 (the design: ALWAYS
-    # offer -- not the Sacrificer rate), and the reranker spy proves the
-    # reranker never runs on a book hit.
+    # take the book -- not the Sacrificer rate), and the reranker spy proves
+    # the reranker never runs on a Gambiter book hit.
     book_calls, rerank_calls = [], []
 
     def fake_book(board, probability=1.0):
@@ -478,10 +485,10 @@ def test_gambiter_book_bypass_skips_reranker():
         rerank_calls.append(args)
         raise AssertionError("rerank_moves must NOT run on a Gambiter book hit")
 
-    original_book = train_router_module.maybe_play_gambit
+    original_book = train_router_module.steer_to_gambit
     original_rerank = train_router_module.rerank_moves
     try:
-        train_router_module.maybe_play_gambit = fake_book
+        train_router_module.steer_to_gambit = fake_book
         train_router_module.rerank_moves = spy_rerank
         client = _make_client()
         response = client.post(
@@ -510,16 +517,16 @@ def test_gambiter_book_bypass_skips_reranker():
         board = chess.Board(GAMBIT_POSITION_FEN)
         assert chess.Move.from_uci(data["move_uci"]) in board.legal_moves
         print(f"    Gambiter book hit -> 200, f2f4 straight from the book: {data}")
-        print(f"    maybe_play_gambit called once with probability={book_calls[0]}"
+        print(f"    steer_to_gambit called once with probability={book_calls[0]}"
               " (EXACTLY 1.0, not the Sacrificer rate); rerank_moves NOT called")
     finally:
-        train_router_module.maybe_play_gambit = original_book
+        train_router_module.steer_to_gambit = original_book
         train_router_module.rerank_moves = original_rerank
     print("  [PASS] Gambiter book hit bypasses the reranker (probability=1.0)")
 
 
 def test_gambiter_out_of_book_falls_through():
-    # Gambiter at an OUT-of-book position: maybe_play_gambit returns None ->
+    # Gambiter at an OUT-of-book position: steer_to_gambit returns None ->
     # the normal pipeline runs with gambiter_score (rerank_moves called with
     # persona="gambiter"), response contract unchanged, gambit_book null.
     canned = [
@@ -538,19 +545,28 @@ def test_gambiter_out_of_book_falls_through():
         rerank_calls.append(persona)
         return [dict(row) for row in canned]
 
-    original_book = train_router_module.maybe_play_gambit
+    original_book = train_router_module.steer_to_gambit
     original_rerank = train_router_module.rerank_moves
     try:
-        train_router_module.maybe_play_gambit = fake_book
+        train_router_module.steer_to_gambit = fake_book
         train_router_module.rerank_moves = fake_rerank
         client = _make_client()
         # OUT-of-book position: the sacrifice-fixture middlegame (verified
         # not in the gambit index -- see the no-match unit test).
         out_of_book_fen = FIXTURES_BY_NAME["obvious sacrifice"]["fen"]
+        book = __import__(
+            "services.gambit_book", fromlist=[
+                "load_gambit_index", "load_gambit_steering_index",
+            ]
+        )
         board = chess.Board(out_of_book_fen)
-        assert str(board.fen()) not in __import__(
-            "services.gambit_book", fromlist=["load_gambit_index"]
-        ).load_gambit_index(), "chosen position is actually in book"
+        key = book._normalized_position_key(board)
+        assert str(board.fen()) not in book.load_gambit_index(), (
+            "chosen position is actually in book"
+        )
+        assert key not in book.load_gambit_steering_index(), (
+            "chosen position is actually steerable -- pick another"
+        )
         response = client.post(
             URL,
             headers=CLERK,
@@ -571,10 +587,10 @@ def test_gambiter_out_of_book_falls_through():
         assert rerank_calls == ["gambiter"], rerank_calls
         print(f"    out-of-book Gambiter -> pipeline pick f4 with gambiter_score:"
               f" {data}")
-        print("    maybe_play_gambit called once (probability=1.0); rerank_moves"
+        print("    steer_to_gambit called once (probability=1.0); rerank_moves"
               " called with persona='gambiter'")
     finally:
-        train_router_module.maybe_play_gambit = original_book
+        train_router_module.steer_to_gambit = original_book
         train_router_module.rerank_moves = original_rerank
     print("  [PASS] Gambiter falls through to the reranker out of book")
 
