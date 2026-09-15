@@ -36,7 +36,7 @@ from schemas.train_schemas import (
 from services.gambit_book import (
     GAMBITER_OFFER_PROBABILITY,
     SACRIFICER_OFFER_PROBABILITY,
-    maybe_play_gambit,
+    steer_to_gambit,
 )
 from services.persona_reranker import best_persona_move, rerank_moves
 from services.opponent_game_analysis import get_opponent_analysis_status
@@ -1141,11 +1141,17 @@ def get_engine_sparring_move(
     if board.turn != bot_color:
         raise HTTPException(status_code=409, detail="It is not the bot's turn")
 
-    # Sacrificer's gambit-book bypass, checked BEFORE the reranker: when the
-    # classical-gambit book has an offer for this exact position and the
-    # SACRIFICER_OFFER_PROBABILITY offer roll succeeds (live value 1.0 = the
-    # Gambiter-equivalent "always offer at book squares" mode; the constant
-    # is the single dial), the book move IS the response and
+    # Sacrificer's gambit-book bypass, checked BEFORE the reranker. The book
+    # STEERS here, not just responds: steer_to_gambit() picks a random gambit
+    # line still reachable from this position (uniform among ALL such lines
+    # -- an offer playable right now is one candidate among them, it does
+    # not exclusively win) and plays its next move, so a fresh game opens
+    # with a different gambit every time (the old responder-only lookup
+    # always produced the same 1...f5 vs 1.e4 -- the position after 1.e4 has
+    # exactly one black-offered entry, Duras Gambit). With the
+    # SACRIFICER_OFFER_PROBABILITY roll succeeded (live value 1.0 = the
+    # Gambiter-equivalent "always take the book at book squares" mode; the
+    # constant is the single dial), the book move IS the response and
     # rerank_moves() never runs for this move (no engine spawn, no rerank
     # cost). Every other persona -- and Sacrificer whenever the roll fails
     # or the position is out of book -- falls through to the unchanged
@@ -1154,7 +1160,7 @@ def get_engine_sparring_move(
     # EngineSparringMoveResponse.gambit_book) plus the gambit_book marker,
     # so the UI can tell a book move from a reranker pick.
     if body.persona == "sacrificer":
-        book = maybe_play_gambit(
+        book = steer_to_gambit(
             board, probability=SACRIFICER_OFFER_PROBABILITY
         )
         if book is not None:
@@ -1175,9 +1181,10 @@ def get_engine_sparring_move(
             )
 
     # Gambiter's book-first HARD bypass -- parallel to Sacrificer's block
-    # above, with two deliberate differences: probability=1.0 (ALWAYS offer
-    # when the book has this position; at 1.0 the roll can never fail, so
-    # the outcome is deterministic), and a different rate constant
+    # above (steer_to_gambit, steering + offers -- see that comment), with
+    # two deliberate differences: probability=1.0 (ALWAYS take the book when
+    # a steerable line or an offer exists; at 1.0 the roll can never fail,
+    # so the outcome is deterministic), and a different rate constant
     # (GAMBITER_OFFER_PROBABILITY). STRUCTURE DECISION: a second standalone
     # block rather than a shared helper. A helper parameterized by
     # (persona, probability) would be cleaner DRY-wise, but it would rewrite
@@ -1186,7 +1193,7 @@ def get_engine_sparring_move(
     # of deliberate duplication is the cheaper risk. If a third book persona
     # ever appears, the shared-helper refactor is the follow-up.
     if body.persona == "gambiter":
-        book = maybe_play_gambit(board, probability=GAMBITER_OFFER_PROBABILITY)
+        book = steer_to_gambit(board, probability=GAMBITER_OFFER_PROBABILITY)
         if book is not None:
             return EngineSparringMoveResponse(
                 move_uci=book["uci"],
