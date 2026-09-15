@@ -295,7 +295,7 @@ class SparringWarmupResponse(BaseModel):
 # no service dependencies, and importing a service enum would invert that
 # layering. Drift between this Literal and PersonaType's values is pinned by
 # a test in routers/train_engine_sparring_test.py (get_args == enum values).
-PersonaName = Literal["attacker", "sacrificer", "defender", "positional"]
+PersonaName = Literal["attacker", "sacrificer", "defender", "positional", "gambiter"]
 
 
 class EngineSparringMoveRequest(BaseModel):
@@ -343,6 +343,19 @@ class EngineSparringMoveRequest(BaseModel):
     )
 
 
+class GambitBookMove(BaseModel):
+    # Identifying metadata for a move played straight out of the classical
+    # gambit book (services/gambit_book.py) instead of by the persona
+    # reranker. Populated ONLY on gambit-book bypass moves (Sacrificer, at
+    # the configured offer rate); null on every reranker-selected move.
+    # `uci` repeats move_uci so the field stays standalone-parseable (name +
+    # eco alone can be ambiguous: the same opening name exists at several
+    # line depths in the book).
+    name: str
+    eco: str
+    uci: str
+
+
 class EngineSparringMoveResponse(BaseModel):
     # The persona's chosen move plus the transparency numbers the Sparring UI
     # shows. Where SparringMoveResponse surfaces `cp_loss` (how much the
@@ -360,6 +373,19 @@ class EngineSparringMoveResponse(BaseModel):
     #     ONLY when it differs from the chosen move (null when the persona
     #     picked the engine's actual best, same spirit as
     #     SparringMoveResponse's optional best_move fields).
+    #   * gambit_book -- populated ONLY when the move came from the classical
+    #     gambit book (services/gambit_book.py) instead of the reranker
+    #     (currently Sacrificer-only, at the configured offer rate
+    #     services.gambit_book.SACRIFICER_OFFER_PROBABILITY -- live value 1.0,
+    #     i.e. a book offer at EVERY exact pre-offer square). On such moves the
+    #     engine is BYPASSED for the move, so the numeric fields are the
+    #     documented "not computed" sentinels -- engine_score_cp=0 (int is
+    #     kept so the existing frontend contract is unchanged),
+    #     engine_norm_cp=0.0, persona_final_cp=0.0 -- and best_move_* are
+    #     null (no engine-best comparison exists). Consumers MUST check
+    #     gambit_book rather than inferring anything from the numeric fields
+    #     on book moves: a 0 there means "engine not consulted", not
+    #     "perfectly equal move".
     move_uci: str
     move_san: str
     persona: PersonaName
@@ -368,6 +394,7 @@ class EngineSparringMoveResponse(BaseModel):
     persona_final_cp: float
     best_move_uci: Optional[str] = None
     best_move_san: Optional[str] = None
+    gambit_book: Optional[GambitBookMove] = None
 
 
 class OpponentDataClearResponse(BaseModel):
