@@ -30,6 +30,7 @@ SOURCES = {
     "sacrificer": "frontend/public/persona-sacrificer-full.png",
     "defender": "frontend/public/persona-defender-full.png",
     "positional": "frontend/public/persona-positional-full.png",
+    "gambiter": "frontend/public/persona-gambiter-full.png",
 }
 
 
