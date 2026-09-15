@@ -44,6 +44,7 @@ const PERSONA_TILES = [
   { name: 'Sacrificer', icon: '/persona-sacrificer.webp' },
   { name: 'Defender', icon: '/persona-defender.webp' },
   { name: 'Positional', icon: '/persona-positional.webp' },
+  { name: 'Gambiter', icon: '/persona-gambiter.webp' },
 ];
 
 function PersonaStrip() {
