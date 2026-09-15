@@ -1,6 +1,6 @@
 """
-Persona weight vectors (Attacker + Sacrificer + Defender + Positional) for
-the Engine Sparring reranker.
+Persona weight vectors (Attacker + Sacrificer + Defender + Positional +
+Gambiter) for the Engine Sparring reranker.
 
 This module sits BETWEEN the shared feature extractor (persona_features.py,
 which produces StyleScores) and the bounding gate (persona_bounds.py, whose
@@ -15,16 +15,18 @@ bounded_persona_bias() consumes this module's output). It provides:
     score_cp order, because MultiPV search order is not guaranteed to be
     cp-sorted (see the function's docstring for the observed inversions).
   * attacker_score() / sacrificer_score() / defender_score() /
-    positional_score(): the four persona weight presets. Each applies phase
-    gating internally (per the ARCHITECTURE NOTE in persona_bounds.py), then
-    normalizes, then takes the weighted sum of the normalized fields. Each
-    returns a single raw_persona_score float in [-1, 1], ready for
-    bounded_persona_bias(raw, engine_norm_cp, phase).
+    positional_score() / gambiter_score(): the persona weight presets. Each
+    applies phase gating internally (per the ARCHITECTURE NOTE in
+    persona_bounds.py), then normalizes, then takes the weighted sum of the
+    normalized fields. Each returns a single raw_persona_score float in
+    [-1, 1], ready for bounded_persona_bias(raw, engine_norm_cp, phase).
 
-All four planned personas (Attacker, Sacrificer, Defender, Positional) now
-exist here. Positional is structurally DIFFERENT from the other three: it
-has no positive anchor at all (pure penalty persona -- see its weight block
-for the argued design decision). This module must not modify
+All five personas (Attacker, Sacrificer, Defender, Positional, Gambiter)
+now exist here. Positional is structurally DIFFERENT from the other three
+first-pass personas: it has no positive anchor at all (pure penalty persona
+-- see its weight block for the argued design decision), and Gambiter is
+structurally DERIVED: a literal 0.7/0.3 blend of the Attacker and Sacrificer
+vectors (see its weight block). This module must not modify
 persona_features.py or persona_bounds.py.
 
 NOTE ON SIGNATURES: the task sketch showed one-argument weight functions,
@@ -192,6 +194,18 @@ king-zone PRESSURE readings; the defense side splits differently):
   The Defender inherits the attack-side damping decisions verbatim by
   building on _phase_damped_scores() (it weights attack_gain, so the same
   king-pressure components must damp for it too).
+
+GAMBITER PHASE GATING -- pure reuse, like Positional
+====================================================
+Gambiter weights defense_gain at 0.0 (see its weight block), so the
+Defender's defense-side damping is irrelevant to it; and its nonzero terms
+(attack_gain, sacrifice_signal, volatility) are exactly the components
+_phase_damped_scores already governs: the attack-side kzp/kaa damping
+applies to its attack_gain term (Gambiter weights attack_gain nonzero, so
+it needs the same king-pressure damping Attacker/Sacrificer get), while
+sacrifice_signal and volatility are conventionally never damped. No second
+damping function is created for it -- reuse over reinvention, same as
+Positional.
 
 POSITIONAL PHASE GATING -- pure reuse, no third damping function
 =================================================================
@@ -777,6 +791,80 @@ def positional_score(scores: StyleScores, board: chess.Board) -> float:
         + _POSITIONAL_W_SACRIFICE * n["sacrifice_signal"]
         + _POSITIONAL_W_DEFENSE * n["defense_gain"]
         + _POSITIONAL_W_INITIATIVE * n["initiative_proxy"]
+    )
+    return max(-1.0, min(1.0, total))
+
+
+# --- Gambiter weights (derived fifth persona: a literal 0.7/0.3 blend of
+#     the Attacker and Sacrificer first-pass vectors; the design decision was
+#     "attack-led gambit seeker", so the blend is anchored on Attacker) -------
+#
+# DESIGN DECISION -- DERIVED, NOT HAND-TUNED: Gambiter's rerank personality
+# is "mostly the Attacker's eye, with a Sacrificer's taste for the
+# material gamble", and the cheapest correct way to express exactly that is
+# a convex blend of the two proven vectors. Each weight below is literally
+# 0.7 * Attacker's + 0.3 * Sacrificer's (recomputed from those personas'
+# ACTUAL current constants; the persona_weights_test asserts the blend
+# identity against the live constants, so if either parent's vector is ever
+# retuned, this test fails and forces a conscious re-blend rather than
+# silently drifting).
+#
+# attack_gain      0.55 : 0.7*0.70 (Attacker) + 0.3*0.20 (Sacrificer) --
+#                         attack-led, as designed: the Gambiter still wants
+#                         king pressure on every move, with a smaller
+#                         sacrifice tilt than Attacker's own 0.70 anchor.
+# volatility       0.17 : 0.7*0.20 + 0.3*0.10 -- sharp play is a mild
+#                         plus, exactly between its two parents.
+# sacrifice_signal 0.28 : 0.7*0.10 + 0.3*0.70 -- the blended-in Sacrificer
+#                         share: nearly triple the Attacker's own 0.10
+#                         tie-breaker, enough to push a genuinely
+#                         sacrificial candidate past a pure-pressure one,
+#                         but well short of Sacrificer's 0.70 dominance.
+# defense_gain     0.00 : 0.7*0.0 + 0.3*0.0 -- both parents keep it at 0.0
+#                         ("a move can be defensively sound AND attacking");
+#                         the blend preserves that reasoning unchanged.
+# initiative_proxy 0.00 : no signal exists (always 0.0 by design in
+#                         persona_features; would require lookahead).
+# Weights sum to exactly 1.0 (0.55 + 0.17 + 0.28 = 1.00) and are all
+# non-negative, so the weighted sum of inputs that each live in [-1, 1] is
+# guaranteed in [-1, 1]: the theoretical bound of |total| is exactly
+# 1.0 = 0.55 + 0.17 + 0.28, reached only when EVERY input saturates its
+# endpoint simultaneously (attack_gain's tanh never reaches 1.0 below raw
+# ~+266 -- absurd), so the final clamp is VESTIGIAL safety for this persona,
+# exactly like Attacker/Sacrificer (and unlike the Defender, whose negative
+# weights make its clamp load-bearing). Verified in tests, not assumed.
+_GAMBITER_W_ATTACK = 0.55
+_GAMBITER_W_VOLATILITY = 0.17
+_GAMBITER_W_SACRIFICE = 0.28
+_GAMBITER_W_DEFENSE = 0.0
+_GAMBITER_W_INITIATIVE = 0.0
+
+
+def gambiter_score(scores: StyleScores, board: chess.Board) -> float:
+    """Gambiter persona raw score in [-1, 1] (bounded_persona_bias input).
+
+    LITERAL BLEND persona: 0.7 * Attacker + 0.3 * Sacrificer (per-field
+    derivation in the weight-block comment). Because every persona score in
+    this module is a weighted sum over the SAME normalized inputs (same
+    phase gating, same normalize_style_scores), gambiter_score equals
+    0.7*attacker_score + 0.3*sacrificer_score EXACTLY on any input where
+    none of the three clamps bind -- asserted in the tests rather than
+    assumed.
+
+    `board` is the position BEFORE the move (the same position the scores
+    were computed on); it is used only for game_phase(). Phase gating reuses
+    _phase_damped_scores (attack side) -- attack_gain is weighted nonzero,
+    so the same king-pressure damping Attacker/Sacrificer get applies here;
+    defense_gain is weighted 0.0, so no defense-side damping is needed.
+    """
+    phase = game_phase(board)
+    n = normalize_style_scores(_phase_damped_scores(scores, phase))
+    total = (
+        _GAMBITER_W_ATTACK * n["attack_gain"]
+        + _GAMBITER_W_VOLATILITY * n["volatility"]
+        + _GAMBITER_W_SACRIFICE * n["sacrifice_signal"]
+        + _GAMBITER_W_DEFENSE * n["defense_gain"]
+        + _GAMBITER_W_INITIATIVE * n["initiative_proxy"]
     )
     return max(-1.0, min(1.0, total))
 
