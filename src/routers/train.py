@@ -16,6 +16,7 @@ from engines.stockfish_engine import (
 from schemas.train_schemas import (
     EngineSparringMoveRequest,
     EngineSparringMoveResponse,
+    GambitBookMove,
     OpponentAnalysisStatusResponse,
     OpponentDataClearResponse,
     OpponentImportJobResponse,
@@ -31,6 +32,11 @@ from schemas.train_schemas import (
     WeaknessProfileJobResponse,
     WeaknessProfileRequest,
     WeaknessProfileStartResponse,
+)
+from services.gambit_book import (
+    GAMBITER_OFFER_PROBABILITY,
+    SACRIFICER_OFFER_PROBABILITY,
+    maybe_play_gambit,
 )
 from services.persona_reranker import best_persona_move, rerank_moves
 from services.opponent_game_analysis import get_opponent_analysis_status
@@ -1134,6 +1140,69 @@ def get_engine_sparring_move(
     bot_color = chess.WHITE if body.bot_color == "white" else chess.BLACK
     if board.turn != bot_color:
         raise HTTPException(status_code=409, detail="It is not the bot's turn")
+
+    # Sacrificer's gambit-book bypass, checked BEFORE the reranker: when the
+    # classical-gambit book has an offer for this exact position and the
+    # SACRIFICER_OFFER_PROBABILITY offer roll succeeds (live value 1.0 = the
+    # Gambiter-equivalent "always offer at book squares" mode; the constant
+    # is the single dial), the book move IS the response and
+    # rerank_moves() never runs for this move (no engine spawn, no rerank
+    # cost). Every other persona -- and Sacrificer whenever the roll fails
+    # or the position is out of book -- falls through to the unchanged
+    # pipeline below. A book move reports the numeric fields as the
+    # documented "engine bypassed" sentinels (see
+    # EngineSparringMoveResponse.gambit_book) plus the gambit_book marker,
+    # so the UI can tell a book move from a reranker pick.
+    if body.persona == "sacrificer":
+        book = maybe_play_gambit(
+            board, probability=SACRIFICER_OFFER_PROBABILITY
+        )
+        if book is not None:
+            return EngineSparringMoveResponse(
+                move_uci=book["uci"],
+                move_san=book["san"],
+                persona=body.persona,
+                engine_score_cp=0,
+                engine_norm_cp=0.0,
+                persona_final_cp=0.0,
+                best_move_uci=None,
+                best_move_san=None,
+                gambit_book=GambitBookMove(
+                    name=book["gambit_name"],
+                    eco=book["eco"],
+                    uci=book["uci"],
+                ),
+            )
+
+    # Gambiter's book-first HARD bypass -- parallel to Sacrificer's block
+    # above, with two deliberate differences: probability=1.0 (ALWAYS offer
+    # when the book has this position; at 1.0 the roll can never fail, so
+    # the outcome is deterministic), and a different rate constant
+    # (GAMBITER_OFFER_PROBABILITY). STRUCTURE DECISION: a second standalone
+    # block rather than a shared helper. A helper parameterized by
+    # (persona, probability) would be cleaner DRY-wise, but it would rewrite
+    # the proven Sacrificer path, and this task's hard constraint is that
+    # Sacrificer's behavior and tests are COMPLETELY unaffected -- ~15 lines
+    # of deliberate duplication is the cheaper risk. If a third book persona
+    # ever appears, the shared-helper refactor is the follow-up.
+    if body.persona == "gambiter":
+        book = maybe_play_gambit(board, probability=GAMBITER_OFFER_PROBABILITY)
+        if book is not None:
+            return EngineSparringMoveResponse(
+                move_uci=book["uci"],
+                move_san=book["san"],
+                persona=body.persona,
+                engine_score_cp=0,
+                engine_norm_cp=0.0,
+                persona_final_cp=0.0,
+                best_move_uci=None,
+                best_move_san=None,
+                gambit_book=GambitBookMove(
+                    name=book["gambit_name"],
+                    eco=book["eco"],
+                    uci=book["uci"],
+                ),
+            )
 
     try:
         ranked = rerank_moves(
