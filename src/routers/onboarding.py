@@ -72,16 +72,20 @@ def set_skill_level(request: Request, body: SkillLevelBody, conn=Depends(get_db)
 
         # Upsert keyed on clerk_id. Email is filled in if we have it
         # (COALESCE keeps any existing value when the header is absent).
+        # endgame_trainer_rating follows the exact tactical_rating
+        # pattern: seeded once from the same skill-band midpoint, then
+        # preserved by COALESCE so re-onboarding never resets it.
         cur.execute(
             """
-            INSERT INTO users (clerk_id, email, skill_level, tactical_rating)
-            VALUES (%s, %s, %s, %s)
+            INSERT INTO users (clerk_id, email, skill_level, tactical_rating, endgame_trainer_rating)
+            VALUES (%s, %s, %s, %s, %s)
             ON CONFLICT (clerk_id) DO UPDATE
             SET skill_level = EXCLUDED.skill_level,
                 tactical_rating = COALESCE(users.tactical_rating, EXCLUDED.tactical_rating),
+                endgame_trainer_rating = COALESCE(users.endgame_trainer_rating, EXCLUDED.endgame_trainer_rating),
                 email = COALESCE(EXCLUDED.email, users.email)
             """,
-            (clerk_id, email, body.skill_level, starting_rating),
+            (clerk_id, email, body.skill_level, starting_rating, starting_rating),
         )
     conn.commit()
 
