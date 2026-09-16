@@ -27,7 +27,8 @@ def run_migrations():
                 ALTER TABLE users
                     ADD COLUMN IF NOT EXISTS skill_level    VARCHAR(20) DEFAULT NULL,
                     ADD COLUMN IF NOT EXISTS calibrated     BOOLEAN NOT NULL DEFAULT FALSE,
-                    ADD COLUMN IF NOT EXISTS tactical_rating INTEGER DEFAULT NULL
+                    ADD COLUMN IF NOT EXISTS tactical_rating INTEGER DEFAULT NULL,
+                    ADD COLUMN IF NOT EXISTS endgame_trainer_rating INTEGER DEFAULT NULL
                 """
             )
             cur.execute(
@@ -812,6 +813,109 @@ def run_migrations():
                             ON puzzles USING GIN (themes);
                     END IF;
                 END $$;
+                """
+            )
+
+            # --- endgame trainer --------------------------------------------
+            # Static content library for the Endgame Trainer: topics are the
+            # named theoretical endings shown on the Endgames library page,
+            # positions are the drillable FEN variants under each topic.
+            # Seed data is loaded out-of-band (like puzzles); these tables
+            # hold no per-user state — session/progress tracking lives in
+            # separate tables added with the training feature itself.
+            #
+            # category is a single piece-type/matchup tag for library
+            # filtering, enforced with an inline CHECK (the same TEXT + CHECK
+            # style as repertoires.color / opponent_import_jobs.status — this
+            # schema does not use native PG enums). Values:
+            #   pure_pawn     kings + pawns only
+            #   knight        knight endings, no other piece types
+            #                 (N vs P, N+P vs K, NN vs K)
+            #   bishop        single-bishop endings (B+P vs K, B vs P)
+            #   bishop_bishop bishop vs bishop (same- and opposite-colored)
+            #   bishop_knight bishop & knight (B vs N; KBN vs K mate)
+            #   rook          rook endings (R+P vs R, R vs P — Lucena,
+            #                 Philidor, etc.)
+            #   bishop_rook   rook & bishop matchups (R vs B, RB vs R)
+            #   knight_rook   rook & knight matchups (R vs N, RN vs R)
+            #   queen         queen endings, no other piece types
+            #                 (Q vs P, Q+P vs Q)
+            #   multi_piece   everything else (Q vs R, Q vs R+B, two-rook
+            #                 endings, ...)
+            #
+            # difficulty_rating uses the same scale as puzzles.rating (plain
+            # INTEGER, Lichess-style ~400-3000) so the Elo expected-score
+            # calculation against users.endgame_trainer_rating can reuse the
+            # existing rating math. sort_order is NULL-able: topics without a
+            # curated position sort after ordered ones.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS endgame_topics (
+                    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    name              TEXT NOT NULL UNIQUE,
+                    category          TEXT NOT NULL CHECK (category IN (
+                        'pure_pawn',
+                        'knight',
+                        'bishop',
+                        'bishop_bishop',
+                        'bishop_knight',
+                        'rook',
+                        'bishop_rook',
+                        'knight_rook',
+                        'queen',
+                        'multi_piece'
+                    )),
+                    description       TEXT NOT NULL,
+                    difficulty_rating INTEGER NOT NULL,
+                    sort_order        INTEGER,
+                    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            # fen stores the full six-field FEN, NOT the four-field
+            # normalization used by repertoire_positions: the halfmove clock
+            # changes the tablebase outcome under the 50-move rule, so two
+            # positions that differ only in counters are distinct drill
+            # variants here. Side to move is deliberately NOT a column — it
+            # is field 2 of the FEN ('w'/'b'), and duplicating it would only
+            # create a second source of truth that can diverge.
+            #
+            # is_winning is tablebase-derived at seed time: TRUE = tablebase
+            # win for the side to move, FALSE = tablebase draw. Tablebase
+            # losses are intentionally excluded from drillable content, so
+            # the column is NOT NULL — every seeded row must have a known
+            # outcome. UNIQUE (topic_id, fen) gives the seeder an ON CONFLICT
+            # target, matching the natural-key style of
+            # repertoire_positions(repertoire_id, fen, move).
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS endgame_positions (
+                    id         UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    topic_id   UUID NOT NULL REFERENCES endgame_topics(id) ON DELETE CASCADE,
+                    fen        TEXT NOT NULL,
+                    is_winning BOOLEAN NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (topic_id, fen)
+                )
+                """
+            )
+            # Library page query path: filter by category, order by
+            # sort_order. Matches the composite-index convention of
+            # idx_repertoire_positions_repertoire_due.
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_endgame_topics_category_sort
+                    ON endgame_topics(category, sort_order)
+                """
+            )
+            # FK lookup path for loading a topic's positions. Matches the
+            # FK-index convention of idx_opponent_game_analysis_game_id.
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_endgame_positions_topic_id
+                    ON endgame_positions(topic_id)
                 """
             )
         conn.commit()
