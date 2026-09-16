@@ -25,6 +25,10 @@ test_game.pgn
 woodpecker-bird-original.png.bak
 landing_page mockup image.png
 
+# Syzygy tablebase files are fetched and validated at build time by
+# scripts/prewarm_syzygy.py; never copy host-local copies into the image.
+data/syzygy/
+
 # Generic local artifacts
 *.log
 *.db
