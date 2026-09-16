@@ -1,0 +1,409 @@
+"""
+Session state machine for the Endgame Trainer (per-move grading).
+
+evaluate_endgame_move(fen_before, move, fen_after) is called for EVERY move
+the user plays in a drill and returns one of:
+
+  * in_progress -- the move preserved the drill's outcome (win stayed win /
+    draw stayed draw) and the game has not resolved on the board yet. The
+    session keeps going; being tablebase-winning but not yet checkmate is
+    NOT solved.
+  * solved      -- the game actually resolved on the board in the drill's
+    favor: checkmate delivered (win drill), or a legitimate board-draw
+    reached (draw drill; also counts if the defender over-delivers and
+    mates). python-chess resolution, NOT the tablebase verdict: the
+    tablebase says what the position is worth, only the board says the
+    game ended.
+  * failed      -- the move lost the drill: threw away a win, blundered a
+    win into a loss, or lost a draw. Fails IMMEDIATELY on the offending
+    move, with a failure_category granular enough to feed
+    endgame_common_mistakes later -- never a generic "wrong".
+
+STATELESS PRECEDENT (confirmed before building)
+===============================================
+Same architecture as Opponent Preparation's sparring endpoint and Engine
+Sparring's POST /train/engine-sparring-move (src/routers/train.py): the
+frontend owns the chess.js game and sends FEN (+ move) per request; there
+is NO backend session/game-state table. evaluate_endgame_move() is a pure
+transition grader -- every call is self-contained, derivable entirely from
+the three FENs/move passed in. This matches the codebase's established
+stateless-sparring design; no DB session table is introduced.
+
+WHY RE-PROBE INSTEAD OF TRUSTING is_winning
+===========================================
+The drill row's is_winning is known, but a buggy or compromised client
+supplies the FENs, so this function treats NOTHING as pre-verified:
+probe_tablebase(fen_before) re-derives the current position's outcome from
+the local Syzygy files, and probe_tablebase(fen_after) re-derives the
+post-move state. The stored flag is only used as a cross-check the caller
+can run (drill_is_winning guard below), never as the verdict itself.
+
+DRILL-TYPE GUARD (drill_is_winning)
+===================================
+Optional bool = the drill's endgame_positions.is_winning. When provided:
+  * win drill: probe(fen_before) for the user MUST be "win" -- a "draw"
+    means the win was already thrown away on some earlier move (the session
+    should have failed then), a "loss" likewise. Receiving either means the
+    client is replaying/stale/wrong FENs -> ValueError (route maps to
+    400/409, the same integrity tier as engine-sparring's terminal/bot-turn
+    checks).
+  * draw drill: probe(fen_before) must be "draw" or "win" (the opponent may
+    have blundered between user moves, handing the user a win -- that is a
+    legitimate mid-drill state, hold or convert as you like). A "loss"
+    cannot arise from correct grading -> same ValueError.
+None (default) skips the guard so the function stays usable ad hoc.
+
+RESOLUTION DETECTION (python-chess, not tablebase)
+==================================================
+A tablebase "win" that is not yet checkmate is IN_PROGRESS by definition --
+the whole point of a Lucena drill is the LAST move too. Resolution checked
+on the position after the user's move:
+  checkmate            -> the user's side delivered mate -> solved
+  stalemate / insufficient material / fifty-move rule (halfmove clock >=
+  100) -> the game is genuinely drawn on the board -> solved for a draw
+  drill, failed for a win drill (see _terminal_verdict()).
+LIMITATION -- THREEFOLD REPETITION: threefold (and fivefold) needs the game
+history; a stateless single-transition call cannot count repetitions. The
+trainer's real flow grades one user move at a time and the frontend owns
+the full game, so the route layer (or the client) must adjudicate
+threefold claims; this function deliberately does not guess. The fifty-
+move rule IS detectable statelessly (the clock rides in the FEN). If/when
+a repetition-claim path is added, it belongs in this same resolution
+layer, not in a parallel mechanism.
+
+RATING UPDATE
+=============
+On solved/failed (never in_progress), if endgame_trainer_rating and
+topic_difficulty_rating are supplied, rating_change is computed by the
+EXISTING core.rating.calculate_rating_change() -- the exact +/-3/5/8
+banding used for puzzles -- no new math. Clamping to [400, 3000] and
+writing users.endgame_trainer_rating stays in the route layer (same split
+as puzzles.py, which clamps + persists there; no history table exists for
+endgames yet either).
+
+ABANDONED STATUS -- deliberately NOT here
+=========================================
+See the step report: a move cap / hint nudge is a product-UX concern (how
+many moves a user may take, when to offer help). This function sees one
+transition and has no move counter to check; the stateless frontend owns
+the move count. It belongs one layer up (route/client), not here. The
+CLOSEST thing inside this function is the fifty-move rule, which is a real
+RULE of chess (the position itself runs out), not a session policy.
+
+MOVE FORMAT
+===========
+`move` accepts UCI ("e2e4", "e7e8q" -- what chess.js sends natively) or
+SAN ("Rd1+"). Legality is verified against fen_before server-side; a legal
+FEN+illegal move is a client-integrity error -> ValueError, not a graded
+verdict.
+fen_after is cross-checked against the position DERIVED from
+fen_before+move (first 4 FEN fields: board/turn/castling/ep -- the same
+normalization repertoire_positions uses), so a client cannot claim an
+outcome for a position the move does not actually produce. The derived
+board is authoritative for all grading.
+"""
+from __future__ import annotations
+
+import logging
+from enum import Enum
+from typing import Optional
+
+import chess
+from pydantic import BaseModel
+
+from core.rating import calculate_rating_change
+from services.tablebase import (
+    TablebaseResult,
+    TablebaseUnavailableError,
+    probe_tablebase,
+)
+
+log = logging.getLogger(__name__)
+
+
+class EndgameStatus(str, Enum):
+    IN_PROGRESS = "in_progress"
+    SOLVED = "solved"
+    FAILED = "failed"
+
+
+class EndgameFailureCategory(str, Enum):
+    """Granular failure kinds -- feeds endgame_common_mistakes later."""
+
+    # Win drill: a move turned a tablebase win into a tablebase draw.
+    THREW_AWAY_WIN = "threw_away_win"
+    # Win drill: a move turned a tablebase win into a tablebase loss.
+    BLUNDERED_INTO_LOSS = "blundered_into_loss"
+    # Draw drill: a move turned a tablebase draw into a tablebase loss.
+    LOST_THE_DRAW = "lost_the_draw"
+    # Win drill: the game reached a board-draw (e.g. the fifty-move clock
+    # expired) without the user ever playing a tablebase-losing move -- they
+    # shuffled forever instead of converting. Distinct from the three move
+    # categories above because no single move was to blame.
+    RAN_OUT_OF_MOVES = "ran_out_of_moves"
+
+
+class EndgameResolution(str, Enum):
+    """How the game actually ended on the board (python-chess-detected)."""
+
+    CHECKMATE = "checkmate"
+    STALEMATE = "stalemate"
+    INSUFFICIENT_MATERIAL = "insufficient_material"
+    FIFTY_MOVE_RULE = "fifty_move_rule"
+    # Degraded drill-end: the user PROMOTED with the win intact while NO
+    # tablebase source could grade the follow-up (promotion adds a piece,
+    # e.g. KRPvKR -> KQRvKR = 6 men; with the Lichess fallback active the
+    # probe usually succeeds and the drill instead continues to real
+    # checkmate — this resolution only fires when the fallback is disabled
+    # or unreachable, i.e. offline). The tablebase's own DTZ metric
+    # measures distance-to-promotion for exactly this reason. NOT used for
+    # captures (they stay within local coverage).
+    PROMOTION = "promotion"
+
+
+class EndgameMoveResult(BaseModel):
+    status: EndgameStatus
+    # None unless status == failed.
+    failure_category: Optional[EndgameFailureCategory] = None
+    # None until the game resolved on the board (solved/failed verdicts).
+    resolution: Optional[EndgameResolution] = None
+    # Tablebase verdicts FROM THE USER'S PERSPECTIVE (inverted off the
+    # side-to-move of each FEN), with DTZ when stored.
+    outcome_before: Optional[str] = None
+    outcome_after: Optional[str] = None
+    dtz_before: Optional[int] = None
+    dtz_after: Optional[int] = None
+    # Present only on solved/failed when both ratings were supplied:
+    # core.rating.calculate_rating_change() delta (clamping to [400, 3000]
+    # is the route's job, same as puzzles.py).
+    rating_change: Optional[int] = None
+
+
+def _probe_for_user(fen: str, user_is_side_to_move: bool) -> TablebaseResult:
+    """probe_tablebase(), reinterpreted FROM THE USER'S PERSPECTIVE.
+
+    The local tablebase answers for the side to move; when grading the
+    position AFTER the user's move the side to move is the opponent, so the
+    verdict is inverted (win<->loss, draw stays draw).
+    """
+    result = probe_tablebase(fen)
+    if user_is_side_to_move:
+        return result
+    inverted = {"win": "loss", "draw": "draw", "loss": "win"}[result.outcome]
+    result.outcome = inverted
+    return result
+
+
+def _terminal_verdict(
+    board: chess.Board, drill_is_winning: Optional[bool]
+) -> Optional[tuple[EndgameStatus, Optional[EndgameFailureCategory], EndgameResolution]]:
+    """Detect an actually-resolved game on the board and return the drill
+    verdict, or None when the game is still live.
+
+    Resolution precedence over transition classification: a move that both
+    resolves the game and would otherwise be graded by the transition table
+    is judged by the RESOLUTION (e.g. delivering stalemate in a win drill is
+    'threw away the win', not 'in progress'). Checkmate always wins the
+    session regardless of drill type (a draw-drill user who mates exceeded
+    the goal).
+    """
+    if board.is_checkmate():
+        return (EndgameStatus.SOLVED, None, EndgameResolution.CHECKMATE)
+    if board.is_stalemate():
+        resolution = EndgameResolution.STALEMATE
+    elif board.is_insufficient_material():
+        resolution = EndgameResolution.INSUFFICIENT_MATERIAL
+    elif board.is_fifty_moves():
+        resolution = EndgameResolution.FIFTY_MOVE_RULE
+    else:
+        return None
+    if drill_is_winning is False:
+        return (EndgameStatus.SOLVED, None, resolution)
+    # Win drill (or guard-free call) reaching a board draw: the win died,
+    # but no single move threw it -- the clock/structure did.
+    return (EndgameStatus.FAILED, EndgameFailureCategory.RAN_OUT_OF_MOVES, resolution)
+
+
+def evaluate_endgame_move(
+    fen_before: str,
+    move: str,
+    fen_after: str,
+    drill_is_winning: Optional[bool] = None,
+    endgame_trainer_rating: Optional[int] = None,
+    topic_difficulty_rating: Optional[int] = None,
+) -> EndgameMoveResult:
+    """Grade one user move in an endgame drill. See the module docstring."""
+    # --- 1. fen_before: parse, legality, resolution, re-probe guard -------
+    try:
+        board_before = chess.Board(fen_before)
+    except ValueError as exc:
+        raise ValueError(f"malformed FEN (fen_before) {fen_before!r}: {exc}") from exc
+    if not board_before.is_valid():
+        raise ValueError(f"illegal position (fen_before) {fen_before!r}")
+
+    if board_before.is_checkmate() or board_before.is_stalemate():
+        raise ValueError(
+            f"fen_before {fen_before!r} is already a terminal position; "
+            "the previous request must resolve the session instead"
+        )
+
+    # --- 2. move: parse (UCI first, SAN fallback) and verify legality -----
+    try:
+        parsed = chess.Move.from_uci(move)
+        if parsed not in board_before.legal_moves:
+            raise ValueError(f"illegal move {move!r} in {fen_before!r}")
+    except ValueError as exc:
+        if "illegal move" in str(exc):
+            raise
+        try:
+            parsed = board_before.parse_san(move)
+        except ValueError as exc2:
+            raise ValueError(
+                f"unrecognized move {move!r} in {fen_before!r}"
+            ) from exc2
+        # SAN given: re-derive so downstream code always has UCI semantics.
+
+    derived_after = board_before.copy(stack=False)
+    derived_after.push(parsed)
+
+    # --- 3. fen_after: cross-check against the derived position -----------
+    # First 4 fields only (board/turn/castling/ep), the repertoire_positions
+    # normalization, so a counter-only difference cannot fail the check --
+    # but a client claiming a DIFFERENT board cannot slip through.
+    try:
+        claimed = chess.Board(fen_after)
+    except ValueError as exc:
+        raise ValueError(f"malformed FEN (fen_after) {fen_after!r}: {exc}") from exc
+    if not claimed.is_valid():
+        raise ValueError(f"illegal position (fen_after) {fen_after!r}")
+    claimed_key = " ".join(claimed.fen().split()[:4])
+    derived_key = " ".join(derived_after.fen().split()[:4])
+    if claimed_key != derived_key:
+        raise ValueError(
+            f"fen_after {fen_after!r} does not match fen_before+move "
+            f"(expected {derived_key})"
+        )
+    board_after = derived_after
+
+    # --- 4. re-probe fen_before (never trust a flag) ----------------------
+    probe_before = _probe_for_user(fen_before, user_is_side_to_move=True)
+    if drill_is_winning is True and probe_before.outcome != "win":
+        raise ValueError(
+            f"win drill received a non-winning fen_before {fen_before!r} "
+            f"(tablebase says {probe_before.outcome} for the user); the session "
+            "must already have failed -- stale or wrong FEN from the client"
+        )
+    if drill_is_winning is False and probe_before.outcome == "loss":
+        raise ValueError(
+            f"draw drill received a lost fen_before {fen_before!r}; the session "
+            "must already have failed -- stale or wrong FEN from the client"
+        )
+
+    # --- 5a. resolution the OPPONENT's reply may have produced ------------
+    # The fifty-move clock always expires on the SECOND mover's halfmove --
+    # with the user moving first (clock 0), that is the defender's reply,
+    # so a clock-expired position arrives as the NEXT fen_before. Also the
+    # structural case where the defender's own move self-resolves. Return
+    # the terminal verdict here; the move/fen_after are irrelevant to it
+    # (the move was still validated above so garbage can't ride through).
+    verdict_before = _terminal_verdict(board_before, drill_is_winning)
+    if verdict_before is not None:
+        status, failure_category, resolution = verdict_before
+        return EndgameMoveResult(
+            status=status,
+            failure_category=failure_category,
+            resolution=resolution,
+            outcome_before=probe_before.outcome,
+            dtz_before=probe_before.dtz,
+            rating_change=_rating_change(status, endgame_trainer_rating, topic_difficulty_rating),
+        )
+
+    # --- 6. resolution on the position after the user's move --------------
+    verdict = _terminal_verdict(board_after, drill_is_winning)
+    if verdict is not None:
+        status, failure_category, resolution = verdict
+        return EndgameMoveResult(
+            status=status,
+            failure_category=failure_category,
+            resolution=resolution,
+            outcome_before=probe_before.outcome,
+            dtz_before=probe_before.dtz,
+            rating_change=_rating_change(status, endgame_trainer_rating, topic_difficulty_rating),
+        )
+
+    # --- 7. transition classification (tablebase, user's perspective) -----
+    try:
+        probe_after = _probe_for_user(fen_after, user_is_side_to_move=False)
+    except TablebaseUnavailableError:
+        # With the Lichess fallback active this is rare (offline deploy,
+        # API down/rate-limited): the only transition out of local coverage
+        # on an unresolved position is a promotion (adds a piece -> 6 men).
+        # A promotion from a tablebase win then ends the drill as a
+        # degraded SOLVED (see EndgameResolution.PROMOTION); any other
+        # coverage gap (e.g. a capture in a draw drill) is a genuine
+        # install/availability gap and fails loudly.
+        if probe_before.outcome == "win" and parsed.promotion is not None:
+            return EndgameMoveResult(
+                status=EndgameStatus.SOLVED,
+                resolution=EndgameResolution.PROMOTION,
+                outcome_before=probe_before.outcome,
+                dtz_before=probe_before.dtz,
+                rating_change=_rating_change(
+                    EndgameStatus.SOLVED, endgame_trainer_rating, topic_difficulty_rating
+                ),
+            )
+        raise
+
+    if probe_before.outcome == "win":
+        if probe_after.outcome == "win":
+            status, failure_category = EndgameStatus.IN_PROGRESS, None
+        elif probe_after.outcome == "draw":
+            status, failure_category = (
+                EndgameStatus.FAILED,
+                EndgameFailureCategory.THREW_AWAY_WIN,
+            )
+        else:
+            status, failure_category = (
+                EndgameStatus.FAILED,
+                EndgameFailureCategory.BLUNDERED_INTO_LOSS,
+            )
+    else:  # draw drill in progress
+        if probe_after.outcome in ("draw", "win"):
+            # "win" is theoretically impossible from the user's own move
+            # (a tablebase draw cannot be promoted to a win by one move),
+            # but it is not a failure either -- hold / keep going.
+            status, failure_category = EndgameStatus.IN_PROGRESS, None
+        else:
+            status, failure_category = (
+                EndgameStatus.FAILED,
+                EndgameFailureCategory.LOST_THE_DRAW,
+            )
+
+    return EndgameMoveResult(
+        status=status,
+        failure_category=failure_category,
+        outcome_before=probe_before.outcome,
+        outcome_after=probe_after.outcome,
+        dtz_before=probe_before.dtz,
+        dtz_after=probe_after.dtz,
+        rating_change=_rating_change(status, endgame_trainer_rating, topic_difficulty_rating),
+    )
+
+
+def _rating_change(
+    status: EndgameStatus,
+    endgame_trainer_rating: Optional[int],
+    topic_difficulty_rating: Optional[int],
+) -> Optional[int]:
+    """Rating delta on terminal statuses, reusing the puzzles math
+    (core.rating.calculate_rating_change). None for in_progress or when the
+    caller did not supply both ratings."""
+    if status not in (EndgameStatus.SOLVED, EndgameStatus.FAILED):
+        return None
+    if endgame_trainer_rating is None or topic_difficulty_rating is None:
+        return None
+    return calculate_rating_change(
+        endgame_trainer_rating,
+        topic_difficulty_rating,
+        solved=(status == EndgameStatus.SOLVED),
+    )
