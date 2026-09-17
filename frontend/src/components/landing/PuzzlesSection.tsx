@@ -1,8 +1,13 @@
 'use client';
 
-import TacticBoard from './TacticBoard';
+import dynamic from 'next/dynamic';
+
 import SectionHeading from './SectionHeading';
 import DustCanvas from './DustCanvas';
+
+// TacticBoard statically imports chess.js + react-chessboard; keep that
+// ~60KB gzipped out of the landing page's initial bundle.
+const TacticBoard = dynamic(() => import('./TacticBoard'));
 
 export default function PuzzlesSection() {
   return (
