@@ -1,12 +1,11 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
+import dynamic from 'next/dynamic';
 import gsap from 'gsap';
 import { ScrollTrigger } from 'gsap/ScrollTrigger';
 import Lenis from 'lenis';
 
-import SignInModal from '../auth/SignInModal';
-import SignUpModal from '../auth/SignUpModal';
 import LandingNav from './LandingNav';
 import RailNav from './RailNav';
 import Hero from './Hero';
@@ -16,6 +15,11 @@ import ReviewSection from './ReviewSection';
 import WoodpeckerSection from './WoodpeckerSection';
 import MoreSection from './MoreSection';
 import CtaSection from './CtaSection';
+
+// The auth modals only mount after a click and pull Clerk's modal runtime
+// into the initial bundle when imported statically.
+const SignInModal = dynamic(() => import('../auth/SignInModal'), { ssr: false });
+const SignUpModal = dynamic(() => import('../auth/SignUpModal'), { ssr: false });
 
 export default function LandingPage() {
   const [authModal, setAuthModal] = useState<'sign-in' | 'sign-up' | null>(null);
