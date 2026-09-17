@@ -380,3 +380,78 @@ def close_stockfish_singleton() -> None:
             instance.close()
         except Exception:  # noqa: BLE001 -- shutdown must never raise
             pass
+
+
+# --- Long-lived singleton (used by game review) -----------------------------
+#
+# Game review previously spawned a fresh Stockfish subprocess per request
+# (`StockfishEngine(depth=REVIEW_DEPTH)` + start/close in the handler), paying
+# process spawn + UCI handshake (~0.3-0.7s) before the first of ~2N
+# evaluations even started. Review gets its OWN singleton rather than
+# borrowing the sparring one because UCI `setoption` strength limits persist
+# on a subprocess until changed (see configure_strength's persistence note and
+# persona_reranker's "why not the singleton" rationale) -- a dedicated process
+# guarantees review always runs full strength regardless of what the sparring
+# path configured, and gives the two paths independent failure domains: a
+# crashed review engine is reset without disturbing an in-flight sparring
+# session and vice versa.
+
+_review_stockfish: Optional[StockfishEngine] = None
+_review_stockfish_lifecycle_lock = Lock()
+
+
+def start_review_stockfish(depth: int = 12) -> StockfishEngine:
+    """Start the long-lived full-strength Stockfish used by game review.
+
+    Idempotent: returns the existing singleton when it already has a live
+    subprocess. `depth` only applies when the subprocess is first created
+    (REVIEW_DEPTH is static per deployment). Raises if the engine cannot be
+    spawned so callers can degrade loudly instead of silently.
+    """
+    global _review_stockfish
+    with _review_stockfish_lifecycle_lock:
+        if _review_stockfish is not None and _review_stockfish.engine is not None:
+            return _review_stockfish
+        instance = StockfishEngine(depth=depth)
+        instance.start()  # raises on failure BEFORE we publish the global
+        _review_stockfish = instance
+        return _review_stockfish
+
+
+def get_review_stockfish(depth: int = 12) -> StockfishEngine:
+    """Return the long-lived review Stockfish, starting it on first use."""
+    global _review_stockfish
+    if _review_stockfish is None:
+        return start_review_stockfish(depth)
+    return _review_stockfish
+
+
+def reset_review_stockfish() -> None:
+    """Drop the long-lived review Stockfish after a failure.
+
+    Best-effort `quit()` so a still-alive subprocess doesn't leak; any
+    exception is swallowed because the caller is already handling a failed
+    evaluate() -- the next review request starts a fresh subprocess.
+    """
+    global _review_stockfish
+    with _review_stockfish_lifecycle_lock:
+        instance = _review_stockfish
+        _review_stockfish = None
+    if instance is not None:
+        try:
+            instance.close()
+        except Exception:  # noqa: BLE001 -- reset path must never raise
+            pass
+
+
+def close_review_stockfish() -> None:
+    """Quit the long-lived review Stockfish (app shutdown). Best-effort."""
+    global _review_stockfish
+    with _review_stockfish_lifecycle_lock:
+        instance = _review_stockfish
+        _review_stockfish = None
+    if instance is not None:
+        try:
+            instance.close()
+        except Exception:  # noqa: BLE001 -- shutdown must never raise
+            pass
