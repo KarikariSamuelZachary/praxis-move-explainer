@@ -1,8 +1,13 @@
 'use client';
 
+import dynamic from 'next/dynamic';
+
 import SectionHeading from './SectionHeading';
-import ReviewDemo from './ReviewDemo';
 import DustCanvas from './DustCanvas';
+
+// ReviewDemo statically imports chess.js + react-chessboard; keep that
+// ~60KB gzipped out of the landing page's initial bundle.
+const ReviewDemo = dynamic(() => import('./ReviewDemo'));
 
 export default function ReviewSection() {
   return (
