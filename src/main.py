@@ -15,7 +15,9 @@ from core.migrations import run_migrations
 from engines.maia_engine import close_maia3, start_maia3, verify_maia3_patch
 from engines.stockfish_engine import (
     STOCKFISH_CANDIDATE_PATHS,
+    close_review_stockfish,
     close_stockfish_singleton,
+    start_review_stockfish,
     start_stockfish_singleton,
 )
 from routers import import_games, maia_debug, onboarding, puzzles, repertoire, review, train, user, webhooks, woodpecker
@@ -136,11 +138,21 @@ def startup():
     except Exception as exc:  # noqa: BLE001
         log.exception("Stockfish singleton failed to start at boot: %s", exc)
 
+    # Separate full-strength Stockfish singleton for game review (strength
+    # isolation from the sparring engine; see engines.stockfish_engine). Same
+    # non-fatal boot policy as above: the request path can start it lazily.
+    try:
+        review_engine = start_review_stockfish(depth=int(os.getenv("REVIEW_DEPTH", "18")))
+        log.info("Review Stockfish singleton started from: %s", review_engine.stockfish_path)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Review Stockfish singleton failed to start at boot: %s", exc)
+
 
 @app.on_event("shutdown")
 def shutdown():
     close_maia3()
     close_stockfish_singleton()
+    close_review_stockfish()
 
 # --- Routers ---
 app.include_router(onboarding.router, prefix="/onboarding")
