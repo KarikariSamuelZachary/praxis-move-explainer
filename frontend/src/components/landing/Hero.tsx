@@ -17,6 +17,7 @@ export default function Hero({ onStartTraining, onExplore }: HeroProps) {
   const sectionRef = useRef<HTMLElement>(null);
   const textRef = useRef<HTMLDivElement>(null);
   const reliefRef = useRef<HTMLDivElement>(null);
+  const reliefIntroRef = useRef<HTMLDivElement>(null);
   const cutoutRef = useRef<HTMLDivElement>(null);
   const shadowRef = useRef<HTMLDivElement>(null);
   const hintRef = useRef<HTMLDivElement>(null);
@@ -73,7 +74,7 @@ export default function Hero({ onStartTraining, onExplore }: HeroProps) {
           '-=0.9'
         )
         .fromTo(
-          reliefRef.current,
+          reliefIntroRef.current,
           { opacity: 0, scale: 1.05 },
           { opacity: 1, scale: 1, duration: 2.2, ease: 'power2.out' },
           0.3
@@ -166,20 +167,20 @@ export default function Hero({ onStartTraining, onExplore }: HeroProps) {
       <div className="relative z-10 mx-auto grid w-full max-w-[1400px] items-center gap-12 px-5 pb-24 pt-32 sm:px-8 lg:grid-cols-2 lg:gap-6 lg:pb-16 lg:pt-20 xl:pl-40">
         <div ref={textRef} className="max-w-2xl">
           <h1 className="font-display text-[2.3rem] font-semibold leading-[1.14] tracking-wide text-gold-bright sm:text-5xl lg:text-[2.9rem] xl:text-[3.35rem]">
-            <span data-hero-line className="block">
+            <span data-hero-line className="hero-intro block">
               Train Like Masters.
             </span>
-            <span data-hero-line className="block">
+            <span data-hero-line className="hero-intro block">
               Think Deeper.
             </span>
-            <span data-hero-line className="block">
+            <span data-hero-line className="hero-intro block">
               Remember Longer.
             </span>
           </h1>
 
           <p
             data-hero-sub
-            className="mt-8 max-w-lg text-base leading-7 text-wood-mute sm:text-lg sm:leading-8"
+            className="hero-intro mt-8 max-w-lg text-base leading-7 text-wood-mute sm:text-lg sm:leading-8"
           >
             Praxis is your all-in-one chess training workspace.
             <br />
@@ -193,7 +194,7 @@ export default function Hero({ onStartTraining, onExplore }: HeroProps) {
               type="button"
               data-hero-cta
               onClick={onStartTraining}
-              className="group inline-flex items-center gap-3 rounded-md bg-moss px-8 py-4 text-sm font-semibold tracking-wide text-white shadow-[0_10px_36px_rgba(46,158,91,0.4)] transition duration-300 hover:bg-moss-bright hover:shadow-[0_10px_44px_rgba(55,190,126,0.5)]"
+              className="hero-intro group inline-flex items-center gap-3 rounded-md bg-moss px-8 py-4 text-sm font-semibold tracking-wide text-white shadow-[0_10px_36px_rgba(46,158,91,0.4)] transition duration-300 hover:bg-moss-bright hover:shadow-[0_10px_44px_rgba(55,190,126,0.5)]"
             >
               Start Training
               <span className="transition-transform duration-300 group-hover:translate-x-1">
@@ -204,7 +205,7 @@ export default function Hero({ onStartTraining, onExplore }: HeroProps) {
               type="button"
               data-hero-cta
               onClick={onExplore}
-              className="group inline-flex items-center gap-3 rounded-md px-2 py-4 text-sm font-medium tracking-wide text-cream/90 transition hover:text-gold-bright"
+              className="hero-intro group inline-flex items-center gap-3 rounded-md px-2 py-4 text-sm font-medium tracking-wide text-cream/90 transition hover:text-gold-bright"
             >
               <span className="flex h-9 w-9 items-center justify-center rounded-full border border-cream/30 text-xs transition group-hover:border-gold/60">
                 ▶
@@ -216,16 +217,25 @@ export default function Hero({ onStartTraining, onExplore }: HeroProps) {
 
         {/* Knight visual: relief carved in wood, dimensional knight lifts out on scroll */}
         <div className="relative mx-auto flex h-[46vh] w-full max-w-md items-center justify-center lg:h-[78vh] lg:max-w-none">
+          {/* The scroll timeline (reliefRef) and the intro fade (reliefIntroRef)
+              must target different elements: ScrollTrigger renders the scrub
+              timeline at progress 0 on init, which applies the fromTo "from"
+              state (opacity 1) and would otherwise fight the intro fade. */}
           <div
             ref={reliefRef}
             className="absolute inset-0 flex items-center justify-center"
           >
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              src="/knight-relief.webp"
-              alt="Chess knight carved into walnut"
-              className="max-h-full w-auto rounded-full object-contain [mask-image:radial-gradient(ellipse_60%_56%_at_50%_47%,black_50%,transparent_74%)]"
-            />
+            <div
+              ref={reliefIntroRef}
+              className="hero-intro flex h-full w-full items-center justify-center"
+            >
+              {/* eslint-disable-next-line @next/next/no-img-element */}
+              <img
+                src="/knight-relief.webp"
+                alt="Chess knight carved into walnut"
+                className="max-h-full w-auto rounded-full object-contain [mask-image:radial-gradient(ellipse_60%_56%_at_50%_47%,black_50%,transparent_74%)]"
+              />
+            </div>
           </div>
 
           <div
@@ -250,7 +260,7 @@ export default function Hero({ onStartTraining, onExplore }: HeroProps) {
 
       <div
         ref={hintRef}
-        className="absolute bottom-8 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-3"
+        className="hero-intro absolute bottom-8 left-1/2 z-10 flex -translate-x-1/2 flex-col items-center gap-3"
       >
         <div className="flex h-12 w-7 items-start justify-center rounded-full border border-cream/30 p-2">
           <div className="h-2 w-1 rounded-full bg-cream/70 [animation:scroll-dot_1.8s_ease-in-out_infinite]" />

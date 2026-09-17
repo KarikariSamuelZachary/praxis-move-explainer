@@ -111,6 +111,51 @@
   }
 }
 
+/*
+ * Hero/nav elements that GSAP fades in after hydration. They ship hidden in
+ * the SSR markup so the first paint can never show them before their intro
+ * (fixes the knight flashing on refresh/fresh load: visible -> vanish ->
+ * fade in). GSAP animates inline opacity over the class afterwards.
+ * Reduced motion and JS-disabled contexts never run the GSAP intro (the
+ * effects early-return / never hydrate), so those are revealed here.
+ */
+.hero-intro {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hero-intro {
+    opacity: 1;
+  }
+}
+
+@media (scripting: none) {
+  .hero-intro {
+    opacity: 1;
+  }
+}
+
+/*
+ * Same SSR-hidden pattern for the below-fold sections revealed by the
+ * [data-reveal] scroll animation in LandingPage - otherwise a refresh with
+ * scroll restoration mid-page flashes those sections before they fade in.
+ */
+[data-reveal] {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-reveal] {
+    opacity: 1;
+  }
+}
+
+@media (scripting: none) {
+  [data-reveal] {
+    opacity: 1;
+  }
+}
+
 html,
 body {
   height: 100%;
