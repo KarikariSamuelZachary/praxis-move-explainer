@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { redis } from '@/lib/redis';
+import { getBackendConfig } from '@/lib/backend';
 
 const MAX_REQUESTS_PER_WINDOW = 60;
 const RATE_LIMIT_WINDOW_SECONDS = 60;
@@ -26,8 +27,7 @@ export async function GET(
   request: NextRequest,
   { params }: { params: Promise<{ id: string }> }
 ) {
-  const backendApiUrl = process.env.BACKEND_API_URL ?? 'http://localhost:8000';
-  const internalSecret = process.env.INTERNAL_SECRET ?? '';
+  const { backendApiUrl, internalSecret } = getBackendConfig();
   const requestPath = request.nextUrl.pathname;
 
   try {

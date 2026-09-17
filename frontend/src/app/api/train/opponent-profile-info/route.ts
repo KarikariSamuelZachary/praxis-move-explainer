@@ -1,5 +1,6 @@
 import { auth } from '@clerk/nextjs/server';
 import { NextRequest, NextResponse } from 'next/server';
+import { getBackendConfig } from '@/lib/backend';
 
 export async function GET(request: NextRequest) {
   try {
@@ -8,8 +9,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const backendApiUrl = process.env.BACKEND_API_URL ?? 'http://localhost:8000';
-    const internalSecret = process.env.INTERNAL_SECRET ?? '';
+    const { backendApiUrl, internalSecret } = getBackendConfig();
     const backendUrl = new URL('/api/train/opponent-profile-info', backendApiUrl);
     backendUrl.search = request.nextUrl.search;
 

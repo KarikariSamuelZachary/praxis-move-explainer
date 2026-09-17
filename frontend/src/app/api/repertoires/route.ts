@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
+import { getBackendConfig } from '@/lib/backend';
 
 /**
  * /api/repertoires - thin proxy to the FastAPI backend.
@@ -18,8 +19,7 @@ import { auth } from '@clerk/nextjs/server';
  *   * 401 if Clerk reports no user; 502 if the backend is unreachable.
  */
 
-const BACKEND_API_URL = process.env.BACKEND_API_URL ?? 'http://localhost:8000';
-const INTERNAL_SECRET = process.env.INTERNAL_SECRET ?? '';
+const { backendApiUrl: BACKEND_API_URL, internalSecret: INTERNAL_SECRET } = getBackendConfig();
 
 export async function GET(_request: NextRequest) {
   const backendUrl = new URL('/api/repertoires', BACKEND_API_URL);

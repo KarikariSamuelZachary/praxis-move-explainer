@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
+import { getBackendConfig } from '@/lib/backend';
 
 export async function POST(request: NextRequest) {
   try {
@@ -9,8 +10,7 @@ export async function POST(request: NextRequest) {
     }
 
     const body = await request.json();
-    const backendApiUrl = process.env.BACKEND_API_URL ?? 'http://localhost:8000';
-    const internalSecret = process.env.INTERNAL_SECRET ?? '';
+    const { backendApiUrl, internalSecret } = getBackendConfig();
     const backendUrl = new URL('/api/train/sparring-move', backendApiUrl);
 
     const response = await fetch(backendUrl, {

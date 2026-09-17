@@ -1,5 +1,6 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
 import { NextResponse } from "next/server";
+import { getBackendConfig } from "@/lib/backend";
 
 const isProtectedRoute = createRouteMatcher(["/puzzles(.*)", "/review(.*)", "/woodpecker(.*)", "/train(.*)", "/repertoire(.*)", "/onboarding(.*)"]);
 const isAppRoute = createRouteMatcher(["/puzzles(.*)", "/review(.*)", "/woodpecker(.*)", "/train(.*)", "/repertoire(.*)"]);
@@ -9,8 +10,7 @@ async function getSkillLevel(
   userId: string,
   route: "onboarding" | "puzzles",
 ): Promise<string | null> {
-  const backendApiUrl = process.env.BACKEND_API_URL ?? "http://localhost:8000";
-  const internalSecret = process.env.INTERNAL_SECRET ?? "";
+  const { backendApiUrl, internalSecret } = getBackendConfig();
   const startedAt = Date.now();
 
   console.log("[TIMING] proxy skill-level fetch start", {

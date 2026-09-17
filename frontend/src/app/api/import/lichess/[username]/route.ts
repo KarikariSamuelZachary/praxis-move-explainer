@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
+import { getBackendConfig } from '@/lib/backend';
 
 const MAX_LIMIT = 50;
 const DEFAULT_LIMIT = 10;
@@ -25,8 +26,7 @@ export async function GET(
         ? limitParam
         : DEFAULT_LIMIT;
 
-    const backendApiUrl = process.env.BACKEND_API_URL ?? 'http://localhost:8000';
-    const internalSecret = process.env.INTERNAL_SECRET ?? '';
+    const { backendApiUrl, internalSecret } = getBackendConfig();
     const backendUrl = new URL(
       `/api/import/lichess/${encodeURIComponent(username)}`,
       backendApiUrl

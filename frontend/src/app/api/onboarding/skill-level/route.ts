@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth, currentUser } from '@clerk/nextjs/server';
+import { getBackendConfig } from '@/lib/backend';
 
 export async function GET(request: NextRequest) {
   try {
@@ -8,8 +9,7 @@ export async function GET(request: NextRequest) {
       return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
     }
 
-    const backendApiUrl = process.env.BACKEND_API_URL ?? 'http://localhost:8000';
-    const internalSecret = process.env.INTERNAL_SECRET ?? '';
+    const { backendApiUrl, internalSecret } = getBackendConfig();
     const backendUrl = new URL('/onboarding/skill-level', backendApiUrl);
 
     const response = await fetch(backendUrl, {
@@ -47,8 +47,7 @@ export async function POST(request: NextRequest) {
     const body = await request.json();
     const user = await currentUser();
     const email = user?.primaryEmailAddress?.emailAddress ?? '';
-    const backendApiUrl = process.env.BACKEND_API_URL ?? 'http://localhost:8000';
-    const internalSecret = process.env.INTERNAL_SECRET ?? '';
+    const { backendApiUrl, internalSecret } = getBackendConfig();
     const backendUrl = new URL('/onboarding/skill-level', backendApiUrl);
 
     const response = await fetch(backendUrl, {

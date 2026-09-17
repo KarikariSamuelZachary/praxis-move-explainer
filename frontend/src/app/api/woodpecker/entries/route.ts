@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
+import { getBackendConfig } from '@/lib/backend';
 
 export async function POST(request: NextRequest) {
   const requestStarted = performance.now();
-  const backendApiUrl = process.env.BACKEND_API_URL ?? 'http://localhost:8000';
-  const internalSecret = process.env.INTERNAL_SECRET ?? '';
+  const { backendApiUrl, internalSecret } = getBackendConfig();
   const backendUrl = new URL('/api/woodpecker/entries', backendApiUrl);
 
   try {

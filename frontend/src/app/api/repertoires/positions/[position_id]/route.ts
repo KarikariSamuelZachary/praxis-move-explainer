@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
+import { getBackendConfig } from '@/lib/backend';
 
 /**
  * /api/repertoires/positions/{position_id} - proxy to the FastAPI
@@ -40,8 +41,7 @@ import { auth } from '@clerk/nextjs/server';
  * Next.js 16: `params` is a Promise to await.
  */
 
-const BACKEND_API_URL = process.env.BACKEND_API_URL ?? 'http://localhost:8000';
-const INTERNAL_SECRET = process.env.INTERNAL_SECRET ?? '';
+const { backendApiUrl: BACKEND_API_URL, internalSecret: INTERNAL_SECRET } = getBackendConfig();
 
 type RouteContext = { params: Promise<{ position_id: string }> };
 

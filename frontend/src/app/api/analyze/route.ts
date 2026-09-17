@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { redis } from '@/lib/redis';
+import { getBackendConfig } from '@/lib/backend';
 
 type AnalyzeRequest = {
   pgn?: string;
@@ -195,8 +196,7 @@ export async function POST(request: NextRequest) {
       );
     }
 
-    const backendApiUrl = process.env.BACKEND_API_URL ?? 'http://localhost:8000';
-    const internalSecret = process.env.INTERNAL_SECRET ?? '';
+    const { backendApiUrl, internalSecret } = getBackendConfig();
     const backendUrl = new URL('/api/review', backendApiUrl);
 
     const response = await fetch(backendUrl, {

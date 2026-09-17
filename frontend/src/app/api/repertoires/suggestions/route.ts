@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
+import { getBackendConfig } from '@/lib/backend';
 
 /**
  * /api/repertoires/suggestions - proxy to the FastAPI backend's
@@ -16,8 +17,7 @@ import { auth } from '@clerk/nextjs/server';
  * client's `body.detail || body.error` parsing works.
  */
 
-const BACKEND_API_URL = process.env.BACKEND_API_URL ?? 'http://localhost:8000';
-const INTERNAL_SECRET = process.env.INTERNAL_SECRET ?? '';
+const { backendApiUrl: BACKEND_API_URL, internalSecret: INTERNAL_SECRET } = getBackendConfig();
 
 export async function GET(request: NextRequest) {
   const fen = request.nextUrl.searchParams.get('fen');
