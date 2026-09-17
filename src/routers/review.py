@@ -2,11 +2,12 @@ import logging
 import os
 from typing import Any, Dict, List
 
+import chess.engine
 from fastapi import APIRouter, Depends, HTTPException
 
 from core.game_analyzer import GameAnalyzer
 from core.rate_limit import limit_by_ip
-from engines.stockfish_engine import StockfishEngine
+from engines.stockfish_engine import get_review_stockfish, reset_review_stockfish
 from llms.gemini_explainer import GeminiExplainer
 from llms.groq_explainer import GroqExplainer
 from llms.mock_explainer import MockExplainer
@@ -80,21 +81,27 @@ def review_game(
     if not pgn:
         raise HTTPException(status_code=400, detail="Missing PGN")
 
-    engine = StockfishEngine(
-        depth=int(os.getenv("REVIEW_DEPTH", "18")),
-    )
+    # Long-lived singleton (booted at startup) instead of a fresh Stockfish
+    # subprocess per review -- spawning + UCI handshake cost ~0.3-0.7s before
+    # the first evaluation even started.
+    explainer = _build_explainer()
+    log.info("Selected review explainer: %s", explainer.__class__.__name__)
 
     try:
-        engine.start()
-        explainer = _build_explainer()
-        log.info("Selected review explainer: %s", explainer.__class__.__name__)
+        engine = get_review_stockfish(depth=int(os.getenv("REVIEW_DEPTH", "18")))
         analyzer = GameAnalyzer(engine=engine, explainer=explainer)
         review_rows = analyzer.analyze_full_game(pgn, target_color=body.target_color)
         return _normalize_review_rows(review_rows)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (chess.engine.EngineError, RuntimeError) as exc:
+        # The singleton handle may be dead (mid-session engine crash) or in an
+        # unknown state after a failed/timeout analyse -- drop it so the next
+        # review starts a fresh subprocess instead of retrying into a poisoned
+        # engine. This never touches the sparring singleton.
+        reset_review_stockfish()
+        log.exception("Game review engine failed")
+        raise HTTPException(status_code=500, detail="Failed to analyze PGN") from exc
     except Exception as exc:
         log.exception("Failed to analyze PGN")
         raise HTTPException(status_code=500, detail="Failed to analyze PGN") from exc
-    finally:
-        engine.close()
