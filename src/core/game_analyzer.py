@@ -160,6 +160,12 @@ class GameAnalyzer:
             }
         ]
 
+        # The position after move N is exactly the position before move N+1.
+        # Reusing the previous ply's "after" evaluation as this ply's "before"
+        # evaluation halves the engine searches (N+1 instead of 2N) with
+        # identical inputs -- previously every position was searched twice.
+        previous_eval: Optional[Evaluation] = None
+
         for ply_index, node in enumerate(game.mainline()):
             move = node.move
             move_color = "white" if board.turn == chess.WHITE else "black"
@@ -167,11 +173,12 @@ class GameAnalyzer:
             fen_before = board.fen()
             move_number = board.fullmove_number
             move_san = board.san(move)
-            eval_before = self.engine.evaluate(board)
+            eval_before = previous_eval if previous_eval is not None else self.engine.evaluate(board)
 
             board.push(move)
             fen_after = board.fen()
             eval_after = self.engine.evaluate(board)
+            previous_eval = eval_after
 
             if target_color != "both" and target_color != move_color:
                 continue
@@ -243,6 +250,10 @@ class GameAnalyzer:
         board = game.board()
         mistakes: List[AnalyzedMistake] = []
 
+        # See analyze_full_game: carry the previous ply's "after" evaluation
+        # forward instead of searching every position twice.
+        previous_eval: Optional[Evaluation] = None
+
         for ply_index, node in enumerate(game.mainline()):
             move = node.move
             move_color = "white" if board.turn == chess.WHITE else "black"
@@ -250,11 +261,12 @@ class GameAnalyzer:
             fen_before = board.fen()
             move_number = board.fullmove_number
             move_san = board.san(move)
-            eval_before = self.engine.evaluate(board)
+            eval_before = previous_eval if previous_eval is not None else self.engine.evaluate(board)
 
             board.push(move)
             fen_after = board.fen()
             eval_after = self.engine.evaluate(board)
+            previous_eval = eval_after
 
             if target_color != "both" and target_color != move_color:
                 continue
