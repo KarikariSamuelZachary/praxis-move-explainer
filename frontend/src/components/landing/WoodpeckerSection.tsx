@@ -20,15 +20,34 @@ export default function WoodpeckerSection({ onStartReview }: WoodpeckerSectionPr
   const birdRef = useRef<HTMLImageElement>(null);
   const countRef = useRef<HTMLSpanElement>(null);
   const checkRef = useRef<HTMLSpanElement>(null);
+  const sectionRef = useRef<HTMLElement>(null);
   const [wordIndex, setWordIndex] = useState(0);
+  const [inView, setInView] = useState(false);
+
+  // Track visibility so the rotating caption only ticks while the section is
+  // on screen (previously it re-rendered every 2.2s for the whole time the
+  // landing page was mounted) and stays static under reduced motion.
+  useEffect(() => {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const section = sectionRef.current;
+    if (!section) return;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => setInView(entry.isIntersecting),
+      { threshold: 0 }
+    );
+    observer.observe(section);
+    return () => observer.disconnect();
+  }, []);
 
   // Rotating caption words
   useEffect(() => {
+    if (!inView) return;
     const id = setInterval(() => {
       setWordIndex((i) => (i + 1) % CYCLE_WORDS.length);
     }, 2200);
     return () => clearInterval(id);
-  }, []);
+  }, [inView]);
 
   // Countdown + peck when the card scrolls into view
   useEffect(() => {
@@ -88,7 +107,7 @@ export default function WoodpeckerSection({ onStartReview }: WoodpeckerSectionPr
   }, []);
 
   return (
-    <section id="woodpecker" className="relative">
+    <section ref={sectionRef} id="woodpecker" className="relative">
       <DustCanvas />
       <div className="relative z-10 mx-auto grid w-full max-w-[1400px] items-center gap-14 px-5 py-28 sm:px-8 lg:grid-cols-2 lg:gap-20 lg:py-40 xl:pl-40">
         <SectionHeading
