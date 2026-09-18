@@ -442,6 +442,21 @@ def run_migrations():
                     ON opponent_games(requested_by_user_id, provider, opponent_username)
                 """
             )
+            # The sparring/lookup queries filter
+            # `LOWER(opponent_username) = LOWER(%s)`, which cannot use the
+            # plain-column index above. This expression index keeps those
+            # reads off a full-table scan (measured ~165ms seq scan on the
+            # dev corpus before the index existed).
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_opponent_games_username_lower
+                    ON opponent_games(
+                        requested_by_user_id,
+                        provider,
+                        LOWER(opponent_username)
+                    )
+                """
+            )
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS opponent_repertoire_moves (
@@ -467,6 +482,21 @@ def run_migrations():
                         requested_by_user_id,
                         provider,
                         opponent_username,
+                        position_key
+                    )
+                """
+            )
+            # Same LOWER() problem as opponent_games: pick_repertoire_move /
+            # pick_near_repertoire_moves filter the username case-insensitively.
+            # This was the worst offender (measured ~147-239ms seq scans of
+            # 154k rows per out-of-book sparring move).
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_opponent_repertoire_username_lower
+                    ON opponent_repertoire_moves(
+                        requested_by_user_id,
+                        provider,
+                        LOWER(opponent_username),
                         position_key
                     )
                 """
@@ -558,6 +588,17 @@ def run_migrations():
                         provider,
                         opponent_username,
                         position_key
+                    )
+                """
+            )
+            # Trap lookups filter the username case-insensitively too.
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_opponent_game_blunders_username_lower
+                    ON opponent_game_blunders(
+                        requested_by_user_id,
+                        provider,
+                        LOWER(opponent_username)
                     )
                 """
             )
