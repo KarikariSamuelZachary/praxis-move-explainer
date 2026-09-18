@@ -19,6 +19,10 @@ import { getBackendConfig } from '@/lib/backend';
 
 const { backendApiUrl: BACKEND_API_URL, internalSecret: INTERNAL_SECRET } = getBackendConfig();
 
+// One Stockfish multi-PV analysis upstream (~0.4s nominal); anything close
+// to this bound means the engine is stuck.
+const SUGGESTIONS_TIMEOUT_MS = 30_000;
+
 export async function GET(request: NextRequest) {
   const fen = request.nextUrl.searchParams.get('fen');
 
@@ -36,6 +40,7 @@ export async function GET(request: NextRequest) {
     }
 
     const response = await fetch(backendUrl, {
+      signal: AbortSignal.timeout(SUGGESTIONS_TIMEOUT_MS),
       headers: {
         Accept: 'application/json',
         'X-Internal-Secret': INTERNAL_SECRET,
@@ -52,6 +57,12 @@ export async function GET(request: NextRequest) {
       },
     });
   } catch (error) {
+    if (error instanceof Error && error.name === 'TimeoutError') {
+      return NextResponse.json(
+        { error: 'Suggestion request timed out', detail: 'The engine took too long. Please try again.' },
+        { status: 504 }
+      );
+    }
     console.error('Repertoire suggestions proxy error:', error);
     return NextResponse.json(
       { error: 'Backend is unreachable' },

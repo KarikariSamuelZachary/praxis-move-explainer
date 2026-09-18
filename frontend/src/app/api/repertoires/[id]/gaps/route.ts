@@ -22,6 +22,10 @@ import { getBackendConfig } from '@/lib/backend';
 
 const { backendApiUrl: BACKEND_API_URL, internalSecret: INTERNAL_SECRET } = getBackendConfig();
 
+// The upstream call walks every stored position against Lichess Explorer;
+// bound it so a stalled upstream can't pin the proxy indefinitely.
+const GAPS_TIMEOUT_MS = 180_000;
+
 type RouteContext = { params: Promise<{ id: string }> };
 
 export async function GET(_request: NextRequest, context: RouteContext) {
@@ -38,6 +42,7 @@ export async function GET(_request: NextRequest, context: RouteContext) {
     }
 
     const response = await fetch(backendUrl, {
+      signal: AbortSignal.timeout(GAPS_TIMEOUT_MS),
       headers: {
         Accept: 'application/json',
         'X-Internal-Secret': INTERNAL_SECRET,
@@ -54,6 +59,12 @@ export async function GET(_request: NextRequest, context: RouteContext) {
       },
     });
   } catch (error) {
+    if (error instanceof Error && error.name === 'TimeoutError') {
+      return NextResponse.json(
+        { error: 'Gap scan timed out', detail: 'The gap scan took too long. Please try again.' },
+        { status: 504 }
+      );
+    }
     console.error('Repertoire gaps proxy error:', error);
     return NextResponse.json(
       { error: 'Backend is unreachable' },

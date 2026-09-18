@@ -15,6 +15,10 @@ type ParsedAnalyzePayload = {
 const MAX_REQUESTS_PER_WINDOW = 5;
 const RATE_LIMIT_WINDOW_SECONDS = 60;
 const MAX_PGN_BYTES = 2 * 1024 * 1024;
+// A full review (Stockfish + a provider call per mistake) is legitimately
+// slow, but must not hang the proxy until the platform kills it; fail with a
+// clear 504 first.
+const REVIEW_TIMEOUT_MS = 240_000;
 const ALLOWED_FILE_EXTENSIONS = ['.pgn', '.txt'];
 const ALLOWED_FILE_MIME_TYPES = new Set([
   'application/x-chess-pgn',
@@ -201,6 +205,7 @@ export async function POST(request: NextRequest) {
 
     const response = await fetch(backendUrl, {
       method: 'POST',
+      signal: AbortSignal.timeout(REVIEW_TIMEOUT_MS),
       headers: {
         Accept: 'application/json',
         'Content-Type': 'application/json',
@@ -232,6 +237,15 @@ export async function POST(request: NextRequest) {
       },
     });
   } catch (error) {
+    if (error instanceof Error && error.name === 'TimeoutError') {
+      return NextResponse.json(
+        {
+          error: 'Analysis timed out',
+          detail: 'The analysis service took too long. Please try again.',
+        },
+        { status: 504 }
+      );
+    }
     console.error('Analyze API route error:', error);
     return NextResponse.json(
       {
