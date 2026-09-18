@@ -2,7 +2,7 @@ import logging
 
 from groq import Groq
 
-from llms.base import LLMExplainer
+from llms.base import LLMExplainer, LLM_MAX_RETRIES, LLM_TIMEOUT_SECONDS
 from llms.mock_explainer import MockExplainer
 from schemas.models import Mistake, Explanation
 
@@ -13,12 +13,16 @@ class GroqExplainer(LLMExplainer):
     def __init__(self, api_key, model="openai/gpt-oss-120b"):
         self.api_key = api_key
         self.model = model
-        self.client = Groq(api_key=api_key)
+        self.client = Groq(
+            api_key=api_key,
+            timeout=LLM_TIMEOUT_SECONDS,
+            max_retries=LLM_MAX_RETRIES,
+        )
         self.fallback_explainer = MockExplainer()
 
     def explain_mistake(self, mistake: Mistake) -> Explanation:
         prompt = self._build_prompt(mistake)
-        log.info("Groq prompt: %s", prompt)
+        log.debug("Groq prompt: %s", prompt)
         try:
             response = self._call_groq(prompt)
             explanation = self._parse_response(response)

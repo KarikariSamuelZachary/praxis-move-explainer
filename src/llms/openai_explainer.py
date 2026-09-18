@@ -1,18 +1,34 @@
-from llms.base import LLMExplainer 
+import logging
+
+from llms.base import LLMExplainer, LLM_MAX_RETRIES, LLM_TIMEOUT_SECONDS
+from llms.mock_explainer import MockExplainer
 from schemas.models import Mistake, Explanation
 from openai import OpenAI
+
+log = logging.getLogger(__name__)
+
 
 class OpenAIExplainer(LLMExplainer):
     def __init__(self, api_key, model='gpt-4o'):
         self.api_key = api_key
         self.model = model
-        self.client = OpenAI(api_key=api_key)
+        self.client = OpenAI(
+            api_key=api_key,
+            timeout=LLM_TIMEOUT_SECONDS,
+            max_retries=LLM_MAX_RETRIES,
+        )
+        self.fallback_explainer = MockExplainer()
 
     def explain_mistake(self, mistake: Mistake) -> Explanation:
         prompt = self._build_prompt(mistake)
-        response = self._call_openai(prompt)
-        explanation = self._parse_response(response)
-        return explanation
+        try:
+            response = self._call_openai(prompt)
+            explanation = self._parse_response(response)
+            return explanation
+        except Exception as e:
+            # Keep the review usable when the provider rejects or stalls.
+            log.error("OpenAIExplainer failed, falling back to mock: %s", e)
+            return self.fallback_explainer.explain_mistake(mistake)
 
     def _build_prompt(self, mistake: Mistake) -> str:
         move_num = mistake.position_before_move.move_number
