@@ -1,14 +1,24 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import dynamic from 'next/dynamic';
 
 import AnalysisPanel from '@/components/review/AnalysisPanel';
-import BoardPanel from '@/components/review/BoardPanel';
 import ImportPanel, {
   ImportSource,
 } from '@/components/review/ImportPanel';
 import ReviewShell from '@/components/review/ReviewShell';
 import { GameReviewMove } from '@/types';
+
+// Same lazy-board pattern as the other app routes: BoardPanel statically
+// imports chess.js + react-chessboard, which the empty review page (just an
+// import textarea) should not pay for.
+const BoardPanel = dynamic(() => import('@/components/review/BoardPanel'), {
+  ssr: false,
+  loading: () => (
+    <div className="mx-auto aspect-square w-full max-w-[calc(100vh-70px)] animate-pulse rounded-[10px] border border-white/10 bg-black/40" />
+  ),
+});
 
 type AnalysisState = 'idle' | 'analyzing' | 'ready' | 'error';
 
