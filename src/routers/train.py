@@ -112,7 +112,11 @@ def start_opponent_import(
 def get_opponent_import_status(
     request: Request,
     job_id: str = Path(..., min_length=1),
-    _: None = Depends(limit_by_clerk_user_id(limit=30, window=60)),
+    # The train page polls this route every 1.5s (40/min) for up to 2 minutes,
+    # so 30/min guaranteed a 429 mid-import; 90 gives headroom while staying
+    # bounded. (Since rate-limit keys are now per-route, this budget is
+    # isolated from the other /train endpoints.)
+    _: None = Depends(limit_by_clerk_user_id(limit=90, window=60)),
 ):
     clerk_id = request.headers.get("X-Clerk-User-Id")
     if not clerk_id:

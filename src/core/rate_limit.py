@@ -84,10 +84,20 @@ def limit_by_clerk_user_id(limit: int = 5, window: int = 60):
     Use on user-scoped routes (chess.com / lichess import) where the Clerk
     header is already required. Falls back to client IP if the header is
     somehow missing, so a missing header cannot bypass the limiter.
+
+    The counter is scoped per route (route template, not raw path) rather
+    than shared across every endpoint. A single shared key per user was a
+    bug: the import-status endpoint is polled every 1.5s (40/min), which
+    burned the whole 30/min budget and 429'd unrelated train endpoints.
     """
     def _check(request: Request) -> None:
         identifier = request.headers.get("x-clerk-user-id") or get_client_ip(request)
-        key = f"rate_limit:import:{identifier}"
+        # Scope by the route template (e.g. /api/train/opponent-import/{job_id})
+        # rather than the raw path, so dynamic segments (job ids) cannot mint a
+        # fresh budget per id. Falls back to the path if the route is unknown.
+        route = request.scope.get("route")
+        scope = getattr(route, "path", None) or request.url.path
+        key = f"rate_limit:import:{scope}:{identifier}"
         if is_over_limit(key, limit, window):
             raise HTTPException(
                 status_code=429,
