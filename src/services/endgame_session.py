@@ -213,6 +213,19 @@ class EndgameMoveResult(BaseModel):
     common_mistake: Optional[str] = None
 
 
+# ValueError phrases from evaluate_endgame_move that mean "the client's
+# game state conflicts with the drill" (route -> 409) rather than "the
+# request is malformed" (route -> 400) -- the same 400/409 integrity tier
+# the engine-sparring route uses. Shared by the trainer route
+# (routers/endgames.py) and the review-queue route
+# (routers/endgame_woodpecker.py) so the two cannot drift.
+STATE_CONFLICT_PHRASES = (
+    "already a terminal position",
+    "non-winning fen_before",
+    "lost fen_before",
+)
+
+
 def _probe_for_user(fen: str, user_is_side_to_move: bool) -> TablebaseResult:
     """probe_tablebase(), reinterpreted FROM THE USER'S PERSPECTIVE.
 
