@@ -8,6 +8,12 @@
 # Idempotent: re-running never duplicates rows.
 #   - topics:    ON CONFLICT (name) DO NOTHING
 #   - positions: ON CONFLICT (topic_id, fen) DO NOTHING
+#   - mistakes:  ON CONFLICT (topic_id, failure_type) DO UPDATE
+#     The one deliberate difference: mistake explanations are authored
+#     PROSE that will be revised (positions/topics are derived facts), and
+#     the seeder is the content source of truth — DO UPDATE makes a re-run
+#     apply edits instead of silently keeping stale text. Still duplicate-
+#     free; no user data lives in this table.
 #
 # Provenance of is_winning: every row was probed against the Lichess
 # 7-man Syzygy tablebase service (tablebase.lichess.ovh) at seed-authoring
@@ -154,6 +160,96 @@ POSITIONS = [
 ]
 
 
+# Common-mistake explanations: what likely went wrong when a drill fails,
+# shown alongside the session's raw failure classification. Tagged at the
+# TOPIC level and keyed by the state machine's EndgameFailureCategory
+# (services/endgame_session.py) — one explanation per (topic, failure
+# type), NOT per individual FEN. Rationale: the failure is a pattern
+# ("the bridge was never completed"), not a property of one seeded
+# variant, and per-position content would not scale to 100+ variants per
+# topic. The fourth enum value, ran_out_of_moves, is a real reachable
+# category (a win drill that hits the fifty-move rule) but has no authored
+# content yet — its absence is exercised on purpose by the session test
+# as the "no explanation degrades cleanly" case.
+#
+# All text below is ORIGINAL writing for this project, produced from chess
+# knowledge — the same standard as the topic descriptions above. Nothing
+# is paraphrased from de la Villa or any other published source.
+COMMON_MISTAKES = [
+    {
+        "topic": "Lucena Position",
+        "failure_type": "threw_away_win",
+        "explanation": (
+            "The Lucena position was winning and the result slipped to a "
+            "draw, which means the bridge was never completed. The causes are "
+            "almost always one of a few slips. Letting the defending king out "
+            "of its prison: the attacking rook must keep the defending king cut "
+            "off along a file or rank, and the moment the rook abandons that "
+            "duty the king walks toward the promotion square and arrives in "
+            "time. Mishandling the checks: the defender's checks are answered "
+            "by building the bridge, not by running the king; if the attacking "
+            "rook is not already on the fourth rank, ready to interpose between "
+            "the checking rook and the king, the checks drive the king away "
+            "from its own pawn. Pushing the pawn too soon: the pawn advances "
+            "only once king and rook are arranged behind it, because every "
+            "premature push hands the defender a free tempo to get in front of "
+            "the pawn. Allowing the rook trade or the classic rook-for-pawn "
+            "sacrifice: that converts the win into a trivially drawn "
+            "king-and-pawn ending. The correct idea is to keep the king in "
+            "front of the pawn, keep the defending king cut off, place the rook "
+            "on the fourth rank, absorb the checks by interposing, and only "
+            "then walk the king up and promote."
+        ),
+    },
+    {
+        "topic": "Lucena Position",
+        "failure_type": "blundered_into_loss",
+        "explanation": (
+            "A winning Lucena position is now lost, and in rook-and-pawn "
+            "endings that almost never happens gradually: one move allowed a "
+            "tactic. The usual mechanisms are hanging the rook to a check, "
+            "skewer, or fork after the pieces drifted out of mutual defense; "
+            "leaving the king exposed to a mating net or a forcing check that "
+            "wins material; and allowing the defending rook, passive until that "
+            "moment, to become active with tempo. In these endings the margin "
+            "between a win, a draw, and a loss is often a single unprotected "
+            "piece: a defending rook is never truly harmless while it can give "
+            "check, and a king on the wrong square can be driven back, cut off, "
+            "or mated. The correct idea is the same discipline that converts "
+            "the win in the first place: keep king and rook defending each "
+            "other, never allow a forcing check that wins the pawn or the rook, "
+            "and finish the bridge without offering counterplay. When the "
+            "position is winning, the task is not to find brilliant moves but "
+            "to deny the opponent a single tactic."
+        ),
+    },
+    {
+        "topic": "Lucena Position",
+        "failure_type": "lost_the_draw",
+        "explanation": (
+            "The position was drawn and it became lost, which in a Lucena-type "
+            "ending means a defensive resource was given up. The defender's "
+            "resources are narrow but sufficient when they are kept available: "
+            "an active rook that can check the attacking king from the long "
+            "side, a king close enough to the promotion square to step in front "
+            "of the pawn, and the constant option of sacrificing the rook for "
+            "the pawn at the right moment. The losing slips are subtle. A rook "
+            "that stops checking is a rook that lets the attacking king walk "
+            "forward undisturbed. Checking from the short side is cooperative: "
+            "checks from the wrong direction let the attacking king use the "
+            "pawn as a shield and approach the promotion square. Letting the "
+            "own king be chased is fatal: once it is driven from the promotion "
+            "square, the attacker's king takes its place and the pawn queens. "
+            "And impatience loses draws — a pawn move or rook trade made in a "
+            "hurry can turn a comfortable draw into a lost pawn ending. The "
+            "drawing method asks for accuracy rather than brilliance: every "
+            "move should keep a check available or the king within reach of the "
+            "queening square."
+        ),
+    },
+]
+
+
 def seed():
     conn = psycopg2.connect(**DB_CONFIG)
     cur = conn.cursor()
@@ -187,6 +283,22 @@ def seed():
                 (topic_id, fen, is_winning),
             )
 
+    for m in COMMON_MISTAKES:
+        cur.execute("SELECT id FROM endgame_topics WHERE name = %s", (m["topic"],))
+        row = cur.fetchone()
+        if row is None:
+            raise RuntimeError(f"Topic {m['topic']!r} not found for common mistake")
+        cur.execute(
+            """
+            INSERT INTO endgame_common_mistakes (topic_id, failure_type, explanation)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (topic_id, failure_type)
+                DO UPDATE SET explanation = EXCLUDED.explanation,
+                              updated_at  = NOW()
+            """,
+            (row[0], m["failure_type"], m["explanation"]),
+        )
+
     conn.commit()
 
     cur.execute(
@@ -203,6 +315,25 @@ def seed():
     log.info("Seeded %d positions under %r", len(rows), TOPICS[0]["name"])
     for fen, is_winning in rows:
         log.info("  %-42s is_winning=%s", fen, is_winning)
+
+    cur.execute(
+        """
+        SELECT m.failure_type, length(m.explanation)
+        FROM endgame_common_mistakes m
+        JOIN endgame_topics t ON t.id = m.topic_id
+        WHERE t.name = %s
+        ORDER BY m.failure_type
+        """,
+        (TOPICS[0]["name"],),
+    )
+    mistake_rows = cur.fetchall()
+    log.info(
+        "Seeded %d common-mistake explanations under %r",
+        len(mistake_rows),
+        TOPICS[0]["name"],
+    )
+    for failure_type, chars in mistake_rows:
+        log.info("  %-18s %d chars of explanation", failure_type, chars)
 
     cur.close()
     conn.close()

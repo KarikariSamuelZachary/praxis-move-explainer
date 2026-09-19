@@ -12,6 +12,8 @@ from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from core.database import init_db
 from core.migrations import run_migrations
+from services.tablebase import set_persistent_cache
+from services.tablebase_cache import PostgresProbeCache
 from engines.maia_engine import close_maia3, start_maia3, verify_maia3_patch
 from engines.stockfish_engine import (
     STOCKFISH_CANDIDATE_PATHS,
@@ -32,6 +34,10 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 log = logging.getLogger(__name__)
+
+# Persistent tablebase probe cache, owned by the app (registered on
+# services.tablebase at startup, closed on shutdown).
+_persistent_probe_cache = None
 
 
 def get_stockfish_debug_info():
@@ -99,6 +105,19 @@ def startup():
     init_db()
     run_migrations()
 
+    # Persistent tablebase probe cache: every distinct Lichess fallback
+    # position is paid once per deployment instead of once per user/move.
+    # Non-fatal on failure (the fallback degrades to uncached HTTP), but
+    # loud, matching the Maia/Stockfish boot policy below.
+    global _persistent_probe_cache
+    try:
+        _persistent_probe_cache = PostgresProbeCache()
+        set_persistent_cache(_persistent_probe_cache)
+        log.info("Tablebase persistent probe cache registered")
+    except Exception as exc:  # noqa: BLE001
+        _persistent_probe_cache = None
+        log.exception("Tablebase persistent probe cache unavailable: %s", exc)
+
     # Maia-3 (human-like chess model). We attempt to start it eagerly at
     # boot so a missing checkpoint surfaces immediately rather than on the
     # first sparring request. Other features (Game Review, Puzzles,
@@ -150,6 +169,11 @@ def startup():
 
 @app.on_event("shutdown")
 def shutdown():
+    global _persistent_probe_cache
+    if _persistent_probe_cache is not None:
+        set_persistent_cache(None)
+        _persistent_probe_cache.close()
+        _persistent_probe_cache = None
     close_maia3()
     close_stockfish_singleton()
     close_review_stockfish()

@@ -10,9 +10,10 @@ Covers:
      deployments must fail explicitly, never silently).
 
   B. Fallback behavior with the API enabled: a position beyond installed
-     local coverage (e.g. KQvKR / 6-men material) is ANSWERED by the
-     Lichess fallback with the same TablebaseResult shape, and a repeated
-     identical probe hits the short-lived FEN cache instead of the network.
+     local coverage (the full 3-4-5-man set, so a 6-7-man position) is
+     ANSWERED by the Lichess fallback with the same TablebaseResult shape,
+     and a repeated identical probe hits the short-lived FEN cache instead
+     of the network.
 
   C. Fallback failure modes (simulated transport fakes -- no network):
      HTTP 429 rate limiting, API down/5xx, timeouts, category "unknown"
@@ -33,10 +34,16 @@ Covers:
      proves the local path answers them WITHOUT touching the network after
      the fallback was added.
 
+  E. PERSISTENT PROBE CACHE: the optional set_persistent_cache seam is
+     exercised with fakes (cold put, warm hit with zero transport calls,
+     broken cache transparent), and the PostgresProbeCache adapter gets a
+     real round-trip against the database.
+
 Run with: cd src && ../venv/bin/python services/tablebase_test.py
 """
 import os
 import sys
+import uuid
 from pathlib import Path
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -53,9 +60,12 @@ from services.tablebase import (
 
 load_dotenv()
 
-# A 5-man material the installed KRPvKR files do NOT cover (queen vs rook).
-# Live-verified against tablebase.lichess.ovh: category "loss", dtz -2.
-QUEEN_VS_ROOK_FEN = "KQ3k2/8/8/8/8/8/1r6/7R b - - 0 19"
+# A 6-man position beyond the full local 3-4-5-man coverage. Live-verified
+# against tablebase.lichess.ovh: category "loss", dtz -2 (probe from the
+# losing side to move). Used by the fallback activation and failure-mode
+# checks, which must never depend on which local files happen to be
+# installed.
+SIX_MAN_LOSS_FEN = "6r1/p7/5k2/P7/5K1P/8/8/8 w - - 0 55"
 MALFORMED_FEN = "not-a-fen"
 # Parses but is illegal: kings on adjacent squares.
 ILLEGAL_FEN = "1Kk5/1P6/8/8/8/8/r7/5R2 w - - 0 1"
@@ -82,7 +92,7 @@ def test_failure_contract():
     os.environ["SYZYGY_TABLEBASE_DIR"] = str(Path(os.sep) / "nonexistent" / "syzygy")
     os.environ["SYZYGY_TABLEBASE_API_DISABLED"] = "1"
     try:
-        probe_tablebase(QUEEN_VS_ROOK_FEN)
+        probe_tablebase(SIX_MAN_LOSS_FEN)
         raise AssertionError("offline + missing dir must raise TablebaseUnavailableError")
     except TablebaseUnavailableError as e:
         assert "directory not found" in str(e), e
@@ -99,7 +109,7 @@ def test_failure_contract():
 def test_fallback_activation_and_cache():
     # 1. The fallback answers a position local files do not cover, in the
     #    SAME TablebaseResult shape (live-verified API values).
-    result = probe_tablebase(QUEEN_VS_ROOK_FEN)
+    result = probe_tablebase(SIX_MAN_LOSS_FEN)
     assert result.outcome == "loss", result
     assert result.dtz == -2, result
     assert result.wdl == -2, result
@@ -116,7 +126,7 @@ def test_fallback_activation_and_cache():
 
     module._fetch_lichess = counting_fetch
     try:
-        again = probe_tablebase(QUEEN_VS_ROOK_FEN)
+        again = probe_tablebase(SIX_MAN_LOSS_FEN)
         assert calls["n"] == 0, f"expected cache hit, saw {calls['n']} HTTP calls"
         assert again.outcome == "loss" and again.wdl == -2
     finally:
@@ -149,7 +159,7 @@ def test_fallback_failure_modes():
         original = module._fetch_lichess
         module._fetch_lichess = make_remote(f"simulated: {label}")
         try:
-            probe_tablebase(QUEEN_VS_ROOK_FEN)
+            probe_tablebase(SIX_MAN_LOSS_FEN)
             raise AssertionError(f"{label} must raise TablebaseUnavailableError")
         except TablebaseUnavailableError as exc:
             combined = str(exc)
@@ -245,6 +255,94 @@ def test_seed_agreement():
     print("  all stored is_winning values agree with live tablebase probes")
 
 
+def test_persistent_cache_seam():
+    """The persistent cache is optional and best-effort: a cold fallback
+    populates it, a warm hit skips the transport entirely, and a broken
+    cache is transparent (a miss, never a failed probe). Hermetic: the
+    transport is faked, so no network."""
+    import services.tablebase as module
+    from services.tablebase import TablebaseResult
+
+    class FakeCache:
+        def __init__(self):
+            self.rows = {}
+            self.gets = 0
+            self.puts = 0
+
+        def get(self, key):
+            self.gets += 1
+            return self.rows.get(key)
+
+        def put(self, key, payload):
+            self.puts += 1
+            self.rows[key] = payload
+
+    key = " ".join(SIX_MAN_LOSS_FEN.split()[:4])
+    fetched = {"n": 0}
+
+    def fake_fetch(fen):
+        fetched["n"] += 1
+        return TablebaseResult(outcome="loss", dtz=-2, wdl=-2, source="lichess")
+
+    original = module._fetch_lichess
+    module._fallback_cache.clear()
+    fake = FakeCache()
+    module.set_persistent_cache(fake)
+    module._fetch_lichess = fake_fetch
+    try:
+        first = probe_tablebase(SIX_MAN_LOSS_FEN)
+        assert first.outcome == "loss"
+        assert fetched["n"] == 1, "cold probe must hit the transport"
+        assert fake.puts == 1 and key in fake.rows, "answer must be persisted"
+
+        module._fallback_cache.clear()
+        second = probe_tablebase(SIX_MAN_LOSS_FEN)
+        assert fetched["n"] == 1, "persistent hit must not touch the transport"
+        assert second.wdl == -2
+
+        class BrokenCache:
+            def get(self, key):
+                raise RuntimeError("db down")
+
+            def put(self, key, payload):
+                raise RuntimeError("db down")
+
+        module._fallback_cache.clear()
+        module.set_persistent_cache(BrokenCache())
+        third = probe_tablebase(SIX_MAN_LOSS_FEN)
+        assert fetched["n"] == 2 and third.outcome == "loss"
+    finally:
+        module._fetch_lichess = original
+        module.set_persistent_cache(None)
+        module._fallback_cache.clear()
+
+    print("  cold put, warm hit without transport, broken cache transparent")
+
+
+def test_postgres_cache_roundtrip():
+    import psycopg2
+
+    from services.tablebase_cache import PostgresProbeCache
+
+    cache = PostgresProbeCache()
+    key = "roundtrip-" + uuid.uuid4().hex
+    payload = {"outcome": "draw", "wdl": 0, "dtz": 0, "source": "lichess"}
+    try:
+        cache.put(key, payload)
+        assert cache.get(key) == payload, "stored probe must round-trip"
+        assert cache.get("roundtrip-missing-" + uuid.uuid4().hex) is None
+    finally:
+        conn = psycopg2.connect(**_db_config())
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM tablebase_probe_cache WHERE fen_key = %s", (key,)
+            )
+        conn.commit()
+        conn.close()
+        cache.close()
+    print("  Postgres probe cache round-trip OK")
+
+
 def main():
     print("A. failure contract:")
     test_failure_contract()
@@ -253,6 +351,9 @@ def main():
     test_fallback_failure_modes()
     print("C. seed agreement gate (live probe vs stored is_winning):")
     test_seed_agreement()
+    print("D. persistent probe cache (seam + Postgres round-trip):")
+    test_persistent_cache_seam()
+    test_postgres_cache_roundtrip()
 
 
 if __name__ == "__main__":

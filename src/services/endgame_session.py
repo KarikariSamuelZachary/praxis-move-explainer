@@ -16,8 +16,9 @@ the user plays in a drill and returns one of:
     game ended.
   * failed      -- the move lost the drill: threw away a win, blundered a
     win into a loss, or lost a draw. Fails IMMEDIATELY on the offending
-    move, with a failure_category granular enough to feed
-    endgame_common_mistakes later -- never a generic "wrong".
+    move, with a failure_category granular enough to key
+    endgame_common_mistakes (see attach_common_mistake below) -- never a
+    generic "wrong".
 
 STATELESS PRECEDENT (confirmed before building)
 ===============================================
@@ -81,6 +82,32 @@ writing users.endgame_trainer_rating stays in the route layer (same split
 as puzzles.py, which clamps + persists there; no history table exists for
 endgames yet either).
 
+COMMON-MISTAKE CONTENT (attach_common_mistake)
+==============================================
+Failure categories key the endgame_common_mistakes content table
+(topic-level, one row per (topic, failure type); schema in
+core/migrations.py). The step brief asked to attach that explanation on
+this module's FAILED path -- done, but deliberately NOT inside
+evaluate_endgame_move(). That function is pure: no DB connection, no
+topic, every call derivable from the FENs alone (see STATELESS PRECEDENT
+above). Injecting conn + topic into it for a presentational lookup would
+reopen exactly that contract, and would make the grading hot path depend
+on a DB round-trip. Instead this module exposes:
+
+    attach_common_mistake(conn, result, topic_id) -> EndgameMoveResult
+
+The route grades with evaluate_endgame_move() and then enriches a failed
+result with this one explicit call. Semantics:
+  * non-failed result -> returned unchanged, no query at all;
+  * failed + authored row -> a copy of the result whose common_mistake
+    carries the explanation (a missing row -> common_mistake=None, the
+    normal case until a topic is authored: content absence NEVER raises);
+  * a genuine DB failure propagates (an infrastructure problem, not a
+    content gap) -- the same tiering as tablebase.py's fallback.
+This keeps the DB ownership in the route layer, matching puzzles.py
+(queries in the route, rating math pure), while the caller still receives
+one EndgameMoveResult carrying classification + explanation together.
+
 ABANDONED STATUS -- deliberately NOT here
 =========================================
 See the step report: a move cap / hint nudge is a product-UX concern (how
@@ -107,8 +134,10 @@ from __future__ import annotations
 import logging
 from enum import Enum
 from typing import Optional
+from uuid import UUID
 
 import chess
+from psycopg2.extras import RealDictCursor
 from pydantic import BaseModel
 
 from core.rating import calculate_rating_change
@@ -177,6 +206,11 @@ class EndgameMoveResult(BaseModel):
     # core.rating.calculate_rating_change() delta (clamping to [400, 3000]
     # is the route's job, same as puzzles.py).
     rating_change: Optional[int] = None
+    # Authored endgame_common_mistakes explanation for this (topic, failure
+    # type), attached by attach_common_mistake() -- never by the pure
+    # grader. None on non-failed results, and on failed results whose
+    # topic/failure type has no authored content yet.
+    common_mistake: Optional[str] = None
 
 
 def _probe_for_user(fen: str, user_is_side_to_move: bool) -> TablebaseResult:
@@ -388,6 +422,59 @@ def evaluate_endgame_move(
         dtz_after=probe_after.dtz,
         rating_change=_rating_change(status, endgame_trainer_rating, topic_difficulty_rating),
     )
+
+
+def attach_common_mistake(
+    conn, result: EndgameMoveResult, topic_id: str
+) -> EndgameMoveResult:
+    """Enrich a FAILED result with its authored common-mistake explanation.
+
+    Called by the route right after evaluate_endgame_move() -- the grader
+    is pure and never touches the DB or the topic. No-op (returns `result`
+    itself, no query) unless the result is failed with a failure category.
+    Otherwise returns a COPY of the result carrying the explanation for
+    (topic_id, failure_category) in `common_mistake`, or the copy with
+    common_mistake=None when no content row exists yet (the normal case
+    until a topic is authored -- content absence never raises).
+
+    Raises ValueError for a non-UUID topic_id (programming error, same
+    contract as endgame_library's selectors); a real DB failure propagates
+    -- it is an infrastructure problem, not a content gap. See the module
+    docstring's COMMON-MISTAKE CONTENT section.
+    """
+    if result.status != EndgameStatus.FAILED or result.failure_category is None:
+        return result
+    try:
+        parsed_topic_id = UUID(str(topic_id))
+    except ValueError as exc:
+        raise ValueError(f"topic_id {topic_id!r} is not a valid UUID") from exc
+
+    explanation = _lookup_common_mistake(
+        conn, parsed_topic_id, result.failure_category
+    )
+    return result.model_copy(update={"common_mistake": explanation})
+
+
+def _lookup_common_mistake(
+    conn, topic_id: UUID, failure_category: EndgameFailureCategory
+) -> Optional[str]:
+    """The authored explanation for (topic, failure type), or None when the
+    content has not been written yet. Single-row by the table's
+    UNIQUE (topic_id, failure_type) constraint; the topic id is passed as
+    text because psycopg2 does not adapt uuid.UUID objects out of the box
+    (same note as endgame_library)."""
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT explanation
+            FROM endgame_common_mistakes
+            WHERE topic_id = %s::uuid
+              AND failure_type = %s
+            """,
+            (str(topic_id), failure_category.value),
+        )
+        row = cur.fetchone()
+    return row["explanation"] if row else None
 
 
 def _rating_change(

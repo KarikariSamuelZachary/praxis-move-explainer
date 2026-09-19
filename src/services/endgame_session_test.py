@@ -36,7 +36,18 @@ Sequences:
   G. Rating fields: in_progress never carries a rating change; solved/failed
      reuse core.rating.calculate_rating_change() verbatim.
 
+  H. Common-mistake content: the FAILED results from B/D -- plus locally
+     probed fallback moves so all three authored failure types are always
+     exercised, even if the external move list offers no throw/blunder this
+     run -- are enriched via attach_common_mistake(), exactly the call the
+     route will make. Each enriched result must carry the seeded
+     endgame_common_mistakes row for its (Lucena, failure type). Degradation
+     is checked too: ran_out_of_moves (reachable but unauthored), a topic
+     with no content at all, a non-failed result, and a non-UUID topic id.
+
 Run with: cd src && ../venv/bin/python services/endgame_session_test.py
+(sequence H additionally needs the DB config from src/.env: DB_* vars, or
+a real DATABASE_URL; content must be seeded via seed_endgames.py)
 """
 import json
 import os
@@ -44,16 +55,20 @@ import sys
 import time
 import urllib.parse
 import urllib.request
+import uuid
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import chess
+import psycopg2
 from dotenv import load_dotenv
 
 from core.rating import calculate_rating_change
 from services.endgame_session import (
     EndgameFailureCategory,
+    EndgameMoveResult,
     EndgameStatus,
+    attach_common_mistake,
     evaluate_endgame_move,
 )
 from services.tablebase import probe_tablebase
@@ -72,6 +87,53 @@ _INVERT = {"win": "loss", "draw": "draw", "loss": "win"}
 _MAINLINE = os.getenv(
     "SYZYGY_TABLEBASE_API_BASE", "https://tablebase.lichess.ovh/standard"
 ) + "/mainline"
+
+
+def _db_config():
+    # Mirrors the sibling harnesses (tablebase_test / endgame_library_test):
+    # discrete DB_* vars first, DATABASE_URL fallback.
+    config = {
+        "dbname": os.getenv("DB_NAME"),
+        "user": os.getenv("DB_USER"),
+        "password": os.getenv("DB_PASSWORD"),
+        "host": os.getenv("DB_HOST", "localhost"),
+        "port": int(os.getenv("DB_PORT", 5432)),
+    }
+    if not all([config["dbname"], config["user"], config["password"]]):
+        database_url = os.getenv("DATABASE_URL")
+        if database_url and "://" in database_url:
+            return {"dsn": database_url}
+        raise SystemExit(
+            "sequence H needs a DB: set DB_NAME/DB_USER/DB_PASSWORD (src/.env) "
+            "or a real DATABASE_URL"
+        )
+    return config
+
+
+def _lucena_topic_id(conn) -> str:
+    with conn.cursor() as cur:
+        cur.execute("SELECT id FROM endgame_topics WHERE name = %s", ("Lucena Position",))
+        row = cur.fetchone()
+    assert row is not None, "Lucena Position topic missing - run src/seed_endgames.py"
+    return str(row[0])
+
+
+def _transition_move(board: chess.Board, wanted: str) -> chess.Move | None:
+    """First legal non-resolving move after which the OPPONENT's tablebase
+    verdict is `wanted`: "draw" = the user threw the win away, "win" = the
+    user's move loses. Probed locally, so sequence H does not depend on the
+    external move list. Promotions are skipped on purpose: they leave local
+    coverage (6 men), and H's degradations stay fully offline."""
+    for move in sorted(board.legal_moves, key=lambda m: m.uci()):
+        if move.promotion is not None:
+            continue
+        child = board.copy(stack=False)
+        child.push(move)
+        if child.is_stalemate() or child.is_checkmate():
+            continue
+        if probe_tablebase(child.fen()).outcome == wanted:
+            return move
+    return None
 
 
 def hold_draw_move(board: chess.Board) -> chess.Move:
@@ -196,6 +258,8 @@ def sequence_b_throw_away():
     assert result.rating_change == calculate_rating_change(
         TRAINER_RATING, TOPIC_DIFFICULTY, False
     )
+    throw_result = result
+    blunder_result = None
     if blunders:
         result, _child = grade(board, chess.Move.from_uci(blunders[0]["uci"]), True, "blunder")
         assert result.status == EndgameStatus.FAILED
@@ -203,6 +267,8 @@ def sequence_b_throw_away():
         assert result.rating_change == calculate_rating_change(
             TRAINER_RATING, TOPIC_DIFFICULTY, False
         )
+        blunder_result = result
+    return throw_result, blunder_result
 
 
 def sequence_c_hold_the_draw():
@@ -254,14 +320,17 @@ def sequence_e_degraded_promotion():
 
     # Walk the mainline with the fallback fully active; when the user's move
     # is the promotion, the external API is simulated unreachable FOR THE
-    # POST-PROMOTION POSITION ONLY (the material local files cannot cover).
-    # The state machine must resolve the drill cleanly -- a promotion with
-    # the win intact completes the drill -- instead of surfacing an
-    # ungradeable error mid-session.
+    # POST-PROMOTION POSITION ONLY. Local probing is also forced unavailable
+    # for that one position so this sequence exercises the degraded path
+    # regardless of which Syzygy files are installed (the deployed image has
+    # the full 3-4-5 set, which DOES cover KQRvKR). The state machine must
+    # resolve the drill cleanly -- a promotion with the win intact completes
+    # the drill -- instead of surfacing an ungradeable error mid-session.
     moves = _mainline(B_FILE_LUCENA_W)
     board = chess.Board(B_FILE_LUCENA_W)
     ply = 0
     original = tablebase_module._fetch_lichess
+    original_local = tablebase_module._probe_local
     # Sequence A already cached the post-promotion position in this process;
     # a cache hit would silently mask the simulated outage.
     tablebase_module._fallback_cache.clear()
@@ -276,7 +345,16 @@ def sequence_e_degraded_promotion():
             raise tablebase_module.TablebaseUnavailableError("simulated: network down")
         return original(fen)
 
+    def failing_local(local_board):
+        key = " ".join(local_board.fen().split()[:4])
+        if promotion_child_key is not None and key == promotion_child_key:
+            raise tablebase_module.TablebaseUnavailableError(
+                "simulated: local files do not cover the post-promotion position"
+            )
+        return original_local(local_board)
+
     tablebase_module._fetch_lichess = failing_fetch
+    tablebase_module._probe_local = failing_local
     try:
         for entry in moves:
             move = chess.Move.from_uci(entry["uci"])
@@ -305,6 +383,7 @@ def sequence_e_degraded_promotion():
                 board.push(move)
     finally:
         tablebase_module._fetch_lichess = original
+        tablebase_module._probe_local = original_local
     raise AssertionError("mainline walk did not reach a promotion move")
 
 
@@ -362,13 +441,97 @@ def sequence_f_contract():
     print("  fabricated fen_after / illegal move / stale lost fen_before -> ValueError")
 
 
+def sequence_h_common_mistake_content(throw_result, blunder_result, draw_blunder_result):
+    print("H. common-mistake content on FAILED results (grader stays pure):")
+    conn = psycopg2.connect(**_db_config())
+    try:
+        topic_id = _lucena_topic_id(conn)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT failure_type, explanation
+                FROM endgame_common_mistakes
+                WHERE topic_id = %s
+                """,
+                (topic_id,),
+            )
+            seeded = dict(cur.fetchall())
+        assert set(seeded) == {
+            "threw_away_win",
+            "blundered_into_loss",
+            "lost_the_draw",
+        }, f"expected the three authored Lucena types, got {sorted(seeded)}"
+
+        # Reuse the FAILED results the sequences above already produced; the
+        # external move list may not have offered a throw/blunder this run,
+        # so probe locally for any missing type (same failure, sourced from
+        # the harness instead of the API).
+        failures = {throw_result.failure_category: throw_result}
+        if blunder_result is not None:
+            failures[blunder_result.failure_category] = blunder_result
+        failures[draw_blunder_result.failure_category] = draw_blunder_result
+
+        if EndgameFailureCategory.THREW_AWAY_WIN not in failures:
+            move = _transition_move(chess.Board(B_FILE_LUCENA_W), "draw")
+            assert move is not None, "a winning position must contain a throwing move"
+            result, _child = grade(chess.Board(B_FILE_LUCENA_W), move, True, "throw")
+            assert result.failure_category == EndgameFailureCategory.THREW_AWAY_WIN
+            failures[result.failure_category] = result
+        if EndgameFailureCategory.BLUNDERED_INTO_LOSS not in failures:
+            move = _transition_move(chess.Board(B_FILE_LUCENA_W), "win")
+            assert move is not None, "a winning position must contain a losing move"
+            result, _child = grade(chess.Board(B_FILE_LUCENA_W), move, True, "blunder")
+            assert result.failure_category == EndgameFailureCategory.BLUNDERED_INTO_LOSS
+            failures[result.failure_category] = result
+
+        for category, failed in failures.items():
+            assert failed.status == EndgameStatus.FAILED
+            assert failed.common_mistake is None, "the grader must never touch content"
+            enriched = attach_common_mistake(conn, failed, topic_id)
+            expected = seeded[category.value]
+            assert enriched.common_mistake == expected, category
+            assert enriched.failure_category == category
+            print(
+                f"  {category.value:18s} -> {len(expected):4d}-char explanation "
+                "matches the seeded row"
+            )
+
+        # Content absence degrades, never errors:
+        # (a) a reachable-but-unauthored failure type on a real topic;
+        # (b) a failed result from a topic with no content at all;
+        # (c) a non-failed result (no lookup happens at all).
+        synthetic = EndgameMoveResult(
+            status=EndgameStatus.FAILED,
+            failure_category=EndgameFailureCategory.RAN_OUT_OF_MOVES,
+        )
+        assert attach_common_mistake(conn, synthetic, topic_id).common_mistake is None
+        unseeded_topic = str(uuid.uuid4())
+        any_throw = failures[EndgameFailureCategory.THREW_AWAY_WIN]
+        unchanged = attach_common_mistake(conn, any_throw, unseeded_topic)
+        assert unchanged.common_mistake is None
+        assert unchanged == any_throw
+        in_progress = EndgameMoveResult(status=EndgameStatus.IN_PROGRESS)
+        assert attach_common_mistake(conn, in_progress, topic_id).common_mistake is None
+        print("  ran_out_of_moves / unseeded topic / non-failed -> None, no error")
+
+        try:
+            attach_common_mistake(conn, any_throw, "not-a-uuid")
+            raise AssertionError("non-UUID topic_id must raise ValueError")
+        except ValueError as exc:
+            assert "not a valid UUID" in str(exc), exc
+        print("  non-UUID topic_id -> ValueError")
+    finally:
+        conn.close()
+
+
 def main():
     sequence_a_bridge_to_mate()
-    sequence_b_throw_away()
+    throw_result, blunder_result = sequence_b_throw_away()
     sequence_c_hold_the_draw()
-    sequence_d_defender_blunder()
+    draw_blunder_result = sequence_d_defender_blunder()
     sequence_e_degraded_promotion()
     sequence_f_contract()
+    sequence_h_common_mistake_content(throw_result, blunder_result, draw_blunder_result)
     print("all sequences judged call-by-call; the bridge line reached actual checkmate")
 
 

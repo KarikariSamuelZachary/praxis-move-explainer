@@ -10,10 +10,8 @@ PROBING PATHS
 =============
   1. LOCAL Syzygy files via python-chess's chess.syzygy -- PRIMARY for
      everything they cover. The trainer's positions are small (3-5 men;
-     every seeded Lucena variant is exactly the 5-man K+R+P vs K+R
-     material), and the relevant files are tiny: KRPvKR is 15.6 MB WDL +
-     13.1 MB DTZ, plus the ~35 MB 3/4-man sets for capture/promotion
-     transitions. Probing is a local memory-mapped read: no network, no
+     the deployed local set is the FULL 3-, 4- and 5-man Syzygy collection,
+     ~940 MB), and probing is a local memory-mapped read: no network, no
      latency, no external failure mode during a training session. This
      matches how the codebase already treats self-hosted analysis assets
      (Stockfish ships via apt; the Maia-3 checkpoint is pre-warmed at
@@ -21,21 +19,23 @@ PROBING PATHS
   2. Lichess tablebase API fallback (tablebase.lichess.ovh -- the same
      service that verified the seed data) -- activates ONLY when local
      probing raises TablebaseUnavailableError, i.e. the position is legal
-     but the installed files do not cover its material (e.g. a rook endgame
-     that just promoted: KRPvKR -> KQRvKR is 6 men, and 6-man local files
-     would cost ~149 GB of disk, so they will never be installed). The
-     fallback returns the SAME TablebaseResult shape, so callers (including
-     the state machine) never need to know which source answered.
+     but the installed files do not cover its material (6-7 men: the
+     sourced content includes many 6-7-man drill starts, and 6-man local
+     files would cost ~149 GB while 7-man is ~16 TB, so they are never
+     installed). The fallback returns the SAME TablebaseResult shape, so
+     callers (including the state machine) never need to know which source
+     answered.
 
 WHY THE FALLBACK IS NEEDED (and what it is NOT for)
 ===================================================
-A Lucena drill ends when the user promotes; the promoted position (KQRvKR)
-is 6 men -- permanently outside any feasible local set (the full 6-man
-Syzygy set is ~149 GB). The fallback keeps such drills gradeable to actual
-checkmate without bloating the deployment. It is NOT a general-purpose
-second opinion: whenever local files cover the position, they answer,
-full stop. The step-2 seed-verification remains a one-off offline use of
-the same service.
+With the full 3-4-5-man set installed, every legal <=5-man position is
+answered locally. 6-7-man positions (e.g. a rook endgame that captures
+into KRPvKRP, 6 men, or the sourced 6-7-man drill starts) cannot be stored
+locally at any sane deployment size (6-man ~149 GB, 7-man ~16 TB). The
+fallback keeps those drillable and gradeable to actual checkmate. It is
+NOT a general-purpose second opinion: whenever local files cover the
+position, they answer, full stop. The step-2 seed-verification remains a
+one-off offline use of the same service.
 
 FAILURE CONTRACT (nothing fails silently)
 =========================================
@@ -82,13 +82,22 @@ exception.
 
 CACHING
 =======
-Short-lived in-memory cache keyed on the first 4 FEN fields (the
-repertoire_positions normalization -- counters don't change a verdict),
-TTL 300s, capped at 4096 entries (FIFO eviction). The fallback consults it
-before every HTTP call, so a repeated post-promotion position in one
-session -- or identical positions across concurrent sessions -- costs one
-external call, not one per probe. Local probes never consult it (they are
-memory-speed already). Cache clears on process restart; no persistence.
+Two layers, both only on the fallback path (local probes are memory-speed
+and never consult either):
+
+  1. Short-lived in-memory cache keyed on the first 4 FEN fields (the
+     repertoire_positions normalization -- counters don't change a verdict),
+     TTL 300s, capped at 4096 entries (FIFO eviction), per process.
+  2. OPTIONAL persistent cache (a PostgresProbeCache registered by the app
+     via set_persistent_cache). Each distinct fallback position is paid to
+     the Lichess API once per deployment; repeated positions -- across
+     restarts, workers, and users hours apart -- are primary-key lookups.
+     The cache is best-effort: a failure logs (throttled) and degrades to
+     the old per-probe HTTP behavior, never to a guess, and never raises.
+     With no cache registered (seed scripts, tests) behavior is unchanged.
+     Tablebase verdicts are facts, so cached rows never go stale.
+
+  Local probes never consult a cache (they are memory-speed already).
 
 LOGGING
 =======
@@ -177,6 +186,62 @@ _fallback_cache: dict[str, tuple[float, TablebaseResult]] = {}
 _fallback_cache_lock = threading.Lock()
 _FALLBACK_CACHE_TTL_SECONDS = 300.0
 _FALLBACK_CACHE_MAX_ENTRIES = 4096
+
+# Optional persistent cache (see CACHING above). None until the app
+# registers one at startup; the fallback path works unchanged without it.
+_persistent_cache = None
+_persistent_cache_lock = threading.Lock()
+
+
+def set_persistent_cache(cache) -> None:
+    """Register (or clear, with None) the persistent fallback cache. The
+    object must expose get(fen_key) -> dict|None and put(fen_key, dict)."""
+    global _persistent_cache
+    with _persistent_cache_lock:
+        _persistent_cache = cache
+    log.info(
+        "tablebase persistent probe cache %s",
+        "registered" if cache is not None else "cleared",
+    )
+
+
+def persistent_cache_enabled() -> bool:
+    return _persistent_cache is not None
+
+
+def _persistent_cache_get(key: str) -> Optional[TablebaseResult]:
+    cache = _persistent_cache
+    if cache is None:
+        return None
+    try:
+        payload = cache.get(key)
+    except Exception as exc:  # noqa: BLE001 - a broken cache is a miss, never a failure
+        log.warning("tablebase persistent cache get failed (ignoring): %s", exc)
+        return None
+    if payload is None:
+        return None
+    try:
+        return TablebaseResult(**payload)
+    except Exception:  # noqa: BLE001 - a malformed row is a miss, not a crash
+        log.warning("tablebase persistent cache row for %s is malformed; ignoring", key)
+        return None
+
+
+def _persistent_cache_put(key: str, result: TablebaseResult) -> None:
+    cache = _persistent_cache
+    if cache is None:
+        return
+    try:
+        cache.put(key, result.model_dump())
+    except Exception as exc:  # noqa: BLE001 - cache writes never break a probe
+        log.warning("tablebase persistent cache put failed (ignoring): %s", exc)
+
+
+def _remember_fallback(key: str, result: TablebaseResult) -> None:
+    with _fallback_cache_lock:
+        while len(_fallback_cache) >= _FALLBACK_CACHE_MAX_ENTRIES:
+            _fallback_cache.pop(next(iter(_fallback_cache)))
+        _fallback_cache[key] = (time.monotonic(), result)
 
 
 def _tablebase_dir() -> Path:
@@ -320,7 +385,8 @@ def _fetch_lichess(fen: str) -> TablebaseResult:
 
 
 def _probe_lichess(fen: str) -> TablebaseResult:
-    """Lichess API fallback with the short-lived FEN cache in front."""
+    """Lichess API fallback with the in-memory cache in front and the
+    optional persistent cache behind it (in-memory -> persistent -> HTTP)."""
     key = _cache_key(fen)
     now = time.monotonic()
     with _fallback_cache_lock:
@@ -332,12 +398,16 @@ def _probe_lichess(fen: str) -> TablebaseResult:
                 return cached_result.model_copy()
             _fallback_cache.pop(key, None)  # expired
 
+    persisted = _persistent_cache_get(key)
+    if persisted is not None:
+        log.debug("tablebase fallback persistent cache hit: %s", key)
+        _remember_fallback(key, persisted)
+        return persisted.model_copy()
+
     result = _fetch_lichess(fen)
 
-    with _fallback_cache_lock:
-        while len(_fallback_cache) >= _FALLBACK_CACHE_MAX_ENTRIES:
-            _fallback_cache.pop(next(iter(_fallback_cache)))
-        _fallback_cache[key] = (time.monotonic(), result)
+    _persistent_cache_put(key, result)
+    _remember_fallback(key, result)
     return result.model_copy()
 
 

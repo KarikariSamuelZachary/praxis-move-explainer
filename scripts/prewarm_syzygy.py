@@ -7,19 +7,20 @@ validates them by probing known positions. Mirrors scripts/prewarm_maia3.py:
 a deploy build that cannot reach any mirror fails here, instead of the app
 failing at first drill.
 
-Coverage: the FULL 3- and 4-man sets plus the 5-man KRPvKR family
-(rook-and-pawn vs rook) -- every material the seeded content and its
-capture/promotion transitions can reach. ~34 MB on disk. 6- and 7-man
-positions are deliberately NOT baked into the image; they are served by the
-Lichess API fallback in services/tablebase.py (e.g. the KQRvKR continuation
-after a Lucena promotion).
+Coverage: the FULL 3-, 4- and 5-man sets (145 material configurations,
+~940 MB on disk) -- the material of every sourced endgame position whose
+drill start is <=5 men, including capture/promotion transitions. 6- and
+7-man positions (~149 GB and ~16 TB respectively) are deliberately NOT
+baked into the image; they are served by the Lichess API fallback in
+services/tablebase.py.
 
 Idempotent: files already present are not re-downloaded, and the whole run
 is skipped when everything is present and valid. Each file is tried against
 every mirror (Lichess first, sesse second) because either mirror can be
-down; the build fails only when no mirror can supply a file. Every file's
-magic header is checked, so an error page or truncated download can never
-be baked into the image.
+down; downloads carry a 30s socket timeout so a stalled connection fails
+over instead of hanging the build, and the build fails only when no mirror
+can supply a file. Every file's magic header is checked, so an error page
+or truncated download can never be baked into the image.
 """
 import logging
 import sys
@@ -47,81 +48,49 @@ _MAGIC = {
     ".rtbz": b"\xd7\x66\x0c\xa5",
 }
 
-# All 3-man and 4-man tables, plus the 5-man KRPvKR family (rook-and-pawn
-# vs rook) -- the material of every seeded Lucena Position variant.
+# All 145 material configurations of the published 3-4-5 Syzygy set: both
+# kings plus 1-3 extra pieces drawn (with repetition) from {Q,R,B,N,P} and
+# assigned to either side, canonicalized so mirrored sides collapse to one
+# name. This generates exactly the mirrored 3-4-5 file set (verified against
+# the tablebase.lichess.ovh / tablebase.sesse.net listing); each name is
+# downloaded as .rtbw (WDL) and .rtbz (DTZ).
+_PIECE_TYPES = "QRBNP"
+_RANK = "KQRBNP"
+
+
+def _material_signatures():
+    import itertools
+
+    def strength(side: str):
+        # Published naming orders the side with more pieces first, then the
+        # stronger piece (K > Q > R > B > N > P). Rank indices grow weaker,
+        # so negate them and sort (len, negated) descending.
+        return len(side), [-_RANK.index(p) for p in side]
+
+    names = set()
+    for extra in range(1, 4):
+        for combo in itertools.combinations_with_replacement(_PIECE_TYPES, extra):
+            for side in itertools.product((0, 1), repeat=extra):
+                white = "K" + "".join(
+                    sorted(
+                        (p for p, s in zip(combo, side) if s == 0),
+                        key=_PIECE_TYPES.index,
+                    )
+                )
+                black = "K" + "".join(
+                    sorted(
+                        (p for p, s in zip(combo, side) if s == 1),
+                        key=_PIECE_TYPES.index,
+                    )
+                )
+                names.add("v".join(sorted([white, black], key=strength, reverse=True)))
+    return sorted(names)
+
+
 FILES = [
-    "KBBvK.rtbw",
-    "KBBvK.rtbz",
-    "KBNvK.rtbw",
-    "KBNvK.rtbz",
-    "KBPvK.rtbw",
-    "KBPvK.rtbz",
-    "KBvK.rtbw",
-    "KBvK.rtbz",
-    "KBvKB.rtbw",
-    "KBvKB.rtbz",
-    "KBvKN.rtbw",
-    "KBvKN.rtbz",
-    "KBvKP.rtbw",
-    "KBvKP.rtbz",
-    "KNNvK.rtbw",
-    "KNNvK.rtbz",
-    "KNPvK.rtbw",
-    "KNPvK.rtbz",
-    "KNvK.rtbw",
-    "KNvK.rtbz",
-    "KNvKN.rtbw",
-    "KNvKN.rtbz",
-    "KNvKP.rtbw",
-    "KNvKP.rtbz",
-    "KPPvK.rtbw",
-    "KPPvK.rtbz",
-    "KPvK.rtbw",
-    "KPvK.rtbz",
-    "KPvKP.rtbw",
-    "KPvKP.rtbz",
-    "KQBvK.rtbw",
-    "KQBvK.rtbz",
-    "KQNvK.rtbw",
-    "KQNvK.rtbz",
-    "KQPvK.rtbw",
-    "KQPvK.rtbz",
-    "KQQvK.rtbw",
-    "KQQvK.rtbz",
-    "KQRvK.rtbw",
-    "KQRvK.rtbz",
-    "KQvK.rtbw",
-    "KQvK.rtbz",
-    "KQvKB.rtbw",
-    "KQvKB.rtbz",
-    "KQvKN.rtbw",
-    "KQvKN.rtbz",
-    "KQvKP.rtbw",
-    "KQvKP.rtbz",
-    "KQvKQ.rtbw",
-    "KQvKQ.rtbz",
-    "KQvKR.rtbw",
-    "KQvKR.rtbz",
-    "KRBvK.rtbw",
-    "KRBvK.rtbz",
-    "KRNvK.rtbw",
-    "KRNvK.rtbz",
-    "KRPvK.rtbw",
-    "KRPvK.rtbz",
-    "KRPvKR.rtbw",
-    "KRPvKR.rtbz",
-    "KRRvK.rtbw",
-    "KRRvK.rtbz",
-    "KRvK.rtbw",
-    "KRvK.rtbz",
-    "KRvKB.rtbw",
-    "KRvKB.rtbz",
-    "KRvKN.rtbw",
-    "KRvKN.rtbz",
-    "KRvKP.rtbw",
-    "KRvKP.rtbz",
-    "KRvKR.rtbw",
-    "KRvKR.rtbz",
+    f"{name}{ext}"
+    for name in _material_signatures()
+    for ext in (".rtbw", ".rtbz")
 ]
 
 # (validation fen, expected WDL) -- probed AFTER all files are present.
@@ -138,13 +107,31 @@ def _mirror_kind(name: str) -> str:
     return "3-4-5-wdl" if name.endswith(".rtbw") else "3-4-5-dtz"
 
 
+# A stalled mirror must fail the attempt, not hang the build forever:
+# urllib's urlretrieve has NO timeout, and a silently dead HTTPS connection
+# once froze a real image build for 20+ minutes. urlopen's timeout applies
+# to connect and to every blocking read.
+_DOWNLOAD_TIMEOUT_SECONDS = 30.0
+_DOWNLOAD_CHUNK = 1 << 20
+
+
+def _download(url: str, target: Path) -> None:
+    with urllib.request.urlopen(url, timeout=_DOWNLOAD_TIMEOUT_SECONDS) as response:
+        with open(target, "wb") as out:
+            while True:
+                chunk = response.read(_DOWNLOAD_CHUNK)
+                if not chunk:
+                    break
+                out.write(chunk)
+
+
 def fetch(name: str, target: Path):
     """Download one file, trying every mirror; returns the serving URL or None."""
     for attempt in (1, 2, 3):
         for pattern in MIRRORS:
             url = pattern.format(kind=_mirror_kind(name), name=name)
             try:
-                urllib.request.urlretrieve(url, target)
+                _download(url, target)
                 return url
             except Exception as exc:
                 target.unlink(missing_ok=True)

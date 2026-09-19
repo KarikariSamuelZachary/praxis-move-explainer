@@ -16,11 +16,12 @@ COPY . .
 # if huggingface.co is unreachable from the build host.
 RUN python scripts/prewarm_maia3.py
 
-# Pre-download and validate the Syzygy 3/4/5-man tablebases (all 3- and
-# 4-man tables plus the 5-man KRPvKR family) so endgame drills never fetch
-# locally covered material at runtime. Fails the build if neither mirror is
-# reachable from the build host. 6/7-man positions are deliberately served
-# by the Lichess API fallback in services/tablebase.py, not baked in.
+# Pre-download and validate the full 3-, 4- and 5-man Syzygy tablebases
+# (~940 MB; the sourced Endgame Trainer content has <=5-man drill starts)
+# so endgame drills never fetch locally covered material at runtime. Fails
+# the build if neither mirror is reachable from the build host. 6/7-man
+# positions are deliberately served by the Lichess API fallback in
+# services/tablebase.py, not baked in.
 RUN python scripts/prewarm_syzygy.py
 
 EXPOSE 8000

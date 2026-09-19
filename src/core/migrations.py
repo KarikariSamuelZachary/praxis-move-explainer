@@ -959,6 +959,88 @@ def run_migrations():
                     ON endgame_positions(topic_id)
                 """
             )
+            # Common-mistake explanations for failed drills: authored prose
+            # attached to a FAILED session result, keyed at the TOPIC level
+            # by the state machine's failure category -- NOT per individual
+            # FEN. Rationale: failures are patterns ("you threw the win
+            # away in this type of ending"), not properties of one seeded
+            # variant, and per-position content would not scale once a
+            # topic carries 100+ drill variants.
+            #
+            # failure_type vocabulary mirrors the Python
+            # EndgameFailureCategory enum (services/endgame_session.py) --
+            # the same DB-CHECK <-> Python-constant coupling as
+            # endgame_topics.category. UNIQUE (topic_id, failure_type)
+            # encodes "exactly one authored explanation per topic per
+            # failure type": it gives the seeder an idempotent ON CONFLICT
+            # target (same natural-key style as endgame_positions) and
+            # keeps retrieval a single-row lookup. Message variety across
+            # repeat failures would later be a relax-only change (drop the
+            # constraint, have the lookup pick one of several rows at
+            # random); nothing else depends on the uniqueness.
+            #
+            # Content is optional by design: most topics carry no rows for
+            # a long time, and services/endgame_session.py's
+            # attach_common_mistake() degrades a missing row to "no
+            # explanation" rather than an error.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS endgame_common_mistakes (
+                    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    topic_id     UUID NOT NULL REFERENCES endgame_topics(id) ON DELETE CASCADE,
+                    failure_type TEXT NOT NULL CHECK (failure_type IN (
+                        'threw_away_win',
+                        'blundered_into_loss',
+                        'lost_the_draw',
+                        'ran_out_of_moves'
+                    )),
+                    explanation  TEXT NOT NULL,
+                    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (topic_id, failure_type)
+                )
+                """
+            )
+            # FK-index convention, mirrors idx_endgame_positions_topic_id.
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_endgame_common_mistakes_topic_id
+                    ON endgame_common_mistakes(topic_id)
+                """
+            )
+            # Link a sourced drill position back to the Lichess puzzle it came
+            # from (NULL for curated rows). This is what lets the prefetch
+            # worker replay puzzles.moves and warm the tablebase cache with the
+            # solution line at drill-selection time. Nullable because the
+            # curated Lucena rows have no puzzle provenance.
+            cur.execute(
+                """
+                ALTER TABLE endgame_positions
+                    ADD COLUMN IF NOT EXISTS source_puzzle_id TEXT
+                """
+            )
+            # Persistent cache for Lichess tablebase fallback answers.
+            # services/tablebase.py is deliberately database-free; a
+            # PostgresProbeCache adapter (services/tablebase_cache.py) is
+            # registered at app startup and consulted only on the fallback
+            # path. Without it, every move of a 6-7-man sourced drill re-asks
+            # tablebase.lichess.ovh; with it, each distinct position is paid
+            # once per deployment and repeated positions across users/moves
+            # are instant. Not per-user state: a tablebase verdict is a fact,
+            # identical for every user.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS tablebase_probe_cache (
+                    fen_key    TEXT PRIMARY KEY,
+                    outcome    TEXT NOT NULL CHECK (outcome IN ('win', 'draw', 'loss')),
+                    wdl        SMALLINT NOT NULL,
+                    dtz        INTEGER,
+                    source     TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
         conn.commit()
         log.info("Database migrations completed successfully")
     except Exception:

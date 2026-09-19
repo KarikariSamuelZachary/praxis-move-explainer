@@ -215,7 +215,11 @@ src/test_game.pgn
 
 #large data files
  data/raw/lichess_db_puzzle.csv.zst
- data/syzygy/
+data/syzygy/
+
+#generated endgame sourcing artifacts (candidate-run outputs; the imported
+#content itself lives in the database)
+data/processed/endgame_candidates/
 
 #Database backups (pg_dump output, never commit dump files)
 backups/
