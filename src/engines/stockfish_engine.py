@@ -204,15 +204,19 @@ class StockfishEngine:
         board: chess.Board,
         depth_limit: Optional[int] = None,
         pov: Optional[chess.Color] = None,
+        time_limit: Optional[float] = None,
     ) -> Evaluation:
         if not self.engine:
             raise RuntimeError("Engine not started. Use context manager or call start()")
 
         effective_depth = depth_limit if depth_limit is not None else self.depth
+        effective_time = (
+            time_limit if time_limit is not None else self.FAST_ANALYSIS_TIME
+        )
         with self._call_lock:
             info = self.engine.analyse(
                 board,
-                chess.engine.Limit(time=self.FAST_ANALYSIS_TIME, depth=effective_depth),
+                chess.engine.Limit(time=effective_time, depth=effective_depth),
             )
 
         score = info.get("score")
@@ -450,6 +454,85 @@ def close_review_stockfish() -> None:
     with _review_stockfish_lifecycle_lock:
         instance = _review_stockfish
         _review_stockfish = None
+    if instance is not None:
+        try:
+            instance.close()
+        except Exception:  # noqa: BLE001 -- shutdown must never raise
+            pass
+
+
+# --- Long-lived singleton (used by endgame opponent replies) ----------------
+#
+# Endgame Trainer reply generation reuses the SAME process-lifetime discipline
+# as review/sparring (never a fresh subprocess per call) but gets its OWN
+# singleton, for two reasons:
+#
+#   1. FAILURE DOMAINS. The review route resets its engine on any analyse
+#      failure (reset_review_stockfish). Sharing would let a review failure
+#      kill the engine between an endgame drill's reply and the user's next
+#      move, and vice versa.
+#   2. LATENCY ISOLATION. StockfishEngine._call_lock serializes analyse()
+#      calls per subprocess. A game review holds its engine for ~2N
+#      consecutive evaluations; an endgame reply queued behind that would
+#      wait seconds. A dedicated process keeps reply latency independent of
+#      review load.
+#
+# This path never calls configure_strength(), so the engine stays
+# full-strength for the whole deployment (the strength-limits-persist
+# hazard documented in configure_strength cannot bite here). The sparring
+# singleton was rejected as a reuse target for the same strength reason:
+# it is the depth-12 safety-check engine, not a full-strength defender.
+
+_endgame_stockfish: Optional[StockfishEngine] = None
+_endgame_stockfish_lifecycle_lock = Lock()
+
+
+def start_endgame_stockfish(depth: int = 18) -> StockfishEngine:
+    """Start the long-lived full-strength Stockfish used for endgame replies.
+
+    Idempotent: returns the existing singleton when it already has a live
+    subprocess. `depth` only applies when the subprocess is first created
+    (ENDGAME_REPLY_DEPTH is static per deployment). Raises if the engine
+    cannot be spawned so callers can degrade loudly instead of silently.
+    """
+    global _endgame_stockfish
+    with _endgame_stockfish_lifecycle_lock:
+        if _endgame_stockfish is not None and _endgame_stockfish.engine is not None:
+            return _endgame_stockfish
+        instance = StockfishEngine(depth=depth)
+        instance.start()  # raises on failure BEFORE we publish the global
+        _endgame_stockfish = instance
+        return _endgame_stockfish
+
+
+def get_endgame_stockfish(depth: int = 18) -> StockfishEngine:
+    """Return the long-lived endgame Stockfish, starting it on first use."""
+    global _endgame_stockfish
+    if _endgame_stockfish is None:
+        return start_endgame_stockfish(depth)
+    return _endgame_stockfish
+
+
+def reset_endgame_stockfish() -> None:
+    """Drop the endgame Stockfish after a failure. Best-effort `quit()`; the
+    next reply request starts a fresh subprocess. Mirrors the review reset."""
+    global _endgame_stockfish
+    with _endgame_stockfish_lifecycle_lock:
+        instance = _endgame_stockfish
+        _endgame_stockfish = None
+    if instance is not None:
+        try:
+            instance.close()
+        except Exception:  # noqa: BLE001 -- reset path must never raise
+            pass
+
+
+def close_endgame_stockfish() -> None:
+    """Quit the long-lived endgame Stockfish (app shutdown). Best-effort."""
+    global _endgame_stockfish
+    with _endgame_stockfish_lifecycle_lock:
+        instance = _endgame_stockfish
+        _endgame_stockfish = None
     if instance is not None:
         try:
             instance.close()
