@@ -8,7 +8,12 @@ from pydantic import BaseModel
 from typing import List, Optional
 
 from core.database import get_db
-from core.rating import calculate_rating_change
+from core.rating import (
+    DEFAULT_TRAINER_RATING,
+    calculate_rating_change,
+    clamp_rating,
+    rating_window,
+)
 from schemas.puzzle_schemas import PuzzleResponse
 
 router = APIRouter()
@@ -56,9 +61,9 @@ def get_puzzles(
             )
             if user_row:
                 if user_row["tactical_rating"] is not None:
-                    rating = user_row["tactical_rating"]
-                    min_rating = max(400, rating - 100)
-                    max_rating = min(3000, rating + 100)
+                    min_rating, max_rating = rating_window(
+                        user_row["tactical_rating"]
+                    )
                 elif user_row["skill_level"] in SKILL_RATING_BANDS:
                     min_rating, max_rating = SKILL_RATING_BANDS[user_row["skill_level"]]
 
@@ -245,14 +250,14 @@ def update_puzzle_rating(
 
             old_rating = user["tactical_rating"]
             if old_rating is None:
-                old_rating = 1100
+                old_rating = DEFAULT_TRAINER_RATING
 
             change = calculate_rating_change(
                 old_rating,
                 body.puzzle_rating,
                 body.solved,
             )
-            new_rating = max(400, min(3000, old_rating + change))
+            new_rating = clamp_rating(old_rating + change)
 
             cur.execute(
                 """
