@@ -17,12 +17,14 @@ from services.tablebase_cache import PostgresProbeCache
 from engines.maia_engine import close_maia3, start_maia3, verify_maia3_patch
 from engines.stockfish_engine import (
     STOCKFISH_CANDIDATE_PATHS,
+    close_endgame_stockfish,
     close_review_stockfish,
     close_stockfish_singleton,
+    start_endgame_stockfish,
     start_review_stockfish,
     start_stockfish_singleton,
 )
-from routers import import_games, maia_debug, onboarding, puzzles, repertoire, review, train, user, webhooks, woodpecker
+from routers import endgame_practice, endgame_woodpecker, endgames, import_games, maia_debug, onboarding, puzzles, repertoire, review, train, user, webhooks, woodpecker
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT_DIR / ".env")
@@ -166,6 +168,21 @@ def startup():
     except Exception as exc:  # noqa: BLE001
         log.exception("Review Stockfish singleton failed to start at boot: %s", exc)
 
+    # Separate full-strength Stockfish singleton for Endgame Trainer opponent
+    # replies (tablebase-miss fallback). Own process for failure-domain and
+    # latency isolation from review; see engines.stockfish_engine. Same
+    # non-fatal boot policy: the request path starts it lazily.
+    try:
+        endgame_engine = start_endgame_stockfish(
+            depth=int(os.getenv("ENDGAME_REPLY_DEPTH", "18"))
+        )
+        log.info(
+            "Endgame reply Stockfish singleton started from: %s",
+            endgame_engine.stockfish_path,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Endgame reply Stockfish singleton failed to start at boot: %s", exc)
+
 
 @app.on_event("shutdown")
 def shutdown():
@@ -177,10 +194,18 @@ def shutdown():
     close_maia3()
     close_stockfish_singleton()
     close_review_stockfish()
+    close_endgame_stockfish()
 
 # --- Routers ---
 app.include_router(onboarding.router, prefix="/onboarding")
 app.include_router(puzzles.router, prefix="/api")
+app.include_router(endgames.router, prefix="/api/endgames")
+app.include_router(
+    endgame_woodpecker.router, prefix="/api/endgames/woodpecker"
+)
+app.include_router(
+    endgame_practice.router, prefix="/api/endgames/practice"
+)
 app.include_router(review.router, prefix="/api")
 app.include_router(import_games.router, prefix="/api")
 app.include_router(train.router, prefix="/api")
