@@ -340,3 +340,31 @@ def get_queue(request: Request, conn=Depends(get_db)):
         rows = cur.fetchall()
 
     return rows
+
+
+@router.get("/count")
+def get_due_count(request: Request, conn=Depends(get_db)):
+    """The puzzle tab's badge count: due-now cards only.
+
+    The badge (a nav dot / "something to review") is derived from exactly
+    the GET /queue predicate -- `is_mastered = FALSE AND due <= NOW()`, i.e.
+    due per FSRS right now, NOT "any entries exist". This endpoint exposes
+    that number directly; GET /api/endgames/woodpecker/count uses the
+    identical predicate for the endgame tab so both badges mean the same
+    thing.
+    """
+    user_id = _get_user_id(request)
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT COUNT(*) AS due_count
+            FROM woodpecker_entries
+            WHERE user_id = %s
+              AND is_mastered = FALSE
+              AND due <= NOW()
+            """,
+            (user_id,),
+        )
+        due_count = cur.fetchone()["due_count"]
+
+    return {"due_count": due_count}
