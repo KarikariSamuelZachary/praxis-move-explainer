@@ -32,7 +32,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import psycopg2
 from dotenv import load_dotenv
 
-from services.endgame_library import CATEGORIES, EndgameSelection, select_drill_position
+from services.endgame_library import (
+    CATEGORIES,
+    EndgameSelection,
+    list_categories,
+    select_drill_position,
+)
 
 load_dotenv()
 
@@ -140,6 +145,81 @@ def test_validation(conn):
           f"{len(CATEGORIES)})")
 
 
+def test_sourced_pool(conn):
+    draws = [
+        select_drill_position(conn, category="rook", sourced_only=True)
+        for _ in range(DRAWS)
+    ]
+    assert all(d.status == "ok" for d in draws), "sourced rook pool must be seeded"
+    positions = [d.position for d in draws]
+    assert all(p.topic_category == "rook" for p in positions)
+    assert all(p.source_puzzle_id for p in positions), (
+        "curated row leaked into a sourced_only draw"
+    )
+    assert all(p.solution_moves for p in positions), (
+        "sourced row is missing its stored solution line"
+    )
+
+    # Deterministic proof the filter excludes curated rows: the Lucena topic
+    # has 10 rows and every one is curated (source_puzzle_id IS NULL).
+    lucena_id = _lucena_topic_id(conn)
+    filtered = select_drill_position(conn, topic_id=lucena_id, sourced_only=True)
+    assert filtered.status == "empty", filtered
+    assert "sourced pool only" in (filtered.reason or ""), filtered
+    unfiltered = select_drill_position(conn, topic_id=lucena_id)
+    assert unfiltered.status == "ok", unfiltered
+    print(
+        f"  {DRAWS} sourced_only rook draws: all sourced, all carry "
+        f"solution_moves; Lucena topic -> empty with flag, ok without it"
+    )
+
+
+def test_list_categories(conn):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT t.category, COUNT(*)
+            FROM endgame_topics t
+            JOIN endgame_positions p ON p.topic_id = t.id
+            WHERE p.source_puzzle_id IS NOT NULL
+            GROUP BY 1 ORDER BY 1
+            """
+        )
+        expected_sourced = cur.fetchall()
+        cur.execute(
+            """
+            SELECT t.category, COUNT(*)
+            FROM endgame_topics t
+            JOIN endgame_positions p ON p.topic_id = t.id
+            GROUP BY 1 ORDER BY 1
+            """
+        )
+        expected_all = cur.fetchall()
+
+    got_sourced = [
+        (c.category, c.position_count) for c in list_categories(conn, sourced_only=True)
+    ]
+    got_all = [(c.category, c.position_count) for c in list_categories(conn)]
+    assert got_sourced == expected_sourced, (got_sourced, expected_sourced)
+    assert got_all == expected_all, (got_all, expected_all)
+
+    # The curated-vs-sourced difference must land exactly on rook (the
+    # Lucena topic): it is the only category with curated rows.
+    sourced_map = dict(got_sourced)
+    all_map = dict(got_all)
+    assert set(all_map) == set(sourced_map) | {"rook"}, (all_map, sourced_map)
+    assert all_map["rook"] - sourced_map["rook"] == 10, (all_map, sourced_map)
+    assert sum(sourced_map.values()) + 10 == sum(all_map.values())
+    assert "bishop_knight" not in sourced_map, (
+        "category with no positions must not be listed"
+    )
+    print(
+        f"  sourced list: {len(got_sourced)} categories, "
+        f"{sum(sourced_map.values())} positions (rook={sourced_map['rook']}); "
+        f"all list adds only Lucena's 10 to rook"
+    )
+
+
 def main():
     conn = psycopg2.connect(**_db_config())
     try:
@@ -151,6 +231,10 @@ def main():
         test_empty_scopes(conn)
         print("D. validation:")
         test_validation(conn)
+        print("E. sourced-only pool filter + payload:")
+        test_sourced_pool(conn)
+        print("F. list_categories matches the DB:")
+        test_list_categories(conn)
     finally:
         conn.close()
     print("all library-selection checks passed")
