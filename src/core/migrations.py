@@ -1041,6 +1041,134 @@ def run_migrations():
                 )
                 """
             )
+
+            # --- endgame woodpecker queue -----------------------------------
+            # A DELIBERATELY SEPARATE review queue for failed Endgame Trainer
+            # drills -- not a nullable endgame_position_id bolted onto
+            # woodpecker_entries. The puzzle table's every route treats
+            # `puzzle_id` as its identity key: the duplicate guard and
+            # INSERT (POST /entries), the due/count predicates (GET /queue),
+            # and the attempt endpoint's client-asserted `solved_correctly`
+            # contract. Serving both types from one table would force a
+            # type branch into all of them (plus a can't-be-NOT-NULL
+            # migration on puzzle_id and a two-way CHECK), with zero logic
+            # shared beyond the FSRS block -- which is already shared as
+            # core/fsrs.py pure functions. Two tables keep each queue's
+            # invariants (NOT NULL key, FK target, caps, grading contract)
+            # intact and make "the puzzle queue never returns endgame rows"
+            # structural rather than a WHERE clause someone can forget.
+            #
+            # FSRS column shape is copied from woodpecker_entries verbatim
+            # so card_from_row()/rating_for()/is_lapse()/is_mastered() and
+            # the shared Scheduler work unchanged; state is the INTEGER
+            # FSRS enum (1=Learning, 2=Review, 3=Relearning).
+            #
+            # position_id is a real FK (unlike the puzzle queue's TEXT
+            # puzzle_id, which has no FK to the 5.8M-row puzzles table):
+            # endgame_positions is small and deleting a position must purge
+            # its queue rows. user_id cascades on user deletion so account
+            # teardown is not blocked by queue rows (repertoires use the
+            # same convention).
+            #
+            # Entries are created ONLY by the server on a FAILED trainer
+            # move (routers/endgames.py), never by a public /entries POST:
+            # unlike a client-asserted puzzle miss, an endgame miss is a
+            # tablebase-verified fact, and the queue should not be
+            # fabricatable. Consequently the puzzle queue's free-tier
+            # daily/active caps are NOT mirrored here: those gate a
+            # user-initiated add path, while an automatic capture that
+            # silently dropped a real failure would be worse than a few
+            # extra cards.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS endgame_woodpecker_entries (
+                    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    user_id       TEXT NOT NULL REFERENCES users(clerk_id) ON DELETE CASCADE ON UPDATE CASCADE,
+                    position_id   UUID NOT NULL REFERENCES endgame_positions(id) ON DELETE CASCADE,
+                    theme         TEXT NOT NULL,
+                    added_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    mastered_at   TIMESTAMPTZ,
+                    is_mastered   BOOLEAN NOT NULL DEFAULT FALSE,
+                    source_reason TEXT CHECK (
+                        source_reason IN (
+                            'wrong_answer',
+                            'slow_solution',
+                            'hint_used',
+                            'coach_recommended'
+                        )
+                    ),
+                    due          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    stability    DOUBLE PRECISION,
+                    difficulty   DOUBLE PRECISION,
+                    state        INTEGER NOT NULL DEFAULT 1
+                                    CHECK (state IN (1, 2, 3)),
+                    step         INTEGER,
+                    reps         INTEGER NOT NULL DEFAULT 0,
+                    lapses       INTEGER NOT NULL DEFAULT 0,
+                    last_review  TIMESTAMPTZ
+                )
+                """
+            )
+            # One ACTIVE card per (user, position), the DB-layer backstop
+            # for the capture path's duplicate guard: a mastered card is
+            # excluded, so failing the same drill again after mastery opens
+            # a fresh card (same semantics as the puzzle queue's
+            # is_mastered = FALSE guard). Partial because mastery is the
+            # only state where a duplicate pair is legitimate.
+            cur.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_endgame_woodpecker_active_entry
+                    ON endgame_woodpecker_entries(user_id, position_id)
+                    WHERE is_mastered = FALSE
+                """
+            )
+            # One row per COMPLETED review replay (not per move): the
+            # endgame review is a multi-request full-resolution drill, so
+            # solved_correctly/time_taken_ms land only on the resolving
+            # move, exactly like the puzzle queue's one-row-per-solve.
+            # resolution / failure_category mirror the trainer's richer
+            # vocabulary so the attempt log can be audited without
+            # re-deriving tablebase verdicts.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS endgame_woodpecker_attempts (
+                    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    entry_id         UUID NOT NULL REFERENCES endgame_woodpecker_entries(id) ON DELETE CASCADE,
+                    user_id          TEXT NOT NULL,
+                    solved_correctly BOOLEAN NOT NULL,
+                    time_taken_ms    INT NOT NULL,
+                    resolution       TEXT CHECK (resolution IN (
+                        'checkmate',
+                        'stalemate',
+                        'insufficient_material',
+                        'fifty_move_rule',
+                        'promotion'
+                    )),
+                    failure_category TEXT CHECK (failure_category IN (
+                        'threw_away_win',
+                        'blundered_into_loss',
+                        'lost_the_draw',
+                        'ran_out_of_moves'
+                    )),
+                    attempted_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            # Due/count lookup path: mirrors idx_woodpecker_entries_user_mastered's
+            # role, ordered by due like both queue readers.
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_endgame_woodpecker_entries_user_due
+                    ON endgame_woodpecker_entries(user_id, due)
+                """
+            )
+            # FK-index convention, mirrors idx_endgame_positions_topic_id.
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_endgame_woodpecker_attempts_entry_id
+                    ON endgame_woodpecker_attempts(entry_id)
+                """
+            )
         conn.commit()
         log.info("Database migrations completed successfully")
     except Exception:
