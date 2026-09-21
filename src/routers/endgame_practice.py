@@ -44,6 +44,15 @@ the review queue. The FAILED response still carries the full grader block
 and the authored common-mistake explanation (a read-only enrichment), just
 no rating and no capture.
 
+HINTS (hints_used) -- tracking only, no scoring
+================================================
+"Get solution" is available here like the other two surfaces, and the move
+request carries the same client-owned hints_used count. Practice has no
+rating and no FSRS card, so there is nothing for a hint to neutralize: the
+field is accepted (the shared EndgameMoveRequest keeps one shape) and
+echoed on the response purely so the panel can show "Solved (hint used)".
+Nothing is persisted, like every other practice outcome.
+
 AUTH / USER ROW
 ===============
 Same Clerk pattern as the other endgame endpoints (internal-secret
@@ -182,8 +191,13 @@ def submit_practice_move(
     Response is the shared EndgameMoveResponse with `rating` and
     `review_capture` always None (nothing was written) -- see the module
     docstring for why practice failures are not captured into Woodpecker.
+    `hints_used` is accepted and echoed for display only: practice has no
+    scoring, so there is no consequence to neutralize (and nothing is
+    persisted either way).
     """
     _require_clerk_id(request)
+    if body.hints_used < 0:
+        raise HTTPException(status_code=400, detail="hints_used cannot be negative")
 
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
@@ -275,6 +289,7 @@ def submit_practice_move(
         dtz_before=result.dtz_before,
         dtz_after=result.dtz_after,
         common_mistake=result.common_mistake,
+        hints_used=body.hints_used,
         rating=None,
         review_capture=None,
         opponent_reply=opponent_reply,
