@@ -79,6 +79,26 @@ using exactly those capture fields, so a FAILED response always means the
 review card exists (or already existed -- repeat failures reuse the active
 card). The card can never be fabricated by a client, unlike the puzzle
 queue's public POST /api/woodpecker/entries.
+
+HINT-ASSISTED SOLVES (hints_used)
+=================================
+The grader stays pure and never sees a hint count -- exactly as its own
+docstring prescribes ("a move cap / hint nudge is a product-UX concern ...
+belongs one layer up (route/client)"). This route owns the consequence,
+because it is the one place the rating is written:
+
+  * SOLVED + hints_used > 0 -> NEUTRAL. The user did not demonstrate the
+    technique unaided, so the rating column is left untouched in both
+    directions (change 0, old == new) -- including NOT establishing a first
+    rating for an unrated user, whose column stays NULL and whose response
+    carries rating=None. The echoed `hints_used` is what lets the resolved
+    panel say "Solved (hint used)".
+  * FAILED + hints_used > 0 -> unchanged. A failure is a failure: the
+    rating write and the review capture below still happen.
+
+The count itself is client-owned (the same statelessness every route here
+documents); the hint route (routers/endgame_hint.py) is advisory and
+write-free, and the client reports what it revealed.
 """
 import logging
 
@@ -213,6 +233,7 @@ def submit_move(
       * unknown position_id                -> 404
       * unknown user                       -> 404
       * malformed/illegal move or FEN      -> 400 (client bug)
+      * negative hints_used                -> 400 (client bug)
       * stale/wrong drill state (terminal fen_before, win drill fed a
         non-winning position, draw drill fed a lost one) -> 409
       * tablebase cannot answer right now  -> 503 (retryable; nothing was
@@ -221,6 +242,8 @@ def submit_move(
         unavailable) -> 503 (retryable; nothing was written)
     """
     clerk_id = _require_clerk_id(request)
+    if body.hints_used < 0:
+        raise HTTPException(status_code=400, detail="hints_used cannot be negative")
 
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
@@ -262,9 +285,10 @@ def submit_move(
         conn.rollback()
         raise HTTPException(status_code=404, detail="User not found")
 
-    old_rating = user["endgame_trainer_rating"]
-    if old_rating is None:
-        old_rating = DEFAULT_TRAINER_RATING
+    stored_rating = user["endgame_trainer_rating"]
+    old_rating = (
+        stored_rating if stored_rating is not None else DEFAULT_TRAINER_RATING
+    )
 
     try:
         result = evaluate_endgame_move(
@@ -317,8 +341,30 @@ def submit_move(
             failed_at=datetime.now(timezone.utc),
         )
 
+    # A hint-assisted solve is neutral (module docstring HINT-ASSISTED
+    # SOLVES): no rating write in either direction, and an unrated user
+    # stays unrated. Failures are unaffected -- hints never soften them.
+    neutral_solve = (
+        result.status == EndgameStatus.SOLVED and body.hints_used > 0
+    )
+
     rating_update = None
-    if result.rating_change is not None:
+    if result.rating_change is None:
+        # in_progress: release the FOR UPDATE lock without writing anything.
+        conn.rollback()
+    elif neutral_solve:
+        # Nothing is written and the lock is released. The rating block is
+        # returned for the panel's "±0" only when a rating actually exists;
+        # an unrated user's first rating is not established by a hinted
+        # solve, so their response carries rating=None.
+        conn.rollback()
+        if stored_rating is not None:
+            rating_update = EndgameRatingUpdate(
+                old_rating=stored_rating,
+                new_rating=stored_rating,
+                change=0,
+            )
+    else:
         new_rating = clamp_rating(old_rating + result.rating_change)
         with conn.cursor() as cur:
             cur.execute(
@@ -355,9 +401,6 @@ def submit_move(
             new_rating=new_rating,
             change=result.rating_change,
         )
-    else:
-        # in_progress: release the FOR UPDATE lock without writing anything.
-        conn.rollback()
 
     # --- opponent reply ---------------------------------------------------
     # Within the stored puzzle line the client plays the line from GET /next
@@ -408,6 +451,7 @@ def submit_move(
         dtz_before=result.dtz_before,
         dtz_after=result.dtz_after,
         common_mistake=result.common_mistake,
+        hints_used=body.hints_used,
         rating=rating_update,
         review_capture=review_capture,
         opponent_reply=opponent_reply,
