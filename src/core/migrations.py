@@ -1129,6 +1129,13 @@ def run_migrations():
             # resolution / failure_category mirror the trainer's richer
             # vocabulary so the attempt log can be audited without
             # re-deriving tablebase verdicts.
+            #
+            # hints_used records how the replay was resolved: solved_correctly
+            # stays the BOARD verdict (a hinted solve did resolve), while
+            # hints_used > 0 is why that solve was scheduled as not-clean
+            # (FSRS Again, exactly like a failed replay -- see
+            # routers/endgame_woodpecker.py). 0 for rows written before
+            # "Get solution" existed.
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS endgame_woodpecker_attempts (
@@ -1137,6 +1144,7 @@ def run_migrations():
                     user_id          TEXT NOT NULL,
                     solved_correctly BOOLEAN NOT NULL,
                     time_taken_ms    INT NOT NULL,
+                    hints_used       INTEGER NOT NULL DEFAULT 0,
                     resolution       TEXT CHECK (resolution IN (
                         'checkmate',
                         'stalemate',
@@ -1152,6 +1160,13 @@ def run_migrations():
                     )),
                     attempted_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
+                """
+            )
+            # Upgrade installs that predate the hint column.
+            cur.execute(
+                """
+                ALTER TABLE endgame_woodpecker_attempts
+                    ADD COLUMN IF NOT EXISTS hints_used INTEGER NOT NULL DEFAULT 0
                 """
             )
             # Due/count lookup path: mirrors idx_woodpecker_entries_user_mastered's
