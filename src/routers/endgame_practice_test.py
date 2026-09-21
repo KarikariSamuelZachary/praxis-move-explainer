@@ -218,6 +218,20 @@ def test_auth(client, headers):
     )
     assert response.status_code == 400, response.text
 
+    response = client.post(
+        "/api/endgames/practice/move",
+        headers=headers,
+        json={
+            "position_id": "00000000-0000-0000-0000-000000000001",
+            "fen_before": chess.STARTING_FEN,
+            "move": "e2e4",
+            "fen_after": chess.STARTING_FEN,
+            "hints_used": -1,
+        },
+    )
+    assert response.status_code == 400, response.text
+    assert "hints_used" in response.json()["detail"]
+
     response = client.get(
         "/api/endgames/practice/next", headers=headers, params={"category": "pawn"}
     )
@@ -235,8 +249,9 @@ def test_auth(client, headers):
     response = client.get("/api/endgames/practice/next", headers=headers)
     assert response.status_code == 422, response.text
     print(
-        "  missing secret -> 401; missing clerk -> 400; unknown category -> "
-        "400; unseeded category -> 404; missing ?category -> 422"
+        "  missing secret -> 401; missing clerk -> 400; negative hints_used -> "
+        "400; unknown category -> 400; unseeded category -> 404; missing "
+        "?category -> 422"
     )
 
 
@@ -334,9 +349,10 @@ def test_category_purity(client, headers, categories):
     )
 
 
-def play_practice_drill_to_mate(client, headers, position):
+def play_practice_drill_to_mate(client, headers, position, hints_used=0):
     """Replay a practice drill through POST /practice/move to checkmate,
-    asserting every response is write-free (rating/review_capture None)."""
+    asserting every response is write-free (rating/review_capture None) and
+    echoes the client's running hints_used count."""
     line = position["moves"]
     board = chess.Board(position["fen"])
     user_color = board.turn
@@ -368,12 +384,14 @@ def play_practice_drill_to_mate(client, headers, position):
                 "fen_before": fen_before,
                 "move": uci,
                 "fen_after": board.fen(),
+                "hints_used": hints_used,
             },
         )
         assert response.status_code == 200, response.text
         body = response.json()
         assert body["rating"] is None, body
         assert body["review_capture"] is None, body
+        assert body["hints_used"] == hints_used, body
 
         if board.is_checkmate():
             final_body = body
@@ -403,11 +421,14 @@ def test_solved_drill(client, headers):
     )
     rating_before = read_trainer_rating()
 
+    # Practice has no scoring, so a hint count rides along purely for the
+    # panel's "Solved (hint used)" display -- nothing to neutralize.
     final, user_moves, generated = play_practice_drill_to_mate(
-        client, headers, position
+        client, headers, position, hints_used=2
     )
     assert final["status"] == "solved", final
     assert final["resolution"] == "checkmate", final
+    assert final["hints_used"] == 2, final
     assert final["rating"] is None, final
     assert final["review_capture"] is None, final
     assert user_moves >= 2 and generated >= 1, (user_moves, generated)
@@ -417,8 +438,9 @@ def test_solved_drill(client, headers):
     )
     print(
         f"  {position['topic_name']} | {user_moves} user moves "
-        f"({generated} generated replies) -> solved(checkmate) | rating "
-        f"unchanged at {rating_before} | no Woodpecker entry"
+        f"({generated} generated replies, 2 hints tracked) -> "
+        f"solved(checkmate) | rating unchanged at {rating_before} | "
+        f"no Woodpecker entry"
     )
     return position
 
