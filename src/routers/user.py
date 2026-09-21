@@ -15,7 +15,10 @@ def get_user_rating(request: Request, conn=Depends(get_db)):
 
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
-            "SELECT tactical_rating, skill_level FROM users WHERE clerk_id = %s",
+            """
+            SELECT tactical_rating, endgame_trainer_rating, skill_level
+            FROM users WHERE clerk_id = %s
+            """,
             (clerk_id,),
         )
         row = cur.fetchone()
@@ -29,7 +32,14 @@ def get_user_rating(request: Request, conn=Depends(get_db)):
         band = SKILL_RATING_BANDS[row["skill_level"]]
         tactical_rating = (band[0] + band[1]) // 2
 
+    # endgame_trainer_rating is deliberately returned RAW (NULL until the
+    # first solved/failed endgame drill): the Endgame Trainer derives its
+    # own window from users.endgame_trainer_rating with a skill-band
+    # fallback, but there is no single "effective" number to show the way
+    # there is for tactical_rating -- the frontend renders NULL as
+    # "Unrated" and fills the real value from the first rated response.
     return {
         "tactical_rating": tactical_rating,
+        "endgame_trainer_rating": row["endgame_trainer_rating"],
         "skill_level": row["skill_level"],
     }
