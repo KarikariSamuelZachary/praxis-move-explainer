@@ -59,6 +59,7 @@ const TRAINING_MODES: TrainingMode[] = [
     illustration: '/endgame-trainer-illustration.webp',
     cta: 'Explore Endgames',
     tone: 'purple',
+    href: '/train/endgametrainer',
   },
   {
     key: 'scenario-trainer',
