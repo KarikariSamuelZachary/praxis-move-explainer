@@ -24,7 +24,7 @@ from engines.stockfish_engine import (
     start_review_stockfish,
     start_stockfish_singleton,
 )
-from routers import endgame_practice, endgame_woodpecker, endgames, import_games, maia_debug, onboarding, puzzles, repertoire, review, train, user, webhooks, woodpecker
+from routers import endgame_hint, endgame_playout, endgame_practice, endgame_woodpecker, endgames, import_games, maia_debug, onboarding, puzzles, repertoire, review, train, user, webhooks, woodpecker
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT_DIR / ".env")
@@ -200,11 +200,17 @@ def shutdown():
 app.include_router(onboarding.router, prefix="/onboarding")
 app.include_router(puzzles.router, prefix="/api")
 app.include_router(endgames.router, prefix="/api/endgames")
+# "Get solution" is shared by all three surfaces (rated, review, practice),
+# so it lives beside them at /api/endgames/hint.
+app.include_router(endgame_hint.router, prefix="/api/endgames")
 app.include_router(
     endgame_woodpecker.router, prefix="/api/endgames/woodpecker"
 )
 app.include_router(
     endgame_practice.router, prefix="/api/endgames/practice"
+)
+app.include_router(
+    endgame_playout.router, prefix="/api/endgames/playout"
 )
 app.include_router(review.router, prefix="/api")
 app.include_router(import_games.router, prefix="/api")
