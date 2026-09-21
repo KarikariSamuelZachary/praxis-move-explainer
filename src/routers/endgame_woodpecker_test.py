@@ -37,6 +37,13 @@ What is verified against the REAL seeded content:
      solved_correctly=false, and the badge returns to 0.
   F. Integrity: unknown entry -> 404, negative time -> 400, stale
      non-winning fen_before -> 409, none of which touch the FSRS row.
+  G. Hint-assisted pass does NOT graduate: a mature Review-state card is
+     replayed to real checkmate with hints_used=2. The pass resolves
+     solved and the attempt row records that (solved_correctly=true,
+     hints_used=2), but FSRS receives the failure rating (Again), so the
+     card goes Review -> Relearning with a lapse instead of advancing --
+     exactly the transition a genuinely failed replay produces. The badge
+     returns to 0 and the trainer rating never moves.
 
 Run with: cd src && ../venv/bin/python routers/endgame_woodpecker_test.py
 Requires: DATABASE_URL / INTERNAL_SECRET from root .env, the seeded
@@ -225,7 +232,9 @@ def submit_move(client, headers, position, move):
     return response.json()
 
 
-def submit_review_move(client, headers, entry, fen_before, move_uci, fen_after, ms):
+def submit_review_move(
+    client, headers, entry, fen_before, move_uci, fen_after, ms, hints_used=0
+):
     response = client.post(
         "/api/endgames/woodpecker/attempts",
         headers=headers,
@@ -235,17 +244,21 @@ def submit_review_move(client, headers, entry, fen_before, move_uci, fen_after, 
             "move": move_uci,
             "fen_after": fen_after,
             "time_taken_ms": ms,
+            "hints_used": hints_used,
         },
     )
     assert response.status_code == 200, response.text
-    return response.json()
+    body = response.json()
+    assert body["hints_used"] == hints_used, body
+    return body
 
 
-def replay_review_to_resolution(client, headers, entry):
+def replay_review_to_resolution(client, headers, entry, hints_used=0):
     """Replay the card through the review endpoint to its real resolution.
 
     Within the stored line the client plays the line (server replies None);
-    past it the server generates the opponent move. Returns the resolving
+    past it the server generates the opponent move. `hints_used` rides on
+    every move (read only on the resolving one). Returns the resolving
     response plus counters.
     """
     line = entry["position"]["moves"]
@@ -274,7 +287,14 @@ def replay_review_to_resolution(client, headers, entry):
         user_moves += 1
         last_sent_ms = user_moves * MS_PER_MOVE
         body = submit_review_move(
-            client, headers, entry, fen_before, uci, board.fen(), last_sent_ms
+            client,
+            headers,
+            entry,
+            fen_before,
+            uci,
+            board.fen(),
+            last_sent_ms,
+            hints_used=hints_used,
         )
 
         if board.is_checkmate():
@@ -654,6 +674,106 @@ def test_integrity(client, headers, entry):
     )
 
 
+
+def set_review_state(entry_id, *, stability=12.0, difficulty=5.0, reps=5, lapses=0):
+    """Place the card in the Review state FSRS reaches after clean passes.
+
+    The same raw bookkeeping the harness already does for the due reset
+    (set_due_past): the hint transition has to be measured from a genuinely
+    mature card, and driving it back there with more full replays would only
+    make the harness slower, not more correct.
+    """
+    conn = database.connection_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE endgame_woodpecker_entries
+                SET state       = 2,
+                    step        = NULL,
+                    stability   = %s,
+                    difficulty  = %s,
+                    reps        = %s,
+                    lapses      = %s,
+                    is_mastered = FALSE,
+                    mastered_at = NULL,
+                    last_review = NOW() - INTERVAL '10 days',
+                    due         = NOW() - INTERVAL '1 minute'
+                WHERE id = %s::uuid
+                """,
+                (stability, difficulty, reps, lapses, entry_id),
+            )
+        conn.commit()
+    finally:
+        database.connection_pool.putconn(conn)
+
+
+def test_hint_assisted_review_does_not_graduate(client, headers, entry):
+    print("G. hint-assisted review pass does NOT graduate the card:")
+
+    # The shared hint route must answer for a review position too.
+    hint_response = client.post(
+        "/api/endgames/hint",
+        headers=headers,
+        json={
+            "position_id": entry["position_id"],
+            "fen": entry["position"]["fen"],
+        },
+    )
+    assert hint_response.status_code == 200, hint_response.text
+    hint = hint_response.json()
+    assert (
+        chess.Move.from_uci(hint["move_uci"])
+        in chess.Board(entry["position"]["fen"]).legal_moves
+    ), hint
+
+    set_review_state(entry["id"], reps=5, lapses=0)
+    row = read_entry(entry["id"])
+    assert row["state"] == 2 and row["reps"] == 5 and row["lapses"] == 0, row
+    assert get_count(client, headers) == 1, "due Review card not served"
+
+    rating_before = read_trainer_rating()
+    final, user_moves, _, _, _ = replay_review_to_resolution(
+        client, headers, entry, hints_used=2
+    )
+    assert final["status"] == "solved", final
+    assert final["resolution"] == "checkmate", final
+    assert final["hints_used"] == 2, final
+
+    attempt = final["attempt"]
+    scheduling = final["scheduling"]
+    assert attempt is not None and scheduling is not None, final
+    # WHAT happened is recorded truthfully: the replay did resolve solved.
+    assert attempt["solved_correctly"] is True, attempt
+    # HOW it happened is recorded too, and it is why the schedule below is
+    # the failure path.
+    assert attempt["hints_used"] == 2, attempt
+
+    # FSRS: Again (1), not Good (3) -- Review -> Relearning with a lapse,
+    # exactly the transition a real failed replay produces (section E).
+    assert scheduling["prior_state"] == 2, scheduling
+    assert scheduling["rating"] == 1, scheduling
+    assert scheduling["new_state"] == 3, scheduling
+    assert scheduling["lapses"] == 1, scheduling
+    assert scheduling["reps"] == 6, scheduling
+    assert scheduling["is_mastered"] is False, scheduling
+
+    row = read_entry(entry["id"])
+    assert row["state"] == 3 and row["lapses"] == 1 and row["reps"] == 6, row
+    assert row["is_mastered"] is False and row["mastered_at"] is None, row
+    assert count_attempts(entry["id"]) == 4, "expected four attempt rows"
+    assert read_trainer_rating() == rating_before, "review moved the trainer rating"
+    assert get_count(client, headers) == 0, "Relearning card counted as due"
+    assert get_queue(client, headers) == [], "Relearning card served"
+    print(
+        f"  hint {hint['move_san']} available for the review position | "
+        f"{user_moves} user moves with 2 hints -> solved(checkmate) | "
+        f"attempt solved_correctly=true hints_used=2 | FSRS Again "
+        f"(not Good): Review -> Relearning, lapses=1, reps=6 | "
+        f"card NOT graduated | badge 0"
+    )
+
+
 def main():
     client, headers = setup()
     try:
@@ -664,6 +784,7 @@ def main():
         test_second_success_graduates(client, headers, entry)
         test_repeated_failure(client, headers, entry)
         test_integrity(client, headers, entry)
+        test_hint_assisted_review_does_not_graduate(client, headers, entry)
     finally:
         teardown()
     print("all Endgame Woodpecker queue checks passed (test user removed)")
