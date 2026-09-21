@@ -19,16 +19,21 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/woodpecker', label: 'Woodpecker' },
   { href: '/repertoire', label: 'Repertoire' },
   { href: '/openings', label: 'Openings' },
-  { href: '/community', label: 'Endgames' },
+  { href: '/endgames', label: 'Endgames' },
 ];
 
 function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
+  // Most-specific match wins: /train/endgametrainer lives under /train, so a
+  // plain startsWith would light up both the Train and Endgames tabs.
+  const activeHref = NAV_ITEMS.filter(
+    (item) => pathname === item.href || pathname.startsWith(`${item.href}/`)
+  ).sort((a, b) => b.href.length - a.href.length)[0]?.href;
 
   return (
     <>
       {NAV_ITEMS.map((item) => {
-        const isActive = pathname.startsWith(item.href);
+        const isActive = item.href === activeHref;
 
         return (
           <Link
