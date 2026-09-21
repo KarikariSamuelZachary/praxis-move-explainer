@@ -44,6 +44,24 @@ attempt log row happen only on the resolving request:
 That is the same per-move contract the trainer uses, so a review client is
 just the drill screen pointed at this endpoint.
 
+HINT-ASSISTED PASSES DO NOT GRADUATE
+====================================
+The queue exists to confirm the user has genuinely learned the technique
+unaided, so a replay that needed a hint must not advance the card the way a
+clean pass does. The resolving move carries the client-owned hints_used
+count; when it is > 0 the FSRS write takes the SAME path a real failed
+replay already uses -- rating_for(solved=False) -> Again, i.e. Review ->
+Relearning with a lapse, a short due date and is_mastered = FALSE -- instead
+of Good. Concretely, "doesn't graduate" means: no state promotion, no
+mastery, and the card comes back soon. It is deliberately not a silent
+no-op: leaving the card untouched would keep it due forever and teach the
+scheduler nothing, and reusing the failure path keeps exactly one
+not-clean story in FSRS.
+
+The attempt row stays factual: solved_correctly is the BOARD verdict
+(True), and hints_used records how it was reached, so the log can
+distinguish clean solves from assisted ones without re-deriving anything.
+
 REVIEWS DO NOT TOUCH THE TRAINER RATING
 =======================================
 Unlike POST /api/endgames/move, a review grades with no rating arguments,
@@ -249,10 +267,13 @@ def record_attempt(
       * tablebase cannot grade right now       -> 503 (nothing written)
       * opponent reply cannot be generated     -> 503 (nothing written)
       * time_taken_ms < 0                      -> 400
+      * hints_used < 0                         -> 400
     """
     clerk_id = _require_clerk_id(request)
     if body.time_taken_ms < 0:
         raise HTTPException(status_code=400, detail="time_taken_ms cannot be negative")
+    if body.hints_used < 0:
+        raise HTTPException(status_code=400, detail="hints_used cannot be negative")
 
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         # FOR UPDATE serializes concurrent submissions for this card, so
@@ -345,7 +366,13 @@ def record_attempt(
         card = card_from_row(entry)
         prior_state = card.state
         solved = result.status == EndgameStatus.SOLVED
-        rating = rating_for(solved)
+        # A hint-assisted pass is not a clean solve (module docstring
+        # HINT-ASSISTED PASSES DO NOT GRADUATE): it must not advance the
+        # card, so it takes the same FSRS path as a real failed replay --
+        # Again, never Good. The attempt row below still records the board
+        # verdict and the hint count.
+        clean_solve = solved and body.hints_used == 0
+        rating = rating_for(clean_solve)
         reviewed_card, _ = scheduler.review_card(
             card=card, rating=rating, review_datetime=review_at
         )
@@ -384,6 +411,9 @@ def record_attempt(
             )
             # One attempt row per COMPLETED replay, with the server's own
             # verdict -- the client never asserts solved_correctly here.
+            # solved_correctly is the board verdict; hints_used is the
+            # client-owned count, kept so an auditor can tell why a solved
+            # replay was scheduled as Again.
             cur.execute(
                 """
                 INSERT INTO endgame_woodpecker_attempts (
@@ -391,16 +421,18 @@ def record_attempt(
                     user_id,
                     solved_correctly,
                     time_taken_ms,
+                    hints_used,
                     resolution,
                     failure_category
                 )
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
                 RETURNING
                     id,
                     entry_id,
                     user_id,
                     solved_correctly,
                     time_taken_ms,
+                    hints_used,
                     resolution,
                     failure_category,
                     attempted_at
@@ -410,6 +442,7 @@ def record_attempt(
                     clerk_id,
                     solved,
                     body.time_taken_ms,
+                    body.hints_used,
                     result.resolution.value if result.resolution else None,
                     (
                         result.failure_category.value
@@ -434,11 +467,12 @@ def record_attempt(
             "is_mastered": mastered,
         }
         log.info(
-            "endgame review resolved entry=%s status=%s rating=%s lapse=%s",
+            "endgame review resolved entry=%s status=%s rating=%s lapse=%s hints=%s",
             body.entry_id,
             result.status.value,
             int(rating),
             lapse,
+            body.hints_used,
         )
 
     return EndgameWoodpeckerAttemptResponse(
@@ -451,6 +485,7 @@ def record_attempt(
         dtz_before=result.dtz_before,
         dtz_after=result.dtz_after,
         common_mistake=result.common_mistake,
+        hints_used=body.hints_used,
         opponent_reply=opponent_reply,
         attempt=attempt,
         scheduling=scheduling,
