@@ -72,6 +72,49 @@ class EndgameMoveRequest(BaseModel):
     fen_before: str
     move: str
     fen_after: str
+    # How many hints THIS drill attempt has revealed (client-owned: the
+    # backend keeps no session state). Read only on a resolving move, where
+    # it changes the scored outcome: a hint-assisted SOLVED move is neutral
+    # (no rating write in either direction) in the rated loop, and practice
+    # carries it for display only. A hint-assisted FAILED move is unchanged
+    # -- the failure stands. Negative values are rejected with a 400.
+    hints_used: int = 0
+
+
+class EndgameHintRequest(BaseModel):
+    """Ask for the single best move in the position on the board.
+
+    `fen` is the live drill position with the USER to move; the route
+    rejects the defender's turn, which would otherwise be answered with the
+    defender's best move. Nothing is submitted and nothing is written: the
+    hint is advisory, and the user still plays the move through the
+    surface's own grading route.
+    """
+
+    position_id: UUID
+    fen: str
+
+
+class EndgameHintResponse(BaseModel):
+    """The one theoretically correct move for the side to move.
+
+    Same selection policy as the defender generator (draw-preserving /
+    longest-resistance / fastest-mate -- see services/endgame_reply.py),
+    applied to the user's side of the board. `source` is "tablebase"
+    whenever the local files or the Lichess fallback can reach the position,
+    "stockfish" only for the beyond-coverage fallback.
+
+    Read-only by construction: the route has no write path, so revealing a
+    hint cannot change a recorded outcome. The surfaces report `hints_used`
+    alongside their own moves instead, which is where the scoring
+    consequences live.
+    """
+
+    position_id: str
+    move_uci: str
+    move_san: str
+    fen_after: str
+    source: Literal["tablebase", "stockfish"]
 
 
 class EndgameRatingUpdate(BaseModel):
@@ -159,6 +202,9 @@ class EndgameMoveResponse(BaseModel):
     dtz_before: Optional[int] = None
     dtz_after: Optional[int] = None
     common_mistake: Optional[str] = None
+    # Echoed from the request so the resolved panel (and an attempt log) can
+    # distinguish an unaided solve from a hint-assisted one.
+    hints_used: int = 0
     rating: Optional[EndgameRatingUpdate] = None
     review_capture: Optional[EndgameReviewCapture] = None
     opponent_reply: Optional[EndgameOpponentReply] = None
@@ -221,6 +267,12 @@ class EndgameWoodpeckerAttemptRequest(BaseModel):
     move: str
     fen_after: str
     time_taken_ms: int
+    # Hints revealed during THIS replay (client-owned, like the trainer's
+    # hints_used). On resolution a hint-assisted pass is scheduled as
+    # NOT-CLEAN: FSRS receives the failure rating (Again) instead of Good,
+    # so the card cannot graduate and comes back soon -- exactly how a real
+    # failed replay is already handled. See routers/endgame_woodpecker.py.
+    hints_used: int = 0
 
 
 class EndgameWoodpeckerAttemptResponse(BaseModel):
@@ -245,6 +297,10 @@ class EndgameWoodpeckerAttemptResponse(BaseModel):
     dtz_before: Optional[int] = None
     dtz_after: Optional[int] = None
     common_mistake: Optional[str] = None
+    # Echoed from the request: on a resolved replay the panel needs it to
+    # say the pass was hint-assisted (and the scheduling above shows the
+    # consequence -- an assisted pass is never scheduled as a clean solve).
+    hints_used: int = 0
     opponent_reply: Optional[EndgameOpponentReply] = None
     # The endgame_woodpecker_attempts row written on resolution.
     attempt: Optional[dict] = None
@@ -264,3 +320,95 @@ class EndgamePracticeCategory(BaseModel):
 
     category: str
     position_count: int
+
+
+class EndgamePlayoutReplyRequest(BaseModel):
+    """One continuation step of a FAILED drill's playout.
+
+    `fen_after` is where the user's last move (or the grader's failing move)
+    left the board, i.e. the position the defender must answer. Deliberately
+    no move is submitted: the verdict is already final, so the server is only
+    asked for the defender's reply.
+    """
+
+    position_id: UUID
+    fen_after: str
+
+
+class EndgamePlayoutReplyResponse(BaseModel):
+    """The defender's reply for a settled drill's playout, or None.
+
+    None means either "the request is still inside the stored line" (the
+    client applies the stored move itself, exactly like a graded replay) or
+    "the position is already over" (the playout reached a real ending). The
+    client distinguishes the two from its own game state, and stops asking
+    once its game is over -- so the server maps an already-over position to
+    None instead of treating it as an internal error.
+
+    Nothing in this payload can change a recorded outcome: the route has no
+    write path (no grading, no rating, no Woodpecker capture).
+    """
+
+    opponent_reply: Optional[EndgameOpponentReply] = None
+
+
+class EndgamePlayoutFinishRequest(BaseModel):
+    """Fast-forward a settled drill's continuation from the position it is at.
+
+    `fen` is the board the user is looking at (mid-playout or immediately
+    after the failure). No move is submitted: the route plays the tablebase-
+    optimal line out server-side, or reports the verdict when no cheap
+    concrete line exists.
+    """
+
+    position_id: UUID
+    fen: str
+
+
+class EndgamePlayoutFinishResponse(BaseModel):
+    """The fast-forwarded result of a settled drill.
+
+    Two shapes, both final:
+      * a concrete ending -- `fen`/`ending`/`plies` carry a real terminal
+        position reached by playing the same generator for both sides (only
+        attempted for locally-covered material, where it is ~0.3s; decisive
+        lines measured 13-25 plies, drawn ones 18-20). `line` is the whole
+        sequence that got there, in UCI order, so the client can STEP it
+        move by move with no further requests;
+      * a verdict only -- `fen`/`ending` are None, `line` is empty and
+        `outcome` is the tablebase result, used when the position is beyond
+        the local files (6-7 men fall back to the Lichess API, ~3-13s PER
+        PLY, so a line-play there is not a "fast-forward" and there is no
+        line to step).
+
+    `line` is the ordered moves of the fast-forward, UCI (the same format
+    GET /next's `moves` and opponent_reply.move_uci use, which the board
+    already applies via uciToMove). It is non-empty exactly when the
+    concrete shape is returned AND the request position was not already
+    terminal: the client replays it against the request FEN, so
+    line.length == plies and applying every move reproduces `fen`.
+
+    `outcome` is from the USER's colour (the side to move in the drill's
+    stored FEN), so the panel's copy never has to reason about whose turn it
+    currently is. None only when the request position was already terminal.
+
+    Read-only: this route never grades, never writes a rating and never
+    captures into the review queue.
+    """
+
+    outcome: Optional[Literal["win", "draw", "loss"]] = None
+    fen: Optional[str] = None
+    ending: Optional[
+        Literal[
+            "checkmate",
+            "stalemate",
+            "insufficient_material",
+            "fifty_move_rule",
+            "seventy_five_move_rule",
+            "fivefold_repetition",
+        ]
+    ] = None
+    plies: int = 0
+    # The step-through source of truth: empty on the verdict path and on an
+    # already-terminal request position.
+    line: List[str] = Field(default_factory=list)
