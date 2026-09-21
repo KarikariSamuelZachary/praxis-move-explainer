@@ -44,6 +44,12 @@ curated Lucena fixture):
   E. Integrity: fabricated fen_after / illegal move -> 400 and a stale
      non-winning fen_before for the same drill -> 409, all through the
      real endpoint, with the rating left untouched.
+  F. "Get solution": the hint route returns one legal, win-preserving,
+     deterministic tablebase move and writes nothing; the hinted move then
+     grades cleanly through POST /move; and a hint-assisted SOLVE is
+     NEUTRAL -- rating change 0, old == new, the DB column byte-identical,
+     and an unrated user is not given a first rating by a hinted solve
+     (all with hints_used echoed on the responses).
 
 Random selection is pooled-random, so the harness retries GET /next until
 the served drill is suitable for the local (Syzygy <=5-man) runner. The
@@ -59,6 +65,7 @@ import os
 import sys
 
 from datetime import datetime
+from uuid import uuid4
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -177,6 +184,25 @@ def read_rating():
         database.connection_pool.putconn(conn)
     assert row is not None, "test user missing"
     return row[0]
+
+
+def count_review_cards():
+    """The endgame review queue rows for the test user: the hint route is
+    read-only, so this must not move."""
+    conn = database.connection_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*)
+                FROM endgame_woodpecker_entries
+                WHERE user_id = %s
+                """,
+                (TEST_CLERK_ID,),
+            )
+            return cur.fetchone()[0]
+    finally:
+        database.connection_pool.putconn(conn)
 
 
 def write_rating(value):
@@ -710,6 +736,194 @@ def test_integrity(client, headers, position, failed_position, lost_fen):
     )
 
 
+
+def _fen_key(fen: str) -> str:
+    """First 4 FEN fields: the normalization the endgame routes use."""
+    return " ".join(fen.split()[:4])
+
+
+def post_hint(client, headers, position_id, fen):
+    return client.post(
+        "/api/endgames/hint",
+        headers=headers,
+        json={"position_id": str(position_id), "fen": fen},
+    )
+
+
+def replay_line_with_hints(client, headers, position, hints_used):
+    """Replay the stored mate line through the rated endpoint with a hint
+    count attached, returning the resolving response."""
+    board = chess.Board(position["fen"])
+    user_color = board.turn
+    final_body = None
+    for uci in position["moves"]:
+        move = chess.Move.from_uci(uci)
+        if board.turn != user_color:
+            board.push(move)  # opponent reply, not graded
+            continue
+        fen_before = board.fen()
+        board.push(move)
+        response = client.post(
+            "/api/endgames/move",
+            headers=headers,
+            json={
+                "position_id": position["id"],
+                "fen_before": fen_before,
+                "move": uci,
+                "fen_after": board.fen(),
+                "hints_used": hints_used,
+            },
+        )
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["hints_used"] == hints_used, body
+        if board.is_checkmate():
+            final_body = body
+            break
+        assert body["status"] == "in_progress", body
+        assert body["rating"] is None, "in_progress must not write the rating"
+    assert final_body is not None, "stored mate line never resolved"
+    return final_body
+
+
+def test_hint_and_neutral_solve(client, headers):
+    print("F. 'Get solution' hint + hint-assisted solves are NEUTRAL:")
+    cards_before = count_review_cards()
+    position = fetch_position(
+        client,
+        headers,
+        qualifier=_mate_line_qualifier,
+        max_attempts=MAX_GET_ATTEMPTS_SOLVED,
+    )
+    board = chess.Board(position["fen"])
+    rating_before = read_rating()
+    print(
+        f"  served sourced drill: {position['topic_name']} | "
+        f"rating={position['rating']} | "
+        f"stored line={len(position['moves'])} plies"
+    )
+
+    # --- route validation -------------------------------------------------
+    no_clerk = {"X-Internal-Secret": headers["X-Internal-Secret"]}
+    response = post_hint(client, no_clerk, position["id"], position["fen"])
+    assert response.status_code == 400, response.text
+    response = post_hint(client, headers, uuid4(), position["fen"])
+    assert response.status_code == 404, response.text
+    response = post_hint(client, headers, position["id"], "not-a-fen")
+    assert response.status_code == 400, response.text
+
+    # Defender to move (the user's first stored move, played locally): a
+    # hint there would answer for the defender, so it must be rejected.
+    after_first = board.copy(stack=False)
+    after_first.push(chess.Move.from_uci(position["moves"][0]))
+    response = post_hint(client, headers, position["id"], after_first.fen())
+    assert response.status_code == 409, response.text
+    assert "not your turn" in response.json()["detail"]
+
+    # A negative count is a client bug, rejected before anything else runs.
+    response = client.post(
+        "/api/endgames/move",
+        headers=headers,
+        json={
+            "position_id": position["id"],
+            "fen_before": position["fen"],
+            "move": position["moves"][0],
+            "fen_after": after_first.fen(),
+            "hints_used": -1,
+        },
+    )
+    assert response.status_code == 400, response.text
+    assert "hints_used" in response.json()["detail"]
+
+    # --- the hint itself --------------------------------------------------
+    response = post_hint(client, headers, position["id"], position["fen"])
+    assert response.status_code == 200, response.text
+    hint = response.json()
+    assert hint["position_id"] == position["id"], hint
+    assert hint["source"] == "tablebase", hint  # <=5 men: local files answer
+    hint_move = chess.Move.from_uci(hint["move_uci"])
+    assert hint_move in board.legal_moves, hint
+    derived = board.copy(stack=False)
+    derived.push(hint_move)
+    assert _fen_key(derived.fen()) == _fen_key(hint["fen_after"]), hint
+    if derived.is_checkmate():
+        user_outcome = "win"
+    elif derived.is_stalemate() or derived.is_insufficient_material():
+        user_outcome = "draw"
+    else:
+        user_outcome = _INVERT[probe_tablebase(derived.fen()).outcome]
+    assert user_outcome == "win", (hint, user_outcome)
+    again = post_hint(client, headers, position["id"], position["fen"]).json()
+    assert (
+        again["move_uci"],
+        again["move_san"],
+        again["fen_after"],
+    ) == (hint["move_uci"], hint["move_san"], hint["fen_after"]), (again, hint)
+    assert read_rating() == rating_before, "hint route moved the rating"
+    assert count_review_cards() == cards_before, "hint route queued a card"
+    print(
+        f"  hint {hint['move_san']} ({hint['move_uci']}, {hint['source']}) | "
+        "legal, win-preserving, deterministic | 400/404/409 on bad input | "
+        "rating + queue untouched"
+    )
+
+    # --- the hinted move grades through the rated endpoint -----------------
+    response = client.post(
+        "/api/endgames/move",
+        headers=headers,
+        json={
+            "position_id": position["id"],
+            "fen_before": position["fen"],
+            "move": hint["move_uci"],
+            "fen_after": hint["fen_after"],
+            "hints_used": 1,
+        },
+    )
+    assert response.status_code == 200, response.text
+    hinted = response.json()
+    assert hinted["hints_used"] == 1, hinted
+    assert hinted["status"] in ("in_progress", "solved"), hinted
+    if hinted["status"] == "solved":
+        # The hint happened to be mate-in-1: the neutral rule already applies.
+        assert hinted["rating"]["change"] == 0, hinted
+        assert read_rating() == rating_before
+    else:
+        assert hinted["rating"] is None, hinted
+        assert hinted["outcome_before"] == "win", hinted
+        assert hinted["outcome_after"] == "win", hinted
+    assert read_rating() == rating_before, "a hinted move moved the rating"
+    print("  the hinted move grades cleanly (nothing written on the way)")
+
+    # --- hint-assisted SOLVE: no rating write, either direction ------------
+    final = replay_line_with_hints(client, headers, position, hints_used=2)
+    assert final["status"] == "solved" and final["resolution"] == "checkmate", final
+    rating = final["rating"]
+    assert rating is not None, "a rated user should still see a rating block"
+    assert rating["change"] == 0, rating
+    assert rating["old_rating"] == rating_before, rating
+    assert rating["new_rating"] == rating_before, rating
+    assert read_rating() == rating_before, "hint-assisted solve changed the DB rating"
+    print(
+        f"  hint-assisted solve ({final['hints_used']} hints) -> "
+        f"solved(checkmate) | rating {rating['old_rating']} -> "
+        f"{rating['new_rating']} ({rating['change']:+d}) | DB untouched"
+    )
+
+    # --- an UNRATED user is not established by a hinted solve --------------
+    write_rating(None)
+    try:
+        unrated = replay_line_with_hints(client, headers, position, hints_used=1)
+        assert unrated["status"] == "solved", unrated
+        assert unrated["rating"] is None, unrated
+        assert read_rating() is None, "hinted solve established a first rating"
+    finally:
+        write_rating(rating_before)
+    print(
+        "  unrated user stays unrated after a hinted solve "
+        "(no first-rating write)"
+    )
+
+
 def main():
     client, headers = setup()
     try:
@@ -721,6 +935,7 @@ def main():
         test_integrity(
             client, headers, solved_position, failed_position, lost_fen
         )
+        test_hint_and_neutral_solve(client, headers)
     finally:
         teardown()
     print("all Endgame Trainer HTTP flow checks passed (test user removed)")
