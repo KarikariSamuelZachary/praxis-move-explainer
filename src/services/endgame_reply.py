@@ -198,6 +198,17 @@ def _over_reason(board: chess.Board) -> Optional[str]:
     return None
 
 
+def terminal_reason(fen: str) -> Optional[str]:
+    """The rule that has already ended the game in `fen`, or None while live.
+
+    Public wrapper over the same detection generate_opponent_reply() uses to
+    refuse a terminal input, so the "Play it out" fast-forward and the reply
+    generator can never disagree about what "over" means. Raises ValueError
+    for a malformed/illegal FEN, exactly like the generator.
+    """
+    return _over_reason(_parse_board(fen))
+
+
 def _parse_board(fen: str) -> chess.Board:
     try:
         board = chess.Board(fen)
