@@ -4,6 +4,7 @@ import logging
 import os
 import platform
 import shutil
+import threading
 import time
 from pathlib import Path
 from fastapi import FastAPI, Request
@@ -12,6 +13,7 @@ from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
 from core.database import init_db
 from core.migrations import run_migrations
+from services import endgame_seeding
 from services.tablebase import set_persistent_cache
 from services.tablebase_cache import PostgresProbeCache
 from engines.maia_engine import close_maia3, start_maia3, verify_maia3_patch
@@ -106,6 +108,19 @@ def startup():
 
     init_db()
     run_migrations()
+
+    # Endgame content seeding. The library is DATA, not schema (migrations
+    # create empty tables), and had only ever been seeded by hand -- which is
+    # exactly how production booted with an empty library and answered "no
+    # endgame drill positions in rating range ..." (2026-09-21). Runs on a
+    # daemon thread: a fresh database imports its 22k sourced positions in
+    # the background without delaying boot; normal boots only re-apply the
+    # tiny curated set. See services/endgame_seeding.py for the full policy.
+    threading.Thread(
+        target=endgame_seeding.ensure_endgame_content,
+        name="endgame-seeding",
+        daemon=True,
+    ).start()
 
     # Persistent tablebase probe cache: every distinct Lichess fallback
     # position is paid once per deployment instead of once per user/move.
