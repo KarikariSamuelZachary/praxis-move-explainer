@@ -4,17 +4,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Chess, Square } from 'chess.js';
 import { Chessboard, type SquareRenderer } from 'react-chessboard';
 
+import PromotionPicker from '@/components/board/PromotionPicker';
+
 import {
   EndgameFetchError,
   EndgameGradeResult,
   EndgameMoveSubmission,
-  EndgamePlayoutEnding,
-  EndgamePlayoutResolution,
-  EndgamePlayoutStep,
   EndgameSubmitMove,
-  finishEndgamePlayout,
   moveToUci,
-  playoutEndingFromFinish,
   requestEndgameHint,
   requestEndgamePlayoutReply,
   storedReplyForFen,
@@ -35,12 +32,9 @@ export type EndgameBoardPhase =
   | 'resolved'
   // "Play it out": the settled FAILED drill re-opened for a no-stakes
   // continuation. 'playout' = the user may move (the recorded result is not
-  // affected); 'playout-reply' = the defender is thinking/replying;
-  // 'playout-stepping' = a fast-forwarded line is being walked one move at a
-  // time ("Next move" / "Skip to end" drive it, never the user's pieces).
+  // affected); 'playout-reply' = the defender is thinking/replying.
   | 'playout'
   | 'playout-reply'
-  | 'playout-stepping'
   | 'error';
 
 export interface EndgameBoardProps<
@@ -63,36 +57,31 @@ export interface EndgameBoardProps<
    * failed.
    */
   playout?: boolean;
-  /**
-   * Bumps to request a fast-forward of the position the continuation is at
-   * (the panel's "Skip to final result" / "See the final verdict"). A counter
-   * so repeat presses are distinct requests.
-   */
-  playoutSkipRequest?: number;
-  /** Plies played in the continuation so far (reported as 0 when it starts),
-   *  which drives the soft exit prompt. */
-  onPlayoutProgress?: (plies: number) => void;
-  /** Fired when the continuation finishes: a reached ending, or the tablebase
-   *  verdict when no cheap concrete line existed. */
-  onPlayoutResolved?: (resolution: EndgamePlayoutResolution) => void;
-  /** Bumps to advance one ply of a fast-forwarded line (the stepper's "Next
-   *  move"). A counter so repeat presses are distinct requests. */
-  playoutStepRequest?: number;
-  /** Mirrors the stepper for the panel: how many plies of the returned line
-   *  are on the board and what comes next; null when no line is being
-   *  stepped. */
-  onPlayoutStepping?: (step: EndgamePlayoutStep | null) => void;
+  /** Fired when the continuation finishes: the game reached a terminal
+   *  position (or could not continue). */
+  onPlayoutResolved?: () => void;
   /** Hints this drill attempt has revealed so far, as the caller counted
    *  them. Attached to every graded submission; the backend reads it only on
    *  a resolving move (a hinted solve is neutral on the rated surface and
    *  not-clean on the review surface). */
   hintsUsed?: number;
-  /** Bumps to request the single best move for the current position (the
-   *  panel's "Get solution"). A counter so repeat presses are distinct. */
+  /** True when the current attempt is a retry of an already-recorded drill
+   *  (the panel's Retry). Attached to every submission; a resolving move is
+   *  then graded for the verdict but writes nothing. */
+  retry?: boolean;
+  /** Bumps to request a hint for the current position (the panel's "Hint"):
+   *  only the piece to move is highlighted, nothing is played. A counter so
+   *  repeat presses are distinct requests. */
   hintRequest?: number;
-  /** Fired once a hint has been fetched and highlighted. The hint itself
-   *  submits nothing: the caller counts it into hintsUsed and the user
-   *  plays the move through the normal grading path. */
+  /** Bumps to request the immediate best move for the current position (the
+   *  panel's "Show move"). The board fetches it and plays it as the user's
+   *  move through the normal grading path. A counter so repeat presses are
+   *  distinct. */
+  solutionRequest?: number;
+  /** Fired once a hint or solution move has been fetched. The hint itself
+   *  submits nothing: the caller counts it into hintsUsed and the user plays
+   *  the move through the normal grading path. The solution path plays the
+   *  move itself, so the board counts it before submitting. */
   onHintRevealed?: (hint: EndgameHintResponse) => void;
   onUserMove?: (san: string) => void;
   onOpponentMove?: (san: string) => void;
@@ -137,11 +126,15 @@ const HIGHLIGHT_FAILED = 'rgba(239, 68, 68, 0.5)';
 // of the live loop's user-emerald and opponent-amber, so the board never
 // reads as "the drill is still on".
 const HIGHLIGHT_PLAYOUT = 'rgba(217, 184, 124, 0.3)';
-// "Get solution" highlights the piece and its destination in a cool sky
-// tint: deliberately unlike the user's emerald, the opponent's amber, the
-// settled gold and the solved/failed green/red, because a hint is advisory
-// information rather than a played move.
-const HIGHLIGHT_HINT = 'rgba(56, 189, 248, 0.45)';
+// "Hint" highlights just the piece to move, in the same emerald the Puzzles
+// board's hint uses. It fades on its own (HINT_FADE_MS).
+const HIGHLIGHT_HINT = 'rgba(16, 185, 129, 0.4)';
+const HINT_FADE_MS = 4000;
+// "Show move" plays the answer, so its trail reads as an assisted move rather
+// than a found one: the origin square in light walnut, the destination in
+// deep walnut.
+const HIGHLIGHT_SOLUTION_FROM = 'rgba(217, 184, 124, 0.6)';
+const HIGHLIGHT_SOLUTION_TO = 'rgba(74, 45, 20, 0.8)';
 
 // Puzzles waits 600ms before the stored reply; a converted drill should
 // feel like the same opponent answering.
@@ -149,20 +142,6 @@ const OPPONENT_DELAY_MS = 600;
 
 function isMovablePhase(phase: EndgameBoardPhase): boolean {
   return phase === 'playing' || phase === 'playout';
-}
-
-/**
- * The playout's terminal ending, in the same vocabulary the backend grades
- * (checkmate / stalemate / insufficient material / fifty-move rule), with
- * 'draw' covering the repetition rules. Null when the game is not over.
- */
-function playoutEnding(game: Chess): EndgamePlayoutEnding | null {
-  if (game.isCheckmate()) return 'checkmate';
-  if (game.isStalemate()) return 'stalemate';
-  if (game.isInsufficientMaterial()) return 'insufficient_material';
-  if (game.isDrawByFiftyMoves()) return 'fifty_move_rule';
-  if (game.isDraw()) return 'draw';
-  return null;
 }
 
 function buildHighlight(
@@ -178,19 +157,6 @@ function buildHighlight(
 
 function buildGame(position: EndgamePosition): Chess {
   return new Chess(position.fen);
-}
-
-/** SAN of `uci` in `fen`, for the stepper's "next move" label. Null when the
- *  move cannot be applied -- the line is server-generated, so this is purely
- *  defensive. */
-function sanForMove(fen: string, uci: string): string | null {
-  try {
-    const board = new Chess(fen);
-    const move = board.move(uciToMove(uci));
-    return move ? move.san : null;
-  } catch {
-    return null;
-  }
 }
 
 function getOrientation(position: EndgamePosition): 'white' | 'black' {
@@ -215,13 +181,11 @@ export default function EndgameBoard<
   position,
   submitMove,
   playout = false,
-  playoutSkipRequest = 0,
-  playoutStepRequest = 0,
-  onPlayoutProgress,
   onPlayoutResolved,
-  onPlayoutStepping,
   hintsUsed = 0,
+  retry = false,
   hintRequest = 0,
+  solutionRequest = 0,
   onHintRevealed,
   onUserMove,
   onOpponentMove,
@@ -240,6 +204,9 @@ export default function EndgameBoard<
   const [playoutError, setPlayoutError] = useState<string | null>(null);
   const [hintError, setHintError] = useState<string | null>(null);
   const [hintLoading, setHintLoading] = useState(false);
+  // The piece-only hint highlight, kept apart from the move highlights so its
+  // fade can never wipe the user's played-move tint.
+  const [hintFromSquare, setHintFromSquare] = useState<string | null>(null);
 
   const gameRef = useRef<Chess>(initialGame);
   const phaseRef = useRef<EndgameBoardPhase>('playing');
@@ -257,27 +224,13 @@ export default function EndgameBoard<
   const onThinkingChangeRef = useRef(onThinkingChange);
   const onDrillResolvedRef = useRef(onDrillResolved);
   const onPlayoutResolvedRef = useRef(onPlayoutResolved);
-  const onPlayoutProgressRef = useRef(onPlayoutProgress);
-  const onPlayoutSteppingRef = useRef(onPlayoutStepping);
   const submitMoveRef = useRef<EndgameSubmitMove<Result> | null>(null);
-  // Invalidates in-flight playout work whenever the continuation is skipped
-  // or superseded, so a reply can never land on a board that has moved on.
-  const playoutRunRef = useRef(0);
-  const playoutPliesRef = useRef(0);
-  const skipHandledRef = useRef(0);
-  const skipInFlightRef = useRef(false);
-  // The fast-forwarded line being stepped, board-owned: the moves, the
-  // cursor, the server's final FEN and the ending to report when it ends.
-  const steppingRef = useRef<{
-    line: string[];
-    index: number;
-    finalFen: string;
-    ending: EndgamePlayoutEnding | null;
-  } | null>(null);
-  const stepHandledRef = useRef(0);
   const hintsUsedRef = useRef(hintsUsed);
+  const retryRef = useRef(retry);
   const hintHandledRef = useRef(0);
+  const solutionHandledRef = useRef(0);
   const hintInFlightRef = useRef(false);
+  const hintTimeoutRef = useRef<number | null>(null);
   const onHintRevealedRef = useRef(onHintRevealed);
   useEffect(() => {
     onUserMoveRef.current = onUserMove;
@@ -285,10 +238,9 @@ export default function EndgameBoard<
     onThinkingChangeRef.current = onThinkingChange;
     onDrillResolvedRef.current = onDrillResolved;
     onPlayoutResolvedRef.current = onPlayoutResolved;
-    onPlayoutProgressRef.current = onPlayoutProgress;
-    onPlayoutSteppingRef.current = onPlayoutStepping;
     onHintRevealedRef.current = onHintRevealed;
     hintsUsedRef.current = hintsUsed;
+    retryRef.current = retry;
     submitMoveRef.current = submitMove ?? null;
   });
 
@@ -356,111 +308,18 @@ export default function EndgameBoard<
   // happened, so the board just keeps playing with the shared defender
   // generator. The framing stays on the failed/settled side throughout.
 
-  const finishPlayout = useCallback(
-    (game: Chess) => {
-      clearOpponentTimer();
-      onThinkingChangeRef.current?.(false);
-      updatePhase('resolved');
-      onPlayoutResolvedRef.current?.({
-        kind: 'ending',
-        ending: playoutEnding(game),
-      });
-    },
-    [clearOpponentTimer, updatePhase]
-  );
-
-  // --- Stepping a fast-forwarded line ------------------------------------
-  // /finish returns the whole locally-covered line in one response, so the
-  // user can walk it at their own pace with no further requests. The board
-  // owns the cursor; the panel mirrors it through onPlayoutStepping.
-
-  const completeStepping = useCallback(
-    (fullyStepped: boolean) => {
-      const stepping = steppingRef.current;
-      steppingRef.current = null;
-      onPlayoutSteppingRef.current?.(null);
-      clearOpponentTimer();
-      onThinkingChangeRef.current?.(false);
-      if (stepping) {
-        // The server's FEN is the authority for the line's end. A fully
-        // stepped line keeps its last move highlighted; the "Skip to end"
-        // escape hatch lands on a clean board, exactly like the old instant
-        // jump did.
-        setBoard(new Chess(stepping.finalFen));
-        const last = stepping.line[stepping.line.length - 1];
-        if (fullyStepped && last) {
-          const { from, to } = uciToMove(last);
-          setHighlightSquares(buildHighlight(from, to, HIGHLIGHT_PLAYOUT));
-        } else {
-          setHighlightSquares({});
-        }
-      }
-      updatePhase('resolved');
-      onPlayoutResolvedRef.current?.({
-        kind: 'ending',
-        ending: stepping?.ending ?? null,
-      });
-    },
-    [clearOpponentTimer, setBoard, updatePhase]
-  );
-
-  const enterStepping = useCallback(
-    (line: string[], finalFen: string, ending: EndgamePlayoutEnding | null) => {
-      steppingRef.current = { line, index: 0, finalFen, ending };
-      updatePhase('playout-stepping');
-      onPlayoutSteppingRef.current?.({
-        shown: 0,
-        total: line.length,
-        next_move_san: sanForMove(gameRef.current.fen(), line[0]),
-      });
-    },
-    [updatePhase]
-  );
-
-  const stepPlayoutLine = useCallback(() => {
-    const stepping = steppingRef.current;
-    if (!stepping || phaseRef.current !== 'playout-stepping') return;
-    const nextGame = new Chess(gameRef.current.fen());
-    let applied;
-    try {
-      applied = nextGame.move(uciToMove(stepping.line[stepping.index]));
-    } catch {
-      applied = null;
-    }
-    if (!applied) {
-      // Defensive: a line that cannot be replayed client-side lands on the
-      // server's end position rather than dead-ending the stepper.
-      completeStepping(false);
-      return;
-    }
-    setBoard(nextGame);
-    setHighlightSquares(
-      buildHighlight(applied.from, applied.to, HIGHLIGHT_PLAYOUT)
-    );
-    stepping.index += 1;
-    if (stepping.index >= stepping.line.length) {
-      completeStepping(true);
-      return;
-    }
-    onPlayoutSteppingRef.current?.({
-      shown: stepping.index,
-      total: stepping.line.length,
-      next_move_san: sanForMove(nextGame.fen(), stepping.line[stepping.index]),
-    });
-  }, [completeStepping, setBoard]);
-
-  const bumpPlayoutPlies = useCallback(() => {
-    playoutPliesRef.current += 1;
-    onPlayoutProgressRef.current?.(playoutPliesRef.current);
-  }, []);
+  const finishPlayout = useCallback(() => {
+    clearOpponentTimer();
+    onThinkingChangeRef.current?.(false);
+    updatePhase('resolved');
+    onPlayoutResolvedRef.current?.();
+  }, [clearOpponentTimer, updatePhase]);
 
   const applyPlayoutReply = useCallback(
     (replyUci: string, fenBefore: string) => {
-      const run = playoutRunRef.current;
       clearOpponentTimer();
       opponentTimerRef.current = setTimeout(() => {
         opponentTimerRef.current = null;
-        if (run !== playoutRunRef.current) return;
         const replyGame = new Chess(fenBefore);
         let applied;
         try {
@@ -469,28 +328,26 @@ export default function EndgameBoard<
           applied = null;
         }
         if (!applied) {
-          finishPlayout(gameRef.current);
+          finishPlayout();
           return;
         }
         setBoard(replyGame);
         setHighlightSquares(
           buildHighlight(applied.from, applied.to, HIGHLIGHT_PLAYOUT)
         );
-        bumpPlayoutPlies();
         onThinkingChangeRef.current?.(false);
         if (replyGame.isGameOver()) {
-          finishPlayout(replyGame);
+          finishPlayout();
           return;
         }
         updatePhase('playout');
       }, OPPONENT_DELAY_MS);
     },
-    [bumpPlayoutPlies, clearOpponentTimer, finishPlayout, setBoard, updatePhase]
+    [clearOpponentTimer, finishPlayout, setBoard, updatePhase]
   );
 
   const requestPlayoutReply = useCallback(
     async (fen: string) => {
-      const run = playoutRunRef.current;
       setPlayoutError(null);
       // Locked and "thinking" while the defender's reply is fetched: the
       // board is only interactive on the user's turns.
@@ -501,14 +358,13 @@ export default function EndgameBoard<
           position_id: position.id,
           fen_after: fen,
         });
-        if (run !== playoutRunRef.current) return;
         // Same stored-line contract as a graded replay: null means the
         // client already holds the next stored move and applies it itself.
         const replyUci =
           response.opponent_reply?.move_uci ??
           storedReplyForFen(position.fen, position.moves, fen);
         if (!replyUci) {
-          finishPlayout(gameRef.current);
+          finishPlayout();
           return;
         }
         applyPlayoutReply(replyUci, fen);
@@ -534,134 +390,31 @@ export default function EndgameBoard<
       return;
     }
     playoutStartedRef.current = true;
-    playoutPliesRef.current = 0;
-    onPlayoutProgressRef.current?.(0);
 
     // The failed move left the defender to move -- unless that move already
     // ended the game, in which case the continuation is over before it
     // starts.
     const settled = gameRef.current;
     if (settled.isGameOver()) {
-      finishPlayout(settled);
+      finishPlayout();
       return;
     }
     void requestPlayoutReply(settled.fen());
   }, [playout, finishPlayout, requestPlayoutReply]);
 
-  const skipToFinalResult = useCallback(async () => {
-    // Only a settled failure can be fast-forwarded (the buttons only render
-    // there, but the request arrives as a prop).
-    if (resolvedStatusRef.current !== 'failed') return;
-    // Already stepping a returned line: "skip" now means jump to the end of
-    // that line, which is already in hand -- no second network call.
-    if (steppingRef.current) {
-      completeStepping(false);
-      return;
+  const clearHintTimeout = useCallback(() => {
+    if (hintTimeoutRef.current !== null) {
+      window.clearTimeout(hintTimeoutRef.current);
+      hintTimeoutRef.current = null;
     }
-    const current = gameRef.current;
-    if (current.isGameOver()) {
-      finishPlayout(current);
-      return;
-    }
+  }, []);
 
-    const before = phaseRef.current;
-    // Invalidates any in-flight playout reply: it must not land on a board
-    // that has already jumped to the ending.
-    const run = ++playoutRunRef.current;
-    skipInFlightRef.current = true;
-    setPlayoutError(null);
-    updatePhase('playout-reply');
-    onThinkingChangeRef.current?.(true);
-    try {
-      const response = await finishEndgamePlayout({
-        position_id: position.id,
-        fen: current.fen(),
-      });
-      if (run !== playoutRunRef.current) return;
-      onThinkingChangeRef.current?.(false);
+  const clearHint = useCallback(() => {
+    clearHintTimeout();
+    setHintFromSquare(null);
+  }, [clearHintTimeout]);
 
-      if (response.fen && response.ending) {
-        const ending = playoutEndingFromFinish(response.ending);
-        // Defensive `?? []`: a backend that predates the stepper returns no
-        // line, and the instant jump below is exactly its old behavior.
-        const line = response.line ?? [];
-        if (line.length > 0) {
-          // Locally-covered material: the whole line came back, so the user
-          // steps it move by move. The board stays where the request was
-          // made until the first "Next move".
-          enterStepping(line, response.fen, ending);
-          return;
-        }
-        // No line to step (the request position was already terminal): the
-        // instant jump is still the right behavior.
-        setBoard(new Chess(response.fen));
-        setHighlightSquares({});
-        updatePhase('resolved');
-        onPlayoutResolvedRef.current?.({ kind: 'ending', ending });
-        return;
-      }
-
-      if (response.outcome) {
-        // Beyond the local files: the verdict is the result and the board
-        // stays where it is.
-        updatePhase('resolved');
-        onPlayoutResolvedRef.current?.({
-          kind: 'verdict',
-          outcome: response.outcome,
-        });
-        return;
-      }
-
-      updatePhase('resolved');
-      onPlayoutResolvedRef.current?.({ kind: 'ending', ending: null });
-    } catch (error) {
-      if (run !== playoutRunRef.current) return;
-      const fetchError =
-        error instanceof EndgameFetchError
-          ? error
-          : new EndgameFetchError(
-              'Could not fast-forward the position.',
-              0,
-              true
-            );
-      setPlayoutError(fetchError.message);
-      onThinkingChangeRef.current?.(false);
-      // Put the board back where it was; if the defender was to move, the
-      // reply request that the skip invalidated has to be re-issued.
-      updatePhase(before);
-      if (before === 'playout-reply') {
-        void requestPlayoutReply(gameRef.current.fen());
-      }
-    } finally {
-      skipInFlightRef.current = false;
-    }
-  }, [
-    completeStepping,
-    enterStepping,
-    finishPlayout,
-    position.id,
-    requestPlayoutReply,
-    setBoard,
-    updatePhase,
-  ]);
-
-  useEffect(() => {
-    if (!playoutSkipRequest || playoutSkipRequest === skipHandledRef.current) {
-      return;
-    }
-    skipHandledRef.current = playoutSkipRequest;
-    // A skip already resolving owns the request; consume the duplicate press.
-    if (skipInFlightRef.current) return;
-    void skipToFinalResult();
-  }, [playoutSkipRequest, skipToFinalResult]);
-
-  useEffect(() => {
-    if (!playoutStepRequest || playoutStepRequest === stepHandledRef.current) {
-      return;
-    }
-    stepHandledRef.current = playoutStepRequest;
-    stepPlayoutLine();
-  }, [playoutStepRequest, stepPlayoutLine]);
+  useEffect(() => clearHint, [clearHint]);
 
   const requestHintMove = useCallback(async () => {
     // A hint only means anything for the live drill on the user's turn:
@@ -687,8 +440,15 @@ export default function EndgameBoard<
       ) {
         return;
       }
-      const { from, to } = uciToMove(hint.move_uci);
-      setHighlightSquares(buildHighlight(from, to, HIGHLIGHT_HINT));
+      // Puzzles-style: only the piece to move is highlighted, and it fades
+      // on its own. The destination is deliberately withheld.
+      const { from } = uciToMove(hint.move_uci);
+      clearHintTimeout();
+      setHintFromSquare(from);
+      hintTimeoutRef.current = window.setTimeout(() => {
+        hintTimeoutRef.current = null;
+        setHintFromSquare(null);
+      }, HINT_FADE_MS);
       onHintRevealedRef.current?.(hint);
     } catch (error) {
       const fetchError =
@@ -700,7 +460,7 @@ export default function EndgameBoard<
       setHintLoading(false);
       hintInFlightRef.current = false;
     }
-  }, [position.id]);
+  }, [clearHintTimeout, position.id]);
 
   useEffect(() => {
     if (!hintRequest || hintRequest === hintHandledRef.current) {
@@ -730,6 +490,7 @@ export default function EndgameBoard<
         move: pending.uci,
         fen_after: pending.fenAfter,
         hints_used: hintsUsedRef.current,
+        retry: retryRef.current,
       });
 
       setCanRetry(false);
@@ -806,9 +567,11 @@ export default function EndgameBoard<
   ]);
 
   const submitUserMove = useCallback(
-    (from: string, to: string, promotion?: string) => {
+    (from: string, to: string, promotion?: string, assisted = false) => {
       const inPlayout = phaseRef.current === 'playout';
       if (!inPlayout && phaseRef.current !== 'playing') return;
+      // The hint described the position before this move; it is stale now.
+      clearHint();
 
       const fenBefore = gameRef.current.fen();
       const nextGame = new Chess(fenBefore);
@@ -827,9 +590,8 @@ export default function EndgameBoard<
         setBoard(nextGame);
         setSelectedSquare(null);
         setHighlightSquares(buildHighlight(move.from, move.to, HIGHLIGHT_PLAYOUT));
-        bumpPlayoutPlies();
         if (nextGame.isGameOver()) {
-          finishPlayout(nextGame);
+          finishPlayout();
           return;
         }
         void requestPlayoutReply(nextGame.fen());
@@ -847,11 +609,69 @@ export default function EndgameBoard<
 
       setBoard(nextGame);
       setSelectedSquare(null);
-      setHighlightSquares(buildHighlight(move.from, move.to, HIGHLIGHT_USER));
+      // An assisted move (played by "Show move") gets the walnut trail; a
+      // move the user found keeps the emerald one.
+      setHighlightSquares(
+        assisted
+          ? {
+              [move.from]: { backgroundColor: HIGHLIGHT_SOLUTION_FROM },
+              [move.to]: { backgroundColor: HIGHLIGHT_SOLUTION_TO },
+            }
+          : buildHighlight(move.from, move.to, HIGHLIGHT_USER)
+      );
       void postPendingMove();
     },
-    [bumpPlayoutPlies, finishPlayout, postPendingMove, requestPlayoutReply, setBoard]
+    [clearHint, finishPlayout, postPendingMove, requestPlayoutReply, setBoard]
   );
+
+  // "Show move": fetch the immediate best move for the position and play it
+  // as the user's move, through the normal grading path. The answer was
+  // revealed rather than found, so the hint count is bumped BEFORE the
+  // submission goes out: the payload carries it, and the backend neutralizes
+  // a solution-assisted solve exactly like a hint-assisted one.
+  const requestSolutionMove = useCallback(async () => {
+    if (phaseRef.current !== 'playing') return;
+    if (hintInFlightRef.current) return;
+    hintInFlightRef.current = true;
+    const fenBefore = gameRef.current.fen();
+    setHintError(null);
+    setHintLoading(true);
+    try {
+      const hint = await requestEndgameHint({
+        position_id: position.id,
+        fen: fenBefore,
+      });
+      // Same stale-answer guard as the hint: a move for a position that is no
+      // longer on the board is never played and never counted.
+      if (
+        phaseRef.current !== 'playing' ||
+        gameRef.current.fen() !== fenBefore
+      ) {
+        return;
+      }
+      hintsUsedRef.current += 1;
+      onHintRevealedRef.current?.(hint);
+      const { from, to, promotion } = uciToMove(hint.move_uci);
+      submitUserMove(from, to, promotion, true);
+    } catch (error) {
+      const fetchError =
+        error instanceof EndgameFetchError
+          ? error
+          : new EndgameFetchError('Could not get the solution move.', 0, true);
+      setHintError(fetchError.message);
+    } finally {
+      setHintLoading(false);
+      hintInFlightRef.current = false;
+    }
+  }, [position.id, submitUserMove]);
+
+  useEffect(() => {
+    if (!solutionRequest || solutionRequest === solutionHandledRef.current) {
+      return;
+    }
+    solutionHandledRef.current = solutionRequest;
+    void requestSolutionMove();
+  }, [solutionRequest, requestSolutionMove]);
 
   const undoPendingMove = useCallback(() => {
     const pending = pendingMoveRef.current;
@@ -948,15 +768,23 @@ export default function EndgameBoard<
   );
 
   const displayedSquareStyles = useMemo(() => {
-    if (!selectedSquare) return highlightSquares;
     return {
+      // The piece-only hint sits under the move highlights: a played move
+      // always wins the square.
+      ...(hintFromSquare
+        ? { [hintFromSquare]: { backgroundColor: HIGHLIGHT_HINT } }
+        : {}),
       ...highlightSquares,
-      [selectedSquare]: {
-        ...highlightSquares[selectedSquare],
-        backgroundColor: 'rgba(255, 170, 0, 0.35)',
-      },
+      ...(selectedSquare
+        ? {
+            [selectedSquare]: {
+              ...highlightSquares[selectedSquare],
+              backgroundColor: 'rgba(255, 170, 0, 0.35)',
+            },
+          }
+        : {}),
     };
-  }, [highlightSquares, selectedSquare]);
+  }, [highlightSquares, hintFromSquare, selectedSquare]);
 
   const hintSquares = useMemo<Record<string, 'dot' | 'ring'>>(() => {
     if (!selectedSquare || !isMovablePhase(phase)) return {};
@@ -998,10 +826,7 @@ export default function EndgameBoard<
   // Settled-drill continuation: the board ring stays on the FAILED color
   // while a playout is running, so the unlocked board can never read as
   // "the drill is live again".
-  const playoutRing =
-    phase === 'playout' ||
-    phase === 'playout-reply' ||
-    phase === 'playout-stepping';
+  const playoutRing = phase === 'playout' || phase === 'playout-reply';
 
   return (
     <div>
@@ -1065,46 +890,11 @@ export default function EndgameBoard<
           />
 
           {pendingPromotion && (
-            <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-black/60 backdrop-blur-sm">
-              <div className="rounded-xl border border-zinc-700 bg-zinc-800 p-4 shadow-2xl">
-                <h3 className="mb-4 text-center font-medium text-white">
-                  Promote to
-                </h3>
-                <div className="flex gap-2">
-                  {['q', 'r', 'b', 'n'].map((piece) => (
-                    <button
-                      key={piece}
-                      type="button"
-                      onClick={() => onPromotionPieceSelect(piece)}
-                      className="flex h-14 w-14 items-center justify-center rounded-lg bg-zinc-700 pb-2 text-4xl transition-colors hover:bg-emerald-600"
-                    >
-                      {game.turn() === 'w'
-                        ? piece === 'q'
-                          ? '♕'
-                          : piece === 'r'
-                            ? '♖'
-                            : piece === 'b'
-                              ? '♗'
-                              : '♘'
-                        : piece === 'q'
-                          ? '♛'
-                          : piece === 'r'
-                            ? '♜'
-                            : piece === 'b'
-                              ? '♝'
-                              : '♞'}
-                    </button>
-                  ))}
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setPendingPromotion(null)}
-                  className="mt-4 w-full rounded-lg bg-zinc-700/50 py-2 text-sm text-zinc-300 transition-colors hover:bg-zinc-700"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
+            <PromotionPicker
+              turn={game.turn()}
+              onSelect={onPromotionPieceSelect}
+              onCancel={() => setPendingPromotion(null)}
+            />
           )}
         </div>
       </div>
