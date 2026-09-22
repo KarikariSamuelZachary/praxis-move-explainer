@@ -71,9 +71,16 @@ USAGE
     source venv/bin/activate
     python scripts/import_sourced_endgames.py            # dry run (default)
     python scripts/import_sourced_endgames.py --apply    # write to the DB
+
+    # Regenerate the committed deploy seed artifact from the local survivor
+    # run; src/services/endgame_seeding.py imports this file at first boot
+    # when the sourced pool is empty (gzip is read transparently):
+    python scripts/import_sourced_endgames.py \\
+        --export-seed data/seed/endgame_sourced_seed.jsonl.gz
 """
 import argparse
 import collections
+import gzip
 import json
 import logging
 import os
@@ -191,10 +198,40 @@ def category_for(board: chess.Board) -> str:
 
 
 def load_survivors(path: Path) -> Iterator[Dict[str, Any]]:
-    with open(path, "r", encoding="utf-8") as fh:
+    """Yield survivor records from a plain or gzipped JSONL file.
+
+    Gzip is accepted because the committed deploy seed artifact
+    (data/seed/endgame_sourced_seed.jsonl.gz, produced by --export-seed)
+    ships compressed; src/services/endgame_seeding.py points this loader
+    at it on first boot.
+    """
+    opener = gzip.open if str(path).endswith(".gz") else open
+    with opener(path, "rt", encoding="utf-8") as fh:
         for line in fh:
             if line.strip():
                 yield json.loads(line)
+
+
+def export_seed(survivor_path: Path, out_path: Path) -> int:
+    """Write the rows the importer would consider as gzipped JSONL.
+
+    The filter is deliberately identical to build_plan's early skips
+    (verified kinds, <=7 men), so applying the exported file produces the
+    same library as applying the full survivors run. Used to regenerate
+    the committed data/seed artifact after a new sourcing run.
+    """
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    kept = 0
+    with gzip.open(out_path, "wt", encoding="utf-8", compresslevel=9) as out:
+        for record in load_survivors(survivor_path):
+            if record.get("verification") not in VERIFIED_KINDS:
+                continue
+            if (record.get("puzzle_men") or 99) > 7:
+                continue
+            out.write(json.dumps(record, separators=(",", ":")) + "\n")
+            kept += 1
+    print(f"exported {kept} verified <=7-man rows -> {out_path}")
+    return 0
 
 
 class TopicPlan:
@@ -388,6 +425,12 @@ def parse_args(argv: Optional[List[str]] = None) -> argparse.Namespace:
                         help="exclude drill FENs whose halfmove clock is >= N")
     parser.add_argument("--backfill-source-ids", action="store_true",
                         help="only set endgame_positions.source_puzzle_id, then exit")
+    parser.add_argument(
+        "--export-seed", type=Path, default=None,
+        help="write the verified <=7-man survivor rows as gzipped JSONL to "
+             "this path and exit (regenerates the committed deploy seed "
+             "artifact, data/seed/endgame_sourced_seed.jsonl.gz)",
+    )
     return parser.parse_args(argv)
 
 
@@ -397,6 +440,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.backfill_source_ids:
         return backfill_source_ids(args.survivors)
+
+    if args.export_seed is not None:
+        return export_seed(args.survivors, args.export_seed)
 
     tablebase = chess.syzygy.open_tablebase(str(tablebase_dir()))
     try:
