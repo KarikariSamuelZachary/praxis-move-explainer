@@ -128,6 +128,10 @@ export interface EndgameMoveRequestPayload {
    * resolving move: a hint-assisted SOLVED move is neutral in the rated
    * loop; practice carries it for display only. */
   hints_used?: number;
+  /** True when this attempt replays a drill whose result was already
+   * recorded (the panel's Retry): the verdict still comes back, but the
+   * rated route writes no rating change and no review capture. */
+  retry?: boolean;
 }
 
 /** "Get solution": the single best move for the position on the board.
@@ -183,6 +187,11 @@ export interface EndgameWoodpeckerQueueEntry {
   position: EndgamePosition;
 }
 
+/** The endgame review tab's badge: due-now, unmastered cards only. */
+export interface EndgameWoodpeckerCountResponse {
+  due_count: number;
+}
+
 /** The FSRS transition written when a review replay resolves. */
 export interface EndgameScheduling {
   prior_state: number;
@@ -222,6 +231,10 @@ export interface EndgameWoodpeckerAttemptPayload {
   /** Hints this replay has revealed: on resolution a hinted pass is
    * scheduled as not-clean (FSRS Again), so the card cannot graduate. */
   hints_used?: number;
+  /** True when this replay retries a card whose outcome was already
+   * recorded (the panel's Retry): the verdict still comes back, but the
+   * attempts route writes no FSRS transition and no attempt row. */
+  retry?: boolean;
 }
 
 /** One continuation step of a settled FAILED drill ("Play it out"). */
@@ -235,39 +248,6 @@ export interface EndgamePlayoutReplyResponse {
    * its own copy of the next stored move) or when the position is already
    * over. The backend route never grades and never writes. */
   opponent_reply?: EndgameOpponentReply | null;
-}
-
-/** Fast-forward request for a settled drill's continuation. */
-export interface EndgamePlayoutFinishRequest {
-  position_id: string;
-  fen: string;
-}
-
-/** The terminal reasons a fast-forwarded line can reach. */
-export type EndgamePlayoutFinishEnding =
-  | 'checkmate'
-  | 'stalemate'
-  | 'insufficient_material'
-  | 'fifty_move_rule'
-  | 'seventy_five_move_rule'
-  | 'fivefold_repetition';
-
-export interface EndgamePlayoutFinishResponse {
-  /** Tablebase verdict from the USER's colour, so the panel never has to
-   * reason about whose turn the request position is at. Null only when the
-   * request position was already terminal. */
-  outcome?: EndgameOutcome | null;
-  /** A concrete terminal position, when a cheap line existed; null when only
-   * the verdict could be produced (6-7-man material costs seconds per ply on
-   * the Lichess fallback). */
-  fen?: string | null;
-  ending?: EndgamePlayoutFinishEnding | null;
-  plies: number;
-  /** The ordered UCI moves that reached `fen`, for stepping the line with no
-   * further requests (the board replays them against the request FEN).
-   * Non-empty exactly when a concrete ending came back and the request
-   * position was not already terminal; always empty on the verdict path. */
-  line: string[];
 }
 
 export interface EndgameWoodpeckerAttemptResponse {
