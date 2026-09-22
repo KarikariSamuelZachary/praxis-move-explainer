@@ -85,7 +85,10 @@ TEST_CLERK_ID = "endgame-trainer-http-test"
 TEST_EMAIL = "endgame-trainer-http-test@example.invalid"
 TEST_RATING = 880
 TEST_SKILL_LEVEL = "intermediate"
-RATING_WINDOW = (TEST_RATING - 100, TEST_RATING + 100)
+# /next draws within this radius of the user's CURRENT rating. The suite's
+# own tests move that rating (D/D2), so fetch_position derives the window at
+# call time rather than pinning it to the fixture's initial value.
+RATING_WINDOW_RADIUS = 100
 
 MAX_GET_ATTEMPTS_SOLVED = 60
 MAX_GET_ATTEMPTS_FAILED = 20
@@ -261,7 +264,11 @@ def _past_line_qualifier(data, board):
 def fetch_position(client, headers, *, qualifier, max_attempts: int):
     """GET /next until a locally-runnable sourced win drill matching
     `qualifier` is served."""
-    assert_min, assert_max = RATING_WINDOW
+    # The server's band is centered on the rating the user has RIGHT NOW;
+    # earlier tests move it, so a fixed fixture window would drift.
+    current_rating = read_rating() or TEST_RATING
+    assert_min = current_rating - RATING_WINDOW_RADIUS
+    assert_max = current_rating + RATING_WINDOW_RADIUS
     seen = {"attempts": 0, "sourced": 0, "solvable": 0}
     for _ in range(max_attempts):
         seen["attempts"] += 1
@@ -750,7 +757,7 @@ def post_hint(client, headers, position_id, fen):
     )
 
 
-def replay_line_with_hints(client, headers, position, hints_used):
+def replay_line_with_hints(client, headers, position, hints_used, retry=False):
     """Replay the stored mate line through the rated endpoint with a hint
     count attached, returning the resolving response."""
     board = chess.Board(position["fen"])
@@ -772,6 +779,7 @@ def replay_line_with_hints(client, headers, position, hints_used):
                 "move": uci,
                 "fen_after": board.fen(),
                 "hints_used": hints_used,
+                "retry": retry,
             },
         )
         assert response.status_code == 200, response.text
@@ -924,6 +932,77 @@ def test_hint_and_neutral_solve(client, headers):
     )
 
 
+def test_retry_is_unrated(client, headers):
+    print("G. 'Retry' replays are UNRATED (verdict yes, writes no):")
+    cards_before = count_review_cards()
+    rating_before = read_rating()
+
+    # --- a retried FAILURE writes nothing ---------------------------------
+    position = fetch_position(
+        client,
+        headers,
+        qualifier=_any_locally_runnable,
+        max_attempts=MAX_GET_ATTEMPTS_FAILED,
+    )
+    board = chess.Board(position["fen"])
+    throw, user_outcome = find_throwing_move(board)
+    assert throw is not None, "served win drill has no throwing move?"
+    fen_before = board.fen()
+    board.push(throw)
+    response = client.post(
+        "/api/endgames/move",
+        headers=headers,
+        json={
+            "position_id": position["id"],
+            "fen_before": fen_before,
+            "move": throw.uci(),
+            "fen_after": board.fen(),
+            "retry": True,
+        },
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["status"] == "failed", body
+    assert body["review_capture"] is None, body
+    rating = body["rating"]
+    assert rating is not None, "a rated user should still see a rating block"
+    assert rating["change"] == 0, rating
+    assert rating["old_rating"] == rating_before, rating
+    assert rating["new_rating"] == rating_before, rating
+    assert read_rating() == rating_before, "a retried failure moved the rating"
+    assert count_review_cards() == cards_before, "a retried failure queued a card"
+    print(
+        f"  retried failure ({user_outcome}) -> verdict kept | rating "
+        f"{rating['old_rating']} -> {rating['new_rating']} "
+        f"({rating['change']:+d}) | no capture, DB untouched"
+    )
+
+    # --- a retried SOLVE writes nothing -----------------------------------
+    solved_position = fetch_position(
+        client,
+        headers,
+        qualifier=_mate_line_qualifier,
+        max_attempts=MAX_GET_ATTEMPTS_SOLVED,
+    )
+    final = replay_line_with_hints(
+        client, headers, solved_position, hints_used=0, retry=True
+    )
+    assert final["status"] == "solved", final
+    assert final["resolution"] == "checkmate", final
+    rating = final["rating"]
+    assert rating is not None, "a rated user should still see a rating block"
+    assert rating["change"] == 0, rating
+    assert rating["old_rating"] == rating_before, rating
+    assert rating["new_rating"] == rating_before, rating
+    assert read_rating() == rating_before, "a retried solve moved the rating"
+    assert count_review_cards() == cards_before, "a retried solve queued a card"
+    print(
+        f"  retried solve (checkmate) -> verdict kept | rating "
+        f"{rating['old_rating']} -> {rating['new_rating']} "
+        f"({rating['change']:+d}) | DB untouched"
+    )
+
+
 def main():
     client, headers = setup()
     try:
@@ -936,6 +1015,7 @@ def main():
             client, headers, solved_position, failed_position, lost_fen
         )
         test_hint_and_neutral_solve(client, headers)
+        test_retry_is_unrated(client, headers)
     finally:
         teardown()
     print("all Endgame Trainer HTTP flow checks passed (test user removed)")
