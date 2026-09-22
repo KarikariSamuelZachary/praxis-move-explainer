@@ -1,5 +1,7 @@
 'use client';
 
+import PromotionPicker from '@/components/board/PromotionPicker';
+
 /**
  * BoardShell - reusable walnut-frame chessboard shell shared by the
  * Repertoire build/train pages so their board looks and feels
@@ -405,50 +407,14 @@ export default function BoardShell({
         />
 
         {moveToPromote && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-black/60 backdrop-blur-sm">
-            <div className="rounded-xl border border-zinc-700 bg-zinc-800 p-4 shadow-2xl">
-              <h3 className="mb-4 text-center font-medium text-white">
-                Promote to
-              </h3>
-              <div className="flex gap-2">
-                {['q', 'r', 'b', 'n'].map((piece) => (
-                  <button
-                    key={piece}
-                    type="button"
-                    onClick={() => handlePromotionSelect(piece)}
-                    className="flex h-14 w-14 items-center justify-center rounded-lg bg-zinc-700 pb-2 text-4xl transition-colors hover:bg-emerald-600"
-                    aria-label={`Promote to ${piece.toUpperCase()}`}
-                  >
-                    {promotionDialogTurn === 'w'
-                      ? piece === 'q'
-                        ? '♕'
-                        : piece === 'r'
-                        ? '♖'
-                        : piece === 'b'
-                        ? '♗'
-                        : '♘'
-                      : piece === 'q'
-                      ? '♛'
-                      : piece === 'r'
-                      ? '♜'
-                      : piece === 'b'
-                      ? '♝'
-                      : '♞'}
-                  </button>
-                ))}
-              </div>
-              <button
-                type="button"
-                onClick={() => {
-                  setMoveToPromote(null);
-                  setSelectedSquare(null);
-                }}
-                className="mt-4 w-full rounded-lg bg-zinc-700/50 py-2 text-sm text-zinc-300 transition-colors hover:bg-zinc-700"
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
+          <PromotionPicker
+            turn={promotionDialogTurn}
+            onSelect={handlePromotionSelect}
+            onCancel={() => {
+              setMoveToPromote(null);
+              setSelectedSquare(null);
+            }}
+          />
         )}
       </div>
     </div>
