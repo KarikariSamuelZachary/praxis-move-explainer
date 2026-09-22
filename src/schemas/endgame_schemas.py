@@ -79,6 +79,11 @@ class EndgameMoveRequest(BaseModel):
     # carries it for display only. A hint-assisted FAILED move is unchanged
     # -- the failure stands. Negative values are rejected with a 400.
     hints_used: int = 0
+    # True when this attempt REPLAYS a drill whose result was already
+    # recorded (the panel's "Retry"). The move is graded exactly like a
+    # first attempt -- the verdict drives the UI -- but resolution writes
+    # nothing: no rating change and no review capture. Retry is practice.
+    retry: bool = False
 
 
 class EndgameHintRequest(BaseModel):
@@ -273,6 +278,11 @@ class EndgameWoodpeckerAttemptRequest(BaseModel):
     # so the card cannot graduate and comes back soon -- exactly how a real
     # failed replay is already handled. See routers/endgame_woodpecker.py.
     hints_used: int = 0
+    # True when this replay RETRIES a card whose outcome was already
+    # recorded (the panel's "Retry"): the move is graded for the verdict,
+    # but resolution writes nothing -- no FSRS transition and no second
+    # attempt row. Retry is practice.
+    retry: bool = False
 
 
 class EndgameWoodpeckerAttemptResponse(BaseModel):
