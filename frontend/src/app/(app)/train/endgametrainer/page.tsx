@@ -6,7 +6,6 @@ import dynamic from 'next/dynamic';
 import {
   EndgameFetchError,
   EndgamePlayoutStatus,
-  EndgamePlayoutStep,
   fetchNextEndgamePosition,
   fetchNextEndgamePracticePosition,
   practiceCategoryLabel,
@@ -17,12 +16,10 @@ import DrillStatusPanel from '@/components/endgames/DrillStatusPanel';
 import PracticeCategoriesCard, {
   type PracticeCategoriesCardProps,
 } from '@/components/endgames/PracticeCategoriesCard';
+import WoodpeckerPromoCard from '@/components/endgames/WoodpeckerPromoCard';
+import { WOOD_PANEL_CLASS, WOOD_PANEL_STYLE } from '@/lib/woodPanel';
 import type { EndgameBoardProps } from '@/components/board/EndgameBoard';
-import {
-  EndgameHintResponse,
-  EndgameMoveResponse,
-  EndgamePosition,
-} from '@/types';
+import { EndgameMoveResponse, EndgamePosition } from '@/types';
 
 // Same dynamic-import contract as the Puzzles board (react-chessboard is
 // client-only). Typed for the trainer's move response so the resolved
@@ -106,23 +103,16 @@ export default function EndgamesPage() {
 
   const [result, setResult] = useState<EndgameMoveResponse | null>(null);
   const [playout, setPlayout] = useState<EndgamePlayoutStatus | null>(null);
-  const [playoutPlies, setPlayoutPlies] = useState(0);
-  const [skipPlayoutRequest, setSkipPlayoutRequest] = useState(0);
-  const [playoutStepRequest, setPlayoutStepRequest] = useState(0);
-  // "Show Hint": how many hints this attempt has revealed (sent with every
-  // move; the server reads it when the drill resolves) plus the hint
-  // currently highlighted on the board.
+  // The two assists: how many hints/reveals this attempt has used (sent with
+  // every move; the server reads it when the drill resolves), plus one
+  // request counter per button so repeat presses are distinct.
   const [hintsUsed, setHintsUsed] = useState(0);
   const [hintRequest, setHintRequest] = useState(0);
-  const [revealedHint, setRevealedHint] = useState<EndgameHintResponse | null>(
-    null
-  );
-  const [history, setHistory] = useState<string[]>([]);
-  const [moveCount, setMoveCount] = useState(0);
-  const [lastUserSan, setLastUserSan] = useState<string | null>(null);
-  const [lastOpponentSan, setLastOpponentSan] = useState<string | null>(null);
+  const [solutionRequest, setSolutionRequest] = useState(0);
+  // True while the current attempt is a "Retry" replay: its graded moves
+  // still resolve the drill, but the backend writes no rating for them.
+  const [isRetry, setIsRetry] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
 
   const [rating, setRating] = useState<number | null>(null);
   const [ratingChange, setRatingChange] = useState<number | null>(null);
@@ -134,8 +124,6 @@ export default function EndgamesPage() {
   const bufferedPositionRef = useRef<EndgamePosition | null>(null);
   const bufferedSourceRef = useRef<DrillSource | null>(null);
   const prefetchingRef = useRef(false);
-  const drillStartedAtRef = useRef(0);
-  const moveCountRef = useRef(0);
   // Guards the async draws: a fetch that resolves after the user has moved
   // on (another category, a newer draw) must never start its drill.
   const loadTokenRef = useRef(0);
@@ -144,24 +132,24 @@ export default function EndgamesPage() {
     setPosition(next);
     setResult(null);
     setPlayout(null);
-    setPlayoutPlies(0);
-    setSkipPlayoutRequest(0);
-    setPlayoutStepRequest(0);
     setHintsUsed(0);
     setHintRequest(0);
-    setRevealedHint(null);
-    setHistory([]);
-    setMoveCount(0);
-    setLastUserSan(null);
-    setLastOpponentSan(null);
+    setSolutionRequest(0);
+    setIsRetry(false);
     setIsThinking(false);
-    setElapsedSeconds(0);
     setNextError(null);
-    moveCountRef.current = 0;
-    drillStartedAtRef.current = Date.now();
     setDrillKey((key) => key + 1);
     setLoadState({ kind: 'ready' });
   }, []);
+
+  /** "Retry": replay the same position as a fresh, UNRATED attempt. */
+  const handleRetry = useCallback(() => {
+    if (!position) return;
+    startDrill(position);
+    // After startDrill's reset: the retry attempt is unrated because the
+    // drill's first resolution already moved the rating.
+    setIsRetry(true);
+  }, [position, startDrill]);
 
   const prefetchNext = useCallback(async (source: DrillSource) => {
     if (prefetchingRef.current || bufferedPositionRef.current) return;
@@ -288,49 +276,20 @@ export default function EndgamesPage() {
     }
   }, [isAdvancing, practiceCategory, prefetchNext, startDrill]);
 
-  const handleUserMove = useCallback((san: string) => {
-    moveCountRef.current += 1;
-    setMoveCount(moveCountRef.current);
-    setLastUserSan(san);
-    // The revealed hint described the previous position; it is stale now
-    // (the board has already replaced its highlight with this move) and the
-    // button comes back for the next one.
-    setRevealedHint(null);
-  }, []);
-
-  const handleOpponentMove = useCallback((san: string) => {
-    setLastOpponentSan(san);
-  }, []);
-
-  const handleHintRevealed = useCallback((hint: EndgameHintResponse) => {
-    // Counted only on a successful reveal. From here every submission
-    // carries the running count; the rated route neutralizes the rating on
-    // a hint-assisted solve.
+  const handleHintRevealed = useCallback(() => {
+    // Counted only on a successful reveal, from either assist ("Hint" or
+    // "Show move"). From here every submission carries the running count; the
+    // rated route neutralizes the rating on a hint-assisted solve.
     setHintsUsed((count) => count + 1);
-    setRevealedHint(hint);
   }, []);
 
   const handleThinkingChange = useCallback((thinking: boolean) => {
     setIsThinking(thinking);
   }, []);
 
-  const handlePlayoutStepping = useCallback(
-    (step: EndgamePlayoutStep | null) => {
-      // The board owns the line and its cursor; this is the mirror the panel
-      // renders. Null only ever accompanies a completion callback, which
-      // sets the done state right after.
-      setPlayout(step ? { state: 'stepping', ...step } : null);
-    },
-    []
-  );
-
   const handleDrillResolved = useCallback(
-    (resolved: EndgameMoveResponse, historySan: string[]) => {
+    (resolved: EndgameMoveResponse) => {
       setResult(resolved);
-      setHistory(historySan);
-      setElapsedSeconds(
-        Math.max(1, Math.round((Date.now() - drillStartedAtRef.current) / 1000))
-      );
       // Practice writes nothing: only a rated drill moves the rating.
       if (!practiceCategory && resolved.rating) {
         setRating(resolved.rating.new_rating);
@@ -401,7 +360,8 @@ export default function EndgamesPage() {
             {/* ============ LEFT: RATING + CATEGORY LIST ============ */}
             <section className="order-2 mt-6 flex min-h-0 flex-col gap-5 xl:order-none xl:mt-0">
               <div
-                className={`${CARD_CLASS} flex shrink-0 items-center gap-4 p-5 shadow-2xl shadow-black/25`}
+                className={`${WOOD_PANEL_CLASS} flex shrink-0 items-center gap-4 p-5`}
+                style={WOOD_PANEL_STYLE}
               >
                 {/* The badge is decoration: the rating itself is text. */}
                 <img
@@ -465,18 +425,12 @@ export default function EndgamesPage() {
                     practiceCategory ? practiceSubmitMove : undefined
                   }
                   playout={playout?.state === 'active'}
-                  playoutSkipRequest={skipPlayoutRequest}
-                  playoutStepRequest={playoutStepRequest}
-                  onPlayoutProgress={setPlayoutPlies}
-                  onPlayoutResolved={(resolution) =>
-                    setPlayout({ state: 'done', resolution })
-                  }
-                  onPlayoutStepping={handlePlayoutStepping}
+                  onPlayoutResolved={() => setPlayout({ state: 'done' })}
                   hintsUsed={hintsUsed}
+                  retry={isRetry}
                   hintRequest={hintRequest}
+                  solutionRequest={solutionRequest}
                   onHintRevealed={handleHintRevealed}
-                  onUserMove={handleUserMove}
-                  onOpponentMove={handleOpponentMove}
                   onThinkingChange={handleThinkingChange}
                   onDrillResolved={handleDrillResolved}
                 />
@@ -510,21 +464,18 @@ export default function EndgamesPage() {
                   context={practiceCategory ? 'practice' : 'rated'}
                   position={position}
                   result={result}
-                  moveCount={moveCount}
-                  history={history}
-                  elapsedSeconds={elapsedSeconds}
-                  lastUserSan={lastUserSan}
-                  lastOpponentSan={lastOpponentSan}
                   isThinking={isThinking}
                   onPlayItOut={() => setPlayout({ state: 'active' })}
-                  onSkipToResult={() => setSkipPlayoutRequest((n) => n + 1)}
-                  onStepPlayout={() => setPlayoutStepRequest((n) => n + 1)}
-                  playoutPlies={playoutPlies}
+                  onRetry={handleRetry}
                   playout={playout}
                   onRequestHint={() => setHintRequest((n) => n + 1)}
-                  revealedHint={revealedHint}
+                  onRequestSolution={() => setSolutionRequest((n) => n + 1)}
                 />
               </div>
+
+              {/* The landing page's Woodpecker card, compacted for the
+                  column: the spaced-repetition pitch inside the drill loop. */}
+              <WoodpeckerPromoCard />
 
               {nextError && (
                 <div
