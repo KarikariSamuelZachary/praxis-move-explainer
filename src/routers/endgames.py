@@ -99,6 +99,14 @@ because it is the one place the rating is written:
 The count itself is client-owned (the same statelessness every route here
 documents); the hint route (routers/endgame_hint.py) is advisory and
 write-free, and the client reports what it revealed.
+
+RETRIES (retry)
+===============
+The panel's "Retry" replays a drill whose result was already recorded, so a
+resolving retry move is graded for the verdict but writes nothing: no
+rating change (the first attempt already moved it) and no review capture
+(the first failure already queued the card). The verdict still drives the
+UI, so the user gets the same solved/failed feedback as a first attempt.
 """
 import logging
 
@@ -322,9 +330,14 @@ def submit_move(
         result = attach_common_mistake(conn, result, str(position["topic_id"]))
 
     # Built before the write below because the endgame Woodpecker capture
-    # (same transaction as the rating) persists these exact fields.
+    # (same transaction as the rating) persists these exact fields. A retry
+    # never captures: the drill's first failure already queued the card.
     review_capture = None
-    if result.status == EndgameStatus.FAILED and result.failure_category is not None:
+    if (
+        not body.retry
+        and result.status == EndgameStatus.FAILED
+        and result.failure_category is not None
+    ):
         review_capture = EndgameReviewCapture(
             position_id=str(body.position_id),
             source_puzzle_id=position["source_puzzle_id"],
@@ -347,16 +360,20 @@ def submit_move(
     neutral_solve = (
         result.status == EndgameStatus.SOLVED and body.hints_used > 0
     )
+    # A RETRY replays a drill whose result was already recorded, so its
+    # resolution is unrated for the same reason: nothing may move the rating
+    # a second time. The verdict still comes back for the UI.
+    unrated = body.retry or neutral_solve
 
     rating_update = None
     if result.rating_change is None:
         # in_progress: release the FOR UPDATE lock without writing anything.
         conn.rollback()
-    elif neutral_solve:
+    elif unrated:
         # Nothing is written and the lock is released. The rating block is
         # returned for the panel's "±0" only when a rating actually exists;
-        # an unrated user's first rating is not established by a hinted
-        # solve, so their response carries rating=None.
+        # an unrated user's first rating is not established by a hinted or
+        # retried solve, so their response carries rating=None.
         conn.rollback()
         if stored_rating is not None:
             rating_update = EndgameRatingUpdate(
