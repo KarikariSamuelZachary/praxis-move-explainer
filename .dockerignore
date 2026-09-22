@@ -21,6 +21,12 @@ url
 # Local data and backup artifacts not needed in a production image
 data/raw/
 praxis_subset.csv
+
+# Generated endgame sourcing artifacts are dev-only: the deploy image ships
+# the committed data/seed/endgame_sourced_seed.jsonl.gz instead and imports
+# it on first boot when the sourced endgame pool is empty (and data/syzygy is
+# already baked into the base image). See src/services/endgame_seeding.py.
+data/processed/endgame_candidates/
 test_game.pgn
 woodpecker-bird-original.png.bak
 landing_page mockup image.png
