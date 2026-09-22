@@ -8,9 +8,6 @@ import {
   EndgameMoveResponse,
   EndgameOpponentReply,
   EndgameOutcome,
-  EndgamePlayoutFinishEnding,
-  EndgamePlayoutFinishRequest,
-  EndgamePlayoutFinishResponse,
   EndgamePlayoutReplyRequest,
   EndgamePlayoutReplyResponse,
   EndgamePosition,
@@ -19,6 +16,7 @@ import {
   EndgameStatus,
   EndgameWoodpeckerAttemptPayload,
   EndgameWoodpeckerAttemptResponse,
+  EndgameWoodpeckerCountResponse,
   EndgameWoodpeckerQueueEntry,
 } from '@/types';
 
@@ -45,6 +43,13 @@ export interface EndgameMoveSubmission {
    * and a hinted review pass is scheduled as not-clean.
    */
   hints_used: number;
+  /**
+   * True when this attempt replays an already-recorded drill (the panel's
+   * Retry). The board attaches it to every submission of that replay; the
+   * backend grades each move for the verdict but writes nothing on
+   * resolution -- no rating change, no review capture/FSRS transition.
+   */
+  retry: boolean;
 }
 
 export type EndgameSubmitMove<Result> = (
@@ -234,69 +239,13 @@ export function submitEndgamePracticeMove(
 }
 
 /**
- * Where a "Play it out" continuation ended, detected client-side with the
- * same terminal conditions the backend grades against ('draw' covers the
- * repetition rules, which have no single named bucket in the wire types).
- */
-export type EndgamePlayoutEnding =
-  | 'checkmate'
-  | 'stalemate'
-  | 'insufficient_material'
-  | 'fifty_move_rule'
-  | 'draw';
-
-/**
- * How a settled drill's continuation finished:
- *   * 'ending'  -- a terminal position was reached (or the continuation could
- *                  not continue); `ending` is null in the defensive case;
- *   * 'verdict' -- no cheap concrete line existed, so the tablebase verdict
- *                  itself is the result (from the user's colour).
- */
-export type EndgamePlayoutResolution =
-  | { kind: 'ending'; ending: EndgamePlayoutEnding | null }
-  | { kind: 'verdict'; outcome: EndgameOutcome };
-
-/**
- * One step of a fast-forwarded line, mirrored from the board: how many plies
- * of the line are on the board, how many the line has, and the SAN of the
- * next one (the stepper's button label).
- */
-export interface EndgamePlayoutStep {
-  shown: number;
-  total: number;
-  next_move_san: string | null;
-}
-
-/**
  * The panel's view of the continuation:
- *   * active   -- the user is playing it out against the defender;
- *   * stepping -- a locally-covered fast-forward came back as a whole line
- *                 and the user is walking it move by move (the board owns
- *                 the line and its cursor; this is the mirror the panel
- *                 renders);
- *   * done     -- the continuation ended, with its resolution.
+ *   * active -- the user is playing it out against the defender;
+ *   * done   -- the continuation ended. The board detects the terminal
+ *               position itself; the panel only needs to stop offering the
+ *               continuation.
  */
-export type EndgamePlayoutStatus =
-  | { state: 'active' }
-  | ({ state: 'stepping' } & EndgamePlayoutStep)
-  | { state: 'done'; resolution: EndgamePlayoutResolution };
-
-export function playoutEndingLabel(ending: EndgamePlayoutEnding): string {
-  return ending === 'draw' ? 'a draw' : endgameResolutionLabel(ending).toLowerCase();
-}
-
-/** The finish route's precise ending, in the panel's display vocabulary. */
-export function playoutEndingFromFinish(
-  ending: EndgamePlayoutFinishEnding
-): EndgamePlayoutEnding {
-  switch (ending) {
-    case 'seventy_five_move_rule':
-    case 'fivefold_repetition':
-      return 'draw';
-    default:
-      return ending;
-  }
-}
+export type EndgamePlayoutStatus = { state: 'active' } | { state: 'done' };
 
 /**
  * The defender's reply for a FAILED drill's continuation.
@@ -336,45 +285,6 @@ export async function requestEndgamePlayoutReply(
   }
 
   return (await response.json()) as EndgamePlayoutReplyResponse;
-}
-
-/**
- * Fast-forward a settled drill's continuation to its final result.
- *
- * Returns either a concrete terminal position (locally-covered material) or
- * the tablebase verdict (beyond local coverage, where a line-play would cost
- * seconds per ply). Read-only either way: the route never grades, never
- * writes a rating and never captures into the review queue.
- */
-export async function finishEndgamePlayout(
-  payload: EndgamePlayoutFinishRequest
-): Promise<EndgamePlayoutFinishResponse> {
-  let response: Response;
-  try {
-    response = await fetch('/api/endgames/playout/finish', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-  } catch {
-    throw new EndgameFetchError('Could not reach the server.', 0, true);
-  }
-
-  if (!response.ok) {
-    const body = await response.json().catch(() => ({}));
-    const detail = body.detail ?? body.error;
-    const retryable =
-      response.status === 429 ||
-      response.status === 502 ||
-      response.status === 503;
-    throw new EndgameFetchError(
-      detail ?? `Could not resolve the position (${response.status}).`,
-      response.status,
-      retryable
-    );
-  }
-
-  return (await response.json()) as EndgamePlayoutFinishResponse;
 }
 
 /**
@@ -504,6 +414,33 @@ export async function fetchEndgameWoodpeckerQueue(): Promise<
   }
 
   return (await response.json()) as EndgameWoodpeckerQueueEntry[];
+}
+
+/**
+ * The endgame review due count, for the Woodpecker card's "Reviews Due".
+ * Same predicate as the queue: due-now, unmastered cards only.
+ */
+export async function fetchEndgameWoodpeckerCount(): Promise<number> {
+  let response: Response;
+  try {
+    response = await fetch('/api/endgames/woodpecker/count', {
+      cache: 'no-store',
+    });
+  } catch {
+    throw new EndgameFetchError('Could not reach the server.', 0, true);
+  }
+
+  if (!response.ok) {
+    const body = await response.json().catch(() => ({}));
+    throw new EndgameFetchError(
+      body.detail ?? body.error ?? `Could not load your reviews (${response.status}).`,
+      response.status,
+      response.status === 429 || response.status >= 500
+    );
+  }
+
+  const body = (await response.json()) as EndgameWoodpeckerCountResponse;
+  return body.due_count;
 }
 
 /**
@@ -658,54 +595,3 @@ export function endgameResolutionLabel(resolution: EndgameResolution): string {
       return 'Promotion';
   }
 }
-
-/**
- * "When does FSRS bring this card back" as a short label for the review
- * panel's third stat cell. Reviews have no rating change, so the resolved
- * state reports the scheduling outcome instead: Today / Tomorrow / 6d / 3w.
- */
-export function endgameDueLabel(
-  due: string,
-  now: Date = new Date()
-): string {
-  const dueMs = new Date(due).getTime();
-  if (Number.isNaN(dueMs)) return '—';
-
-  const days = Math.round((dueMs - now.getTime()) / 86_400_000);
-  if (days <= 0) return 'Today';
-  if (days === 1) return 'Tomorrow';
-  if (days < 14) return `${days}d`;
-  if (days < 60) return `${Math.round(days / 7)}w`;
-  return `${Math.round(days / 30)}mo`;
-}
-
-/**
- * The three-state card's failure language. The point of this mode is
- * durable technique, so failures are framed as the technique breaking
- * down at a moment in the sequence -- never as "wrong move".
- */
-export const ENDGAME_FAILURE_COPY: Record<
-  EndgameFailureCategory,
-  { title: string; detail: string }
-> = {
-  threw_away_win: {
-    title: 'The win slipped away',
-    detail:
-      'That move let the defender back into a drawn position. The technique broke down before the conversion finished.',
-  },
-  blundered_into_loss: {
-    title: 'The win turned on you',
-    detail:
-      'That move handed the defender the game. A winning conversion became a loss in one step.',
-  },
-  lost_the_draw: {
-    title: 'The draw slipped away',
-    detail:
-      'The position became lost. The defensive technique broke down before the draw was secured.',
-  },
-  ran_out_of_moves: {
-    title: 'The win never came',
-    detail:
-      'The clock ran out before the conversion landed. Winning positions still have to be converted move by move.',
-  },
-};
