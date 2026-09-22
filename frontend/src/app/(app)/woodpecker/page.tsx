@@ -9,14 +9,12 @@ import type { EndgameBoardProps } from '@/components/board/EndgameBoard';
 import DrillStatusPanel from '@/components/endgames/DrillStatusPanel';
 import {
   EndgamePlayoutStatus,
-  EndgamePlayoutStep,
   fetchEndgameWoodpeckerQueue,
   submitEndgameWoodpeckerMove,
   type EndgameMoveSubmission,
   type EndgameSubmitMove,
 } from '@/lib/endgames';
 import type {
-  EndgameHintResponse,
   EndgameWoodpeckerAttemptResponse,
   EndgameWoodpeckerQueueEntry,
   Puzzle,
@@ -713,26 +711,20 @@ export default function WoodpeckerPage() {
     useState<EndgameWoodpeckerAttemptResponse | null>(null);
   const [endgamePlayout, setEndgamePlayout] =
     useState<EndgamePlayoutStatus | null>(null);
-  const [endgamePlayoutPlies, setEndgamePlayoutPlies] = useState(0);
-  const [endgameSkipPlayoutRequest, setEndgameSkipPlayoutRequest] = useState(0);
-  const [endgamePlayoutStepRequest, setEndgamePlayoutStepRequest] = useState(0);
-  // "Get solution" for the endgame review tab: the running count (sent with
-  // every review move; a hinted pass is scheduled as not-clean on
-  // resolution) plus the hint currently highlighted on the board.
+  // Bumped by "Retry": remounts the board at the entry's initial position
+  // while the entry itself stays current.
+  const [endgameRetryKey, setEndgameRetryKey] = useState(0);
+  // True while the current replay is a "Retry": its graded moves still
+  // resolve the card for the verdict, but the backend writes no FSRS
+  // transition and no attempt row.
+  const [endgameIsRetry, setEndgameIsRetry] = useState(false);
+  // The endgame review tab's two assists: the running hint/reveal count (sent
+  // with every review move; a hinted pass is scheduled as not-clean on
+  // resolution) plus one request counter per button.
   const [endgameHintsUsed, setEndgameHintsUsed] = useState(0);
   const [endgameHintRequest, setEndgameHintRequest] = useState(0);
-  const [endgameRevealedHint, setEndgameRevealedHint] =
-    useState<EndgameHintResponse | null>(null);
-  const [endgameHistory, setEndgameHistory] = useState<string[]>([]);
-  const [endgameMoveCount, setEndgameMoveCount] = useState(0);
-  const [endgameLastUserSan, setEndgameLastUserSan] = useState<string | null>(
-    null
-  );
-  const [endgameLastOpponentSan, setEndgameLastOpponentSan] = useState<
-    string | null
-  >(null);
+  const [endgameSolutionRequest, setEndgameSolutionRequest] = useState(0);
   const [endgameIsThinking, setEndgameIsThinking] = useState(false);
-  const [endgameElapsedSeconds, setEndgameElapsedSeconds] = useState(0);
   const [endgameCompletedCount, setEndgameCompletedCount] = useState(0);
   const endgameDrillStartedAtRef = useRef(0);
   const endgameAdvanceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
@@ -878,18 +870,11 @@ export default function WoodpeckerPage() {
       setEndgameCompletedCount(0);
       setEndgameResult(null);
       setEndgamePlayout(null);
-      setEndgamePlayoutPlies(0);
-      setEndgameSkipPlayoutRequest(0);
-      setEndgamePlayoutStepRequest(0);
       setEndgameHintsUsed(0);
       setEndgameHintRequest(0);
-      setEndgameRevealedHint(null);
-      setEndgameHistory([]);
-      setEndgameMoveCount(0);
-      setEndgameLastUserSan(null);
-      setEndgameLastOpponentSan(null);
+      setEndgameSolutionRequest(0);
+      setEndgameIsRetry(false);
       setEndgameIsThinking(false);
-      setEndgameElapsedSeconds(0);
       endgameDrillStartedAtRef.current = Date.now();
     } catch (e) {
       console.error('Endgame review queue load failed:', e);
@@ -1029,17 +1014,10 @@ export default function WoodpeckerPage() {
     if (!endgameQueue) return;
     setEndgameResult(null);
     setEndgamePlayout(null);
-    setEndgamePlayoutPlies(0);
-    setEndgameSkipPlayoutRequest(0);
-    setEndgamePlayoutStepRequest(0);
     setEndgameHintsUsed(0);
     setEndgameHintRequest(0);
-    setEndgameRevealedHint(null);
-    setEndgameHistory([]);
-    setEndgameMoveCount(0);
-    setEndgameLastUserSan(null);
-    setEndgameLastOpponentSan(null);
-    setEndgameElapsedSeconds(0);
+    setEndgameSolutionRequest(0);
+    setEndgameIsRetry(false);
     if (endgameIndex + 1 >= endgameQueue.length) {
       setEndgameCompletedCount(endgameQueue.length);
       setEndgameIndex(endgameQueue.length);
@@ -1050,12 +1028,8 @@ export default function WoodpeckerPage() {
   }, [clearEndgameAdvanceTimeout, endgameIndex, endgameQueue]);
 
   const handleEndgameResolved = useCallback(
-    (resolved: EndgameWoodpeckerAttemptResponse, historySan: string[]) => {
+    (resolved: EndgameWoodpeckerAttemptResponse) => {
       setEndgameResult(resolved);
-      setEndgameHistory(historySan);
-      setEndgameElapsedSeconds(
-        Math.max(1, Math.round((Date.now() - endgameDrillStartedAtRef.current) / 1000))
-      );
       // Same auto-advance contract as the puzzle tab: hold the resolved
       // panel briefly, then load the next due card unless the reviewer
       // turned auto-advance off.
@@ -1067,36 +1041,33 @@ export default function WoodpeckerPage() {
     [advanceEndgame, autoAdvance, clearEndgameAdvanceTimeout]
   );
 
-  const handleEndgameUserMove = useCallback((san: string) => {
-    setEndgameMoveCount((count) => count + 1);
-    setEndgameLastUserSan(san);
-    // The revealed hint described the position that just left the board.
-    setEndgameRevealedHint(null);
-  }, []);
+  /** "Retry": replay the current review card from its initial position as an
+   *  UNRATED attempt -- the first resolution already scheduled the card. */
+  const handleEndgameRetry = useCallback(() => {
+    // A retry supersedes any pending auto-advance.
+    clearEndgameAdvanceTimeout();
+    setEndgameResult(null);
+    setEndgamePlayout(null);
+    setEndgameHintsUsed(0);
+    setEndgameHintRequest(0);
+    setEndgameSolutionRequest(0);
+    setEndgameIsRetry(true);
+    setEndgameIsThinking(false);
+    endgameDrillStartedAtRef.current = Date.now();
+    setEndgameRetryKey((key) => key + 1);
+  }, [clearEndgameAdvanceTimeout]);
 
-  const handleEndgameOpponentMove = useCallback((san: string) => {
-    setEndgameLastOpponentSan(san);
-  }, []);
-
-  const handleEndgameHintRevealed = useCallback((hint: EndgameHintResponse) => {
-    // Counted on successful reveals only. Every review move from here
-    // carries the running count, and the attempts route schedules a
-    // hint-assisted pass as not-clean (FSRS Again) on resolution.
+  const handleEndgameHintRevealed = useCallback(() => {
+    // Counted on successful reveals only, from either assist ("Hint" or
+    // "Show move"). Every review move from here carries the running count,
+    // and the attempts route schedules a hint-assisted pass as not-clean
+    // (FSRS Again) on resolution.
     setEndgameHintsUsed((count) => count + 1);
-    setEndgameRevealedHint(hint);
   }, []);
 
   const handleEndgameThinkingChange = useCallback((thinking: boolean) => {
     setEndgameIsThinking(thinking);
   }, []);
-
-  const handleEndgamePlayoutStepping = useCallback(
-    (step: EndgamePlayoutStep | null) => {
-      // The board owns the line and its cursor; this is the panel's mirror.
-      setEndgamePlayout(step ? { state: 'stepping', ...step } : null);
-    },
-    []
-  );
 
   const handleEndgameExit = useCallback(() => {
     clearEndgameAdvanceTimeout();
@@ -1602,22 +1573,16 @@ export default function WoodpeckerPage() {
           <div className="relative mx-auto aspect-square w-full max-w-[calc(100vh-70px)]">
             <div className="w-full">
               <EndgameBoard
-                key={currentEndgameEntry.id}
+                key={`${currentEndgameEntry.id}:${endgameRetryKey}`}
                 position={endgamePosition}
                 submitMove={submitEndgameReviewMove}
                 playout={endgamePlayout?.state === 'active'}
-                playoutSkipRequest={endgameSkipPlayoutRequest}
-                playoutStepRequest={endgamePlayoutStepRequest}
-                onPlayoutProgress={setEndgamePlayoutPlies}
-                onPlayoutResolved={(resolution) =>
-                  setEndgamePlayout({ state: 'done', resolution })
-                }
-                onPlayoutStepping={handleEndgamePlayoutStepping}
+                onPlayoutResolved={() => setEndgamePlayout({ state: 'done' })}
                 hintsUsed={endgameHintsUsed}
+                retry={endgameIsRetry}
                 hintRequest={endgameHintRequest}
+                solutionRequest={endgameSolutionRequest}
                 onHintRevealed={handleEndgameHintRevealed}
-                onUserMove={handleEndgameUserMove}
-                onOpponentMove={handleEndgameOpponentMove}
                 onThinkingChange={handleEndgameThinkingChange}
                 onDrillResolved={handleEndgameResolved}
               />
@@ -1717,27 +1682,15 @@ export default function WoodpeckerPage() {
               context="review"
               position={endgamePosition}
               result={endgameResult}
-              moveCount={endgameMoveCount}
-              history={endgameHistory}
-              elapsedSeconds={endgameElapsedSeconds}
-              lastUserSan={endgameLastUserSan}
-              lastOpponentSan={endgameLastOpponentSan}
               isThinking={endgameIsThinking}
-              scheduling={endgameResult?.scheduling ?? null}
               onPlayItOut={() => setEndgamePlayout({ state: 'active' })}
-              onSkipToResult={() =>
-                setEndgameSkipPlayoutRequest((n) => n + 1)
-              }
-              onStepPlayout={() =>
-                setEndgamePlayoutStepRequest((n) => n + 1)
-              }
-              playoutPlies={endgamePlayoutPlies}
+              onRetry={handleEndgameRetry}
               playout={endgamePlayout}
               onRequestHint={() => setEndgameHintRequest((n) => n + 1)}
-              revealedHint={endgameRevealedHint}
+              onRequestSolution={() => setEndgameSolutionRequest((n) => n + 1)}
             />
 
-            {endgameResult ? (
+            {endgameResult && (
               <button
                 type="button"
                 onClick={advanceEndgame}
@@ -1746,12 +1699,6 @@ export default function WoodpeckerPage() {
                 <NextIcon />
                 Next Review
               </button>
-            ) : (
-              <div className="rounded-xl border border-white/10 bg-black/20 px-4 py-3 text-center text-[11px] leading-4 text-white/40">
-                No hints, no stored line — replay the technique to a real board
-                ending. FSRS reschedules this card server-side on the final
-                move.
-              </div>
             )}
           </div>
         </section>
