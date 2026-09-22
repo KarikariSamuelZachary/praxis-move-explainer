@@ -2,7 +2,7 @@
 
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
-import { useClerk } from '@clerk/nextjs';
+import { useClerk, useUser } from '@clerk/nextjs';
 import { useEffect, useRef, useState } from 'react';
 
 import { KnightMark } from '@/components/layout/KnightMark';
@@ -54,19 +54,21 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
   );
 }
 
-function BellIcon() {
-  return (
-    <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24">
-      <path d="M18 8a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9" />
-      <path d="M13.73 21a2 2 0 0 1-3.46 0" />
-    </svg>
-  );
-}
-
 function ProfileMenu() {
   const { signOut } = useClerk();
+  const { user } = useUser();
   const [isOpen, setIsOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  // The mark carries the account's initial. Sign-up collects no name, so the
+  // email is the one identifier every account has; its first letter is the
+  // initial. A missing/blank address falls back to "?" rather than a letter
+  // that belongs to nobody.
+  const email =
+    user?.primaryEmailAddress?.emailAddress ??
+    user?.emailAddresses?.[0]?.emailAddress ??
+    '';
+  const initial = email.trim() ? email.trim()[0].toUpperCase() : '?';
 
   useEffect(() => {
     if (!isOpen) return;
@@ -102,7 +104,7 @@ function ProfileMenu() {
         aria-haspopup="menu"
         aria-expanded={isOpen}
       >
-        S
+        {initial}
       </button>
       {isOpen && (
         <div
@@ -161,11 +163,7 @@ export default function TopNav() {
             <NavLinks />
           </div>
 
-          <div className="hidden items-center gap-5 md:flex">
-            <button type="button" className="relative text-white/80 transition hover:text-white" aria-label="Notifications">
-              <BellIcon />
-              <span className="absolute -right-0.5 top-0 h-2 w-2 rounded-full bg-[#10b981] ring-2 ring-black" />
-            </button>
+          <div className="hidden items-center md:flex">
             <ProfileMenu />
           </div>
 
@@ -208,8 +206,7 @@ export default function TopNav() {
               <NavLinks onNavigate={() => setIsOpen(false)} />
             </div>
 
-            <div className="mt-4 flex items-center gap-5 border-t border-white/10 pt-4">
-              <BellIcon />
+            <div className="mt-4 flex items-center border-t border-white/10 pt-4">
               <ProfileMenu />
             </div>
           </div>
