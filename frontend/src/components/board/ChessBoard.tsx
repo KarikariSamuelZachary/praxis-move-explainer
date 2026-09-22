@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Chess, Move, Square } from 'chess.js';
 import { Chessboard, type SquareRenderer } from 'react-chessboard';
 
+import PromotionPicker from '@/components/board/PromotionPicker';
 import { Puzzle } from '@/types';
 
 export type BoardApi = {
@@ -700,30 +701,11 @@ export default function ChessBoardComponent({
         />
 
           {moveToPromote && (
-            <div className="absolute inset-0 flex items-center justify-center bg-black/60 z-10 rounded-lg backdrop-blur-sm">
-              <div className="bg-zinc-800 p-4 rounded-xl shadow-2xl border border-zinc-700">
-                <h3 className="text-white text-center mb-4 font-medium">Promote to</h3>
-                <div className="flex gap-2">
-                  {['q', 'r', 'b', 'n'].map((piece) => (
-                    <button
-                      key={piece}
-                      onClick={() => onPromotionPieceSelect(piece)}
-                      className="w-14 h-14 bg-zinc-700 hover:bg-emerald-600 rounded-lg text-4xl flex items-center justify-center transition-colors pb-2"
-                    >
-                      {game.turn() === 'w'
-                        ? (piece === 'q' ? '♕' : piece === 'r' ? '♖' : piece === 'b' ? '♗' : '♘')
-                        : (piece === 'q' ? '♛' : piece === 'r' ? '♜' : piece === 'b' ? '♝' : '♞')}
-                    </button>
-                  ))}
-                </div>
-                <button
-                  onClick={() => setMoveToPromote(null)}
-                  className="mt-4 w-full py-2 bg-zinc-700/50 hover:bg-zinc-700 rounded-lg text-zinc-300 text-sm transition-colors"
-                >
-                  Cancel
-                </button>
-              </div>
-            </div>
+            <PromotionPicker
+              turn={game.turn()}
+              onSelect={onPromotionPieceSelect}
+              onCancel={() => setMoveToPromote(null)}
+            />
           )}
       </div>
     </div>
