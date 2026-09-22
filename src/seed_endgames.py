@@ -25,11 +25,18 @@
 
 import logging
 import os
+from pathlib import Path
 
 import psycopg2
 from dotenv import load_dotenv
 
-load_dotenv()
+# Load the repo-root .env explicitly. A bare load_dotenv() resolves from THIS
+# file's directory first, and src/.env defines local DB_NAME/DB_USER/DB_PASSWORD
+# -- which then silently beat an exported prod DATABASE_URL in the DB_CONFIG
+# fallback below. That is exactly how the 2026-09-21 prod seed run wrote to the
+# local database instead. Exported env vars still win (dotenv never overrides
+# the process environment), so DB_* or DATABASE_URL on the command line works.
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 DB_CONFIG = {
     "dbname": os.getenv("DB_NAME"),
