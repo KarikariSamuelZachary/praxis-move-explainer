@@ -360,6 +360,11 @@ def record_attempt(
         # Intermediate move of the replay: release the entry lock without
         # writing anything (mirrors the trainer's in_progress rollback).
         conn.rollback()
+    elif body.retry:
+        # A RETRY replays a card whose outcome was already recorded: the
+        # move is graded for the verdict, but the card is not re-scheduled
+        # and no second attempt row is written. Retry is practice.
+        conn.rollback()
     else:
         # --- FSRS scheduling (same block as routers/woodpecker.py) --------
         review_at = now_utc()
