@@ -1,11 +1,32 @@
 """
-Backend rate limiter backed by Upstash Redis (REST).
+Backend rate limiter for the FastAPI routes.
 
-Mirrors the exact incr + conditional expire pattern used by the frontend
-in frontend/src/app/api/puzzles/route.ts so the two layers stay consistent.
+Two backends, selected per call by RATE_LIMIT_BACKEND:
+
+  * "memory" (DEFAULT) -- a thread-safe in-process fixed-window counter. A
+    limiter check is a dict operation (sub-microsecond): it adds ZERO
+    network latency to the request path. This matters because a probe of
+    the old default measured the Upstash round trip at ~350-1400 ms per
+    request on the live endgame routes -- more than the grading itself.
+    Trade-off: the budget is per process. With one uvicorn worker (the
+    Dockerfile runs one) and one replica it is exactly as strict as before;
+    with N replicas a client effectively gets N x the configured budget.
+    The route limits here are generous abuse guards (e.g. 120/min per user
+    on the move routes), not billing meters, so this is the right default.
+
+  * "redis" -- the original Upstash Redis (REST) fixed-window counter,
+    unchanged: a global budget shared across every process and replica.
+    Set RATE_LIMIT_BACKEND=redis to opt back in when the deployment runs
+    multiple replicas AND the strict global budget is wanted. Each check
+    then pays a synchronous HTTP round trip, so this is a deliberate
+    latency/correctness trade, not an oversight.
+
+Mirrors the incr + conditional expire pattern used by the frontend in
+frontend/src/app/api/puzzles/route.ts so the two layers stay consistent
+where both are active.
 
 Upstash credentials use the REST API (UPSTASH_REDIS_REST_URL +
-UPSTASH_REDIS_REST_TOKEN), not a redis:// URL — so upstash_redis.Redis
+UPSTASH_REDIS_REST_TOKEN), not a redis:// URL -- so upstash_redis.Redis
 is used directly rather than redis-py or slowapi.
 
 The Redis client is constructed lazily on first use (not at import time)
@@ -13,6 +34,8 @@ so it picks up env vars loaded by src/main.py's load_dotenv(...) calls,
 which run after this module's import due to import ordering in main.py.
 """
 import os
+import threading
+import time
 from typing import Optional
 
 from fastapi import HTTPException, Request
@@ -44,19 +67,72 @@ def get_client_ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
 
+# --- in-memory backend ---------------------------------------------------
+# key -> (window_started_monotonic, count, window_seconds). The window is
+# stored per entry so the sweep can expire each key by its OWN window
+# (routes use different windows: 5/min imports, 120/min moves).
+_memory_counters: dict[str, tuple[float, int, int]] = {}
+_memory_lock = threading.Lock()
+# Hard cap so a hostile/buggy key space cannot grow the dict without bound;
+# on overflow the oldest tenth is dropped (their windows expire anyway).
+_MEMORY_MAX_KEYS = 100_000
+# Entries older than their own window are pruned every this many checks.
+_MEMORY_SWEEP_EVERY = 4096
+_memory_ops = 0
+
+
+def _memory_is_over_limit(key: str, limit: int, window_seconds: int) -> bool:
+    """Fixed-window counter in process memory. Thread-safe; the check is a
+    dict read/write under one lock, no I/O."""
+    global _memory_ops
+    now = time.monotonic()
+    with _memory_lock:
+        entry = _memory_counters.get(key)
+        if entry is None or now - entry[0] >= window_seconds:
+            _memory_counters[key] = (now, 1, window_seconds)
+            count = 1
+        else:
+            count = entry[1] + 1
+            _memory_counters[key] = (entry[0], count, window_seconds)
+
+        _memory_ops += 1
+        if _memory_ops % _MEMORY_SWEEP_EVERY == 0:
+            for existing_key, (started, _count, window) in list(
+                _memory_counters.items()
+            ):
+                if now - started >= window:
+                    _memory_counters.pop(existing_key, None)
+        if len(_memory_counters) > _MEMORY_MAX_KEYS:
+            oldest = sorted(
+                _memory_counters, key=lambda k: _memory_counters[k][0]
+            )[: _MEMORY_MAX_KEYS // 10]
+            for existing_key in oldest:
+                _memory_counters.pop(existing_key, None)
+
+    return count > limit
+
+
+def _backend() -> str:
+    """Which backend is active: "memory" (default) or "redis". Read per call
+    so tests and ops can flip it without reimporting the module."""
+    return os.getenv("RATE_LIMIT_BACKEND", "memory").strip().lower()
+
+
 def is_over_limit(key: str, limit: int, window_seconds: int) -> bool:
     """
-    Fixed-window counter, same shape as the frontend limiter.
+    Fixed-window counter. Returns True if the caller has exceeded `limit`
+    within `window_seconds`.
 
-    Increments a Redis counter and, on the very first hit in the window,
-    sets its TTL so the window rolls forward cleanly. Returns True if the
-    caller has exceeded `limit` within `window_seconds`.
+    "memory": in-process counter, no I/O (see module docstring).
+    "redis": Upstash REST incr + conditional expire, shared globally.
     """
-    redis = get_redis()
-    count = redis.incr(key)
-    if count == 1:
-        redis.expire(key, window_seconds)
-    return count > limit
+    if _backend() == "redis":
+        redis = get_redis()
+        count = redis.incr(key)
+        if count == 1:
+            redis.expire(key, window_seconds)
+        return count > limit
+    return _memory_is_over_limit(key, limit, window_seconds)
 
 
 def limit_by_ip(limit: int = 5, window: int = 60):
