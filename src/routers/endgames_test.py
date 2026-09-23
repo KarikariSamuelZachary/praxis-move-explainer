@@ -393,6 +393,31 @@ def test_auth(client, headers):
     print("  missing internal secret -> 401; missing Clerk id -> 400")
 
 
+def test_recommendation(client, headers):
+    """The Train page card endpoint: auth-gated, always answers for a user
+    with no history (fallback), and carries the card's shape.
+
+    The fresh test user has an endgame rating but no failed drills, so the
+    pick must be the difficulty-matched fallback -- not an error, and not a
+    bogus weakness claim."""
+    no_clerk = {"X-Internal-Secret": headers["X-Internal-Secret"]}
+    response = client.get("/api/endgames/recommendation", headers=no_clerk)
+    assert response.status_code == 400, response.text
+
+    response = client.get("/api/endgames/recommendation", headers=headers)
+    assert response.status_code == 200, response.text
+    data = response.json()
+    for key in ("category", "reason", "is_fallback", "sample_fen"):
+        assert key in data, f"missing response key {key!r}: {data}"
+    assert data["is_fallback"] is True, data
+    assert data["reason"], data
+    assert data["sample_fen"], data
+    print(
+        f"  cold-start recommendation: {data['category']} "
+        f"({data['reason']}) | sample FEN present"
+    )
+
+
 def test_rating_fallback(client, headers):
     print("A2. rating fallback when endgame_trainer_rating is NULL:")
     write_rating(None)
@@ -1009,6 +1034,7 @@ def main():
     client, headers = setup()
     try:
         test_auth(client, headers)
+        test_recommendation(client, headers)
         test_rating_fallback(client, headers)
         solved_position = test_solved(client, headers)
         failed_position, lost_fen = test_failed(client, headers)
