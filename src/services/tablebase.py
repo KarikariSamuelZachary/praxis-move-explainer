@@ -99,6 +99,25 @@ and never consult either):
 
   Local probes never consult a cache (they are memory-speed already).
 
+PER-MOVE PAYLOADS (probe_tablebase_moves)
+=========================================
+The opponent-reply generator needs one verdict PER LEGAL MOVE, not just the
+root position's. Deriving that from probe_tablebase() means enumerating the
+children and probing each one -- memory-speed locally, but for 6-7-man
+positions that is one Lichess request per legal move (measured 2.6-6.7s
+for 3-11 replies). The Lichess /standard response already carries the whole
+`moves` array in that single request, so probe_tablebase_moves() exposes it:
+
+  * local files answer -> `moves` is None and the caller enumerates
+    children itself (fast, unchanged);
+  * local cannot -> ONE Lichess request returns the root verdict AND every
+    legal move's verdict, parsed into TablebaseMove entries.
+
+The per-move payload gets its own short-lived in-memory cache (the
+position-level caches above store only the root verdict). Callers still get
+the plain position-level behavior from probe_tablebase(); its parser
+deliberately keeps discarding the per-move array.
+
 LOGGING
 =======
 Every fallback activation logs a WARNING with the FEN and the local reason;
@@ -127,7 +146,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 import chess
 import chess.syzygy
@@ -178,6 +197,34 @@ class TablebaseResult(BaseModel):
     source: Literal["local", "lichess"]
 
 
+class TablebaseMove(BaseModel):
+    """One legal move's tablebase verdict, from the CHILD side to move's
+    perspective -- the same side the child's own probe would report (the
+    mover's opponent), so callers invert exactly as they do for a child
+    probe. Only produced by the remote path; the local path enumerates
+    children itself."""
+
+    uci: str
+    outcome: Literal["win", "draw", "loss"]
+    dtz: Optional[int]
+    wdl: int
+
+
+class TablebaseMovesProbe(BaseModel):
+    """Result of probe_tablebase_moves(): the root verdict plus the per-move
+    payload when the local files could not answer.
+
+    `moves` is None when the LOCAL files answered -- every child of a covered
+    position is covered too, so the caller enumerates them itself at memory
+    speed (see services/endgame_reply.py). Otherwise it is the full legal-move
+    list from ONE Lichess request, sorted by the API (callers must not rely on
+    that order; they iterate the board's moves).
+    """
+
+    result: TablebaseResult
+    moves: Optional[List[TablebaseMove]] = None
+
+
 _tablebase: Optional[chess.syzygy.Tablebase] = None
 _tablebase_lock = threading.Lock()
 
@@ -186,6 +233,12 @@ _fallback_cache: dict[str, tuple[float, TablebaseResult]] = {}
 _fallback_cache_lock = threading.Lock()
 _FALLBACK_CACHE_TTL_SECONDS = 300.0
 _FALLBACK_CACHE_MAX_ENTRIES = 4096
+
+# Short-lived per-move payload cache, same policy as the fallback cache. Kept
+# separate because the position-level caches above store only the root
+# verdict; this one holds the full TablebaseMovesProbe (root + every move).
+_moves_cache: dict[str, tuple[float, TablebaseMovesProbe]] = {}
+_moves_cache_lock = threading.Lock()
 
 # Optional persistent cache (see CACHING above). None until the app
 # registers one at startup; the fallback path works unchanged without it.
@@ -335,10 +388,14 @@ def _probe_local(board: chess.Board) -> TablebaseResult:
     )
 
 
-def _fetch_lichess(fen: str) -> TablebaseResult:
-    """One live HTTP attempt against tablebase.lichess.ovh. The only test
-    seam for failure modes: tests monkeypatch this to simulate 429s,
-    outages and malformed responses without a network."""
+def _fetch_lichess_payload(fen: str) -> dict:
+    """One live HTTP attempt against tablebase.lichess.ovh, returning the
+    parsed JSON payload (the raw body: root category/dtz AND the per-move
+    `moves` array used by probe_tablebase_moves).
+
+    The only HTTP seam: tests monkeypatch this (or _fetch_lichess, which
+    delegates here) to simulate 429s, outages and malformed responses
+    without a network."""
     url = f"{_api_base()}?fen={urllib.parse.quote(fen)}"
     try:
         with urllib.request.urlopen(url, timeout=_api_timeout()) as response:
@@ -362,7 +419,16 @@ def _fetch_lichess(fen: str) -> TablebaseResult:
         raise TablebaseUnavailableError(
             f"tablebase fallback failed: malformed response body: {exc}"
         ) from exc
+    if not isinstance(payload, dict):
+        raise TablebaseUnavailableError(
+            f"tablebase fallback failed: unexpected response type {type(payload).__name__}"
+        )
+    return payload
 
+
+def _lichess_wdl(payload: dict, fen: str) -> int:
+    """The payload's root category as a raw syzygy WDL value. Raises
+    TablebaseUnavailableError for the API's own non-answers."""
     category = payload.get("category")
     if category == "unknown":
         # The service answers HTTP 200 with category "unknown" when it has
@@ -376,12 +442,62 @@ def _fetch_lichess(fen: str) -> TablebaseResult:
         raise TablebaseUnavailableError(
             f"tablebase fallback failed: unrecognized category {category!r}"
         )
+    return wdl
+
+
+def _lichess_result_from_payload(payload: dict, fen: str) -> TablebaseResult:
+    wdl = _lichess_wdl(payload, fen)
     return TablebaseResult(
         outcome=_WDL_OUTCOME[wdl],
         dtz=payload.get("dtz"),
         wdl=wdl,
         source="lichess",
     )
+
+
+def _lichess_moves_from_payload(
+    payload: dict, fen: str
+) -> List[TablebaseMove]:
+    """Parse the payload's per-move `moves` array. Every returned entry is
+    from the CHILD side to move, exactly like a child probe. Raises
+    TablebaseUnavailableError when the array is missing/empty or an entry is
+    unusable: the caller (the reply generator) must then fall back to
+    per-child probing rather than rank an incomplete move set."""
+    moves = payload.get("moves")
+    if not isinstance(moves, list) or not moves:
+        raise TablebaseUnavailableError(
+            f"tablebase fallback returned no per-move data for {fen!r}"
+        )
+    parsed: List[TablebaseMove] = []
+    for entry in moves:
+        if not isinstance(entry, dict) or not isinstance(entry.get("uci"), str):
+            raise TablebaseUnavailableError(
+                f"tablebase fallback returned a malformed move entry for {fen!r}"
+            )
+        wdl = _LICHESS_CATEGORY_WDL.get(entry.get("category"))
+        if wdl is None:
+            raise TablebaseUnavailableError(
+                f"tablebase fallback returned an unrecognized move category "
+                f"{entry.get('category')!r} for {fen!r}"
+            )
+        dtz = entry.get("dtz")
+        parsed.append(
+            TablebaseMove(
+                uci=entry["uci"],
+                outcome=_WDL_OUTCOME[wdl],
+                dtz=int(dtz) if dtz is not None else None,
+                wdl=wdl,
+            )
+        )
+    return parsed
+
+
+def _fetch_lichess(fen: str) -> TablebaseResult:
+    """One live HTTP attempt against tablebase.lichess.ovh. The only test
+    seam for failure modes: tests monkeypatch this to simulate 429s,
+    outages and malformed responses without a network."""
+    payload = _fetch_lichess_payload(fen)
+    return _lichess_result_from_payload(payload, fen)
 
 
 def _probe_lichess(fen: str) -> TablebaseResult:
@@ -455,3 +571,100 @@ def probe_tablebase(fen: str) -> TablebaseResult:
             result.wdl,
         )
         return result
+
+
+def probe_tablebase_moves(fen: str) -> TablebaseMovesProbe:
+    """Root verdict + per-move verdicts, one network request at most.
+
+    The reply generator's entry point (services/endgame_reply.py). The local
+    files answer the root probe -> `moves` is None and the caller enumerates
+    children itself (memory-speed, unchanged behavior). Otherwise ONE Lichess
+    request returns the root verdict plus every legal move's verdict.
+
+    Caching: the per-move payload has its own short-lived in-memory cache
+    (TTL/cap shared with the position-level fallback cache). A payload fetch
+    also warms the position-level caches with the root verdict (and the
+    persistent cache with the root only -- writing N children would add N DB
+    round trips to the request path; children are warmed in memory instead,
+    which covers the drill's next moves in this process). Raises the same
+    TablebaseUnavailableError contract as probe_tablebase."""
+    try:
+        board = chess.Board(fen)
+    except ValueError as e:
+        raise ValueError(f"malformed FEN {fen!r}: {e}") from e
+    if not board.is_valid():
+        raise ValueError(f"illegal position {fen!r}: failed python-chess validity check")
+
+    try:
+        return TablebaseMovesProbe(result=_probe_local(board))
+    except TablebaseUnavailableError as local_error:
+        if not _api_enabled():
+            raise
+        key = _cache_key(fen)
+        now = time.monotonic()
+        with _moves_cache_lock:
+            hit = _moves_cache.get(key)
+            if hit is not None:
+                cached_at, cached_probe = hit
+                if now - cached_at < _FALLBACK_CACHE_TTL_SECONDS:
+                    log.debug("tablebase per-move cache hit: %s", key)
+                    return cached_probe.model_copy(deep=True)
+                _moves_cache.pop(key, None)  # expired
+
+        log.warning(
+            "tablebase fallback: local files cannot answer %s (%s); asking "
+            "tablebase.lichess.ovh for the per-move payload",
+            fen,
+            local_error,
+        )
+        try:
+            payload = _fetch_lichess_payload(fen)
+            result = _lichess_result_from_payload(payload, fen)
+            moves = _lichess_moves_from_payload(payload, fen)
+        except TablebaseUnavailableError as remote_error:
+            log.error(
+                "tablebase fallback failed for %s: %s", fen, remote_error
+            )
+            raise TablebaseUnavailableError(
+                f"tablebase probe unavailable for {fen!r} "
+                f"[local: {local_error}] [remote: {remote_error}]"
+            ) from local_error
+
+        # Warm the position-level caches exactly as probe_tablebase would
+        # have (the root is the position that gets graded first).
+        _persistent_cache_put(key, result)
+        _remember_fallback(key, result)
+        # Children: in-memory only. The user's next graded fen_before is one
+        # of these positions, and 300s of in-process warmth covers the
+        # immediate continuation at zero I/O. Children still inside local
+        # coverage are skipped -- they never consult the fallback cache.
+        for move in moves:
+            try:
+                child = board.copy(stack=False)
+                child.push(chess.Move.from_uci(move.uci))
+            except ValueError:
+                continue
+            if len(child.piece_map()) <= 5:
+                continue
+            _remember_fallback(
+                _cache_key(child.fen()),
+                TablebaseResult(
+                    outcome=move.outcome, dtz=move.dtz, wdl=move.wdl, source="lichess"
+                ),
+            )
+
+        probe = TablebaseMovesProbe(result=result, moves=moves)
+        with _moves_cache_lock:
+            while len(_moves_cache) >= _FALLBACK_CACHE_MAX_ENTRIES:
+                _moves_cache.pop(next(iter(_moves_cache)))
+            _moves_cache[key] = (time.monotonic(), probe)
+        log.info(
+            "tablebase fallback answered %s with %d per-move entries: "
+            "outcome=%s dtz=%s wdl=%d",
+            fen,
+            len(moves),
+            result.outcome,
+            result.dtz,
+            result.wdl,
+        )
+        return probe.model_copy(deep=True)
