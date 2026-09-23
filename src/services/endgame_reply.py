@@ -24,16 +24,22 @@ more easily than the real technique demands. Concretely:
 
 PER-MOVE DTZ: WHY THE MOVE IS FOUND BY PROBING CHILDREN
 =======================================================
-services/tablebase.py answers POSITION-level questions only:
-probe_tablebase(fen) returns the outcome/dtz of the position itself (and
-its internal Lichess parser deliberately discards the API's per-move
-`moves` array). It does NOT expose a per-move DTZ. The only way to find the
-best move with the existing module, reused as-is, is to enumerate every
-legal move, probe the resulting child FEN, and rank the children. That is
-what _tablebase_candidates() does. The child probe is from the CHILD side
-to move (the opponent of the mover), so `_INVERT` flips it back to the
-mover's perspective; the child's DTZ is kept from the child side to move's
-perspective, which is exactly the quantity the policy below needs.
+services/tablebase.py's position-level probe answers ONE position. The best
+move is chosen by ranking every legal move's CHILD verdict. Two paths:
+
+  * LOCAL coverage (<=5 men): enumerate every legal move, probe the child
+    locally, rank. The child probe is from the CHILD side to move (the
+    opponent of the mover), so `_INVERT` flips it back to the mover's
+    perspective; the child's DTZ is kept from the child side to move's
+    perspective, which is exactly the quantity the policy below needs.
+
+  * BEYOND local coverage (6-7 men): probing every child over the network
+    was one Lichess request PER LEGAL MOVE (measured 2.6-6.7s for 3-11
+    replies). The API already returns the whole per-move verdict set in its
+    single response, so probe_tablebase_moves() is used instead: ONE request
+    yields the root verdict and every legal move's category/DTZ, consumed by
+    _candidates_from_moves(). The per-move perspective is identical to a
+    child probe's, so the selection policy is untouched.
 
 SELECTION POLICY (DTZ-optimal defense)
 ======================================
@@ -111,7 +117,12 @@ from engines.stockfish_engine import (
     get_endgame_stockfish,
     reset_endgame_stockfish,
 )
-from services.tablebase import TablebaseUnavailableError, probe_tablebase
+from services.tablebase import (
+    TablebaseMove,
+    TablebaseUnavailableError,
+    probe_tablebase,
+    probe_tablebase_moves,
+)
 
 log = logging.getLogger(__name__)
 
@@ -265,6 +276,10 @@ def generate_opponent_reply(fen: str) -> OpponentReply:
 
 
 def _tablebase_candidates(board: chess.Board) -> List[_Candidate]:
+    """LOCAL path: enumerate every legal move and probe each child against
+    the local Syzygy files. Only called when the root probe was answered
+    locally (every child of a covered position is covered too), so the
+    probes are memory-speed."""
     candidates: List[_Candidate] = []
     for move in sorted(board.legal_moves, key=lambda m: m.uci()):
         zeroing = board.is_capture(move) or move.promotion is not None
@@ -295,6 +310,61 @@ def _tablebase_candidates(board: chess.Board) -> List[_Candidate]:
                 move,
                 _INVERT[child_result.outcome],
                 child_result.dtz,
+                is_zeroing=zeroing,
+            )
+        )
+    return candidates
+
+
+def _candidates_from_moves(
+    board: chess.Board, moves: Sequence[TablebaseMove]
+) -> List[_Candidate]:
+    """REMOTE path: build the same candidate list from ONE Lichess request's
+    per-move payload (probe_tablebase_moves) instead of one child probe per
+    legal move.
+
+    Terminal children are still classified by python-chess (authoritative
+    for on-board resolution); everything else takes the payload's verdict.
+    The payload is from the child side to move, so it is inverted to the
+    mover's perspective exactly like a child probe. A payload that does not
+    cover every legal move raises TablebaseUnavailableError; the caller falls
+    back to the per-child probing path rather than rank an incomplete set.
+    """
+    by_uci = {move.uci: move for move in moves}
+    candidates: List[_Candidate] = []
+    for move in sorted(board.legal_moves, key=lambda m: m.uci()):
+        zeroing = board.is_capture(move) or move.promotion is not None
+        child = board.copy(stack=False)
+        child.push(move)
+        if child.is_checkmate():
+            candidates.append(
+                _Candidate(
+                    move,
+                    "win",
+                    None,
+                    ends_game=True,
+                    is_mate=True,
+                    is_zeroing=zeroing,
+                )
+            )
+            continue
+        if child.is_stalemate() or child.is_insufficient_material():
+            candidates.append(
+                _Candidate(move, "draw", None, ends_game=True, is_zeroing=zeroing)
+            )
+            continue
+
+        entry = by_uci.get(move.uci())
+        if entry is None:
+            raise TablebaseUnavailableError(
+                f"tablebase fallback payload did not cover move {move.uci()} "
+                f"in {board.fen()!r}"
+            )
+        candidates.append(
+            _Candidate(
+                move,
+                _INVERT[entry.outcome],
+                entry.dtz,
                 is_zeroing=zeroing,
             )
         )
@@ -360,15 +430,30 @@ def _pick_candidate(
 
 
 def _reply_from_tablebase(board: chess.Board) -> OpponentReply:
-    root = probe_tablebase(board.fen())
-    candidates = _tablebase_candidates(board)
-    chosen = _pick_candidate(candidates, root.outcome, root.dtz)
+    probe = probe_tablebase_moves(board.fen())
+    if probe.moves is None:
+        # Local files answered: enumerate children locally. No network.
+        candidates = _tablebase_candidates(board)
+    else:
+        try:
+            candidates = _candidates_from_moves(board, probe.moves)
+        except TablebaseUnavailableError as exc:
+            # An incomplete per-move payload: fall back to the old (slow)
+            # per-child probing rather than rank a partial move set.
+            log.warning(
+                "endgame reply: per-move payload unusable for %s (%s); "
+                "falling back to per-child probing",
+                board.fen(),
+                exc,
+            )
+            candidates = _tablebase_candidates(board)
+    chosen = _pick_candidate(candidates, probe.result.outcome, probe.result.dtz)
     return _build_reply(
         board,
         chosen.move,
         source="tablebase",
-        outcome=root.outcome,
-        dtz=root.dtz,
+        outcome=probe.result.outcome,
+        dtz=probe.result.dtz,
     )
 
 
