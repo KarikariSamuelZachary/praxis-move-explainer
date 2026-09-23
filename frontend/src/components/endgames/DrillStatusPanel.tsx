@@ -89,10 +89,10 @@ export interface DrillStatusPanelProps {
   playout?: EndgamePlayoutStatus | null;
 }
 
-function CheckCircleIcon() {
+function CheckCircleIcon({ className = 'h-5 w-5' }: { className?: string }) {
   return (
     <svg
-      className="h-5 w-5"
+      className={className}
       fill="none"
       stroke="currentColor"
       strokeLinecap="round"
@@ -318,9 +318,11 @@ export default function DrillStatusPanel({
       {/* ---------- SOLVED ---------- */}
       {result?.status === 'solved' && (
         <>
-          <div className="mt-3 flex items-center gap-2">
+          {/* Centered and led by a larger tick: the solved card is a single
+              celebratory beat, unlike the live and failed rows. */}
+          <div className="mt-3 flex flex-col items-center gap-2.5 text-center">
             <span className="text-[#10b981]">
-              <CheckCircleIcon />
+              <CheckCircleIcon className="h-10 w-10" />
             </span>
             <h2 className={HEADING_CLASS}>
               {isPractice
