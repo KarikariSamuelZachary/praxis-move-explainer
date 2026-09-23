@@ -51,11 +51,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import psycopg2
 from dotenv import load_dotenv
 
+import chess
+
 from services.tablebase import (
     TablebaseUnavailableError,
     _fetch_lichess,
     _open_tablebase,
     probe_tablebase,
+    probe_tablebase_moves,
 )
 
 load_dotenv()
@@ -170,6 +173,109 @@ def test_fallback_failure_modes():
             module._fetch_lichess = original
 
     print("  429 / down / timeout / beyond-API-ceiling all raise explicit combined errors")
+
+
+def test_per_move_payload():
+    """The per-move reply payload: local short-circuit, one-request parsing,
+    the in-memory payload cache, and the explicit failure contract. Hermetic
+    -- a fake payload seam, no network."""
+    import services.tablebase as module
+
+    # Local coverage short-circuits: no payload, no network, moves=None.
+    local = probe_tablebase_moves("8/8/8/4k3/8/8/8/R3K3 w - - 0 1")
+    assert local.moves is None and local.result.source == "local", local
+
+    module._moves_cache.clear()
+    module._fallback_cache.clear()
+    board = chess.Board(SIX_MAN_LOSS_FEN)
+    legal = sorted(board.legal_moves, key=lambda m: m.uci())
+    calls = {"n": 0}
+
+    def fake_payload(fen):
+        calls["n"] += 1
+        return {
+            "category": "loss",
+            "dtz": -2,
+            "moves": [
+                {"uci": move.uci(), "category": "win", "dtz": 5 + index}
+                for index, move in enumerate(legal)
+            ],
+        }
+
+    original = module._fetch_lichess_payload
+    module._fetch_lichess_payload = fake_payload
+    try:
+        probe = probe_tablebase_moves(SIX_MAN_LOSS_FEN)
+        assert calls["n"] == 1, "remote path must fetch ONE payload"
+        assert probe.result.outcome == "loss" and probe.result.dtz == -2
+        assert probe.result.source == "lichess"
+        assert probe.moves is not None
+        assert len(probe.moves) == len(legal), (len(probe.moves), len(legal))
+        by_uci = {move.uci: move for move in probe.moves}
+        assert by_uci[legal[0].uci()].outcome == "win"
+        assert by_uci[legal[0].uci()].dtz == 5
+        assert by_uci[legal[0].uci()].wdl == 2
+
+        # A repeat is served from the payload cache, not the transport.
+        again = probe_tablebase_moves(SIX_MAN_LOSS_FEN)
+        assert calls["n"] == 1 and again.moves is not None
+
+        # Children are warmed in memory: probing the first child (6 men,
+        # beyond local coverage) must not touch the transport either.
+        child_board = board.copy(stack=False)
+        child_board.push(legal[0])
+        child_probe = probe_tablebase(child_board.fen())
+        assert child_probe.outcome == "win" and child_probe.dtz == 5
+        assert calls["n"] == 1, "child warming failed; probe went to the wire"
+
+        # Missing per-move data and unusable entries are explicit failures.
+        module._moves_cache.clear()
+        module._fallback_cache.clear()
+
+        def no_moves(fen):
+            return {"category": "loss", "dtz": -2}
+
+        module._fetch_lichess_payload = no_moves
+        try:
+            probe_tablebase_moves(SIX_MAN_LOSS_FEN)
+            raise AssertionError("missing moves array must raise")
+        except TablebaseUnavailableError as exc:
+            assert "no per-move data" in str(exc), exc
+
+        def bad_entry(fen):
+            return {
+                "category": "loss",
+                "dtz": -2,
+                "moves": [{"uci": legal[0].uci(), "category": "banana"}],
+            }
+
+        module._fetch_lichess_payload = bad_entry
+        try:
+            probe_tablebase_moves(SIX_MAN_LOSS_FEN)
+            raise AssertionError("unusable move category must raise")
+        except TablebaseUnavailableError as exc:
+            assert "unrecognized move category" in str(exc), exc
+
+        # A transport failure keeps the combined local+remote message.
+        def down(fen):
+            raise TablebaseUnavailableError("simulated: API down")
+
+        module._fetch_lichess_payload = down
+        try:
+            probe_tablebase_moves(SIX_MAN_LOSS_FEN)
+            raise AssertionError("transport failure must raise")
+        except TablebaseUnavailableError as exc:
+            combined = str(exc)
+            assert "[local:" in combined and "[remote:" in combined, combined
+    finally:
+        module._fetch_lichess_payload = original
+        module._moves_cache.clear()
+        module._fallback_cache.clear()
+
+    print(
+        "  local short-circuit; one payload fetch parsed, cached, and "
+        "warmed; missing/malformed payloads raise explicitly"
+    )
 
 
 def _db_config():
@@ -349,6 +455,8 @@ def main():
     print("B. lichess fallback (activation, shape, cache, failure modes):")
     test_fallback_activation_and_cache()
     test_fallback_failure_modes()
+    print("B2. per-move payload (one request, parsing, warming, failures):")
+    test_per_move_payload()
     print("C. seed agreement gate (live probe vs stored is_winning):")
     test_seed_agreement()
     print("D. persistent probe cache (seam + Postgres round-trip):")
