@@ -136,8 +136,13 @@ const HINT_FADE_MS = 4000;
 const HIGHLIGHT_SOLUTION_FROM = 'rgba(217, 184, 124, 0.6)';
 const HIGHLIGHT_SOLUTION_TO = 'rgba(74, 45, 20, 0.8)';
 
-// Puzzles waits 600ms before the stored reply; a converted drill should
-// feel like the same opponent answering.
+// Puzzles waits 600ms before playing the stored reply; a converted drill
+// should feel like the same opponent answering. The wait is measured from
+// the USER'S MOVE, not from the grading response: a slow round trip is
+// absorbed into the 600ms instead of being added on top of it (the boards
+// used to wait the full 600ms again after every response, which doubled the
+// perceived reply time). The piece animation is 200ms, so anything at or
+// above that still reads naturally.
 const OPPONENT_DELAY_MS = 600;
 
 function isMovablePhase(phase: EndgameBoardPhase): boolean {
@@ -212,6 +217,10 @@ export default function EndgameBoard<
   const phaseRef = useRef<EndgameBoardPhase>('playing');
   const pendingMoveRef = useRef<PendingMove | null>(null);
   const opponentTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // performance.now() when the current user move was accepted. The opponent
+  // delay is measured from here so a slow grading round trip counts toward
+  // it (see OPPONENT_DELAY_MS).
+  const userMoveAtRef = useRef(0);
   // The last graded verdict, kept so playout only opens on a genuine failed
   // drill, plus the one-shot guard so the continuation starts once.
   const resolvedStatusRef = useRef<EndgameStatus | null>(null);
@@ -271,6 +280,15 @@ export default function EndgameBoard<
     }
   }, []);
 
+  // What remains of OPPONENT_DELAY_MS after the user's move until now. The
+  // round trip (grading, and for generated replies the tablebase work) is
+  // part of the wait, so only the remainder is held back here; an instant
+  // response still gets the full, natural pause.
+  const remainingOpponentDelay = useCallback((): number => {
+    const elapsed = performance.now() - userMoveAtRef.current;
+    return Math.max(0, OPPONENT_DELAY_MS - elapsed);
+  }, []);
+
   useEffect(() => clearOpponentTimer, [clearOpponentTimer]);
 
   const applyOpponentReply = useCallback(
@@ -298,9 +316,9 @@ export default function EndgameBoard<
         onOpponentMoveRef.current?.(applied.san);
         updatePhase('playing');
         onThinkingChangeRef.current?.(false);
-      }, OPPONENT_DELAY_MS);
+      }, remainingOpponentDelay());
     },
-    [clearOpponentTimer, setBoard, updatePhase]
+    [clearOpponentTimer, remainingOpponentDelay, setBoard, updatePhase]
   );
 
   // --- "Play it out": the settled FAILED drill's continuation -------------
@@ -341,9 +359,9 @@ export default function EndgameBoard<
           return;
         }
         updatePhase('playout');
-      }, OPPONENT_DELAY_MS);
+      }, remainingOpponentDelay());
     },
-    [clearOpponentTimer, finishPlayout, setBoard, updatePhase]
+    [clearOpponentTimer, finishPlayout, remainingOpponentDelay, setBoard, updatePhase]
   );
 
   const requestPlayoutReply = useCallback(
@@ -582,6 +600,10 @@ export default function EndgameBoard<
         return;
       }
       if (!move) return;
+
+      // The opponent-delay clock runs from the user's move, not the
+      // response; see remainingOpponentDelay().
+      userMoveAtRef.current = performance.now();
 
       if (inPlayout) {
         // Settled-drill continuation: applied locally, never graded, and no
