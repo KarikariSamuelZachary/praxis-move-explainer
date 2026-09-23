@@ -3,8 +3,10 @@
 import Image from 'next/image';
 import Link from 'next/link';
 import dynamic from 'next/dynamic';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
+
+import { practiceCategoryLabel } from '@/lib/endgames';
 
 const MiniBoard = dynamic(
   () => import('react-chessboard').then((module) => module.Chessboard),
@@ -468,7 +470,51 @@ function TrainingModeCard({ mode }: { mode: TrainingMode }) {
   );
 }
 
+type ApiRecommendation = {
+  category: string;
+  sample_fen: string | null;
+};
+
+// Rendered until the backend answers (and if it never does): the card is an
+// enhancement and must never be empty or broken. Rook endings are the
+// largest sourced pool and the classic starting point.
+const DEFAULT_RECOMMENDATION: ApiRecommendation = {
+  category: 'rook',
+  sample_fen: RECOMMENDED_FEN,
+};
+
 function RecommendedPanel() {
+  const [recommendation, setRecommendation] =
+    useState<ApiRecommendation | null>(null);
+
+  // The backend picks the material category this user is weakest at (failed
+  // drills + their review attempts, weighted weakness score -- see
+  // services/endgame_recommendation.py). Any failure keeps the default
+  // card rather than surfacing an error on the Train page.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch('/api/endgames/recommendation', {
+          cache: 'no-store',
+        });
+        if (!response.ok) return;
+        const data = (await response.json()) as ApiRecommendation;
+        if (!cancelled && data?.category) {
+          setRecommendation(data);
+        }
+      } catch {
+        // Enhancement only: the default card stays.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const shown = recommendation ?? DEFAULT_RECOMMENDATION;
+  const label = practiceCategoryLabel(shown.category);
+
   return (
     <section className={`${CARD_CLASS} flex flex-col gap-2 p-3 self-end shadow-2xl shadow-black/25`} aria-label="Recommended for you">
       <header className="flex items-center gap-2">
@@ -484,7 +530,7 @@ function RecommendedPanel() {
         <div className="h-20 w-20 shrink-0 overflow-hidden rounded-lg shadow-lg shadow-black/50 ring-1 ring-black/60">
           <MiniBoard
             options={{
-              position: RECOMMENDED_FEN,
+              position: shown.sample_fen ?? RECOMMENDED_FEN,
               allowDragging: false,
               showNotation: false,
               darkSquareStyle: {
@@ -501,18 +547,20 @@ function RecommendedPanel() {
             }}
           />
         </div>
-        <h3 className="min-w-0 flex-1 font-display text-lg font-semibold leading-snug text-[#f7e5c6]">
-          Strengthen your endgames
-        </h3>
+        <div className="min-w-0 flex-1">
+          <h3 className="font-display text-lg font-semibold leading-snug text-[#f7e5c6]">
+            {label} Endings
+          </h3>
+        </div>
       </div>
 
-      <button
-        type="button"
+      <Link
+        href={`/train/endgametrainer?category=${encodeURIComponent(shown.category)}`}
         className="group/cta inline-flex h-9 w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-[#d9b87c]/45 px-4 text-sm font-semibold text-[#efd9a7] transition-colors duration-200 hover:bg-[#d9b87c]/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#efd9a7]"
       >
-        <span>Start Rook Endings</span>
+        <span>Start {label} Endings</span>
         <ArrowRightIcon />
-      </button>
+      </Link>
     </section>
   );
 }
