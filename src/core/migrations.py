@@ -382,6 +382,55 @@ def run_migrations():
                 """
             )
 
+            # attempts_total: the client's total attempts for the session --
+            # one per solved position plus one per position that needed a
+            # retry or a hint -- reported by POST /sessions/{id}/complete.
+            # last_score_percent is ACCURACY (positions_correct /
+            # attempts_total), which is the same number the Train page shows
+            # at the end of a session. Before this column the list endpoint
+            # divided by positions_total, which counted every persisted row
+            # (owner AND opponent plies) and therefore read 50% for a
+            # perfect session on a 5-line repertoire.
+            cur.execute(
+                """
+                ALTER TABLE repertoire_training_sessions
+                    ADD COLUMN IF NOT EXISTS attempts_total INTEGER
+                """
+            )
+            # Same-row sanity check: every correctly solved position is an
+            # attempt, so attempts_total can never be smaller. NULL stays
+            # legal for sessions completed by a client that predates the
+            # column (see the backfill below).
+            cur.execute(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1
+                        FROM information_schema.check_constraints
+                        WHERE constraint_name = 'repertoire_training_sessions_attempts_total_check'
+                    ) THEN
+                        ALTER TABLE repertoire_training_sessions
+                            ADD CONSTRAINT repertoire_training_sessions_attempts_total_check
+                            CHECK (attempts_total IS NULL OR attempts_total >= positions_correct);
+                    END IF;
+                END $$;
+                """
+            )
+            # Backfill legacy completed sessions. Retries were never recorded
+            # before this column existed, and a session can only be completed
+            # after every quiz position was solved -- so positions_correct is
+            # the best available (lower-bound) reconstruction of the attempt
+            # count: a clean run. Idempotent: only NULL rows are touched.
+            cur.execute(
+                """
+                UPDATE repertoire_training_sessions
+                SET attempts_total = positions_correct
+                WHERE attempts_total IS NULL
+                  AND completed_at IS NOT NULL
+                """
+            )
+
             # --- opponent game ingestion ------------------------------------
             # Public games imported for training against an opponent profile.
             # Kept separate from user-owned/review games so future training
