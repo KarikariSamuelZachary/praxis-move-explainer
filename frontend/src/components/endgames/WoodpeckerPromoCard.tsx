@@ -56,9 +56,9 @@ export default function WoodpeckerPromoCard() {
           className="h-24 w-auto shrink-0 [filter:brightness(0.82)_sepia(0.25)_drop-shadow(0_8px_14px_rgba(0,0,0,0.5))]"
         />
 
-        {/* Centered inside its own column: the card is narrow, so the text
-            block sits toward the middle rather than hugging the bird. */}
-        <div className="flex min-w-0 flex-1 flex-col items-center text-center">
+        {/* Centered in its own column, then nudged back toward the bird with
+            a little right padding so the block doesn't sit fully forward. */}
+        <div className="flex min-w-0 flex-1 flex-col items-center pr-8 text-center">
           <div className="text-[10px] font-semibold uppercase tracking-[0.25em] text-wood-mute">
             Reviews Due
           </div>
