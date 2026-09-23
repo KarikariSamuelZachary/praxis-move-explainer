@@ -1030,10 +1030,12 @@ export default function WoodpeckerPage() {
   const handleEndgameResolved = useCallback(
     (resolved: EndgameWoodpeckerAttemptResponse) => {
       setEndgameResult(resolved);
-      // Same auto-advance contract as the puzzle tab: hold the resolved
-      // panel briefly, then load the next due card unless the reviewer
-      // turned auto-advance off.
-      if (autoAdvance) {
+      // Auto-advance a SOLVED review only. A failed review must hold on
+      // screen: its resolved panel is where "Play it out" and "Retry"
+      // live, and the old blanket 1500ms timer took them away before the
+      // reviewer could act. A solved card has no actions, so continuing
+      // there keeps the puzzle tab's cadence.
+      if (autoAdvance && resolved.status === 'solved') {
         clearEndgameAdvanceTimeout();
         endgameAdvanceTimeoutRef.current = setTimeout(advanceEndgame, 1500);
       }
@@ -1633,7 +1635,7 @@ export default function WoodpeckerPage() {
                     <div>
                       <div className="text-sm font-semibold text-[#f7e5c6]">Auto-advance</div>
                       <div className="mt-1 text-[11px] leading-4 text-white/45">
-                        Continue after the review ends
+                        Continue after a solved review
                       </div>
                     </div>
                     <button
@@ -1653,19 +1655,20 @@ export default function WoodpeckerPage() {
                     </button>
                   </div>
 
-                  {!autoAdvance && endgameResult !== null && (
-                    <button
-                      type="button"
-                      onClick={advanceEndgame}
-                      className="mt-3 w-full rounded-lg bg-emerald-500 py-2.5 text-sm font-semibold text-white shadow-lg shadow-emerald-950/40 transition hover:bg-emerald-400"
-                    >
-                      Next Review
-                    </button>
-                  )}
+                  {endgameResult !== null &&
+                    (!autoAdvance || endgameResult.status === 'failed') && (
+                      <button
+                        type="button"
+                        onClick={advanceEndgame}
+                        className="mt-3 w-full rounded-lg bg-emerald-500 py-2.5 text-sm font-semibold text-white shadow-lg shadow-emerald-950/40 transition hover:bg-emerald-400"
+                      >
+                        Next Review
+                      </button>
+                    )}
 
                   <div className="mt-3 border-t border-white/10 pt-2 text-[10px] text-white/40">
                     {autoAdvance
-                      ? 'Next review loads after a short pause.'
+                      ? 'Solved reviews advance; failed ones wait for you.'
                       : 'Use Next Review when you are ready.'}
                   </div>
                 </div>
