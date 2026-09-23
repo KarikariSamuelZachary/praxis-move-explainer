@@ -174,13 +174,13 @@ def teardown():
         database.connection_pool.putconn(conn)
 
 
-def read_rating():
+def read_rating(clerk_id: str = TEST_CLERK_ID):
     conn = database.connection_pool.getconn()
     try:
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT endgame_trainer_rating FROM users WHERE clerk_id = %s",
-                (TEST_CLERK_ID,),
+                (clerk_id,),
             )
             row = cur.fetchone()
     finally:
@@ -265,8 +265,10 @@ def fetch_position(client, headers, *, qualifier, max_attempts: int):
     """GET /next until a locally-runnable sourced win drill matching
     `qualifier` is served."""
     # The server's band is centered on the rating the user has RIGHT NOW;
-    # earlier tests move it, so a fixed fixture window would drift.
-    current_rating = read_rating() or TEST_RATING
+    # earlier tests move it, so a fixed fixture window would drift. The
+    # user is the one the caller's headers authenticate as -- other suites
+    # import this helper with their own test user.
+    current_rating = read_rating(headers["X-Clerk-User-Id"]) or TEST_RATING
     assert_min = current_rating - RATING_WINDOW_RADIUS
     assert_max = current_rating + RATING_WINDOW_RADIUS
     seen = {"attempts": 0, "sourced": 0, "solvable": 0}
