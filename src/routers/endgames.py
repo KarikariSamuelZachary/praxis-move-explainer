@@ -128,6 +128,10 @@ from schemas.endgame_schemas import (
     EndgameReviewCapture,
 )
 from services.endgame_library import select_rating_matched_position
+from services.endgame_recommendation import (
+    EndgameRecommendation,
+    recommend_category,
+)
 from services.endgame_reply import (
     OpponentReplyUnavailableError,
     TerminalPositionError,
@@ -222,6 +226,38 @@ def get_next_position(
         topic_category=position.topic_category,
         source_puzzle_id=position.source_puzzle_id,
     )
+
+
+@router.get("/recommendation", response_model=EndgameRecommendation)
+def get_recommendation(
+    request: Request,
+    # 120/min: the Train page's Recommended For You card fetches this once
+    # per page load; the same generous bound the other endgame routes use.
+    _: None = Depends(limit_by_clerk_user_id(limit=120, window=60)),
+    conn=Depends(get_db),
+):
+    """The Train page's Recommended For You card: the material category this
+    user is weakest at, plus a human-readable reason and a sample FEN for
+    the thumbnail.
+
+    Selection is services.endgame_recommendation's weighted weakness score
+    over the data the app already persists (failed drills as endgame
+    Woodpecker cards + their review attempts); a user with no qualifying
+    history gets a difficulty-matched starter category with
+    is_fallback=True. Read-only: no writes, no commit.
+
+    404 only when the deployment has no drillable endgame content at all
+    (the same empty-library signal GET /next uses).
+    """
+    clerk_id = _require_clerk_id(request)
+
+    recommendation = recommend_category(conn, clerk_id)
+    if recommendation is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No endgame content is available yet.",
+        )
+    return recommendation
 
 
 @router.post("/move", response_model=EndgameMoveResponse)
