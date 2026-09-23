@@ -28,8 +28,17 @@ class RepertoireTrainingSession(BaseModel):
     id: UUID
     repertoire_id: UUID
     mode: Literal["review", "train"]
+    # Number of QUIZ positions the session presented (owner-side rows only
+    # -- opponent plies ride along for the auto-reply lookup but are never
+    # quizzed).
     positions_total: int
     positions_correct: int
+    # Total attempts the client reported: solved positions plus positions
+    # that needed a retry or a hint. GET /api/repertoires' last_score_percent
+    # is positions_correct / attempts_total (accuracy). None for a session
+    # completed by a client that predates the column; the migration
+    # backfills existing completed rows with positions_correct.
+    attempts_total: Optional[int] = None
     started_at: datetime
     completed_at: Optional[datetime] = None
 
