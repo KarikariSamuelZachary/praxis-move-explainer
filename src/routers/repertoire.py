@@ -131,6 +131,13 @@ class CompleteSessionBody(BaseModel):
     # (0 <= positions_correct <= positions_total) so a client can't
     # report 47/18.
     positions_correct: int
+    # Total attempts for the session: every solved position plus every
+    # position that needed a retry or a hint. GET /api/repertoires'
+    # last_score_percent is positions_correct / attempts_total, matching
+    # the score the Train page displays at the end of a session.
+    # Optional so a client that predates the column can still complete;
+    # the score then falls back to positions_correct / positions_total.
+    attempts_total: Optional[int] = None
 
 
 # ---------------------------------------------------------------------
@@ -143,6 +150,15 @@ def _get_user_id(request: Request) -> str:
     if not user_id:
         raise HTTPException(status_code=400, detail="Missing X-Clerk-User-Id header")
     return user_id
+
+
+def _fen_side_to_move(fen: str) -> str:
+    """The side-to-move letter ('w'/'b') of a stored FEN, or '' when the
+    FEN is malformed. Used to count the owner's quiz rows: a stored
+    position is a quiz item exactly when its side to move is the
+    repertoire owner's color."""
+    parts = fen.split()
+    return parts[1] if len(parts) > 1 else ""
 
 
 def _load_owned_repertoire(cur, repertoire_id: str, user_id: str):
@@ -228,7 +244,7 @@ def _load_owned_session_for_update(cur, session_id: str, user_id: str):
     to a different user. Returns the joined row dict (which includes
     the `user_id` column from repertoires + the session's own columns
     the complete handler needs: positions_total, completed_at, mode,
-    positions_correct, started_at, repertoire_id).
+    positions_correct, attempts_total, started_at, repertoire_id).
 
     FOR UPDATE locks the session row for the duration of the
     transaction — so two concurrent /complete calls on the same
@@ -244,6 +260,7 @@ def _load_owned_session_for_update(cur, session_id: str, user_id: str):
             s.mode,
             s.positions_total,
             s.positions_correct,
+            s.attempts_total,
             s.started_at,
             s.completed_at,
             r.user_id
@@ -296,6 +313,7 @@ _SESSION_COLUMNS = """
     mode,
     positions_total,
     positions_correct,
+    attempts_total,
     started_at,
     completed_at
 """
@@ -341,8 +359,12 @@ def list_repertoires(request: Request, conn=Depends(get_db)):
       * `last_trained_at`  — completed_at of the latest session with
         completed_at IS NOT NULL (null if none).
       * `times_trained`   — count of completed sessions.
-      * `last_score_percent` — positions_correct / positions_total *
-        100 from that latest session (null if no completed session).
+      * `last_score_percent` — ACCURACY from that latest session:
+        positions_correct / attempts_total * 100, the same score the
+        Train page shows at the end of a session. Falls back to
+        positions_correct / positions_total only when attempts_total is
+        missing (a client that predates the column; the migration
+        backfills completed rows). Null if no completed session.
 
     A repertoire with zero completed sessions is returned with
     last_trained_at=null, times_trained=0, last_score_percent=null
@@ -368,11 +390,14 @@ def list_repertoires(request: Request, conn=Depends(get_db)):
                 COALESCE(c.times_trained, 0) AS times_trained,
                 CASE
                     WHEN s.id IS NULL THEN NULL
+                    WHEN s.attempts_total IS NOT NULL AND s.attempts_total > 0
+                        THEN (s.positions_correct * 100.0 / s.attempts_total)
                     ELSE (s.positions_correct * 100.0 / s.positions_total)
                 END AS last_score_percent
             FROM repertoires r
             LEFT JOIN LATERAL (
-                SELECT id, completed_at, positions_correct, positions_total
+                SELECT id, completed_at, positions_correct, positions_total,
+                       attempts_total
                 FROM repertoire_training_sessions
                 WHERE repertoire_id = r.id
                   AND completed_at IS NOT NULL
@@ -860,6 +885,25 @@ def start_session(
                 detail="no positions to train for this mode",
             )
 
+        # positions_total counts QUIZ positions, not persisted rows: train
+        # mode returns the opponent plies too (the client auto-plays their
+        # stored replies on the board), but only owner-side rows are
+        # actually quizzed. This is the number /complete validates
+        # positions_correct against, and the denominator the score falls
+        # back to when attempts_total is absent.
+        positions_total = sum(
+            1 for r in rows if _fen_side_to_move(r["fen"]) == owner_letter
+        )
+        if positions_total == 0:
+            # Every selected row is an opponent ply (or has a malformed
+            # FEN): there is nothing to quiz, so refuse exactly like an
+            # empty selection rather than insert a zero-total row the
+            # CHECK would reject.
+            raise HTTPException(
+                status_code=400,
+                detail="no positions to train for this mode",
+            )
+
         # Insert the session row. positions_total is set now (not
         # updated as the client reviews); positions_correct starts at
         # 0 and is updated by /complete. completed_at is NULL — the
@@ -880,7 +924,7 @@ def start_session(
             VALUES (%s, %s, %s, 0, NULL)
             RETURNING {_SESSION_COLUMNS}
             """,
-            (rid, body.mode, len(rows)),
+            (rid, body.mode, positions_total),
         )
         session_row = cur.fetchone()
 
@@ -916,11 +960,20 @@ def complete_session(
         _load_owned_position_for_update uses).
       * 400 if positions_correct is outside
         [0, session.positions_total] — a client can't report 47/18.
+      * 400 if attempts_total is present and smaller than
+        positions_correct — every solved position is an attempt (the
+        DB's CHECK constraint is the backstop).
       * 400 if completed_at is already set — a session can only be
         completed once. We do NOT silently overwrite; re-completing
         would silently change the GET /api/repertoires
         last_score_percent / last_trained_at aggregates, which the
         client is caching, so reject instead.
+
+    `attempts_total` (optional) is the client's total attempts:
+    positions_correct plus every position that needed a retry or a
+    hint. GET /api/repertoires' last_score_percent is
+    positions_correct / attempts_total — the same accuracy the Train
+    page shows when the session ends.
 
     Returns the updated `RepertoireTrainingSession` (completed_at now
     set, positions_correct now the client's tally).
@@ -959,15 +1012,28 @@ def complete_session(
                 ),
             )
 
+        if body.attempts_total is not None and body.attempts_total < body.positions_correct:
+            # Every solved position is at least one attempt. Rejecting
+            # here gives a clean 400 instead of the DB CHECK's 500; the
+            # constraint stays as the backstop for any other writer.
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"attempts_total cannot be less than positions_correct, "
+                    f"got {body.attempts_total} < {body.positions_correct}"
+                ),
+            )
+
         cur.execute(
             f"""
             UPDATE repertoire_training_sessions
             SET completed_at      = NOW(),
-                positions_correct = %s
+                positions_correct = %s,
+                attempts_total    = %s
             WHERE id = %s
             RETURNING {_SESSION_COLUMNS}
             """,
-            (body.positions_correct, sid),
+            (body.positions_correct, body.attempts_total, sid),
         )
         updated = cur.fetchone()
 
