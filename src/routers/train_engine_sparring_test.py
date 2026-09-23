@@ -636,6 +636,13 @@ def main() -> int:
     # those credentials, and must never touch the real Upstash anyway, so
     # every HTTP test runs with a fake Redis installed; the dedicated limiter
     # test swaps in specific counters and restores this global itself.
+    #
+    # The limiter now defaults to its in-process backend, which would ignore
+    # the fake entirely and let counters accumulate across the tests below
+    # (the same route hit repeatedly would 429 mid-suite). Force the redis
+    # backend for this run so the fake is the one being exercised.
+    previous_backend = os.environ.get("RATE_LIMIT_BACKEND")
+    os.environ["RATE_LIMIT_BACKEND"] = "redis"
     original_get_redis = rate_limit.get_redis
     rate_limit.get_redis = lambda: FakeRedis(incr_value=1)
     try:
@@ -665,6 +672,10 @@ def main() -> int:
                 return 1
     finally:
         rate_limit.get_redis = original_get_redis
+        if previous_backend is None:
+            os.environ.pop("RATE_LIMIT_BACKEND", None)
+        else:
+            os.environ["RATE_LIMIT_BACKEND"] = previous_backend
     print("\nAll engine-sparring endpoint tests passed.")
     return 0
 
