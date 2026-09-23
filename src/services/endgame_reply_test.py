@@ -74,6 +74,10 @@ KR_VS_K = "8/8/8/4k3/8/8/8/R3K3 w - - 0 1"
 # prise), but also a slower non-zeroing winning move. Taken from the real
 # sourced drill that exposed the fivefold-repetition bug.
 KRKR_ZEROING_NOW = "8/8/8/8/1k6/2R3r1/2K5/8 b - - 42 71"
+# 6-man position beyond the full local 3-4-5 coverage (same live-verified
+# row services/tablebase_test.py uses: category "loss", dtz -2 for the side
+# to move). The remote reply path must answer it with ONE Lichess request.
+SIX_MAN_LOSS_FEN = "6r1/p7/5k2/P7/5K1P/8/8/8 w - - 0 55"
 
 TERMINAL_FENS = [
     ("7k/6Q1/6K1/8/8/8/8/8 b - - 0 1", "checkmate"),
@@ -346,6 +350,62 @@ def test_stockfish_fallback():
             os.environ["SYZYGY_TABLEBASE_API_DISABLED"] = previous
 
 
+def test_remote_single_call():
+    print("F. 6-7-man defense via ONE per-move payload request:")
+    import services.tablebase as module
+
+    module._moves_cache.clear()
+    calls = {"n": 0}
+    original = module._fetch_lichess_payload
+
+    def counting_payload(fen):
+        calls["n"] += 1
+        return original(fen)
+
+    module._fetch_lichess_payload = counting_payload
+    try:
+        reply = generate_opponent_reply(SIX_MAN_LOSS_FEN)
+        assert calls["n"] == 1, (
+            "expected exactly one per-move payload request, saw "
+            f"{calls['n']} (per-child sweep regression?)"
+        )
+        assert reply.source == "tablebase", reply
+        root = probe_tablebase(SIX_MAN_LOSS_FEN)
+        assert reply.outcome == root.outcome and reply.dtz == root.dtz, reply
+        _check_common(reply, SIX_MAN_LOSS_FEN)
+
+        # Independent re-derivation (same policy as A1) from the child
+        # probes; every child is cache-warm, so no further payloads.
+        board = chess.Board(SIX_MAN_LOSS_FEN)
+        ranked = []
+        for move in sorted(board.legal_moves, key=lambda m: m.uci()):
+            child = board.copy(stack=False)
+            child.push(move)
+            outcome = (
+                "win"
+                if child.is_checkmate()
+                else _INVERT[probe_tablebase(child.fen()).outcome]
+            )
+            if outcome != "loss":
+                continue
+            dtz = probe_tablebase(child.fen()).dtz
+            ranked.append((-(dtz or 0), move.uci()))
+        ranked.sort()
+        assert reply.move_uci == ranked[0][1], (reply.move_uci, ranked[0])
+        assert calls["n"] == 1, (
+            "independent child probes must hit the warmed cache, saw "
+            f"{calls['n']} payload requests"
+        )
+        print(
+            f"  chose {reply.move_uci} from the single payload "
+            f"({board.legal_moves.count()} legal replies, child dtz "
+            f"{ranked[0][0] * -1}), no per-child sweep"
+        )
+    finally:
+        module._fetch_lichess_payload = original
+        module._moves_cache.clear()
+
+
 def main():
     test_losing_defender()
     test_drawn_position()
@@ -354,6 +414,7 @@ def main():
     test_terminal()
     test_stored_line_real_data()
     test_stockfish_fallback()
+    test_remote_single_call()
     print("all opponent-reply generator checks passed")
 
 
