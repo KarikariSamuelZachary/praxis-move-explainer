@@ -124,6 +124,7 @@ type StartSessionResponse = {
     mode: 'review' | 'train';
     positions_total: number;
     positions_correct: number;
+    attempts_total: number | null;
     started_at: string;
     completed_at: string | null;
   };
@@ -587,6 +588,12 @@ export default function RepertoireTrainPage({
           // closures) so the value we send matches the visible
           // counters.
           const finalCorrect = correctCount + 1;
+          // Total attempts: every solved position plus every position
+          // that needed a retry or a hint. This is the SAME number the
+          // DONE screen below displays as the score denominator, and
+          // the backend stores it so the repertoire list's "Last Score"
+          // shows the same accuracy this screen shows.
+          const attemptsTotal = finalCorrect + incorrectCount;
           setCompletePending(true);
           // Default to "recorded" - flipped to true on any failure
           // path below. Either way, the catch / !ok blocks set
@@ -601,7 +608,10 @@ export default function RepertoireTrainPage({
                 {
                   method: 'POST',
                   headers: { 'Content-Type': 'application/json' },
-                  body: JSON.stringify({ positions_correct: finalCorrect }),
+                  body: JSON.stringify({
+                    positions_correct: finalCorrect,
+                    attempts_total: attemptsTotal,
+                  }),
                 }
               );
               if (!completeRes.ok) {
@@ -688,7 +698,17 @@ export default function RepertoireTrainPage({
       }, paceMs);
       return;
     },
-    [currentPosition, currentIdx, correctCount, quizItems, reviewPending, sessionId, sessionPositions, total]
+    [
+      currentPosition,
+      currentIdx,
+      correctCount,
+      incorrectCount,
+      quizItems,
+      reviewPending,
+      sessionId,
+      sessionPositions,
+      total,
+    ]
   );
 
   // --- Board drag handler. Same pattern as the detail page:
