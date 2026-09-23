@@ -180,6 +180,26 @@ export default function EndgamesPage() {
       .catch((error) => console.error('Failed to fetch endgame rating:', error));
 
     (async () => {
+      // A "Recommended For You" deep link (?category=...) opens that
+      // practice session directly. An unknown or empty category falls
+      // through to the rated loop rather than erroring the whole page.
+      const requestedCategory = new URLSearchParams(
+        window.location.search
+      ).get('category');
+      if (requestedCategory) {
+        try {
+          const first =
+            await fetchNextEndgamePracticePosition(requestedCategory);
+          if (token !== loadTokenRef.current) return;
+          setPracticeCategory(requestedCategory);
+          startDrill(first);
+          void prefetchNext(requestedCategory);
+          return;
+        } catch {
+          // Bad deep link: fall through to the rated loop below.
+        }
+      }
+
       try {
         const first = await fetchNextEndgamePosition();
         if (token !== loadTokenRef.current) return;
