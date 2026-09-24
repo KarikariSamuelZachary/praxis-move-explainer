@@ -331,7 +331,7 @@ class EngineSparringMoveRequest(BaseModel):
         description=(
             "Target Elo for Stockfish's UCI_LimitStrength/UCI_Elo limiting. "
             "Valid range is read from the bundled Stockfish binary's "
-            "advertised UCI_Elo option (Stockfish 16: 1320-3190)."
+            "advertised UCI_Elo option (Stockfish 19: 1320-3190)."
         ),
     )
     skill_level: Optional[int] = Field(
