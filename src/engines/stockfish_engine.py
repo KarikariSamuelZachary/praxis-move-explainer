@@ -77,12 +77,14 @@ def configure_strength(
       * UCI_LimitStrength (check) + UCI_Elo (spin) -- fine-grained Elo control.
       * Skill Level (spin) -- coarse 0-20 control.
 
-    The Stockfish 16 binary in this repo advertises BOTH: `UCI_Elo` spin
-    1320..3190 (default 1320), `Skill Level` spin 0..20 (default 20), and
-    `UCI_LimitStrength` check default False -- verified live against the
-    binary (see engines/stockfish_engine_test.py). The valid Elo/Skill ranges
-    are read from `engine.options` here, so a future Stockfish build that
-    changes them is handled automatically rather than trusted from memory.
+    The bundled Stockfish 19 binary (installed by scripts/prewarm_stockfish.py)
+    advertises BOTH: `UCI_Elo` spin 1320..3190 (default 1320), `Skill Level`
+    spin 0..20 (default 20), and `UCI_LimitStrength` check default False --
+    verified live against the binary (see engines/stockfish_engine_test.py).
+    Stockfish 17 (the distro package still present in the image) shares the
+    same UCI_Elo formula and range. The valid Elo/Skill ranges are read from
+    `engine.options` here, so a future Stockfish build that changes them is
+    handled automatically rather than trusted from memory.
 
     Precedence:
       1. `elo` given + UCI_Elo advertised            -> Elo path.
@@ -174,15 +176,39 @@ def configure_strength(
 class StockfishEngine:
     FAST_ANALYSIS_TIME = 0.1
 
-    def __init__(self, stockfish_path: Optional[str] = None, depth: int = 12):
+    def __init__(
+        self,
+        stockfish_path: Optional[str] = None,
+        depth: int = 12,
+        analysis_time: Optional[float] = None,
+    ):
         self.stockfish_path = resolve_stockfish_path(stockfish_path)
         self.depth = depth
+        # Per-position wall-clock budget for evaluate() when the caller does
+        # not pass an explicit time_limit. Defaults to the historical
+        # FAST_ANALYSIS_TIME; review raises it (REVIEW_TIME_SECONDS) because
+        # deeper per-position evals measurably improve review accuracy and the
+        # replica is billed in 300s active windows regardless.
+        self.analysis_time = (
+            analysis_time if analysis_time is not None else self.FAST_ANALYSIS_TIME
+        )
         self.engine: Optional[chess.engine.SimpleEngine] = None
         # Serializes analyse() calls on this instance. python-chess's
         # SimpleEngine submits UCI commands from whatever thread calls it
         # without a command-level lock, so two concurrent callers would
         # interleave UCI writes on one protocol and corrupt responses.
         self._call_lock = Lock()
+
+    @property
+    def name(self) -> str:
+        """Advertised engine name ('Stockfish 19'), or 'unknown' if not started.
+
+        Read from the UCI handshake stored at popen() time, so this never
+        touches the subprocess and is safe to call from logging/debug paths.
+        """
+        if self.engine is None:
+            return "unknown"
+        return self.engine.id.get("name", "unknown")
 
     def __enter__(self):
         self.start()
@@ -192,7 +218,14 @@ class StockfishEngine:
         self.close()
 
     def start(self):
-        self.engine = chess.engine.SimpleEngine.popen_uci(self.stockfish_path)
+        # Stockfish 19's universal binary is ~103 MB (vs ~38 MB for the old
+        # distro build): python-chess's default 10s UCI handshake timeout is
+        # thin on a cold page cache under memory pressure, where a start was
+        # measured at 5.3s. 30s keeps a slow disk from failing boot/requests
+        # while still bounding a genuinely hung process.
+        self.engine = chess.engine.SimpleEngine.popen_uci(
+            self.stockfish_path, timeout=30
+        )
 
     def close(self):
         if self.engine:
@@ -211,7 +244,7 @@ class StockfishEngine:
 
         effective_depth = depth_limit if depth_limit is not None else self.depth
         effective_time = (
-            time_limit if time_limit is not None else self.FAST_ANALYSIS_TIME
+            time_limit if time_limit is not None else self.analysis_time
         )
         with self._call_lock:
             info = self.engine.analyse(
@@ -400,33 +433,62 @@ def close_stockfish_singleton() -> None:
 # crashed review engine is reset without disturbing an in-flight sparring
 # session and vice versa.
 
+# This singleton also owns review's per-position search budget. The 0.1s
+# FAST_ANALYSIS_TIME is the sparring-safety budget; review can afford more per
+# position because it already runs ~N sequential evaluations per game and the
+# replica bills in 300s active windows regardless. Measured on the deploy base
+# image against depth-18 self-consistency: 0.1s -> 7.0cp mean eval error and
+# 72% best-move agreement; 0.5s -> 4.9cp and 85%. Override per deployment with
+# REVIEW_TIME_SECONDS (read only when the singleton is first created, like
+# REVIEW_DEPTH).
+DEFAULT_REVIEW_TIME_SECONDS = 0.5
+
+
+def _review_time_seconds() -> float:
+    try:
+        value = float(
+            os.getenv("REVIEW_TIME_SECONDS", str(DEFAULT_REVIEW_TIME_SECONDS))
+        )
+    except ValueError:
+        return DEFAULT_REVIEW_TIME_SECONDS
+    return value if value > 0 else DEFAULT_REVIEW_TIME_SECONDS
+
+
 _review_stockfish: Optional[StockfishEngine] = None
 _review_stockfish_lifecycle_lock = Lock()
 
 
-def start_review_stockfish(depth: int = 12) -> StockfishEngine:
+def start_review_stockfish(
+    depth: int = 12, analysis_time: Optional[float] = None
+) -> StockfishEngine:
     """Start the long-lived full-strength Stockfish used by game review.
 
     Idempotent: returns the existing singleton when it already has a live
-    subprocess. `depth` only applies when the subprocess is first created
-    (REVIEW_DEPTH is static per deployment). Raises if the engine cannot be
-    spawned so callers can degrade loudly instead of silently.
+    subprocess. `depth` and `analysis_time` only apply when the subprocess is
+    first created (REVIEW_DEPTH / REVIEW_TIME_SECONDS are static per
+    deployment). `analysis_time` defaults to REVIEW_TIME_SECONDS (env), then
+    to DEFAULT_REVIEW_TIME_SECONDS. Raises if the engine cannot be spawned so
+    callers can degrade loudly instead of silently.
     """
     global _review_stockfish
     with _review_stockfish_lifecycle_lock:
         if _review_stockfish is not None and _review_stockfish.engine is not None:
             return _review_stockfish
-        instance = StockfishEngine(depth=depth)
+        if analysis_time is None:
+            analysis_time = _review_time_seconds()
+        instance = StockfishEngine(depth=depth, analysis_time=analysis_time)
         instance.start()  # raises on failure BEFORE we publish the global
         _review_stockfish = instance
         return _review_stockfish
 
 
-def get_review_stockfish(depth: int = 12) -> StockfishEngine:
+def get_review_stockfish(
+    depth: int = 12, analysis_time: Optional[float] = None
+) -> StockfishEngine:
     """Return the long-lived review Stockfish, starting it on first use."""
     global _review_stockfish
     if _review_stockfish is None:
-        return start_review_stockfish(depth)
+        return start_review_stockfish(depth, analysis_time)
     return _review_stockfish
 
 
@@ -538,3 +600,17 @@ def close_endgame_stockfish() -> None:
             instance.close()
         except Exception:  # noqa: BLE001 -- shutdown must never raise
             pass
+
+
+def singleton_status() -> dict:
+    """Best-effort advertised names of the long-lived engines.
+
+    For /debug/stockfish: reports which engine revision each singleton
+    actually booted ('Stockfish 19'), so a deploy can be verified without
+    shelling into the container. None when that singleton has not started.
+    """
+    return {
+        "sparring": _stockfish.name if _stockfish is not None else None,
+        "review": _review_stockfish.name if _review_stockfish is not None else None,
+        "endgame": _endgame_stockfish.name if _endgame_stockfish is not None else None,
+    }
