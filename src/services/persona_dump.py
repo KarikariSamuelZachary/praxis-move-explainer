@@ -25,7 +25,7 @@ Strength levels:
   * "full"     -> no configure_strength() call (fresh engine = full strength).
   * "elo-1800" -> configure_strength(engine.engine, elo=1800).
   * "elo-1320" -> configure_strength(engine.engine, elo=1320).
-    NOTE: the spec suggested "low Elo (e.g. 1200)", but this Stockfish 16
+    NOTE: the spec suggested "low Elo (e.g. 1200)", but this Stockfish 19
     binary advertises UCI_Elo in [1320, 3190] (verified live), so 1200 is
     below the supported floor and would be rejected by configure_strength().
     1320 is the binary's actual minimum and is used as the "low" level.
