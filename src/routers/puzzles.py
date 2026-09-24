@@ -1,6 +1,5 @@
 import logging
 import random
-import string
 import time
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from psycopg2.extras import RealDictCursor
@@ -18,10 +17,6 @@ from schemas.puzzle_schemas import PuzzleResponse
 
 router = APIRouter()
 log = logging.getLogger(__name__)
-
-# Puzzle IDs in the seeded Lichess dataset are fixed-width alphanumeric IDs.
-_PUZZLE_ID_LENGTH = 5
-_PUZZLE_ID_ALPHABET = string.ascii_letters + string.digits
 
 SKILL_RATING_BANDS = {
     "new": (800, 1000),
@@ -78,23 +73,35 @@ def get_puzzles(
         )
 
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        random_id = "".join(
-            random.choice(_PUZZLE_ID_ALPHABET)
-            for _ in range(_PUZZLE_ID_LENGTH)
-        )
+        # Uniform sample keyed on a per-row random float (puzzles.sample_key,
+        # indexed): take the first rows at/after a random point on the key
+        # axis, wrapping to the largest keys below it only when the batch
+        # would otherwise be short.
+        #
+        # The previous implementation generated a random 5-char id and took
+        # `id >= pivot`, wrapping to `ORDER BY id DESC` when the forward scan
+        # found nothing. That degenerates whenever the pivot lands above the
+        # table's max id: the forward query returns 0 rows and the
+        # deterministic wraparound served the SAME top rows on every request.
+        # The production pool (the 500k-row subset, max id 'IFVZ3') sits well
+        # below the id space a 5-char pivot was drawn from, so nearly every
+        # request hit that path and users saw one repeated puzzle. A key that
+        # is uniform over the DATA (not over an id space the data may not
+        # occupy) makes both directions sample correctly on any subset.
+        pivot = random.random()
         select_started = time.perf_counter()
         cur.execute(
             """
             SELECT id, fen, moves, rating, themes, game_url
             FROM puzzles
-            WHERE id >= %s
+            WHERE sample_key >= %s
               AND (%s::text IS NULL OR themes @> ARRAY[%s]::text[])
               AND rating BETWEEN %s AND %s
-            ORDER BY id
+            ORDER BY sample_key
             LIMIT %s
             """,
             (
-                random_id,
+                pivot,
                 theme or None,
                 theme,
                 min_rating,
@@ -104,13 +111,14 @@ def get_puzzles(
         )
         rows = cur.fetchall()
         log.info(
-            "[PUZZLE_PROFILE] phase=query_execution query=select_forward duration_ms=%.2f rows=%d pivot=%s limit=%d min_rating=%d max_rating=%d",
+            "[PUZZLE_PROFILE] phase=query_execution query=select_forward duration_ms=%.2f rows=%d pivot=%.6f limit=%d min_rating=%d max_rating=%d theme=%s",
             (time.perf_counter() - select_started) * 1000,
             len(rows),
-            random_id,
+            pivot,
             limit,
             min_rating,
             max_rating,
+            theme,
         )
 
         wraparound_used = False
@@ -122,14 +130,14 @@ def get_puzzles(
                 """
                 SELECT id, fen, moves, rating, themes, game_url
                 FROM puzzles
-                WHERE id < %s
+                WHERE sample_key < %s
                   AND (%s::text IS NULL OR themes @> ARRAY[%s]::text[])
                   AND rating BETWEEN %s AND %s
-                ORDER BY id DESC
+                ORDER BY sample_key DESC
                 LIMIT %s
                 """,
                 (
-                    random_id,
+                    pivot,
                     theme or None,
                     theme,
                     min_rating,
@@ -140,20 +148,21 @@ def get_puzzles(
             wrapped_rows = cur.fetchall()
             rows.extend(wrapped_rows)
             log.info(
-                "[PUZZLE_PROFILE] phase=query_execution query=select_wraparound duration_ms=%.2f rows=%d pivot=%s limit=%d min_rating=%d max_rating=%d",
+                "[PUZZLE_PROFILE] phase=query_execution query=select_wraparound duration_ms=%.2f rows=%d pivot=%.6f limit=%d min_rating=%d max_rating=%d theme=%s",
                 (time.perf_counter() - wrap_started) * 1000,
                 len(wrapped_rows),
-                random_id,
+                pivot,
                 remaining,
                 min_rating,
                 max_rating,
+                theme,
             )
 
         log.info(
-            "[PUZZLE_PROFILE] phase=query_execution query=select_total duration_ms=%.2f rows=%d pivot=%s limit=%d min_rating=%d max_rating=%d wraparound=%s",
+            "[PUZZLE_PROFILE] phase=query_execution query=select_total duration_ms=%.2f rows=%d pivot=%.6f limit=%d min_rating=%d max_rating=%d wraparound=%s",
             (time.perf_counter() - select_started) * 1000,
             len(rows),
-            random_id,
+            pivot,
             limit,
             min_rating,
             max_rating,
