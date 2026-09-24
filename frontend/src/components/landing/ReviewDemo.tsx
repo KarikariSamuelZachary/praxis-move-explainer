@@ -354,7 +354,7 @@ export default function ReviewDemo() {
               AI Analysis
             </span>
             <span className="rounded border border-white/10 px-1.5 py-0.5 text-[10px] text-wood-mute">
-              Stockfish 16
+              Stockfish 19
             </span>
           </div>
 
