@@ -21,8 +21,6 @@ const MiniBoard = dynamic(
 const CARD_CLASS =
   'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
 
-const RECOMMENDED_FEN = '1K1k4/1P6/8/8/8/8/r7/2R5 w - - 0 1';
-
 type Tone = 'emerald' | 'amber' | 'purple' | 'blue';
 
 type TrainingMode = {
@@ -475,22 +473,39 @@ type ApiRecommendation = {
   sample_fen: string | null;
 };
 
-// Rendered until the backend answers (and if it never does): the card is an
-// enhancement and must never be empty or broken. Rook endings are the
-// largest sourced pool and the classic starting point.
-const DEFAULT_RECOMMENDATION: ApiRecommendation = {
-  category: 'rook',
-  sample_fen: RECOMMENDED_FEN,
-};
+// Sized exactly like the loaded card so the real recommendation swaps in
+// without moving the mode grid. No category is guessed at: the card must
+// never flash a wrong ending before the backend has picked one.
+function RecommendedSkeleton() {
+  return (
+    <section
+      className={`${CARD_CLASS} flex flex-col gap-2 p-3 self-end shadow-2xl shadow-black/25`}
+      aria-hidden="true"
+    >
+      <div className="flex items-center gap-2">
+        <div className="h-4 w-4 animate-pulse rounded bg-white/10" />
+        <div className="h-3 w-32 animate-pulse rounded bg-white/10" />
+      </div>
+
+      <div className="flex items-center gap-3">
+        <div className="h-20 w-20 shrink-0 animate-pulse rounded-lg bg-black/35" />
+        <div className="h-5 w-28 animate-pulse rounded bg-white/10" />
+      </div>
+
+      <div className="h-9 w-full animate-pulse rounded-lg bg-white/10" />
+    </section>
+  );
+}
 
 function RecommendedPanel() {
   const [recommendation, setRecommendation] =
     useState<ApiRecommendation | null>(null);
+  const [isLoading, setIsLoading] = useState(true);
 
   // The backend picks the material category this user is weakest at (failed
   // drills + their review attempts, weighted weakness score -- see
-  // services/endgame_recommendation.py). Any failure keeps the default
-  // card rather than surfacing an error on the Train page.
+  // services/endgame_recommendation.py). The card is an enhancement: a
+  // failed or empty answer hides it rather than showing a made-up category.
   useEffect(() => {
     let cancelled = false;
     (async () => {
@@ -504,7 +519,11 @@ function RecommendedPanel() {
           setRecommendation(data);
         }
       } catch {
-        // Enhancement only: the default card stays.
+        // Enhancement only: the card stays hidden.
+      } finally {
+        if (!cancelled) {
+          setIsLoading(false);
+        }
       }
     })();
     return () => {
@@ -512,8 +531,14 @@ function RecommendedPanel() {
     };
   }, []);
 
-  const shown = recommendation ?? DEFAULT_RECOMMENDATION;
-  const label = practiceCategoryLabel(shown.category);
+  if (isLoading) {
+    return <RecommendedSkeleton />;
+  }
+  if (!recommendation) {
+    return null;
+  }
+
+  const label = practiceCategoryLabel(recommendation.category);
 
   return (
     <section className={`${CARD_CLASS} flex flex-col gap-2 p-3 self-end shadow-2xl shadow-black/25`} aria-label="Recommended for you">
@@ -530,7 +555,10 @@ function RecommendedPanel() {
         <div className="h-20 w-20 shrink-0 overflow-hidden rounded-lg shadow-lg shadow-black/50 ring-1 ring-black/60">
           <MiniBoard
             options={{
-              position: shown.sample_fen ?? RECOMMENDED_FEN,
+              // A null sample FEN cannot happen for a recommended category
+              // (it cleared the content gate); the board's own start
+              // position is the neutral last resort.
+              position: recommendation.sample_fen ?? undefined,
               allowDragging: false,
               showNotation: false,
               darkSquareStyle: {
@@ -555,7 +583,7 @@ function RecommendedPanel() {
       </div>
 
       <Link
-        href={`/train/endgametrainer?category=${encodeURIComponent(shown.category)}`}
+        href={`/train/endgametrainer?category=${encodeURIComponent(recommendation.category)}`}
         className="group/cta inline-flex h-9 w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-[#d9b87c]/45 px-4 text-sm font-semibold text-[#efd9a7] transition-colors duration-200 hover:bg-[#d9b87c]/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#efd9a7]"
       >
         <span>Start {label} Endings</span>
