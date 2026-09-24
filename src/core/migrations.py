@@ -884,16 +884,27 @@ def run_migrations():
 
             # --- puzzles -----------------------------------------------------
             # The puzzles table is seeded out-of-band (see praxis_subset.csv /
-            # src/seed_puzzles.py) rather than created here, so only add the
-            # indexes when the table already exists. This keeps a fresh deploy
-            # (puzzles not yet loaded) from crashing on startup while ensuring
-            # every environment that actually serves puzzles filters by rating
-            # and theme via indexes instead of 500k-row seq scans.
+            # src/seed_puzzles.py) rather than created here, so only touch it
+            # when it already exists. This keeps a fresh deploy (puzzles not
+            # yet loaded) from crashing on startup while ensuring every
+            # environment that actually serves puzzles filters by rating and
+            # theme via indexes instead of 500k-row seq scans.
             cur.execute(
                 """
                 DO $$
                 BEGIN
                     IF to_regclass('public.puzzles') IS NOT NULL THEN
+                        -- Uniform per-row sample key for GET /api/puzzles'
+                        -- random batch. The volatile default makes every
+                        -- existing row draw its own value (the one-time table
+                        -- rewrite this forces is why the column is added here
+                        -- and not in a per-request query); later inserts,
+                        -- including fresh seeds, inherit the default.
+                        ALTER TABLE puzzles
+                            ADD COLUMN IF NOT EXISTS sample_key
+                                DOUBLE PRECISION DEFAULT random();
+                        CREATE INDEX IF NOT EXISTS idx_puzzles_sample
+                            ON puzzles (sample_key);
                         CREATE INDEX IF NOT EXISTS idx_puzzles_rating
                             ON puzzles (rating);
                         -- GIN index accelerates the API's
