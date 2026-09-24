@@ -10,7 +10,7 @@
 #
 # Building locally requires registry access:
 #   az acr login --name praxismoveacr
-FROM praxismoveacr.azurecr.io/praxis-base@sha256:4b262fe360d893e323ae4304ee7faf590ca3a28efdf501078dafed3aadf67b2e
+FROM praxismoveacr.azurecr.io/praxis-base@sha256:b7847010e2e0309dc698a5cba43883cd1c19119852b30a0cdfd71eebdecb1c02
 
 WORKDIR /app
 
