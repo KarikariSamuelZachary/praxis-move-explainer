@@ -36,12 +36,18 @@ from engines.stockfish_engine import (
     resolve_stockfish_path,
 )
 
-# A moderately complex middlegame (Giuoco Piano-ish: both knights and bishops
-# developed) where full-strength Stockfish has a clear best move but a
-# 1400-Elo-limited Stockfish genuinely diverges -- verified live. Depth is
-# fixed (not time-limited) so full-strength play is deterministic with a
+# A middlegame where full-strength Stockfish saves the attacked e1 rook
+# (e1d1) while a 1400-Elo-limited Stockfish genuinely diverges (e1h1). Depth
+# is fixed (not time-limited) so full-strength play is deterministic with a
 # cleared hash, making the low-vs-full comparison reproducible.
-TEST_FEN = "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/2N2N2/PPPP1PPP/R1BQK2R w KQkq - 4 5"
+#
+# Chosen empirically by sweeping praxis_subset.csv positions at depth 14 on
+# SF16/SF17/SF19 after the previous quiet Giuoco Piano position stopped
+# diverging on Stockfish 19: low-skill play is the depth-1 root move, and
+# SF19's stronger net made that shallow pick agree with the deep pick there.
+# This position diverges on all three engines, keeping the assertion
+# meaningful across the SF19 upgrade.
+TEST_FEN = "2r5/pR5p/5p1k/4p3/4r3/B4nPP/PP3P2/1K2R3 w - - 0 27"
 TEST_DEPTH = 14
 LOW_ELO = 1400
 LOW_ELO_SAMPLES = 10
@@ -74,7 +80,7 @@ class _FakeEngine:
 
 
 def _stockfish_like_options():
-    # Mirrors the real Stockfish 16 advertisement (verified in
+    # Mirrors the real Stockfish 19 advertisement (verified in
     # test_advertised_options).
     return {
         "UCI_LimitStrength": _FakeOption("check", False),
@@ -115,7 +121,7 @@ def _applied_strength(engine: chess.engine.SimpleEngine) -> dict:
 # A. Advertised options
 # ---------------------------------------------------------------------------
 def test_advertised_options():
-    engine = chess.engine.SimpleEngine.popen_uci(resolve_stockfish_path())
+    engine = chess.engine.SimpleEngine.popen_uci(resolve_stockfish_path(), timeout=60)
     try:
         options = engine.options
         assert "UCI_LimitStrength" in options, "UCI_LimitStrength not advertised"
@@ -227,7 +233,7 @@ def test_configure_strength_elo_fallback_to_skill():
 # ---------------------------------------------------------------------------
 def test_live_low_elo_differs_from_full_strength():
     board = chess.Board(TEST_FEN)
-    engine = chess.engine.SimpleEngine.popen_uci(resolve_stockfish_path())
+    engine = chess.engine.SimpleEngine.popen_uci(resolve_stockfish_path(), timeout=60)
     try:
         # Full-strength baseline (deterministic with a cleared hash).
         configure_strength(engine)
@@ -265,7 +271,7 @@ def test_live_low_elo_differs_from_full_strength():
 
 def test_live_options_persist_and_reset_restores_full_strength():
     board = chess.Board(TEST_FEN)
-    engine = chess.engine.SimpleEngine.popen_uci(resolve_stockfish_path())
+    engine = chess.engine.SimpleEngine.popen_uci(resolve_stockfish_path(), timeout=60)
     try:
         # Baseline full-strength move.
         configure_strength(engine)
