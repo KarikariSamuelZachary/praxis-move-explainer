@@ -1,11 +1,12 @@
 # Canonical base image for the Praxis backend.
 #
 # Why this exists: every heavy, rarely-changing layer -- apt packages, pip
-# dependencies (incl. the Maia-3 package), the Maia-3 checkpoint, and the
-# full 3-4-5-man Syzygy set (~984 MB downloaded from the tablebase mirrors)
-# -- is built once here and pushed to ACR. The application Dockerfile starts
-# FROM this image (digest-pinned), so a deploy adds only the source layer
-# instead of re-downloading ~984 MB from Lichess on every push.
+# dependencies (incl. the Maia-3 package), the Maia-3 checkpoint, the pinned
+# Stockfish 19 binary, and the full 3-4-5-man Syzygy set (~984 MB downloaded
+# from the tablebase mirrors) -- is built once here and pushed to ACR. The
+# application Dockerfile starts FROM this image (digest-pinned), so a deploy
+# adds only the source layer instead of re-downloading ~984 MB from Lichess
+# on every push.
 #
 # Rebuild and push ONLY when requirements.txt, the pre-warm scripts, or
 # src/engines change:
@@ -42,3 +43,15 @@ COPY scripts/prewarm_maia3.py scripts/prewarm_maia3.py
 COPY scripts/maia3_patched_uci.py scripts/maia3_patched_uci.py
 COPY src/engines src/engines
 RUN python scripts/prewarm_maia3.py
+
+# Pinned Stockfish 19 (official release binary; see
+# scripts/prewarm_stockfish.py for why not apt and how the SHA-256 pin works).
+# Deliberately the LAST layer: it is a self-contained download+verify, so
+# rebuilding it never invalidates the pip/Syzygy/Maia layers above. The apt
+# `stockfish` package (17-1 in trixie) stays installed -- removing it from the
+# apt line would invalidate everything below and force a full ~1 GB
+# re-download on the next rebuild -- but STOCKFISH_PATH makes the app resolve
+# this binary first, and /debug/stockfish reports the active path.
+COPY scripts/prewarm_stockfish.py scripts/prewarm_stockfish.py
+RUN python scripts/prewarm_stockfish.py
+ENV STOCKFISH_PATH=/opt/stockfish/stockfish
