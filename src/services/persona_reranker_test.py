@@ -76,36 +76,42 @@ LIVE_FIXTURES = [
 ]
 ALL_PERSONAS = list(PersonaType)
 
-# REGRESSION BASELINE: candidate draw + persona orders recorded from the
-# persona_weights_test.py Part 4 harness run (same Stockfish 16 binary,
-# num_moves=5, time_limit=0.3) that this task's delivery must agree with.
+# REGRESSION BASELINE: candidate draw + persona orders re-recorded 2026-09-23
+# against the bundled Stockfish 19 binary (num_moves=5, time_limit=0.3). The
+# previous Stockfish 16 recording no longer matched any SF19 draw (the engine
+# upgrade changes both the candidate moves and the score scale), so Part 4
+# asserted nothing; this recording restores a live pin, including the
+# DEFENDER reorderings that prove persona adjustments still flip orders.
 # SAN lists; converted to moves through the fixture FEN at runtime.
 SAVED_HARNESS_RUN = {
     "obvious sacrifice": {
-        "draw": [("Bxh7+", 805), ("Nxh7", 752), ("Nf3", 710), ("Ne4", 694), ("h4", 684)],
+        "draw": [("Bxh7+", 1162), ("Nh3", 956), ("Nxh7", 937), ("Nf3", 925), ("h4", 914)],
         "orders": {
-            PersonaType.ATTACKER: ["Bxh7+", "Nxh7", "Nf3", "Ne4", "h4"],
-            PersonaType.SACRIFICER: ["Bxh7+", "Nxh7", "Nf3", "Ne4", "h4"],
-            PersonaType.DEFENDER: ["Bxh7+", "Nxh7", "Nf3", "Ne4", "h4"],
-            PersonaType.POSITIONAL: ["Bxh7+", "Nxh7", "Nf3", "Ne4", "h4"],
+            PersonaType.ATTACKER: ["Bxh7+", "Nh3", "Nxh7", "Nf3", "h4"],
+            PersonaType.SACRIFICER: ["Bxh7+", "Nh3", "Nxh7", "Nf3", "h4"],
+            PersonaType.DEFENDER: ["Bxh7+", "Nh3", "Nxh7", "Nf3", "h4"],
+            PersonaType.POSITIONAL: ["Bxh7+", "Nh3", "Nxh7", "Nf3", "h4"],
+            PersonaType.GAMBITER: ["Bxh7+", "Nh3", "Nxh7", "Nf3", "h4"],
         },
     },
     "near-equal candidates mixed style": {
-        "draw": [("Qd2", 32), ("Re1", 31), ("a4", 22), ("b3", 21), ("Ne5", 19)],
+        "draw": [("a4", 43), ("Re1", 43), ("Qd2", 38), ("h3", 26), ("Rc1", 25)],
         "orders": {
-            PersonaType.ATTACKER: ["Qd2", "Re1", "Ne5", "a4", "b3"],
-            PersonaType.SACRIFICER: ["Qd2", "Re1", "Ne5", "a4", "b3"],
-            PersonaType.DEFENDER: ["Re1", "Qd2", "a4", "b3", "Ne5"],
-            PersonaType.POSITIONAL: ["Qd2", "Re1", "a4", "b3", "Ne5"],
+            PersonaType.ATTACKER: ["a4", "Re1", "Qd2", "h3", "Rc1"],
+            PersonaType.SACRIFICER: ["a4", "Re1", "Qd2", "h3", "Rc1"],
+            PersonaType.DEFENDER: ["Re1", "a4", "Qd2", "h3", "Rc1"],
+            PersonaType.POSITIONAL: ["a4", "Re1", "Qd2", "h3", "Rc1"],
+            PersonaType.GAMBITER: ["a4", "Re1", "Qd2", "h3", "Rc1"],
         },
     },
     "quiet positional middlegame": {
-        "draw": [("h6", 0), ("a5", -12), ("a6", -16), ("Bb6", -18), ("Kh8", -18)],
+        "draw": [("a6", 3), ("a5", 1), ("h6", 1), ("Bb6", -6), ("Ne7", -7)],
         "orders": {
-            PersonaType.ATTACKER: ["h6", "a5", "a6", "Bb6", "Kh8"],
-            PersonaType.SACRIFICER: ["h6", "a5", "a6", "Bb6", "Kh8"],
-            PersonaType.DEFENDER: ["h6", "a5", "Kh8", "a6", "Bb6"],
-            PersonaType.POSITIONAL: ["h6", "a5", "a6", "Bb6", "Kh8"],
+            PersonaType.ATTACKER: ["a6", "a5", "h6", "Bb6", "Ne7"],
+            PersonaType.SACRIFICER: ["a6", "a5", "h6", "Bb6", "Ne7"],
+            PersonaType.DEFENDER: ["h6", "a6", "a5", "Bb6", "Ne7"],
+            PersonaType.POSITIONAL: ["a6", "a5", "h6", "Bb6", "Ne7"],
+            PersonaType.GAMBITER: ["a6", "a5", "h6", "Bb6", "Ne7"],
         },
     },
 }
