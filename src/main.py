@@ -22,6 +22,8 @@ from engines.stockfish_engine import (
     close_endgame_stockfish,
     close_review_stockfish,
     close_stockfish_singleton,
+    resolve_stockfish_path,
+    singleton_status,
     start_endgame_stockfish,
     start_review_stockfish,
     start_stockfish_singleton,
@@ -47,6 +49,7 @@ _persistent_probe_cache = None
 def get_stockfish_debug_info():
     workspace_matches = glob.glob("/workspace/**/stockfish", recursive=True)
     return {
+        "resolved_path": resolve_stockfish_path(),
         "shutil_which": shutil.which("stockfish"),
         "common_paths": {
             path: os.path.exists(path)
@@ -54,6 +57,9 @@ def get_stockfish_debug_info():
         },
         "workspace_matches": workspace_matches,
         "stockfish_path_env": os.environ.get("STOCKFISH_PATH"),
+        # Which engine revision each long-lived process actually booted
+        # ('Stockfish 19'), so a deploy is verifiable without a shell.
+        "singletons": singleton_status(),
     }
 
 # --- App ---
@@ -135,7 +141,11 @@ def _warm_engines() -> None:
     # non-fatal: get_stockfish_singleton starts it lazily.
     try:
         engine = start_stockfish_singleton()
-        log.info("Stockfish singleton started from: %s", engine.stockfish_path)
+        log.info(
+            "Stockfish singleton started from: %s (%s)",
+            engine.stockfish_path,
+            engine.name,
+        )
     except Exception as exc:  # noqa: BLE001
         log.exception("Stockfish singleton failed to start at boot: %s", exc)
 
@@ -145,8 +155,10 @@ def _warm_engines() -> None:
     try:
         review_engine = start_review_stockfish(depth=int(os.getenv("REVIEW_DEPTH", "18")))
         log.info(
-            "Review Stockfish singleton started from: %s",
+            "Review Stockfish singleton started from: %s (%s, %.2fs/position)",
             review_engine.stockfish_path,
+            review_engine.name,
+            review_engine.analysis_time,
         )
     except Exception as exc:  # noqa: BLE001
         log.exception("Review Stockfish singleton failed to start at boot: %s", exc)
@@ -160,8 +172,9 @@ def _warm_engines() -> None:
             depth=int(os.getenv("ENDGAME_REPLY_DEPTH", "18"))
         )
         log.info(
-            "Endgame reply Stockfish singleton started from: %s",
+            "Endgame reply Stockfish singleton started from: %s (%s)",
             endgame_engine.stockfish_path,
+            endgame_engine.name,
         )
     except Exception as exc:  # noqa: BLE001
         log.exception("Endgame reply Stockfish singleton failed to start at boot: %s", exc)
