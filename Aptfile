@@ -1,2 +1,5 @@
 # required for game review
+# NOTE: the container image (Dockerfile.base) ships the pinned Stockfish 19
+# binary via scripts/prewarm_stockfish.py. This file only covers the legacy
+# Oryx/App Service build path, which still gets the distro package (17-1).
 stockfish
