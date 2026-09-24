@@ -929,24 +929,31 @@ class Maia3Engine:
 # failure we ensure `_maia3` is reset back to `None` so the failure is loud
 # and retriable, not silently swallowed.
 _maia3: Optional[Maia3Engine] = None
+# Serializes start_maia3(). The boot warm-up runs on a background thread and
+# the request path's get_maia3() can also start on demand, so without this
+# lock a request landing during warm-up would spawn a second UCI process and
+# orphan the first.
+_maia_start_lock = Lock()
 
 
 def start_maia3() -> Maia3Engine:
     """Start the singleton Maia-3 engine or raise on failure.
 
-    This function is safe to call from startup: it never leaves the module
-    in a "looks-started-but-is-broken" state. If `Maia3Engine.start()`
-    raises, the module global is rolled back to `None` before propagating
-    so a later `is_maia_available()` returns False — no false positive.
+    This function is safe to call from startup and from request paths: the
+    start is serialized, and it never leaves the module in a
+    "looks-started-but-is-broken" state. If `Maia3Engine.start()` raises,
+    the module global is rolled back to `None` before propagating so a later
+    `is_maia_available()` returns False — no false positive.
     """
     global _maia3
-    if _maia3 is not None and _maia3.started:
-        return _maia3
+    with _maia_start_lock:
+        if _maia3 is not None and _maia3.started:
+            return _maia3
 
-    instance = Maia3Engine()
-    instance.start()  # raises on failure BEFORE we publish the global
-    _maia3 = instance
-    return _maia3
+        instance = Maia3Engine()
+        instance.start()  # raises on failure BEFORE we publish the global
+        _maia3 = instance
+        return _maia3
 
 
 def get_maia3() -> Maia3Engine:
