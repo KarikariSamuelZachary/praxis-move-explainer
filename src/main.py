@@ -97,6 +97,76 @@ async def log_requests(request: Request, call_next):
     return response
 
 
+def _warm_engines() -> None:
+    """Best-effort pre-warm of the long-lived engines, OFF the boot path.
+
+    Spawning Maia-3 plus the three Stockfish singletons at boot keeps the
+    per-request process spawns off the user path, but it must not delay the
+    app becoming ready: a scale-to-zero replica pays the whole startup
+    before it can answer even a puzzle request, and Stockfish UCI
+    handshakes grow with the binary (multi-second on a cold page cache).
+    This runs on a daemon thread; every request path still starts any
+    engine that is not up yet (get_maia3 / get_stockfish_singleton /
+    get_review_stockfish / get_endgame_stockfish), so the worst case is the
+    same as a lazy boot.
+
+    Every failure is logged loudly and swallowed: none of these engines is
+    required for non-engine features (puzzles, repertoire, endgame
+    library), so none may take the app down.
+    """
+    # Maia-3 (human-like chess model). Starting it here still surfaces a
+    # missing checkpoint in the boot logs (liveness is owned by
+    # engines.maia_engine and read by /api/debug/maia-health). The
+    # throwaway inference pre-loads the model so the user's first
+    # out-of-book sparring move does not pay that latency, and doubles as a
+    # policy-patch self-test (verify_maia3_patch logs at ERROR if the patch
+    # chain is broken).
+    try:
+        start_maia3()
+        log.info("Maia-3 engine started successfully")
+        if verify_maia3_patch():
+            log.info("Maia-3 prewarm inference OK")
+    except Exception as exc:  # noqa: BLE001
+        # log.exception → ERROR level + full traceback. Downstream callers
+        # get a typed MaiaUnavailableError if they try to use Maia.
+        log.exception("Maia-3 engine failed to start at boot: %s", exc)
+
+    # Stockfish singleton for the sparring safety check. Failure is
+    # non-fatal: get_stockfish_singleton starts it lazily.
+    try:
+        engine = start_stockfish_singleton()
+        log.info("Stockfish singleton started from: %s", engine.stockfish_path)
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Stockfish singleton failed to start at boot: %s", exc)
+
+    # Separate full-strength Stockfish singleton for game review (strength
+    # isolation from the sparring engine; see engines.stockfish_engine).
+    # Non-fatal: get_review_stockfish starts it lazily.
+    try:
+        review_engine = start_review_stockfish(depth=int(os.getenv("REVIEW_DEPTH", "18")))
+        log.info(
+            "Review Stockfish singleton started from: %s",
+            review_engine.stockfish_path,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Review Stockfish singleton failed to start at boot: %s", exc)
+
+    # Separate full-strength Stockfish singleton for Endgame Trainer opponent
+    # replies (tablebase-miss fallback). Own process for failure-domain and
+    # latency isolation from review. Non-fatal: get_endgame_stockfish starts
+    # it lazily.
+    try:
+        endgame_engine = start_endgame_stockfish(
+            depth=int(os.getenv("ENDGAME_REPLY_DEPTH", "18"))
+        )
+        log.info(
+            "Endgame reply Stockfish singleton started from: %s",
+            endgame_engine.stockfish_path,
+        )
+    except Exception as exc:  # noqa: BLE001
+        log.exception("Endgame reply Stockfish singleton failed to start at boot: %s", exc)
+
+
 @app.on_event("startup")
 def startup():
     log.info("Platform: %s", platform.machine())
@@ -135,68 +205,15 @@ def startup():
         _persistent_probe_cache = None
         log.exception("Tablebase persistent probe cache unavailable: %s", exc)
 
-    # Maia-3 (human-like chess model). We attempt to start it eagerly at
-    # boot so a missing checkpoint surfaces immediately rather than on the
-    # first sparring request. Other features (Game Review, Puzzles,
-    # Woodpecker) do NOT depend on Maia, so a startup failure must NOT
-    # take the app down — but it must be loud, not swallowed as a quiet
-    # warning. We log the full traceback at ERROR. Maia's actual liveness
-    # state is owned by engines.maia_engine and read by the
-    # /api/debug/maia-health endpoint via is_maia_available(); there is no
-    # parallel health flag in main.py (an earlier revision kept one here,
-    # but nothing read it, so it drifted from the real signal and was
-    # removed).
-    try:
-        start_maia3()
-        log.info("Maia-3 engine started successfully")
-        # Warm the model with one throwaway inference. The engine process
-        # was just spawned; the first `go` still pays one-time model-load
-        # latency inside the subprocess, which would otherwise land on the
-        # user's first out-of-book sparring move. verify_maia3_patch()
-        # issues exactly that throwaway call and doubles as a policy-patch
-        # self-test (it logs at ERROR if the patch chain is broken).
-        if verify_maia3_patch():
-            log.info("Maia-3 prewarm inference OK")
-    except Exception as exc:  # noqa: BLE001
-        # log.exception → ERROR level + full traceback. This is the loud
-        # signal that replaces the previous swallowed warning. Downstream
-        # callers will get a typed MaiaUnavailableError if they try to use
-        # Maia, not a confusing generic failure.
-        log.exception("Maia-3 engine failed to start at boot: %s", exc)
-
-    # Stockfish singleton for the sparring safety check. Spawning it at
-    # boot keeps the process spawn + UCI handshake off the per-move request
-    # path; a boot failure here is non-fatal because the request path can
-    # still start the engine lazily (get_stockfish_singleton).
-    try:
-        engine = start_stockfish_singleton()
-        log.info("Stockfish singleton started from: %s", engine.stockfish_path)
-    except Exception as exc:  # noqa: BLE001
-        log.exception("Stockfish singleton failed to start at boot: %s", exc)
-
-    # Separate full-strength Stockfish singleton for game review (strength
-    # isolation from the sparring engine; see engines.stockfish_engine). Same
-    # non-fatal boot policy as above: the request path can start it lazily.
-    try:
-        review_engine = start_review_stockfish(depth=int(os.getenv("REVIEW_DEPTH", "18")))
-        log.info("Review Stockfish singleton started from: %s", review_engine.stockfish_path)
-    except Exception as exc:  # noqa: BLE001
-        log.exception("Review Stockfish singleton failed to start at boot: %s", exc)
-
-    # Separate full-strength Stockfish singleton for Endgame Trainer opponent
-    # replies (tablebase-miss fallback). Own process for failure-domain and
-    # latency isolation from review; see engines.stockfish_engine. Same
-    # non-fatal boot policy: the request path starts it lazily.
-    try:
-        endgame_engine = start_endgame_stockfish(
-            depth=int(os.getenv("ENDGAME_REPLY_DEPTH", "18"))
-        )
-        log.info(
-            "Endgame reply Stockfish singleton started from: %s",
-            endgame_engine.stockfish_path,
-        )
-    except Exception as exc:  # noqa: BLE001
-        log.exception("Endgame reply Stockfish singleton failed to start at boot: %s", exc)
+    # Long-lived engines (Maia-3 + the three Stockfish singletons) warm on a
+    # background thread: a scale-to-zero replica must be able to answer HTTP
+    # requests immediately instead of waiting on multi-second engine spawns.
+    # See _warm_engines for the full policy.
+    threading.Thread(
+        target=_warm_engines,
+        name="engine-warmup",
+        daemon=True,
+    ).start()
 
 
 @app.on_event("shutdown")
