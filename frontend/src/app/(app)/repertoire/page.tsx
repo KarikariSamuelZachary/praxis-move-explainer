@@ -26,15 +26,16 @@ import { useRouter } from 'next/navigation';
  * through the proxy middleware on the API side (see src/proxy.ts).
  *
  * Pattern parity with Train / Woodpecker pages:
- *   * Wood-grain background + CARD_CLASS (from train/page.tsx) used for
- *     the create modal; the cards on this page use a lighter variant
- *     because they're the primary content, not a one-off modal.
+ *   * Wood-grain background + CARD_CLASS (from train/TrainPageClient.tsx)
+ *     used for the create modal; the cards on this page use a lighter
+ *     variant because they're the primary content, not a one-off modal.
  *   * Chessboard thumbnail via dynamic import of react-chessboard
- *     (matches train/page.tsx's RecommendedPanel which renders a
- *     mini-board for an unrelated FEN).
+ *     (matches train/TrainPageClient.tsx's RecommendedPanel which renders
+ *     a mini-board for an unrelated FEN).
  *   * Fetch + error pattern matches woodpecker/page.tsx: cache: 'no-store',
  *     try/catch, surface body.detail || body.error || status.
- *   * Modal overlay style matches train/page.tsx's OpponentPrepDialog.
+ *   * Modal overlay style matches train/TrainPageClient.tsx's
+ *     OpponentPrepDialog.
  *
  * Scope intentionally excludes (left for later tasks):
  *   * Detail / training page (mounted at /repertoire/{id} as a
