@@ -2,11 +2,11 @@ import { NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { getBackendConfig } from '@/lib/backend';
 
-// Proxy for the Train page's "Recommended For You" card. The backend picks
-// the material category this user is weakest at (weighted weakness score
-// over failed drills + their review attempts) and 404s only when the
-// deployment has no drillable endgame content at all; the card treats any
-// failure as "keep the default recommendation".
+// JSON proxy for the endgame recommendation. The Train page's card now
+// resolves it server-side (lib/endgame-recommendation.ts) so it renders in
+// the first paint; this route stays as the HTTP API, mirroring the
+// backend's status codes (404 = the deployment has no drillable endgame
+// content at all).
 export async function GET() {
   const { backendApiUrl, internalSecret } = getBackendConfig();
   const backendUrl = new URL('/api/endgames/recommendation', backendApiUrl);
