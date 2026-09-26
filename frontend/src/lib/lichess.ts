@@ -188,8 +188,10 @@ export async function fetchPuzzleBatch(
   count: number = 10,
   theme?: string,
   minRating: number = 1000,
-  maxRating: number = 2000
+  maxRating: number = 2000,
+  options: { allowFallback?: boolean } = {}
 ): Promise<Puzzle[]> {
+  const { allowFallback = true } = options;
   try {
     const params = new URLSearchParams();
     if (theme) params.append('theme', theme);
@@ -247,6 +249,9 @@ export async function fetchPuzzleBatch(
     });
   } catch (error) {
     console.error('Failed to fetch puzzle batch from Praxis API:', error);
+    if (!allowFallback) {
+      throw error;
+    }
     return Array.from({ length: count }, () => getFallbackPuzzle());
   }
 }
