@@ -17,8 +17,17 @@ const SECONDS_PER_REVIEW = 40;
  * The count is real -- the user's due endgame reviews -- so the landing's
  * scroll-triggered countdown-to-zero flourish is deliberately absent: a real
  * number must not animate down to a fake zero.
+ *
+ * The bird shares the Puzzles promo's peck: `peckSignal` increments when a
+ * drill resolves failed, and the key remount replays the landing peck.
  */
-export default function WoodpeckerPromoCard() {
+export default function WoodpeckerPromoCard({
+  peckSignal = 0,
+}: {
+  /** Increments on a failed drill resolution; the key remount replays the
+   * peck. A solved drill leaves the bird still. */
+  peckSignal?: number;
+}) {
   const [dueCount, setDueCount] = useState<number | null>(null);
 
   useEffect(() => {
@@ -51,9 +60,12 @@ export default function WoodpeckerPromoCard() {
         {/* Bird burned into the wood, same treatment as the landing card. */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
+          key={peckSignal}
           src="/woodpecker-cutout.webp"
           alt=""
-          className="h-24 w-auto shrink-0 [filter:brightness(0.82)_sepia(0.25)_drop-shadow(0_8px_14px_rgba(0,0,0,0.5))]"
+          className={`h-24 w-auto shrink-0 [filter:brightness(0.82)_sepia(0.25)_drop-shadow(0_8px_14px_rgba(0,0,0,0.5))] ${
+            peckSignal > 0 ? 'woodpecker-peck' : ''
+          }`}
         />
 
         {/* Centered in its own column, then nudged back toward the bird with
