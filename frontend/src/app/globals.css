@@ -111,6 +111,33 @@
   }
 }
 
+/* The landing Woodpecker's one gentle peck (GSAP: power2.in down 160ms,
+   elastic.out back 500ms), replayed by the Puzzles promo card when a move
+   is wrong. The per-keyframe easing carries the overshoot on the return. */
+@keyframes woodpecker-peck {
+  0% {
+    transform: rotate(0deg) translateY(0);
+  }
+  22% {
+    transform: rotate(-9deg) translateY(4px);
+    animation-timing-function: cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+  100% {
+    transform: rotate(0deg) translateY(0);
+  }
+}
+
+.woodpecker-peck {
+  transform-origin: 72% 88%;
+  animation: woodpecker-peck 660ms cubic-bezier(0.11, 0, 0.5, 0);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .woodpecker-peck {
+    animation: none;
+  }
+}
+
 /*
  * Hero/nav elements that GSAP fades in after hydration. They ship hidden in
  * the SSR markup so the first paint can never show them before their intro
