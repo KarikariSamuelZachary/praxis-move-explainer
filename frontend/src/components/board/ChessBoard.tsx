@@ -17,6 +17,13 @@ interface ChessBoardProps {
   puzzle: Puzzle;
   onPuzzleSolved: (timeSeconds: number) => void;
   onPuzzleFailed: () => void;
+  /**
+   * Fires on every wrong move, before the snap-back: the per-move feedback
+   * hook (e.g. the Woodpecker promo peck). `onPuzzleFailed` is the
+   * once-per-attempt scoring hook and also fires when a solution is
+   * revealed, so the two are deliberately separate.
+   */
+  onPuzzleWrongMove?: () => void;
   onPuzzleEnd?: () => void;
   apiRef?: React.MutableRefObject<BoardApi | null>;
 }
@@ -77,6 +84,7 @@ export default function ChessBoardComponent({
   puzzle,
   onPuzzleSolved,
   onPuzzleFailed,
+  onPuzzleWrongMove,
   onPuzzleEnd,
   apiRef,
 }: ChessBoardProps) {
@@ -304,6 +312,7 @@ export default function ChessBoardComponent({
 
     if (!isCorrectMove) {
       onPuzzleFailed();
+      onPuzzleWrongMove?.();
       clearWrongFlashTimeout();
 
       // Temporarily apply wrong move so piece lands visually
@@ -388,7 +397,7 @@ export default function ChessBoardComponent({
     setPuzzleState('playing');
     scheduleOpponentMove(nextGame, opponentReplyIndex);
     return true;
-  }, [clearHintTimeout, clearSnapbackTimeout, clearWrongFlashTimeout, onPuzzleEnd, onPuzzleFailed, onPuzzleSolved, puzzle, scheduleOpponentMove, setBoardState]);
+  }, [clearHintTimeout, clearSnapbackTimeout, clearWrongFlashTimeout, onPuzzleEnd, onPuzzleFailed, onPuzzleWrongMove, onPuzzleSolved, puzzle, scheduleOpponentMove, setBoardState]);
 
   const onDrop = useCallback((sourceSquare: string, targetSquare: string, pieceType: string) => {
     setSelectedSquare(null);
