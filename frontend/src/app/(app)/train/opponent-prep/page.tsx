@@ -204,6 +204,11 @@ export default function OpponentPrepPage() {
   const [timeControl, setTimeControl] = useState<string>('');
   const gameRef = useRef(game);
   const botMoveInFlightRef = useRef(false);
+  // Every position key since the game started. The game is rebuilt from a
+  // FEN on each ply, which resets chess.js's own repetition counter, so
+  // threefold repetition is counted from these keys instead. Reset with the
+  // game (startGame/resetGame).
+  const positionKeysRef = useRef<string[]>([positionKey(START_FEN)]);
 
   useEffect(() => {
     gameRef.current = game;
@@ -274,7 +279,12 @@ export default function OpponentPrepPage() {
   // The latest bot move's SAN still surfaces in the StatusStrip via the
   // `lastMove` API response, so we don't need a derived `moveHistory`
   // here.
-  const gameOver = game.isGameOver();
+  // checkmate | stalemate | insufficient material | fifty-move rule |
+  // threefold repetition (the last one via the tracked keys -- see
+  // detectGameEnding). Any of them ends the game.
+  const ending = detectGameEnding(game, positionKeysRef.current);
+  const gameOver = ending !== null;
+  const endingText = ending ? gameEndingLabel(ending, game) : null;
 
   const humanCanMove =
     isStarted &&
@@ -348,6 +358,7 @@ export default function OpponentPrepPage() {
       const data = (await response.json()) as SparringMoveResponse;
       const nextGame = new Chess(gameRef.current.fen());
       nextGame.move(uciToMove(data.move_uci));
+      positionKeysRef.current.push(positionKey(nextGame.fen()));
       setGame(nextGame);
       setLastMove(data);
       setStatus(data.source);
@@ -388,6 +399,7 @@ export default function OpponentPrepPage() {
     }
 
     if (move) {
+      positionKeysRef.current.push(positionKey(nextGame.fen()));
       setGame(nextGame);
       setLastMove(null);
       setMessage(null);
@@ -409,6 +421,7 @@ export default function OpponentPrepPage() {
 
   function startGame() {
     const nextGame = new Chess();
+    positionKeysRef.current = [positionKey(nextGame.fen())];
     setGame(nextGame);
     setIsStarted(true);
     setLastMove(null);
@@ -437,6 +450,7 @@ export default function OpponentPrepPage() {
   }
 
   function resetGame() {
+    positionKeysRef.current = [positionKey(START_FEN)];
     setGame(new Chess());
     setIsStarted(false);
     setLastMove(null);
@@ -473,6 +487,7 @@ export default function OpponentPrepPage() {
       return false;
     }
 
+    positionKeysRef.current.push(positionKey(nextGame.fen()));
     setGame(nextGame);
     setLastMove(null);
     setMessage(null);
@@ -787,6 +802,7 @@ export default function OpponentPrepPage() {
               lastMove={lastMove}
               message={message}
               gameOver={gameOver && isStarted}
+              endingText={endingText}
               isStarted={isStarted}
               premoveSan={premoveSan}
               onReset={resetGame}
@@ -1227,6 +1243,7 @@ function StatusStrip({
   lastMove,
   message,
   gameOver,
+  endingText,
   isStarted,
   premoveSan,
   onReset,
@@ -1237,6 +1254,8 @@ function StatusStrip({
   lastMove: SparringMoveResponse | null;
   message: string | null;
   gameOver: boolean;
+  /** How the game ended (win/draw + rule); null falls back to "Finished". */
+  endingText: string | null;
   isStarted: boolean;
   premoveSan: string | null;
   onReset: () => void;
@@ -1252,7 +1271,7 @@ function StatusStrip({
     <div className="flex shrink-0 items-center justify-between gap-3 border-t border-black/40 bg-black/40 px-4 py-2.5">
       <div className="flex min-w-0 items-center gap-2">
         <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#f7e5c6]/55">
-          {gameOver ? 'Finished' : label}
+          {gameOver ? (endingText ?? 'Finished') : label}
         </span>
         {isThinking && (
           <span className="h-3 w-3 rounded-full border-2 border-[#f7e5c6]/35 border-t-[#f7e5c6] animate-spin" />
@@ -1361,6 +1380,54 @@ function sourceLabel(status: BotSource) {
   if (status === 'thinking') return 'Thinking';
   if (status === 'error') return 'Needs attention';
   return 'Ready';
+}
+
+type GameEnding =
+  | 'checkmate'
+  | 'stalemate'
+  | 'insufficient_material'
+  | 'fifty_move_rule'
+  | 'threefold_repetition';
+
+/** First 4 FEN fields (board/turn/castling/ep), counters excluded: the key
+ *  a position repeats on. */
+function positionKey(fen: string): string {
+  return fen.split(/\s+/).slice(0, 4).join(' ');
+}
+
+/**
+ * The rule that ended the game, or null while it is live.
+ *
+ * chess.js's own isThreefoldRepetition() cannot see the repetition here:
+ * every ply is applied on a fresh Chess built from a FEN, which resets its
+ * position counter. The tracked `positionKeys` (oldest first, current last)
+ * are counted instead -- on the third occurrence the draw is taken. The
+ * other rules are FEN-readable and stay chess.js's.
+ */
+function detectGameEnding(
+  game: Chess,
+  positionKeys: string[]
+): GameEnding | null {
+  if (game.isCheckmate()) return 'checkmate';
+  if (game.isStalemate()) return 'stalemate';
+  if (game.isInsufficientMaterial()) return 'insufficient_material';
+  if (game.isDrawByFiftyMoves()) return 'fifty_move_rule';
+  const current = positionKeys[positionKeys.length - 1];
+  if (positionKeys.filter((key) => key === current).length >= 3) {
+    return 'threefold_repetition';
+  }
+  return null;
+}
+
+function gameEndingLabel(ending: GameEnding, game: Chess): string {
+  if (ending === 'checkmate') {
+    const winner = game.turn() === 'w' ? 'Black' : 'White';
+    return `Checkmate — ${winner} wins`;
+  }
+  if (ending === 'stalemate') return 'Draw — stalemate';
+  if (ending === 'insufficient_material') return 'Draw — insufficient material';
+  if (ending === 'fifty_move_rule') return 'Draw — fifty-move rule';
+  return 'Draw — threefold repetition';
 }
 
 function uciToMove(uci: string) {
