@@ -3,11 +3,16 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import dynamic from 'next/dynamic';
 import Image from 'next/image';
-import Link from 'next/link';
-import gsap from 'gsap';
+
 import { Puzzle } from '@/types';
 import { fetchPuzzleBatch, getPuzzleDifficultyLabel } from '@/lib/lichess';
+import { puzzleThemeLabel } from '@/lib/themes';
+import { WOOD_PANEL_CLASS, WOOD_PANEL_STYLE } from '@/lib/woodPanel';
 import type { BoardApi } from '@/components/board/ChessBoard';
+import PuzzleStatusPanel from '@/components/puzzles/PuzzleStatusPanel';
+import ThemePickerCard from '@/components/puzzles/ThemePickerCard';
+import WoodpeckerPromoCard from '@/components/puzzles/WoodpeckerPromoCard';
+import { PUZZLE_CARD_CLASS } from '@/components/puzzles/puzzleStyles';
 
 // Dynamically import chessboard to avoid SSR issues
 const ChessBoard = dynamic(() => import('@/components/board/ChessBoard'), {
@@ -24,91 +29,12 @@ const SLOW_THRESHOLD_SECONDS_PER_RATING_POINT_GAP = 1 / 10;
 const SLOW_THRESHOLD_CAP_SECONDS = 180;
 
 const BATCH_SIZE = 10;
-const CARD_CLASS =
-  'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
-const WEEK_DAYS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-const RATING_DATA = [1814, 1828, 1851, 1840, 1860, 1854, 1876];
 const WOODPECKER_SKIP_MESSAGES: Record<string, string> = {
   daily_cap_reached: 'Daily practice queue limit reached - try again tomorrow.',
-  active_cap_reached: 'Practice queue full - solve some due puzzles first.',
 };
-
-function formatTheme(theme: string) {
-  return theme.replace(/([A-Z])/g, ' $1').trim();
-}
 
 function getSideToMove(puzzle: Puzzle) {
   return (puzzle.fen || '').split(/\s+/)[1] === 'b' ? 'black' : 'white';
-}
-
-function RatingSparkline() {
-  const width = 330;
-  const height = 96;
-  const padding = 8;
-  const min = Math.min(...RATING_DATA);
-  const max = Math.max(...RATING_DATA);
-  const range = Math.max(max - min, 1);
-  const points = RATING_DATA.map((value, index) => {
-    const x = padding + (index * (width - padding * 2)) / (RATING_DATA.length - 1);
-    const y = height - padding - ((value - min) / range) * (height - padding * 2);
-    return { x, y };
-  });
-  const path = points.map((point, index) => `${index === 0 ? 'M' : 'L'} ${point.x} ${point.y}`).join(' ');
-  const areaPath = `${path} L ${points[points.length - 1].x} ${height - padding} L ${points[0].x} ${height - padding} Z`;
-
-  return (
-    <svg className="mt-4 h-16 w-full overflow-visible" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Seven day tactical rating trend">
-      <defs>
-        <linearGradient id="rating-fill" x1="0" x2="0" y1="0" y2="1">
-          <stop offset="0%" stopColor="#10b981" stopOpacity="0.38" />
-          <stop offset="100%" stopColor="#10b981" stopOpacity="0" />
-        </linearGradient>
-      </defs>
-      <path d={areaPath} fill="url(#rating-fill)" />
-      <path d={path} fill="none" stroke="#10b981" strokeLinecap="round" strokeLinejoin="round" strokeWidth="3" />
-      {points.map((point) => (
-        <circle key={`${point.x}-${point.y}`} cx={point.x} cy={point.y} fill="#10b981" r="3" stroke="rgba(255,255,255,0.45)" strokeWidth="1" />
-      ))}
-    </svg>
-  );
-}
-
-function CheckIcon() {
-  return (
-    <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2.5" viewBox="0 0 24 24">
-      <path d="m5 12 4 4L19 6" />
-    </svg>
-  );
-}
-
-function HintIcon() {
-  return (
-    <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24">
-      <path d="M9 18h6" />
-      <path d="M10 22h4" />
-      <path d="M8.5 14.5A6 6 0 1 1 15.5 14c-.8.5-1.5 1.3-1.5 2.2V17h-4v-.8c0-.7-.5-1.3-1.5-1.7Z" />
-    </svg>
-  );
-}
-
-function EyeIcon() {
-  return (
-    <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24">
-      <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" />
-      <circle cx="12" cy="12" r="3" />
-    </svg>
-  );
-}
-
-function PlayAgainIcon() {
-  return (
-    <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24">
-      <path d="M3 12a9 9 0 0 1 15-6.7L21 8" />
-      <path d="M21 3v5h-5" />
-      <path d="M21 12a9 9 0 0 1-15 6.7L3 16" />
-      <path d="M3 21v-5h5" />
-    </svg>
-  );
 }
 
 function NextIcon() {
@@ -134,12 +60,9 @@ export default function PuzzlesPage() {
   const [puzzles, setPuzzles] = useState<Puzzle[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [isLoading, setIsLoading] = useState(true);
-  const [sessionStats, setSessionStats] = useState({
-    solved: 0,
-    failed: 0,
-    totalTime: 0,
-  });
-  const [puzzleEnded, setPuzzleEnded] = useState(false);
+  const [result, setResult] = useState<'solved' | 'failed' | null>(null);
+  const [selectedTheme, setSelectedTheme] = useState<string | null>(null);
+  const [themeLoadError, setThemeLoadError] = useState<string | null>(null);
   const [autoAdvance, setAutoAdvance] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [currentRating, setCurrentRating] = useState<number | null>(null);
@@ -152,9 +75,6 @@ export default function PuzzlesPage() {
   const stuckAtEndRef = useRef(false);
   const advanceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
-  const birdRef = useRef<HTMLImageElement>(null);
-  const prevReviewsDueRef = useRef<number | null>(null);
-  const peckTlRef = useRef<gsap.core.Timeline | null>(null);
 
   const clearAdvanceTimeout = useCallback(() => {
     if (advanceTimeoutRef.current) {
@@ -193,46 +113,6 @@ export default function PuzzlesPage() {
     return () => clearAdvanceTimeout();
   }, [currentIndex, clearAdvanceTimeout]);
 
-  // Peck the woodpecker whenever the reviews-due count climbs (a puzzle
-  // just entered the Woodpecker queue). Mirrors the landing-page twitch.
-  useEffect(() => {
-    if (reviewsDue === null) {
-      prevReviewsDueRef.current = reviewsDue;
-      return;
-    }
-    const prev = prevReviewsDueRef.current;
-    prevReviewsDueRef.current = reviewsDue;
-    if (prev === null || reviewsDue <= prev) {
-      return;
-    }
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      return;
-    }
-    const bird = birdRef.current;
-    if (!bird) return;
-
-    if (peckTlRef.current) {
-      peckTlRef.current.kill();
-    }
-    const tl = gsap.timeline();
-    tl.to(bird, {
-      rotate: -9,
-      y: 4,
-      duration: 0.16,
-      ease: 'power2.in',
-      transformOrigin: '72% 88%',
-    }).to(bird, {
-      rotate: 0,
-      y: 0,
-      duration: 0.5,
-      ease: 'elastic.out(1, 0.45)',
-    });
-    peckTlRef.current = tl;
-    return () => {
-      tl.kill();
-    };
-  }, [reviewsDue]);
-
   const fetchReviewsDue = useCallback(() => {
     fetch('/api/woodpecker/queue', { cache: 'no-store' })
       .then((res) => (res.ok ? res.json() : null))
@@ -244,21 +124,37 @@ export default function PuzzlesPage() {
       .catch((error) => console.error('Failed to fetch woodpecker queue:', error));
   }, []);
 
+  // Themed practice is unrated: a theme only swaps the puzzle source, so the
+  // batch is filtered server-side and, unlike the rated loop, never falls back
+  // to unrelated classic puzzles (an empty theme should say so, not lie).
   const loadPuzzles = useCallback(async () => {
     const loadId = ++loadIdRef.current;
     setIsLoading(true);
+    setThemeLoadError(null);
     try {
-      const newPuzzles = await fetchPuzzleBatch(BATCH_SIZE);
+      const newPuzzles = await fetchPuzzleBatch(
+        BATCH_SIZE,
+        selectedTheme ?? undefined,
+        undefined,
+        undefined,
+        { allowFallback: selectedTheme === null }
+      );
       if (loadId !== loadIdRef.current) return;
       setPuzzles(newPuzzles);
       setCurrentIndex(0);
-      setSessionStats({ solved: 0, failed: 0, totalTime: 0 });
     } catch (error) {
+      if (loadId !== loadIdRef.current) return;
       console.error('Failed to load puzzles:', error);
+      setPuzzles([]);
+      setThemeLoadError(
+        selectedTheme
+          ? `No ${puzzleThemeLabel(selectedTheme)} puzzles available right now.`
+          : 'Could not load puzzles.'
+      );
     } finally {
-      setIsLoading(false);
+      if (loadId === loadIdRef.current) setIsLoading(false);
     }
-  }, []);
+  }, [selectedTheme]);
 
   // Background prefetch: keep the buffer topped up so play never stalls.
   // Append another BATCH_SIZE whenever <=3 unsolved puzzles remain.
@@ -267,7 +163,13 @@ export default function PuzzlesPage() {
     fetchingMoreRef.current = true;
     setIsFetchingMore(true);
     try {
-      const more = await fetchPuzzleBatch(BATCH_SIZE);
+      const more = await fetchPuzzleBatch(
+        BATCH_SIZE,
+        selectedTheme ?? undefined,
+        undefined,
+        undefined,
+        { allowFallback: selectedTheme === null }
+      );
       if (more && more.length) {
         setPuzzles((prev) => [...prev, ...more]);
       }
@@ -277,10 +179,10 @@ export default function PuzzlesPage() {
       fetchingMoreRef.current = false;
       setIsFetchingMore(false);
     }
-  }, []);
+  }, [selectedTheme]);
 
   useEffect(() => {
-    loadPuzzles();
+    void loadPuzzles();
   }, [loadPuzzles]);
 
   useEffect(() => {
@@ -295,7 +197,6 @@ export default function PuzzlesPage() {
   useEffect(() => {
     if (stuckAtEndRef.current && currentIndex + 1 < puzzles.length) {
       stuckAtEndRef.current = false;
-      setPuzzleEnded(false);
       setCurrentIndex((i) => i + 1);
     }
   }, [puzzles.length, currentIndex]);
@@ -316,6 +217,7 @@ export default function PuzzlesPage() {
   useEffect(() => {
     hasScoredAttemptRef.current = false;
     setWoodpeckerNotice(null);
+    setResult(null);
   }, [currentIndex]);
 
   function surfaceWoodpeckerSkip(data: unknown) {
@@ -329,17 +231,53 @@ export default function PuzzlesPage() {
     }
   }
 
-  function handlePuzzleSolved(timeSeconds: number) {
-    setSessionStats((prev) => ({
-      ...prev,
-      solved: prev.solved + 1,
-      totalTime: prev.totalTime + timeSeconds,
-    }));
+  function updatePuzzleRating(puzzle: Puzzle, solved: boolean) {
+    fetch('/api/puzzles/rating', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        puzzle_id: puzzle.id,
+        puzzle_rating: puzzle.rating,
+        solved,
+      }),
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.new_rating != null) {
+          setCurrentRating(data.new_rating);
+        }
+      })
+      .catch((error) => console.error('Failed to update rating:', error));
+  }
 
+  function enqueueWoodpeckerReview(
+    puzzle: Puzzle,
+    sourceReason: 'slow_solution' | 'wrong_answer',
+  ) {
+    fetch('/api/woodpecker/entries', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        puzzle_id: puzzle.id,
+        theme: puzzle.themes[0] ?? 'middlegame',
+        source_reason: sourceReason,
+      }),
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        surfaceWoodpeckerSkip(data);
+        fetchReviewsDue();
+      })
+      .catch((error) => console.error('Failed to add woodpecker entry:', error));
+  }
+
+  function handlePuzzleSolved(timeSeconds: number) {
     if (!hasScoredAttemptRef.current) {
       hasScoredAttemptRef.current = true;
       const puzzle = puzzles[currentIndex];
       if (puzzle) {
+        setResult('solved');
+
         // Snapshot the rating BEFORE this solve so the slow-threshold
         // computation uses the player's rating as it stood going into
         // this puzzle, not the value updated asynchronously by the
@@ -354,137 +292,30 @@ export default function PuzzlesPage() {
             ),
         );
 
-        fetch('/api/puzzles/rating', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            puzzle_id: puzzle.id,
-            puzzle_rating: puzzle.rating,
-            solved: true,
-          }),
-        })
-          .then((res) => (res.ok ? res.json() : null))
-          .then((data) => {
-            if (data?.new_rating != null) {
-              setCurrentRating(data.new_rating);
-            }
-          })
-          .catch((error) => console.error('Failed to update rating:', error));
+        // Theme practice is unrated: no tactical_rating history is written.
+        if (selectedTheme === null) {
+          updatePuzzleRating(puzzle, true);
+        }
 
         if (timeSeconds > threshold) {
-          const entryRequestStarted = performance.now();
-          const entryRequest = {
-            puzzle_id: puzzle.id,
-            theme: puzzle.themes[0] ?? 'middlegame',
-            source_reason: 'slow_solution',
-          };
-          console.info('[WOODPECKER_ENTRY_PROFILE] request_start', {
-            timestamp: new Date().toISOString(),
-            puzzle_id: entryRequest.puzzle_id,
-            source_reason: entryRequest.source_reason,
-          });
-
-          fetch('/api/woodpecker/entries', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(entryRequest),
-          })
-            .then((res) => {
-              console.info('[WOODPECKER_ENTRY_PROFILE] request_resolved', {
-                timestamp: new Date().toISOString(),
-                puzzle_id: entryRequest.puzzle_id,
-                source_reason: entryRequest.source_reason,
-                status: res.status,
-                ok: res.ok,
-                duration_ms: Number((performance.now() - entryRequestStarted).toFixed(2)),
-              });
-              return res.ok ? res.json() : null;
-            })
-            .then((data) => {
-              surfaceWoodpeckerSkip(data);
-              return fetchReviewsDue();
-            })
-            .catch((error) => {
-              console.error('[WOODPECKER_ENTRY_PROFILE] request_rejected', {
-                timestamp: new Date().toISOString(),
-                puzzle_id: entryRequest.puzzle_id,
-                source_reason: entryRequest.source_reason,
-                duration_ms: Number((performance.now() - entryRequestStarted).toFixed(2)),
-                error,
-              });
-              console.error('Failed to add woodpecker entry:', error);
-            });
+          enqueueWoodpeckerReview(puzzle, 'slow_solution');
         }
       }
     }
   }
 
   function handlePuzzleFailed() {
-    setSessionStats((prev) => ({ ...prev, failed: prev.failed + 1 }));
-
+    setResult('failed');
     if (!hasScoredAttemptRef.current) {
       hasScoredAttemptRef.current = true;
       const puzzle = puzzles[currentIndex];
       if (puzzle) {
-        fetch('/api/puzzles/rating', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            puzzle_id: puzzle.id,
-            puzzle_rating: puzzle.rating,
-            solved: false,
-          }),
-        })
-          .then((res) => (res.ok ? res.json() : null))
-          .then((data) => {
-            if (data?.new_rating != null) {
-              setCurrentRating(data.new_rating);
-            }
-          })
-          .catch((error) => console.error('Failed to update rating:', error));
+        // Theme practice is unrated: no tactical_rating history is written.
+        if (selectedTheme === null) {
+          updatePuzzleRating(puzzle, false);
+        }
 
-        const entryRequestStarted = performance.now();
-        const entryRequest = {
-          puzzle_id: puzzle.id,
-          theme: puzzle.themes[0] ?? 'middlegame',
-          source_reason: 'wrong_answer',
-        };
-        console.info('[WOODPECKER_ENTRY_PROFILE] request_start', {
-          timestamp: new Date().toISOString(),
-          puzzle_id: entryRequest.puzzle_id,
-          source_reason: entryRequest.source_reason,
-        });
-
-        fetch('/api/woodpecker/entries', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(entryRequest),
-        })
-          .then((res) => {
-            console.info('[WOODPECKER_ENTRY_PROFILE] request_resolved', {
-              timestamp: new Date().toISOString(),
-              puzzle_id: entryRequest.puzzle_id,
-              source_reason: entryRequest.source_reason,
-              status: res.status,
-              ok: res.ok,
-              duration_ms: Number((performance.now() - entryRequestStarted).toFixed(2)),
-            });
-            return res.ok ? res.json() : null;
-          })
-          .then((data) => {
-            surfaceWoodpeckerSkip(data);
-            return fetchReviewsDue();
-          })
-          .catch((error) => {
-            console.error('[WOODPECKER_ENTRY_PROFILE] request_rejected', {
-              timestamp: new Date().toISOString(),
-              puzzle_id: entryRequest.puzzle_id,
-              source_reason: entryRequest.source_reason,
-              duration_ms: Number((performance.now() - entryRequestStarted).toFixed(2)),
-              error,
-            });
-            console.error('Failed to add woodpecker entry:', error);
-          });
+        enqueueWoodpeckerReview(puzzle, 'wrong_answer');
       }
     }
   }
@@ -492,7 +323,6 @@ export default function PuzzlesPage() {
   const handleNextPuzzle = useCallback(() => {
     clearAdvanceTimeout();
     if (currentIndex + 1 < puzzles.length) {
-      setPuzzleEnded(false);
       setCurrentIndex((prev) => prev + 1);
     } else {
       // Ran out of prefetched puzzles - kick off a fetch and wait for
@@ -506,13 +336,7 @@ export default function PuzzlesPage() {
     // Treat revealing the solution before a recorded solve like the existing
     // wrong-answer path. The same ref also prevents re-intake after a correct
     // solve or a prior wrong/reveal attempt on this puzzle.
-    const puzzle = puzzles[currentIndex];
     const shouldIntake = !hasScoredAttemptRef.current;
-    console.info('[PUZZLE_FLOW] show_solution', {
-      timestamp: new Date().toISOString(),
-      puzzle_id: puzzle?.id,
-      intake_triggered: shouldIntake,
-    });
     if (shouldIntake) {
       handlePuzzleFailed();
     }
@@ -520,92 +344,127 @@ export default function PuzzlesPage() {
   }
 
   const handlePuzzleEnd = useCallback(() => {
-    setPuzzleEnded(true);
     if (autoAdvance) {
       clearAdvanceTimeout();
       advanceTimeoutRef.current = setTimeout(handleNextPuzzle, 1500);
     }
   }, [autoAdvance, clearAdvanceTimeout, handleNextPuzzle]);
 
-  const handlePlayAgain = useCallback(() => {
-    clearAdvanceTimeout();
-    stuckAtEndRef.current = false;
-    boardApi.current?.resetPuzzle();
-    setPuzzleEnded(false);
-  }, [clearAdvanceTimeout]);
+  const handleThemeSelect = useCallback((theme: string | null) => {
+    setSelectedTheme((current) => (current === theme ? current : theme));
+  }, []);
 
   const currentPuzzle = puzzles[currentIndex];
-  const displayedThemes = currentPuzzle?.themes?.slice(0, 4) ?? [];
-  const themeCount = currentPuzzle ? Math.max(new Set(currentPuzzle.themes).size, 1) : 0;
-  const isCurrentPuzzleSolved = sessionStats.solved > currentIndex;
-  const avgSolveTime =
-    sessionStats.solved > 0
-      ? Math.round(sessionStats.totalTime / sessionStats.solved)
-      : 0;
   const sideToMoveLabel =
     currentPuzzle && getSideToMove(currentPuzzle) === 'black' ? 'Black' : 'White';
+  const themeLabel = selectedTheme ? puzzleThemeLabel(selectedTheme) : null;
 
   return (
-    <div className="min-h-[calc(100vh-2.5rem)] -mt-2 text-white [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
-      <div className="mx-auto max-w-[1760px] pb-1 px-6 lg:px-10">
-        {/* Main content */}
-        {isLoading ? (
+    <div className="min-h-[calc(100vh-2.5rem)] -mt-2 text-white [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center] xl:h-[calc(100vh-2.5rem)] xl:overflow-hidden">
+      <div className="mx-auto flex flex-col px-6 pb-1 lg:px-10 xl:h-full">
+        {isLoading && puzzles.length === 0 && !themeLoadError ? (
           <div className="flex h-[70vh] items-center justify-center">
-            <div className={`${CARD_CLASS} px-10 py-8 text-center shadow-2xl shadow-black/30`}>
+            <div className={`${PUZZLE_CARD_CLASS} px-10 py-8 text-center shadow-2xl shadow-black/30`}>
               <div className="mx-auto mb-4 h-9 w-9 animate-spin rounded-full border-2 border-[#10b981] border-t-transparent" />
               <p className="text-white/60">Loading puzzles...</p>
             </div>
           </div>
-        ) : currentPuzzle ? (
-          <div className="grid items-start gap-6 xl:grid-cols-[20rem_minmax(0,1fr)_22rem]">
-            {/* ============== LEFT: WOODPECKER CARD + SESSION STATS ============== */}
-            <section className="order-2 mt-6 flex flex-col space-y-6 xl:order-none">
-              <div className={`${CARD_CLASS} mx-auto w-full max-w-[400px] p-5 shadow-2xl shadow-black/25 xl:max-w-none`}>
-                <Image ref={birdRef} src="/woodpecker-bird-v2.webp" alt="" width={160} height={160} className="mx-auto h-[160px] w-[160px] shrink-0 object-contain" />
-                <div className="mt-0 text-center">
-                  <div className="text-sm font-normal text-[#f7e5c6]/60">Reviews Due</div>
-                  <div className="mt-1 text-[50px] font-bold leading-none text-[#f7e5c6]">{reviewsDue ?? '-'}</div>
+        ) : themeLoadError && puzzles.length === 0 ? (
+          <div className="flex h-[70vh] items-center justify-center">
+            <div className={`${PUZZLE_CARD_CLASS} max-w-md px-8 py-6 text-center`}>
+              <p className="text-white/70">{themeLoadError}</p>
+              <button
+                type="button"
+                onClick={() => {
+                  if (selectedTheme) {
+                    handleThemeSelect(null);
+                  } else {
+                    void loadPuzzles();
+                  }
+                }}
+                className="mt-4 w-full rounded-lg border border-white/20 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
+              >
+                {selectedTheme ? 'Back to All Tactics' : 'Try again'}
+              </button>
+            </div>
+          </div>
+        ) : (
+        <div className="grid gap-6 xl:min-h-0 xl:flex-1 xl:grid-cols-[20rem_minmax(0,1fr)_22rem] xl:pt-5">
+          {/* ============ LEFT: RATING + THEME LIST ============ */}
+          <section className="order-2 mt-6 flex min-h-0 flex-col gap-5 xl:order-none xl:mt-0">
+            <div
+              className={`${WOOD_PANEL_CLASS} flex shrink-0 items-center gap-4 p-5`}
+              style={WOOD_PANEL_STYLE}
+            >
+              {/* The badge is decoration: the rating itself is text. */}
+              <Image
+                src="/knight-badge.webp"
+                alt=""
+                width={402}
+                height={454}
+                className="h-16 w-auto shrink-0 drop-shadow-[0_8px_18px_rgba(0,0,0,0.6)]"
+              />
+              <div className="min-w-0 flex-1">
+                <div className="text-[11px] font-bold uppercase tracking-[0.25em] text-white/40">
+                  Tactical Rating
                 </div>
-                <Link href="/woodpecker" className="mt-5 flex w-full items-center justify-center rounded-lg border border-[#f7e5c6]/30 bg-transparent px-4 py-3 text-lg font-bold text-[#f7e5c6] transition hover:border-[#f7e5c6]/60 hover:bg-[#f7e5c6]/5">
-                  Go to Woodpecker
-                </Link>
+                <div className="mt-1.5 flex items-end gap-2.5">
+                  <span className="font-display text-[34px] font-semibold leading-none text-[#f7e5c6]">
+                    {currentRating ?? '—'}
+                  </span>
+                  {currentRating != null && (
+                    <span className="mb-0.5 rounded-full bg-white/10 px-2 py-0.5 text-xs font-bold text-white/60">
+                      {getPuzzleDifficultyLabel(currentRating)}
+                    </span>
+                  )}
+                </div>
+                {currentRating == null && (
+                  <p className="mt-2 text-[11px] leading-4 text-white/40">
+                    Unrated — solve a puzzle to set it.
+                  </p>
+                )}
               </div>
+            </div>
 
-              <div className={`${CARD_CLASS} mx-auto w-full max-w-[400px] p-5 shadow-2xl shadow-black/25 xl:max-w-none`}>
-                <div className="text-center text-[11px] font-bold uppercase tracking-[0.25em] text-white/40">
-                  This Session
-                </div>
-                <div className="mt-4 grid grid-cols-3 gap-2 text-center">
-                  <div>
-                    <div className="text-2xl font-bold text-[#10b981]">{sessionStats.solved}</div>
-                    <div className="mt-1 text-[11px] uppercase tracking-wider text-white/40">Solved</div>
-                  </div>
-                  <div>
-                    <div className="text-2xl font-bold text-red-400">{sessionStats.failed}</div>
-                    <div className="mt-1 text-[11px] uppercase tracking-wider text-white/40">Failed</div>
-                  </div>
-                  <div>
-                    <div className="text-2xl font-bold text-[#f7e5c6]">{avgSolveTime}s</div>
-                    <div className="mt-1 text-[11px] uppercase tracking-wider text-white/40">Avg Time</div>
-                  </div>
-                </div>
-              </div>
-            </section>
+            {/* The theme list: the page's one scroll region, and the switcher
+                for the board's puzzle source. */}
+            <ThemePickerCard
+              activeTheme={selectedTheme}
+              onSelect={handleThemeSelect}
+            />
+          </section>
 
-            {/* ============== CENTER: CHESSBOARD ============== */}
-            <section className="order-1 overflow-visible xl:order-none">
-              <div className="relative mx-auto mt-6 w-full max-w-[calc(100vh-70px)]">
-                <div className="w-full">
-                  <ChessBoard
-                    puzzle={currentPuzzle}
-                    playerElo={currentRating ?? 1100}
-                    onPuzzleSolved={handlePuzzleSolved}
-                    onPuzzleFailed={handlePuzzleFailed}
-                    onPuzzleEnd={handlePuzzleEnd}
-                    apiRef={boardApi}
-                  />
-                </div>
+          {/* ============ CENTER: CHESSBOARD ============ */}
+          <section className="order-1 min-h-0 min-w-0 xl:order-none xl:mt-0">
+            <div className="relative mx-auto mt-6 aspect-square w-full max-w-[calc(100vh-70px)] xl:mt-0">
+              {currentPuzzle && (
+                <>
+                  <div className="w-full">
+                    <ChessBoard
+                      puzzle={currentPuzzle}
+                      onPuzzleSolved={handlePuzzleSolved}
+                      onPuzzleFailed={handlePuzzleFailed}
+                      onPuzzleEnd={handlePuzzleEnd}
+                      apiRef={boardApi}
+                    />
+                  </div>
 
+                  {/* Source swap: the old puzzle stays put under a brief
+                      overlay until the new theme's batch is in hand. */}
+                  {isLoading && (
+                    <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-black/55 backdrop-blur-[2px]">
+                      <div className="flex items-center gap-3 rounded-xl border border-white/10 bg-black/70 px-5 py-3 text-sm text-white/80">
+                        <span className="h-4 w-4 animate-spin rounded-full border-2 border-[#d9b87c] border-t-transparent" />
+                        {themeLabel
+                          ? `Loading ${themeLabel} puzzles…`
+                          : 'Loading rated tactics…'}
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+
+              {currentPuzzle && (
                 <div ref={settingsRef} className="absolute right-2 top-2 z-30 xl:left-full xl:right-auto xl:top-0 xl:ml-[2px]">
                   <button
                     type="button"
@@ -679,105 +538,65 @@ export default function PuzzlesPage() {
                     </div>
                   )}
                 </div>
-              </div>
-            </section>
-
-            {/* ============== RIGHT: STATUS CARD + ACTIONS ============== */}
-            <section className="order-3 mx-auto mt-6 flex w-full max-w-[420px] flex-col space-y-6 xl:order-none xl:max-w-none">
-              <div className={`${CARD_CLASS} p-6 shadow-2xl shadow-black/25`}>
-                <div className="flex items-center gap-2.5">
-                  <span className={`inline-block h-2.5 w-2.5 rounded-full ${sideToMoveLabel === 'White' ? 'bg-white' : 'bg-zinc-800 ring-1 ring-white/40'}`} />
-                  <span className="text-[11px] font-bold uppercase tracking-[0.3em] text-[#f7e5c6]/60">Your Move</span>
-                </div>
-                <h2 className="mt-3 text-2xl font-semibold leading-snug text-[#f7e5c6]">
-                  Find the best move for {sideToMoveLabel}.
-                </h2>
-                <div className="mt-5 border-t border-white/5 pt-4">
-                  <div className="text-[11px] font-bold uppercase tracking-[0.25em] text-white/40">Your Rating</div>
-                  <div className="mt-1.5 text-4xl font-bold leading-none text-[#f7e5c6]">
-                    {currentRating ?? '-'}
-                  </div>
-                </div>
-              </div>
-
-              {woodpeckerNotice && (
-                <div
-                  role="status"
-                  aria-live="polite"
-                  className="flex items-start justify-between gap-3 rounded-xl border border-amber-300/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100"
-                >
-                  <span>{woodpeckerNotice}</span>
-                  <button
-                    type="button"
-                    aria-label="Dismiss notification"
-                    onClick={() => setWoodpeckerNotice(null)}
-                    className="shrink-0 text-lg leading-none text-amber-100/70 transition hover:text-amber-100"
-                  >
-                    ×
-                  </button>
-                </div>
               )}
-
-              <div className="grid grid-cols-2 gap-3">
-                {puzzleEnded ? (
-                  <>
-                    <button
-                      type="button"
-                      onClick={handlePlayAgain}
-                      className={`${CARD_CLASS} flex h-14 items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5`}
-                    >
-                      <PlayAgainIcon />
-                      Play Again
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleNextPuzzle}
-                      disabled={isFetchingMore}
-                      className={`${CARD_CLASS} flex h-14 items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5 disabled:opacity-60`}
-                    >
-                      {isFetchingMore ? (
-                        <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-transparent" />
-                      ) : (
-                        <NextIcon />
-                      )}
-                      {isFetchingMore ? 'Loading…' : 'Next Puzzle'}
-                    </button>
-                  </>
-                ) : (
-                  <>
-                    <button
-                      type="button"
-                      onClick={() => boardApi.current?.showHint()}
-                      className={`${CARD_CLASS} flex h-14 items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5`}
-                    >
-                      <HintIcon />
-                      Hint
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleShowSolution}
-                      className={`${CARD_CLASS} flex h-14 items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5`}
-                    >
-                      <EyeIcon />
-                      Show Solution
-                    </button>
-                  </>
-                )}
-              </div>
-            </section>
-          </div>
-        ) : (
-          <div className="flex h-[70vh] items-center justify-center">
-            <div className={`${CARD_CLASS} px-8 py-6 text-center text-white/60`}>
-              No puzzles available.
-              <button
-                onClick={loadPuzzles}
-                className="mt-4 w-full rounded-lg border border-white/20 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
-              >
-                Try again
-              </button>
             </div>
-          </div>
+          </section>
+
+          {/* ============ RIGHT: STATUS + WOODPECKER ============ */}
+          <section className="order-3 mx-auto flex w-full max-w-[420px] flex-col gap-5 xl:order-none xl:mx-0 xl:mt-0 xl:max-w-none xl:min-h-0">
+            {/* Invisible scroll fallback, same as the trainer's right
+                column: only the tall resolved states on a short screen
+                ever need it; the Next control below stays pinned. */}
+            <div className="wooden-scroll xl:min-h-0 xl:overflow-y-auto">
+              {currentPuzzle && (
+                <PuzzleStatusPanel
+                  sideToMoveLabel={sideToMoveLabel}
+                  themeLabel={themeLabel}
+                  result={result}
+                  onHint={() => boardApi.current?.showHint()}
+                  onShowSolution={handleShowSolution}
+                />
+              )}
+            </div>
+
+            {/* The Endgame Trainer's compact Woodpecker format. */}
+            <WoodpeckerPromoCard dueCount={reviewsDue} />
+
+            {woodpeckerNotice && (
+              <div
+                role="status"
+                aria-live="polite"
+                className="flex shrink-0 items-start justify-between gap-3 rounded-xl border border-amber-300/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100"
+              >
+                <span>{woodpeckerNotice}</span>
+                <button
+                  type="button"
+                  aria-label="Dismiss notification"
+                  onClick={() => setWoodpeckerNotice(null)}
+                  className="shrink-0 text-lg leading-none text-amber-100/70 transition hover:text-amber-100"
+                >
+                  ×
+                </button>
+              </div>
+            )}
+
+            {result && (
+              <button
+                type="button"
+                onClick={handleNextPuzzle}
+                disabled={isFetchingMore}
+                className={`${PUZZLE_CARD_CLASS} flex h-14 w-full shrink-0 items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5 disabled:opacity-60`}
+              >
+                {isFetchingMore ? (
+                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-transparent" />
+                ) : (
+                  <NextIcon />
+                )}
+                {isFetchingMore ? 'Loading…' : 'Next Puzzle'}
+              </button>
+            )}
+          </section>
+        </div>
         )}
       </div>
     </div>
