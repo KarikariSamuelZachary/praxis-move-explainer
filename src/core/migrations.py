@@ -1210,6 +1210,7 @@ def run_migrations():
                         'stalemate',
                         'insufficient_material',
                         'fifty_move_rule',
+                        'threefold_repetition',
                         'promotion'
                     )),
                     failure_category TEXT CHECK (failure_category IN (
@@ -1227,6 +1228,35 @@ def run_migrations():
                 """
                 ALTER TABLE endgame_woodpecker_attempts
                     ADD COLUMN IF NOT EXISTS hints_used INTEGER NOT NULL DEFAULT 0
+                """
+            )
+            # Upgrade installs whose resolution CHECK predates threefold
+            # repetition (an inline unnamed CHECK is auto-named by Postgres;
+            # fresh installs already carry the widened list above).
+            cur.execute(
+                """
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1
+                        FROM pg_constraint
+                        WHERE conname = 'endgame_woodpecker_attempts_resolution_check'
+                          AND pg_get_constraintdef(oid) NOT LIKE '%threefold_repetition%'
+                    ) THEN
+                        ALTER TABLE endgame_woodpecker_attempts
+                            DROP CONSTRAINT endgame_woodpecker_attempts_resolution_check;
+                        ALTER TABLE endgame_woodpecker_attempts
+                            ADD CONSTRAINT endgame_woodpecker_attempts_resolution_check
+                            CHECK (resolution IN (
+                                'checkmate',
+                                'stalemate',
+                                'insufficient_material',
+                                'fifty_move_rule',
+                                'threefold_repetition',
+                                'promotion'
+                            ));
+                    END IF;
+                END $$;
                 """
             )
             # Due/count lookup path: mirrors idx_woodpecker_entries_user_mastered's
