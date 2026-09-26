@@ -52,7 +52,19 @@ export type EndgameResolution =
   | 'stalemate'
   | 'insufficient_material'
   | 'fifty_move_rule'
+  | 'threefold_repetition'
   | 'promotion';
+
+/** How an ungraded "Play it out" continuation ended. Detected client-side
+ * from the live board plus the drill's tracked position history, so it is
+ * deliberately narrower than EndgameResolution (no `promotion`, which is a
+ * graded-degradation detail). */
+export type EndgamePlayoutEnding =
+  | 'checkmate'
+  | 'stalemate'
+  | 'insufficient_material'
+  | 'fifty_move_rule'
+  | 'threefold_repetition';
 
 export interface EndgamePosition {
   id: string;
@@ -132,6 +144,10 @@ export interface EndgameMoveRequestPayload {
    * recorded (the panel's Retry): the verdict still comes back, but the
    * rated route writes no rating change and no review capture. */
   retry?: boolean;
+  /** Every move played since the drill's start position, UCI, oldest first,
+   * NOT including this move. Lets the server adjudicate threefold
+   * repetition; omitted/empty falls back to the stateless FEN-only grading. */
+  history?: string[];
 }
 
 /** "Get solution": the single best move for the position on the board.
@@ -235,6 +251,10 @@ export interface EndgameWoodpeckerAttemptPayload {
    * recorded (the panel's Retry): the verdict still comes back, but the
    * attempts route writes no FSRS transition and no attempt row. */
   retry?: boolean;
+  /** Same contract as EndgameMoveRequestPayload.history: UCI moves played
+   * since the card's start position, enabling threefold-repetition
+   * detection. */
+  history?: string[];
 }
 
 /** One continuation step of a settled FAILED drill ("Play it out"). */
