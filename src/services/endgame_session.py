@@ -61,16 +61,25 @@ the whole point of a Lucena drill is the LAST move too. Resolution checked
 on the position after the user's move:
   checkmate            -> the user's side delivered mate -> solved
   stalemate / insufficient material / fifty-move rule (halfmove clock >=
-  100) -> the game is genuinely drawn on the board -> solved for a draw
-  drill, failed for a win drill (see _terminal_verdict()).
-LIMITATION -- THREEFOLD REPETITION: threefold (and fivefold) needs the game
-history; a stateless single-transition call cannot count repetitions. The
-trainer's real flow grades one user move at a time and the frontend owns
-the full game, so the route layer (or the client) must adjudicate
-threefold claims; this function deliberately does not guess. The fifty-
-move rule IS detectable statelessly (the clock rides in the FEN). If/when
-a repetition-claim path is added, it belongs in this same resolution
-layer, not in a parallel mechanism.
+  100) / threefold repetition -> the game is genuinely drawn on the board
+  -> solved for a draw drill, failed for a win drill (see
+  _terminal_verdict()).
+Stalemate, insufficient material and the fifty-move rule are detectable
+statelessly (the clock and material ride in the FEN). Threefold repetition
+needs the game's history: callers that own the full game pass `start_fen`
+plus `history` (the UCI moves played since the drill's stored start
+position), and evaluate_endgame_move() rebuilds the board WITH its move
+stack so python-chess can count the repetition. Without them the check is
+skipped, never guessed -- a stateless single-transition call cannot know.
+
+START FEN + HISTORY (optional, for repetition)
+===============================================
+`start_fen` is the drill's endgame_positions.fen (the position the client
+started from); `history` is every move played since, UCI, oldest first,
+NOT including the move being graded. The replay is validated move-by-move
+(legality, then the first-4-FEN-fields cross-check against fen_before), so
+client-supplied history is never trusted. A mismatch is a client-integrity
+ValueError (route -> 400), exactly like a fabricated fen_after.
 
 RATING UPDATE
 =============
@@ -133,7 +142,7 @@ from __future__ import annotations
 
 import logging
 from enum import Enum
-from typing import Optional
+from typing import Optional, Sequence
 from uuid import UUID
 
 import chess
@@ -179,6 +188,10 @@ class EndgameResolution(str, Enum):
     STALEMATE = "stalemate"
     INSUFFICIENT_MATERIAL = "insufficient_material"
     FIFTY_MOVE_RULE = "fifty_move_rule"
+    # The same position occurred three times (a claimable draw). Detected
+    # only when the caller supplied start_fen + history -- see the module
+    # docstring's START FEN + HISTORY section.
+    THREEFOLD_REPETITION = "threefold_repetition"
     # Degraded drill-end: the user PROMOTED with the win intact while NO
     # tablebase source could grade the follow-up (promotion adds a piece,
     # e.g. KRPvKR -> KQRvKR = 6 men; with the Lichess fallback active the
@@ -262,6 +275,15 @@ def _terminal_verdict(
         resolution = EndgameResolution.INSUFFICIENT_MATERIAL
     elif board.is_fifty_moves():
         resolution = EndgameResolution.FIFTY_MOVE_RULE
+    elif board.is_repetition(3):
+        # Threefold is a CLAIM in the rules; the trainer auto-adjudicates it
+        # (same as lichess/chess.com apply the claim for you). Uses
+        # is_repetition(3), not can_claim_threefold_repetition(): the latter
+        # also fires when the claim would only become available after one of
+        # the side-to-move's moves, which is not the position that resolved.
+        # Only ever true on a board rebuilt with its move stack (the
+        # start_fen + history path); FEN-built boards return False.
+        resolution = EndgameResolution.THREEFOLD_REPETITION
     else:
         return None
     if drill_is_winning is False:
@@ -271,6 +293,51 @@ def _terminal_verdict(
     return (EndgameStatus.FAILED, EndgameFailureCategory.RAN_OUT_OF_MOVES, resolution)
 
 
+def board_from_history(
+    start_fen: str, history: Sequence[str], fen_before: str
+) -> chess.Board:
+    """Rebuild the live board from the drill's start position plus every move
+    played since, so repetition is countable.
+
+    Raises ValueError for a malformed start/fen_before, an illegal or
+    malformed history move, or a replay that does not end at fen_before
+    (first 4 FEN fields, the same normalization as the fen_after
+    cross-check). Client-supplied history is never trusted.
+    """
+    try:
+        board = chess.Board(start_fen)
+    except ValueError as exc:
+        raise ValueError(f"malformed FEN (start) {start_fen!r}: {exc}") from exc
+    if not board.is_valid():
+        raise ValueError(f"illegal position (start) {start_fen!r}")
+
+    for index, uci in enumerate(history):
+        try:
+            played = chess.Move.from_uci(uci)
+        except ValueError as exc:
+            raise ValueError(f"malformed history move #{index} {uci!r}") from exc
+        if played not in board.legal_moves:
+            raise ValueError(
+                f"illegal history move #{index} {uci!r} in {board.fen()!r}"
+            )
+        board.push(played)
+
+    try:
+        claimed = chess.Board(fen_before)
+    except ValueError as exc:
+        raise ValueError(f"malformed FEN (fen_before) {fen_before!r}: {exc}") from exc
+    if not claimed.is_valid():
+        raise ValueError(f"illegal position (fen_before) {fen_before!r}")
+    replayed_key = " ".join(board.fen().split()[:4])
+    claimed_key = " ".join(claimed.fen().split()[:4])
+    if replayed_key != claimed_key:
+        raise ValueError(
+            f"history does not lead to fen_before (replayed {replayed_key!r}, "
+            f"claimed {claimed_key!r})"
+        )
+    return board
+
+
 def evaluate_endgame_move(
     fen_before: str,
     move: str,
@@ -278,8 +345,15 @@ def evaluate_endgame_move(
     drill_is_winning: Optional[bool] = None,
     endgame_trainer_rating: Optional[int] = None,
     topic_difficulty_rating: Optional[int] = None,
+    start_fen: Optional[str] = None,
+    history: Optional[Sequence[str]] = None,
 ) -> EndgameMoveResult:
-    """Grade one user move in an endgame drill. See the module docstring."""
+    """Grade one user move in an endgame drill. See the module docstring.
+
+    `start_fen` + `history` are optional and only enable threefold-repetition
+    detection; without them the function stays exactly as stateless as
+    before (see the docstring's START FEN + HISTORY section).
+    """
     # --- 1. fen_before: parse, legality, resolution, re-probe guard -------
     try:
         board_before = chess.Board(fen_before)
@@ -287,6 +361,13 @@ def evaluate_endgame_move(
         raise ValueError(f"malformed FEN (fen_before) {fen_before!r}: {exc}") from exc
     if not board_before.is_valid():
         raise ValueError(f"illegal position (fen_before) {fen_before!r}")
+
+    if history:
+        if not start_fen:
+            raise ValueError(
+                "history was supplied without the drill's start position"
+            )
+        board_before = board_from_history(start_fen, history, fen_before)
 
     if board_before.is_checkmate() or board_before.is_stalemate():
         raise ValueError(
@@ -310,7 +391,10 @@ def evaluate_endgame_move(
             ) from exc2
         # SAN given: re-derive so downstream code always has UCI semantics.
 
-    derived_after = board_before.copy(stack=False)
+    # copy() keeps the move stack: the position after this move must be able
+    # to count repetitions against the whole drill (board_before carries the
+    # stack only when start_fen + history were supplied).
+    derived_after = board_before.copy()
     derived_after.push(parsed)
 
     # --- 3. fen_after: cross-check against the derived position -----------
@@ -434,6 +518,51 @@ def evaluate_endgame_move(
         dtz_before=probe_before.dtz,
         dtz_after=probe_after.dtz,
         rating_change=_rating_change(status, endgame_trainer_rating, topic_difficulty_rating),
+    )
+
+
+def evaluate_defender_reply(
+    fen_after: str,
+    *,
+    drill_is_winning: Optional[bool],
+    endgame_trainer_rating: Optional[int] = None,
+    topic_difficulty_rating: Optional[int] = None,
+) -> Optional[EndgameMoveResult]:
+    """Adjudicate a generated defender move that ended the game on the board.
+
+    The defender's move is never graded -- the user's move already was, as
+    in_progress. But that move can itself end the game: the fifty-move clock
+    expires on the SECOND mover's halfmove, and a draw drill's defender can
+    stalemate or (rarely) leave insufficient material. The next user move may
+    then not exist (stalemate) or never be played, so the routes call this
+    right after generating the reply and replace the in_progress result when
+    it returns a verdict. None means the game is still live.
+
+    Threefold repetition is deliberately absent here: this board is built
+    from a FEN alone and cannot see the drill's history. A repetition the
+    defender's move creates is caught by the NEXT move's history-rebuilt
+    fen_before (_terminal_verdict step 5a).
+    """
+    try:
+        board = chess.Board(fen_after)
+    except ValueError as exc:
+        raise ValueError(
+            f"malformed FEN (defender reply) {fen_after!r}: {exc}"
+        ) from exc
+    if not board.is_valid():
+        raise ValueError(f"illegal position (defender reply) {fen_after!r}")
+
+    verdict = _terminal_verdict(board, drill_is_winning)
+    if verdict is None:
+        return None
+    status, failure_category, resolution = verdict
+    return EndgameMoveResult(
+        status=status,
+        failure_category=failure_category,
+        resolution=resolution,
+        rating_change=_rating_change(
+            status, endgame_trainer_rating, topic_difficulty_rating
+        ),
     )
 
 
