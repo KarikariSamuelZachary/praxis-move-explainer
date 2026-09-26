@@ -84,6 +84,14 @@ class EndgameMoveRequest(BaseModel):
     # first attempt -- the verdict drives the UI -- but resolution writes
     # nothing: no rating change and no review capture. Retry is practice.
     retry: bool = False
+    # Every move played since the drill's stored start position, UCI, oldest
+    # first, NOT including the move being submitted. The grader rebuilds the
+    # board with its move stack from the start position + these moves so
+    # threefold repetition is countable; empty (the default) keeps the
+    # stateless FEN-only grading and skips repetition. The replay is
+    # validated against fen_before server-side, so this can never forge a
+    # position.
+    history: List[str] = Field(default_factory=list)
 
 
 class EndgameHintRequest(BaseModel):
@@ -283,6 +291,9 @@ class EndgameWoodpeckerAttemptRequest(BaseModel):
     # but resolution writes nothing -- no FSRS transition and no second
     # attempt row. Retry is practice.
     retry: bool = False
+    # Same contract as EndgameMoveRequest.history: UCI moves played since the
+    # card's stored start position, enabling threefold-repetition detection.
+    history: List[str] = Field(default_factory=list)
 
 
 class EndgameWoodpeckerAttemptResponse(BaseModel):
