@@ -121,6 +121,9 @@ export default function EndgamesPage() {
   // key remounts the board so a repeat never inherits prior state.
   const [drillKey, setDrillKey] = useState(0);
 
+  // Replays the promo bird's peck once per failed drill resolution.
+  const [woodpeckerPeck, setWoodpeckerPeck] = useState(0);
+
   const bufferedPositionRef = useRef<EndgamePosition | null>(null);
   const bufferedSourceRef = useRef<DrillSource | null>(null);
   const prefetchingRef = useRef(false);
@@ -310,6 +313,9 @@ export default function EndgamesPage() {
   const handleDrillResolved = useCallback(
     (resolved: EndgameMoveResponse) => {
       setResult(resolved);
+      if (resolved.status === 'failed') {
+        setWoodpeckerPeck((n) => n + 1);
+      }
       // Practice writes nothing: only a rated drill moves the rating.
       if (!practiceCategory && resolved.rating) {
         setRating(resolved.rating.new_rating);
@@ -497,7 +503,7 @@ export default function EndgamesPage() {
 
               {/* The landing page's Woodpecker card, compacted for the
                   column: the spaced-repetition pitch inside the drill loop. */}
-              <WoodpeckerPromoCard />
+              <WoodpeckerPromoCard peckSignal={woodpeckerPeck} />
 
               {nextError && (
                 <div
