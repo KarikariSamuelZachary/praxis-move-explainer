@@ -445,7 +445,9 @@ export default function EndgamesPage() {
                     practiceCategory ? practiceSubmitMove : undefined
                   }
                   playout={playout?.state === 'active'}
-                  onPlayoutResolved={() => setPlayout({ state: 'done' })}
+                  onPlayoutResolved={(ending) =>
+                    setPlayout({ state: 'done', ending })
+                  }
                   hintsUsed={hintsUsed}
                   retry={isRetry}
                   hintRequest={hintRequest}
