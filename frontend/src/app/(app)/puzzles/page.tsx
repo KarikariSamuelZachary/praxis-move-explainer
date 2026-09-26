@@ -68,9 +68,11 @@ export default function PuzzlesPage() {
   const [currentRating, setCurrentRating] = useState<number | null>(null);
   const [reviewsDue, setReviewsDue] = useState<number | null>(null);
   const [woodpeckerNotice, setWoodpeckerNotice] = useState<string | null>(null);
+  const [woodpeckerPeck, setWoodpeckerPeck] = useState(0);
   const [isFetchingMore, setIsFetchingMore] = useState(false);
   const loadIdRef = useRef(0);
   const hasScoredAttemptRef = useRef(false);
+  const hasPeckedRef = useRef(false);
   const fetchingMoreRef = useRef(false);
   const stuckAtEndRef = useRef(false);
   const advanceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -216,6 +218,7 @@ export default function PuzzlesPage() {
 
   useEffect(() => {
     hasScoredAttemptRef.current = false;
+    hasPeckedRef.current = false;
     setWoodpeckerNotice(null);
     setResult(null);
   }, [currentIndex]);
@@ -318,6 +321,14 @@ export default function PuzzlesPage() {
         enqueueWoodpeckerReview(puzzle, 'wrong_answer');
       }
     }
+  }
+
+  function handlePuzzleWrongMove() {
+    // One peck per puzzle: the first mistake gets the bird's attention,
+    // retries on the same position keep it still.
+    if (hasPeckedRef.current) return;
+    hasPeckedRef.current = true;
+    setWoodpeckerPeck((n) => n + 1);
   }
 
   const handleNextPuzzle = useCallback(() => {
@@ -444,6 +455,7 @@ export default function PuzzlesPage() {
                       puzzle={currentPuzzle}
                       onPuzzleSolved={handlePuzzleSolved}
                       onPuzzleFailed={handlePuzzleFailed}
+                      onPuzzleWrongMove={handlePuzzleWrongMove}
                       onPuzzleEnd={handlePuzzleEnd}
                       apiRef={boardApi}
                     />
@@ -560,7 +572,10 @@ export default function PuzzlesPage() {
             </div>
 
             {/* The Endgame Trainer's compact Woodpecker format. */}
-            <WoodpeckerPromoCard dueCount={reviewsDue} />
+            <WoodpeckerPromoCard
+              dueCount={reviewsDue}
+              peckSignal={woodpeckerPeck}
+            />
 
             {woodpeckerNotice && (
               <div
