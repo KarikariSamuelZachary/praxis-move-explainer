@@ -141,6 +141,7 @@ from services.endgame_session import (
     STATE_CONFLICT_PHRASES,
     EndgameStatus,
     attach_common_mistake,
+    evaluate_defender_reply,
     evaluate_endgame_move,
 )
 from services.endgame_woodpecker import queue_failed_drill
@@ -342,6 +343,8 @@ def submit_move(
             drill_is_winning=position["is_winning"],
             endgame_trainer_rating=old_rating,
             topic_difficulty_rating=position["topic_difficulty_rating"],
+            start_fen=position["fen"],
+            history=body.history,
         )
     except TablebaseUnavailableError as exc:
         conn.rollback()
@@ -361,6 +364,67 @@ def submit_move(
             else 400
         )
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+
+    # --- opponent reply ---------------------------------------------------
+    # Generated BEFORE the rating write: the defender's move can itself end
+    # the game (the fifty-move clock expires on the second mover's halfmove;
+    # a draw drill's defender can stalemate the user), turning this move
+    # from in_progress into the resolving one. The next user move may not
+    # exist (stalemate) or may never be played, so the verdict is settled
+    # here instead of stalling. Within the stored puzzle line the client
+    # plays the line from GET /next (no server generation); once the line is
+    # exhausted -- or the user has deviated off it -- the server generates
+    # the defender's move. The same composition answers reviews in
+    # routers/endgame_woodpecker.py.
+    opponent_reply = None
+    if result.status == EndgameStatus.IN_PROGRESS:
+        source_moves = (
+            position["source_moves"].split() if position["source_moves"] else None
+        )
+        try:
+            generated = opponent_reply_for_move(
+                position["fen"], source_moves, body.fen_after
+            )
+        except TerminalPositionError as exc:
+            # Unreachable for a graded IN_PROGRESS move; surface as an
+            # internal integrity error rather than returning no reply.
+            log.error("opponent reply requested for a terminal position: %s", exc)
+            raise HTTPException(
+                status_code=500, detail="Internal drill state error"
+            ) from exc
+        except OpponentReplyUnavailableError as exc:
+            log.error("opponent reply unavailable for %s: %s", body.fen_after, exc)
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Could not generate the opponent's reply right now. "
+                    "Please retry the move."
+                ),
+            ) from exc
+        if generated is not None:
+            opponent_reply = EndgameOpponentReply(
+                move_uci=generated.move_uci,
+                move_san=generated.move_san,
+                fen_after=generated.fen_after,
+                source=generated.source,
+            )
+            defender_result = evaluate_defender_reply(
+                generated.fen_after,
+                drill_is_winning=position["is_winning"],
+                endgame_trainer_rating=old_rating,
+                topic_difficulty_rating=position["topic_difficulty_rating"],
+            )
+            if defender_result is not None:
+                # Carry the in-progress move's tablebase verdicts so the
+                # panel/audit keep the full picture.
+                result = defender_result.model_copy(
+                    update={
+                        "outcome_before": result.outcome_before,
+                        "outcome_after": result.outcome_after,
+                        "dtz_before": result.dtz_before,
+                        "dtz_after": result.dtz_after,
+                    }
+                )
 
     if result.status == EndgameStatus.FAILED:
         result = attach_common_mistake(conn, result, str(position["topic_id"]))
@@ -454,45 +518,6 @@ def submit_move(
             new_rating=new_rating,
             change=result.rating_change,
         )
-
-    # --- opponent reply ---------------------------------------------------
-    # Within the stored puzzle line the client plays the line from GET /next
-    # (no server generation). Once the line is exhausted -- or the user has
-    # deviated off it -- the server generates the defender's move and hands
-    # the resulting FEN back so the drill can continue to resolution. The
-    # same composition answers reviews in routers/endgame_woodpecker.py.
-    opponent_reply = None
-    if result.status == EndgameStatus.IN_PROGRESS:
-        source_moves = (
-            position["source_moves"].split() if position["source_moves"] else None
-        )
-        try:
-            generated = opponent_reply_for_move(
-                position["fen"], source_moves, body.fen_after
-            )
-        except TerminalPositionError as exc:
-            # Unreachable for a graded IN_PROGRESS move; surface as an
-            # internal integrity error rather than returning no reply.
-            log.error("opponent reply requested for a terminal position: %s", exc)
-            raise HTTPException(
-                status_code=500, detail="Internal drill state error"
-            ) from exc
-        except OpponentReplyUnavailableError as exc:
-            log.error("opponent reply unavailable for %s: %s", body.fen_after, exc)
-            raise HTTPException(
-                status_code=503,
-                detail=(
-                    "Could not generate the opponent's reply right now. "
-                    "Please retry the move."
-                ),
-            ) from exc
-        if generated is not None:
-            opponent_reply = EndgameOpponentReply(
-                move_uci=generated.move_uci,
-                move_san=generated.move_san,
-                fen_after=generated.fen_after,
-                source=generated.source,
-            )
 
     return EndgameMoveResponse(
         position_id=str(body.position_id),
