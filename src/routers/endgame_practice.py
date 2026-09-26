@@ -96,6 +96,7 @@ from services.endgame_session import (
     STATE_CONFLICT_PHRASES,
     EndgameStatus,
     attach_common_mistake,
+    evaluate_defender_reply,
     evaluate_endgame_move,
 )
 from services.tablebase import TablebaseUnavailableError
@@ -227,6 +228,8 @@ def submit_practice_move(
             body.move,
             body.fen_after,
             drill_is_winning=position["is_winning"],
+            start_fen=position["fen"],
+            history=body.history,
         )
     except TablebaseUnavailableError as exc:
         log.error("practice move ungradeable (tablebase unavailable): %s", exc)
@@ -244,9 +247,6 @@ def submit_practice_move(
             else 400
         )
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
-
-    if result.status == EndgameStatus.FAILED:
-        result = attach_common_mistake(conn, result, str(position["topic_id"]))
 
     opponent_reply = None
     if result.status == EndgameStatus.IN_PROGRESS:
@@ -278,6 +278,28 @@ def submit_practice_move(
                 fen_after=generated.fen_after,
                 source=generated.source,
             )
+            # The defender's own move can end the game (fifty-move clock on
+            # the second mover's halfmove; stalemate/insufficient in a draw
+            # drill). Practice writes nothing, but the verdict must not wait
+            # for a next user move that may not exist.
+            defender_result = evaluate_defender_reply(
+                generated.fen_after,
+                drill_is_winning=position["is_winning"],
+            )
+            if defender_result is not None:
+                result = defender_result.model_copy(
+                    update={
+                        "outcome_before": result.outcome_before,
+                        "outcome_after": result.outcome_after,
+                        "dtz_before": result.dtz_before,
+                        "dtz_after": result.dtz_after,
+                    }
+                )
+
+    # Enriched after the defender's move is adjudicated: that move is what
+    # turned the drill into a FAILED ran-out-of-moves result here.
+    if result.status == EndgameStatus.FAILED:
+        result = attach_common_mistake(conn, result, str(position["topic_id"]))
 
     return EndgameMoveResponse(
         position_id=str(body.position_id),
