@@ -16,8 +16,14 @@ const SECONDS_PER_REVIEW = 40;
  */
 export default function WoodpeckerPromoCard({
   dueCount,
+  peckSignal = 0,
 }: {
   dueCount: number | null;
+  /**
+   * Increments on the first wrong move of a puzzle; the key remount replays
+   * the peck. Later retries on the same position leave the bird still.
+   */
+  peckSignal?: number;
 }) {
   const minutes =
     dueCount !== null && dueCount > 0
@@ -27,12 +33,16 @@ export default function WoodpeckerPromoCard({
   return (
     <div className={`${WOOD_PANEL_CLASS} shrink-0`} style={WOOD_PANEL_STYLE}>
       <div className="flex items-center gap-4 p-4">
-        {/* Bird burned into the wood, same treatment as the landing card. */}
+        {/* Bird burned into the wood, same treatment as the landing card,
+            nudged forward with a touch of scale and a deeper drop shadow. */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
+          key={peckSignal}
           src="/woodpecker-cutout.webp"
           alt=""
-          className="h-24 w-auto shrink-0 [filter:brightness(0.82)_sepia(0.25)_drop-shadow(0_8px_14px_rgba(0,0,0,0.5))]"
+          className={`h-24 w-auto shrink-0 [scale:1.12] [filter:brightness(0.86)_sepia(0.25)_drop-shadow(0_16px_24px_rgba(0,0,0,0.6))] ${
+            peckSignal > 0 ? 'woodpecker-peck' : ''
+          }`}
         />
 
         <div className="flex min-w-0 flex-1 flex-col items-center pr-8 text-center">
