@@ -9,22 +9,15 @@ export type PuzzleThemeGroup = {
   themes: PuzzleThemeOption[];
 };
 
+export function puzzleThemeLabel(key: string): string {
+  for (const group of PUZZLE_THEME_GROUPS) {
+    const theme = group.themes.find((option) => option.key === key);
+    if (theme) return theme.label;
+  }
+  return key;
+}
+
 export const PUZZLE_THEME_GROUPS: PuzzleThemeGroup[] = [
-  {
-    name: 'Phases',
-    accent: 'from-sky-500 to-cyan-300',
-    themes: [
-      { key: 'opening', label: 'Opening' },
-      { key: 'middlegame', label: 'Middlegame' },
-      { key: 'endgame', label: 'Endgame' },
-      { key: 'rookEndgame', label: 'Rook endgame' },
-      { key: 'bishopEndgame', label: 'Bishop endgame' },
-      { key: 'pawnEndgame', label: 'Pawn endgame' },
-      { key: 'knightEndgame', label: 'Knight endgame' },
-      { key: 'queenEndgame', label: 'Queen endgame' },
-      { key: 'queenRookEndgame', label: 'Queen and Rook' },
-    ],
-  },
   {
     name: 'Motifs',
     accent: 'from-emerald-500 to-lime-300',
@@ -96,36 +89,6 @@ export const PUZZLE_THEME_GROUPS: PuzzleThemeGroup[] = [
       { key: 'enPassant', label: 'En passant' },
       { key: 'promotion', label: 'Promotion' },
       { key: 'underPromotion', label: 'Underpromotion' },
-    ],
-  },
-  {
-    name: 'Goals',
-    accent: 'from-indigo-400 to-violet-300',
-    themes: [
-      { key: 'mix', label: 'Healthy mix' },
-      { key: 'equality', label: 'Equality' },
-      { key: 'advantage', label: 'Advantage' },
-      { key: 'crushing', label: 'Crushing' },
-    ],
-  },
-  {
-    name: 'Length',
-    accent: 'from-stone-300 to-zinc-500',
-    themes: [
-      { key: 'oneMove', label: 'One-move puzzle' },
-      { key: 'short', label: 'Short puzzle' },
-      { key: 'long', label: 'Long puzzle' },
-      { key: 'veryLong', label: 'Very long puzzle' },
-    ],
-  },
-  {
-    name: 'Origin',
-    accent: 'from-blue-400 to-slate-300',
-    themes: [
-      { key: 'master', label: 'Master games' },
-      { key: 'masterVsMaster', label: 'Master vs Master' },
-      { key: 'superGM', label: 'Super GM games' },
-      { key: 'playerGames', label: 'Player games' },
     ],
   },
 ];
