@@ -110,6 +110,7 @@ from services.endgame_session import (
     STATE_CONFLICT_PHRASES,
     EndgameStatus,
     attach_common_mistake,
+    evaluate_defender_reply,
     evaluate_endgame_move,
 )
 from services.tablebase import TablebaseUnavailableError
@@ -298,6 +299,8 @@ def record_attempt(
             body.move,
             body.fen_after,
             drill_is_winning=entry["is_winning"],
+            start_fen=entry["fen"],
+            history=body.history,
         )
     except TablebaseUnavailableError as exc:
         conn.rollback()
@@ -317,9 +320,6 @@ def record_attempt(
             else 400
         )
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc
-
-    if result.status == EndgameStatus.FAILED:
-        result = attach_common_mistake(conn, result, str(entry["topic_id"]))
 
     opponent_reply = None
     if result.status == EndgameStatus.IN_PROGRESS:
@@ -353,6 +353,26 @@ def record_attempt(
                 fen_after=generated.fen_after,
                 source=generated.source,
             )
+            # The defender's own move can end the game (fifty-move clock on
+            # the second mover's halfmove; stalemate/insufficient in a draw
+            # drill); FSRS must schedule the resolution now, not wait for a
+            # next replay move that may not exist.
+            defender_result = evaluate_defender_reply(
+                generated.fen_after,
+                drill_is_winning=entry["is_winning"],
+            )
+            if defender_result is not None:
+                result = defender_result.model_copy(
+                    update={
+                        "outcome_before": result.outcome_before,
+                        "outcome_after": result.outcome_after,
+                        "dtz_before": result.dtz_before,
+                        "dtz_after": result.dtz_after,
+                    }
+                )
+
+    if result.status == EndgameStatus.FAILED:
+        result = attach_common_mistake(conn, result, str(entry["topic_id"]))
 
     attempt = None
     scheduling = None
