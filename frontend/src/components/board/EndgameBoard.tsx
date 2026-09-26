@@ -21,6 +21,7 @@ import {
 import {
   EndgameHintResponse,
   EndgameMoveResponse,
+  EndgamePlayoutEnding,
   EndgamePosition,
   EndgameStatus,
 } from '@/types';
@@ -58,8 +59,9 @@ export interface EndgameBoardProps<
    */
   playout?: boolean;
   /** Fired when the continuation finishes: the game reached a terminal
-   *  position (or could not continue). */
-  onPlayoutResolved?: () => void;
+   *  position (or could not continue). `ending` is the rule that ended it,
+   *  or null when the stored line simply ran out. */
+  onPlayoutResolved?: (ending: EndgamePlayoutEnding | null) => void;
   /** Hints this drill attempt has revealed so far, as the caller counted
    *  them. Attached to every graded submission; the backend reads it only on
    *  a resolving move (a hinted solve is neutral on the rated surface and
@@ -98,6 +100,9 @@ interface PendingMove {
   san: string;
   from: string;
   to: string;
+  /** True once the move is in the tracked drill history (set after the
+   *  server accepts it, so the error banner's Retry cannot record twice). */
+  recorded?: boolean;
 }
 
 interface PendingPromotion {
@@ -168,6 +173,37 @@ function getOrientation(position: EndgamePosition): 'white' | 'black' {
   return position.fen.split(/\s+/)[1] === 'b' ? 'black' : 'white';
 }
 
+/** First 4 FEN fields (board/turn/castling/ep): the same normalization the
+ *  backend's fen_after / history cross-checks use. */
+function positionKey(fen: string): string {
+  return fen.split(/\s+/).slice(0, 4).join(' ');
+}
+
+/**
+ * The rule that ended the game on `game`, or null while it is live.
+ *
+ * Precedence mirrors python-chess's `is_game_over()` chain. chess.js's own
+ * `isThreefoldRepetition()` is unusable here: every ply is applied on a
+ * fresh Chess built from a FEN, so its position counter never spans the
+ * drill. The tracked `positionKeys` (oldest first, current last) are counted
+ * instead -- on the third occurrence the draw is taken, the same
+ * auto-adjudication the grader applies to the claim.
+ */
+function detectEnding(
+  game: Chess,
+  positionKeys: string[]
+): EndgamePlayoutEnding | null {
+  if (game.isCheckmate()) return 'checkmate';
+  if (game.isStalemate()) return 'stalemate';
+  if (game.isInsufficientMaterial()) return 'insufficient_material';
+  if (game.isDrawByFiftyMoves()) return 'fifty_move_rule';
+  const current = positionKeys[positionKeys.length - 1];
+  if (positionKeys.filter((key) => key === current).length >= 3) {
+    return 'threefold_repetition';
+  }
+  return null;
+}
+
 /**
  * The full-resolution drill board.
  *
@@ -226,6 +262,15 @@ export default function EndgameBoard<
   const resolvedStatusRef = useRef<EndgameStatus | null>(null);
   const playoutStartedRef = useRef(false);
 
+  // The drill's played moves and position keys. Tracked here because every
+  // ply is applied on a fresh Chess built from a FEN, so chess.js's own
+  // history and position counter never span the drill. UCI goes to the
+  // server for threefold adjudication; the keys let the playout detect
+  // repetition client-side; SAN backs onDrillResolved's move list.
+  const playedUciRef = useRef<string[]>([]);
+  const playedSanRef = useRef<string[]>([]);
+  const positionKeysRef = useRef<string[]>([positionKey(position.fen)]);
+
   // Prop callbacks live in refs so the async grading flow never closes over
   // a stale render's handlers.
   const onUserMoveRef = useRef(onUserMove);
@@ -273,6 +318,18 @@ export default function EndgameBoard<
     setGame(nextGame);
   }, []);
 
+  const recordMove = useCallback(
+    (move: { uci: string; san: string; fenAfter: string }) => {
+      playedUciRef.current = [...playedUciRef.current, move.uci];
+      playedSanRef.current = [...playedSanRef.current, move.san];
+      positionKeysRef.current = [
+        ...positionKeysRef.current,
+        positionKey(move.fenAfter),
+      ];
+    },
+    []
+  );
+
   const clearOpponentTimer = useCallback(() => {
     if (opponentTimerRef.current) {
       clearTimeout(opponentTimerRef.current);
@@ -291,8 +348,21 @@ export default function EndgameBoard<
 
   useEffect(() => clearOpponentTimer, [clearOpponentTimer]);
 
+  // The single resolution path for a graded drill: stop the clock, record
+  // the verdict, and hand it to the page with the drill's full move list.
+  const finishResolved = useCallback(
+    (result: Result) => {
+      clearOpponentTimer();
+      resolvedStatusRef.current = result.status;
+      updatePhase('resolved');
+      onThinkingChangeRef.current?.(false);
+      onDrillResolvedRef.current?.(result, [...playedSanRef.current]);
+    },
+    [clearOpponentTimer, updatePhase]
+  );
+
   const applyOpponentReply = useCallback(
-    (replyUci: string, fenBefore: string) => {
+    (replyUci: string, fenBefore: string, resolvedResult?: Result) => {
       updatePhase('opponent');
       clearOpponentTimer();
       opponentTimerRef.current = setTimeout(() => {
@@ -305,20 +375,53 @@ export default function EndgameBoard<
           applied = null;
         }
         if (!applied) {
+          // A resolving reply that could not be replayed is dropped and the
+          // verdict still lands; otherwise stay playable.
+          if (resolvedResult) {
+            finishResolved(resolvedResult);
+            return;
+          }
           updatePhase('playing');
           onThinkingChangeRef.current?.(false);
           return;
         }
         setBoard(replyGame);
         setHighlightSquares(
-          buildHighlight(applied.from, applied.to, HIGHLIGHT_OPPONENT)
+          buildHighlight(
+            applied.from,
+            applied.to,
+            resolvedResult
+              ? resolvedResult.status === 'solved'
+                ? HIGHLIGHT_SOLVED
+                : HIGHLIGHT_FAILED
+              : HIGHLIGHT_OPPONENT
+          )
         );
         onOpponentMoveRef.current?.(applied.san);
+        recordMove({
+          uci: replyUci,
+          san: applied.san,
+          fenAfter: replyGame.fen(),
+        });
+        if (resolvedResult) {
+          // The defender's own move ended the game (fifty-move clock on the
+          // second mover's halfmove, stalemate, ...): show it on the board,
+          // then resolve with the server's verdict.
+          finishResolved(resolvedResult);
+          return;
+        }
         updatePhase('playing');
         onThinkingChangeRef.current?.(false);
       }, remainingOpponentDelay());
     },
-    [clearOpponentTimer, remainingOpponentDelay, setBoard, updatePhase]
+    [
+      clearOpponentTimer,
+      finishResolved,
+      recordMove,
+      remainingOpponentDelay,
+      setBoard,
+      updatePhase,
+    ]
   );
 
   // --- "Play it out": the settled FAILED drill's continuation -------------
@@ -326,12 +429,15 @@ export default function EndgameBoard<
   // happened, so the board just keeps playing with the shared defender
   // generator. The framing stays on the failed/settled side throughout.
 
-  const finishPlayout = useCallback(() => {
-    clearOpponentTimer();
-    onThinkingChangeRef.current?.(false);
-    updatePhase('resolved');
-    onPlayoutResolvedRef.current?.();
-  }, [clearOpponentTimer, updatePhase]);
+  const finishPlayout = useCallback(
+    (ending: EndgamePlayoutEnding | null) => {
+      clearOpponentTimer();
+      onThinkingChangeRef.current?.(false);
+      updatePhase('resolved');
+      onPlayoutResolvedRef.current?.(ending);
+    },
+    [clearOpponentTimer, updatePhase]
+  );
 
   const applyPlayoutReply = useCallback(
     (replyUci: string, fenBefore: string) => {
@@ -346,7 +452,7 @@ export default function EndgameBoard<
           applied = null;
         }
         if (!applied) {
-          finishPlayout();
+          finishPlayout(null);
           return;
         }
         setBoard(replyGame);
@@ -354,14 +460,27 @@ export default function EndgameBoard<
           buildHighlight(applied.from, applied.to, HIGHLIGHT_PLAYOUT)
         );
         onThinkingChangeRef.current?.(false);
-        if (replyGame.isGameOver()) {
-          finishPlayout();
+        recordMove({
+          uci: replyUci,
+          san: applied.san,
+          fenAfter: replyGame.fen(),
+        });
+        const ending = detectEnding(replyGame, positionKeysRef.current);
+        if (ending) {
+          finishPlayout(ending);
           return;
         }
         updatePhase('playout');
       }, remainingOpponentDelay());
     },
-    [clearOpponentTimer, finishPlayout, remainingOpponentDelay, setBoard, updatePhase]
+    [
+      clearOpponentTimer,
+      finishPlayout,
+      recordMove,
+      remainingOpponentDelay,
+      setBoard,
+      updatePhase,
+    ]
   );
 
   const requestPlayoutReply = useCallback(
@@ -382,7 +501,7 @@ export default function EndgameBoard<
           response.opponent_reply?.move_uci ??
           storedReplyForFen(position.fen, position.moves, fen);
         if (!replyUci) {
-          finishPlayout();
+          finishPlayout(null);
           return;
         }
         applyPlayoutReply(replyUci, fen);
@@ -411,10 +530,11 @@ export default function EndgameBoard<
 
     // The failed move left the defender to move -- unless that move already
     // ended the game, in which case the continuation is over before it
-    // starts.
+    // starts (with the same ending the verdict reported).
     const settled = gameRef.current;
-    if (settled.isGameOver()) {
-      finishPlayout();
+    const settledEnding = detectEnding(settled, positionKeysRef.current);
+    if (settledEnding) {
+      finishPlayout(settledEnding);
       return;
     }
     void requestPlayoutReply(settled.fen());
@@ -509,7 +629,20 @@ export default function EndgameBoard<
         fen_after: pending.fenAfter,
         hints_used: hintsUsedRef.current,
         retry: retryRef.current,
+        history: [...playedUciRef.current],
       });
+
+      // The server accepted the move: it is now part of the drill and counts
+      // toward repetition. Recorded once, so the error banner's Retry
+      // re-submitting the same pending move cannot double-count.
+      if (!pending.recorded) {
+        recordMove({
+          uci: pending.uci,
+          san: pending.san,
+          fenAfter: pending.fenAfter,
+        });
+        pending.recorded = true;
+      }
 
       setCanRetry(false);
       onUserMoveRef.current?.(pending.san);
@@ -533,9 +666,20 @@ export default function EndgameBoard<
         return;
       }
 
-      // solved | failed -- the drill resolved on the board.
-      clearOpponentTimer();
-      resolvedStatusRef.current = result.status;
+      // A resolved result can still carry the defender's final move when
+      // that move is what ended the game (the route adjudicates it so a
+      // stalemated user is not stuck with no move to submit). Play it, then
+      // show the verdict.
+      if (result.opponent_reply?.move_uci) {
+        applyOpponentReply(
+          result.opponent_reply.move_uci,
+          pending.fenAfter,
+          result
+        );
+        return;
+      }
+
+      // solved | failed -- the drill resolved on the user's move.
       setHighlightSquares(
         buildHighlight(
           pending.from,
@@ -543,9 +687,7 @@ export default function EndgameBoard<
           result.status === 'solved' ? HIGHLIGHT_SOLVED : HIGHLIGHT_FAILED
         )
       );
-      updatePhase('resolved');
-      onThinkingChangeRef.current?.(false);
-      onDrillResolvedRef.current?.(result, gameRef.current.history());
+      finishResolved(result);
     } catch (error) {
       const fetchError =
         error instanceof EndgameFetchError
@@ -577,9 +719,10 @@ export default function EndgameBoard<
     }
   }, [
     applyOpponentReply,
-    clearOpponentTimer,
     defaultSubmitMove,
+    finishResolved,
     position,
+    recordMove,
     setBoard,
     updatePhase,
   ]);
@@ -612,8 +755,14 @@ export default function EndgameBoard<
         setBoard(nextGame);
         setSelectedSquare(null);
         setHighlightSquares(buildHighlight(move.from, move.to, HIGHLIGHT_PLAYOUT));
-        if (nextGame.isGameOver()) {
-          finishPlayout();
+        recordMove({
+          uci: moveToUci(move),
+          san: move.san,
+          fenAfter: nextGame.fen(),
+        });
+        const ending = detectEnding(nextGame, positionKeysRef.current);
+        if (ending) {
+          finishPlayout(ending);
           return;
         }
         void requestPlayoutReply(nextGame.fen());
@@ -643,7 +792,14 @@ export default function EndgameBoard<
       );
       void postPendingMove();
     },
-    [clearHint, finishPlayout, postPendingMove, requestPlayoutReply, setBoard]
+    [
+      clearHint,
+      finishPlayout,
+      postPendingMove,
+      recordMove,
+      requestPlayoutReply,
+      setBoard,
+    ]
   );
 
   // "Show move": fetch the immediate best move for the position and play it
