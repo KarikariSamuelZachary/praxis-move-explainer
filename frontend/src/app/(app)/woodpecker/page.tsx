@@ -1269,7 +1269,6 @@ export default function WoodpeckerPage() {
             <div className="w-full">
               <ChessBoard
                 puzzle={currentPuzzle}
-                playerElo={1100}
                 onPuzzleSolved={handlePuzzleSolved}
                 onPuzzleFailed={handlePuzzleFailed}
                 onPuzzleEnd={handlePuzzleEnd}
@@ -1579,7 +1578,9 @@ export default function WoodpeckerPage() {
                 position={endgamePosition}
                 submitMove={submitEndgameReviewMove}
                 playout={endgamePlayout?.state === 'active'}
-                onPlayoutResolved={() => setEndgamePlayout({ state: 'done' })}
+                onPlayoutResolved={(ending) =>
+                  setEndgamePlayout({ state: 'done', ending })
+                }
                 hintsUsed={endgameHintsUsed}
                 retry={endgameIsRetry}
                 hintRequest={endgameHintRequest}
