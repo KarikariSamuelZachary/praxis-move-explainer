@@ -5,7 +5,16 @@ import {
   EndgamePlayoutStatus,
   endgameResolutionLabel,
 } from '@/lib/endgames';
-import { EndgamePosition } from '@/types';
+import { EndgamePlayoutEnding, EndgamePosition } from '@/types';
+
+/** How the ungraded continuation ended, in the panel's voice. */
+const PLAYOUT_ENDING_LABELS: Record<EndgamePlayoutEnding, string> = {
+  checkmate: 'Checkmate',
+  stalemate: 'Draw — stalemate',
+  insufficient_material: 'Draw — insufficient material',
+  fifty_move_rule: 'Draw — fifty-move rule',
+  threefold_repetition: 'Draw — threefold repetition',
+};
 
 /**
  * The drill's three-state panel: quiet in progress, detailed resolved.
@@ -215,6 +224,7 @@ export default function DrillStatusPanel({
 }: DrillStatusPanelProps) {
   const hintUsed = (result?.hints_used ?? 0) > 0;
   const isWinDrill = position.is_winning;
+  const sideToMove = position.fen.split(/\s+/)[1] === 'b' ? 'Black' : 'White';
   const isReview = context === 'review';
   const isPractice = context === 'practice';
 
@@ -269,7 +279,7 @@ export default function DrillStatusPanel({
         <>
           <h2 className={`mt-3 ${HEADING_CLASS}`}>
             {isWinDrill
-              ? 'Find the fastest route to checkmate.'
+              ? `${sideToMove} to play`
               : 'Hold the draw to the end.'}
           </h2>
           {!isWinDrill && (
@@ -371,8 +381,9 @@ export default function DrillStatusPanel({
 
           {/* The settled-drill choices, styled as one control pair like
               Hint / Show move: a no-stakes continuation and a fresh attempt.
-              The continuation runs with no status chrome of its own -- the
-              board's red ring is the only signal that the drill is open. */}
+              While running, the board's red ring is the only signal; once it
+              ends, the line below reports the rule that ended it (the
+              playout is ungraded, so this is the only verdict it gets). */}
           {(onPlayItOut || onRetry) && (
             <div className="mt-5 border-t border-white/10 pt-4">
               <div
@@ -403,6 +414,14 @@ export default function DrillStatusPanel({
                 )}
               </div>
             </div>
+          )}
+
+          {playout?.state === 'done' && (
+            <p className="mt-4 text-center text-[12px] text-[#f0e0c0]/70">
+              {playout.ending
+                ? `Played out — ${PLAYOUT_ENDING_LABELS[playout.ending]}`
+                : 'Played out — the line ended here.'}
+            </p>
           )}
         </>
       )}
