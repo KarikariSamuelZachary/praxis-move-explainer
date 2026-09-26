@@ -45,6 +45,13 @@ Sequences:
      is checked too: ran_out_of_moves (reachable but unauthored), a topic
      with no content at all, a non-failed result, and a non-UUID topic id.
 
+  I. Threefold repetition + defender-reply endings: shuffling a rook ending
+     through a start_fen + history replay produces a draw the FEN alone
+     cannot see; the claim is auto-adjudicated (failed ran_out_of_moves for
+     a win drill, solved for a draw drill) and bad history is rejected as a
+     client-integrity error. Also covers evaluate_defender_reply() catching
+     a game the defender's own move ended.
+
 Run with: cd src && ../venv/bin/python services/endgame_session_test.py
 (sequence H additionally needs the DB config from src/.env: DB_* vars, or
 a real DATABASE_URL; content must be seeded via seed_endgames.py)
@@ -67,8 +74,12 @@ from core.rating import calculate_rating_change
 from services.endgame_session import (
     EndgameFailureCategory,
     EndgameMoveResult,
+    EndgameResolution,
     EndgameStatus,
+    _terminal_verdict,
     attach_common_mistake,
+    board_from_history,
+    evaluate_defender_reply,
     evaluate_endgame_move,
 )
 from services.tablebase import probe_tablebase
@@ -524,6 +535,98 @@ def sequence_h_common_mistake_content(throw_result, blunder_result, draw_blunder
         conn.close()
 
 
+def sequence_i_repetition_and_history():
+    print("I. threefold repetition via start_fen + history:")
+    # A quiet rook ending shuffled through two full cycles: the start
+    # position occurs three times, so the third occurrence is a draw.
+    start = "4k3/8/8/8/8/8/8/R3K3 w - - 0 1"
+    cycle = ["a1a2", "e8d8", "a2a1", "d8e8"]
+    history = cycle * 2
+    board = chess.Board(start)
+    for uci in history:
+        board.push(chess.Move.from_uci(uci))
+    fen_before = board.fen()
+
+    # The FEN alone cannot express repetition; the replay can.
+    assert not chess.Board(fen_before).is_repetition(3)
+    rebuilt = board_from_history(start, history, fen_before)
+    assert rebuilt.is_repetition(3)
+    assert _terminal_verdict(rebuilt, True) == (
+        EndgameStatus.FAILED,
+        EndgameFailureCategory.RAN_OUT_OF_MOVES,
+        EndgameResolution.THREEFOLD_REPETITION,
+    )
+    assert _terminal_verdict(rebuilt, False) == (
+        EndgameStatus.SOLVED,
+        None,
+        EndgameResolution.THREEFOLD_REPETITION,
+    )
+
+    # End to end through the grader: the claim is adjudicated before any
+    # transition classification (the win drill fails on the repetition).
+    user_move = "a1a2"
+    next_board = chess.Board(fen_before)
+    next_board.push(chess.Move.from_uci(user_move))
+    graded = evaluate_endgame_move(
+        fen_before,
+        user_move,
+        next_board.fen(),
+        drill_is_winning=True,
+        start_fen=start,
+        history=history,
+    )
+    assert graded.status == EndgameStatus.FAILED, graded
+    assert graded.resolution == EndgameResolution.THREEFOLD_REPETITION, graded
+    assert graded.failure_category == EndgameFailureCategory.RAN_OUT_OF_MOVES, graded
+
+    # Untrusted history: short replay, illegal move, malformed move, and
+    # history without a start position are all client-integrity errors.
+    for bad_history, phrase in [
+        # One ply only: a different position from fen_before (the short
+        # cycle alone replays to the SAME position, counters ignored).
+        (["a1a2"], "does not lead"),
+        (["e1e2", "e8d8", "a2a1", "d8e8"], "illegal history move"),
+        (["nonsense"], "malformed history move"),
+    ]:
+        try:
+            board_from_history(start, bad_history, fen_before)
+            raise AssertionError(f"{bad_history} must raise ValueError")
+        except ValueError as exc:
+            assert phrase in str(exc), exc
+    try:
+        evaluate_endgame_move(
+            fen_before,
+            user_move,
+            next_board.fen(),
+            drill_is_winning=True,
+            history=history,
+        )
+        raise AssertionError("history without start_fen must raise ValueError")
+    except ValueError as exc:
+        assert "without the drill's start position" in str(exc), exc
+    print("  replay adjudicates threefold; bad history -> ValueError")
+
+    # Defender-reply endings: a defender move that is itself terminal.
+    stalemate_fen = "7k/5Q2/7K/8/8/8/8/8 b - - 0 1"
+    win_reply = evaluate_defender_reply(stalemate_fen, drill_is_winning=True)
+    draw_reply = evaluate_defender_reply(stalemate_fen, drill_is_winning=False)
+    assert win_reply is not None
+    assert win_reply.status == EndgameStatus.FAILED
+    assert win_reply.resolution == EndgameResolution.STALEMATE
+    assert draw_reply is not None
+    assert draw_reply.status == EndgameStatus.SOLVED
+    assert draw_reply.resolution == EndgameResolution.STALEMATE
+    assert evaluate_defender_reply(
+        "4k3/8/8/8/8/8/8/R3K3 b - - 3 2", drill_is_winning=True
+    ) is None
+    try:
+        evaluate_defender_reply("not a fen", drill_is_winning=True)
+        raise AssertionError("malformed defender reply FEN must raise ValueError")
+    except ValueError as exc:
+        assert "malformed FEN (defender reply)" in str(exc), exc
+    print("  defender-reply terminal verdicts (stalemate/live/malformed)")
+
+
 def main():
     sequence_a_bridge_to_mate()
     throw_result, blunder_result = sequence_b_throw_away()
@@ -531,6 +634,7 @@ def main():
     draw_blunder_result = sequence_d_defender_blunder()
     sequence_e_degraded_promotion()
     sequence_f_contract()
+    sequence_i_repetition_and_history()
     sequence_h_common_mistake_content(throw_result, blunder_result, draw_blunder_result)
     print("all sequences judged call-by-call; the bridge line reached actual checkmate")
 
