@@ -8,6 +8,7 @@ import {
   EndgameMoveResponse,
   EndgameOpponentReply,
   EndgameOutcome,
+  EndgamePlayoutEnding,
   EndgamePlayoutReplyRequest,
   EndgamePlayoutReplyResponse,
   EndgamePosition,
@@ -50,6 +51,13 @@ export interface EndgameMoveSubmission {
    * resolution -- no rating change, no review capture/FSRS transition.
    */
   retry: boolean;
+  /**
+   * Every move played since the drill's start position, UCI, oldest first,
+   * NOT including the move being submitted. The board attaches it to every
+   * submission so the backend can rebuild the game and adjudicate threefold
+   * repetition (which a FEN alone cannot express).
+   */
+  history: string[];
 }
 
 export type EndgameSubmitMove<Result> = (
@@ -242,10 +250,13 @@ export function submitEndgamePracticeMove(
  * The panel's view of the continuation:
  *   * active -- the user is playing it out against the defender;
  *   * done   -- the continuation ended. The board detects the terminal
- *               position itself; the panel only needs to stop offering the
- *               continuation.
+ *               position itself (the playout is ungraded) and reports how it
+ *               ended; `ending` is null when the stored line simply ran out
+ *               with no terminal position.
  */
-export type EndgamePlayoutStatus = { state: 'active' } | { state: 'done' };
+export type EndgamePlayoutStatus =
+  | { state: 'active' }
+  | { state: 'done'; ending: EndgamePlayoutEnding | null };
 
 /**
  * The defender's reply for a FAILED drill's continuation.
@@ -591,6 +602,8 @@ export function endgameResolutionLabel(resolution: EndgameResolution): string {
       return 'Insufficient material';
     case 'fifty_move_rule':
       return 'Fifty-move rule';
+    case 'threefold_repetition':
+      return 'Threefold repetition';
     case 'promotion':
       return 'Promotion';
   }
