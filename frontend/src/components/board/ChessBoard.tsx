@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Chess, Move, Square } from 'chess.js';
+import { Chess, type Move, type Square } from 'chess.js';
 import { Chessboard, type SquareRenderer } from 'react-chessboard';
 
 import PromotionPicker from '@/components/board/PromotionPicker';
@@ -15,7 +15,6 @@ export type BoardApi = {
 
 interface ChessBoardProps {
   puzzle: Puzzle;
-  playerElo: number;
   onPuzzleSolved: (timeSeconds: number) => void;
   onPuzzleFailed: () => void;
   onPuzzleEnd?: () => void;
@@ -44,15 +43,6 @@ function applyUciMove(game: Chess, uciMove: string): Move {
   const promotion = uciMove.length > 4 ? uciMove[4] : undefined;
 
   return game.move({ from, to, promotion });
-}
-
-function trySanFromUci(fen: string, uciMove: string): string {
-  try {
-    const probe = new Chess(fen);
-    return applyUciMove(probe, uciMove).san;
-  } catch {
-    return uciMove;
-  }
 }
 
 function buildHighlight(from: string, to: string, color: string): HighlightSquares {
@@ -90,18 +80,15 @@ export default function ChessBoardComponent({
   onPuzzleEnd,
   apiRef,
 }: ChessBoardProps) {
-  const initialGame = buildInitialGame(puzzle);
-
-  const [game, setGame] = useState<Chess>(initialGame);
+  const [game, setGame] = useState<Chess>(() => buildInitialGame(puzzle));
   const [highlightSquares, setHighlightSquares] = useState<HighlightSquares>(() => buildInitialHighlight(puzzle));
   const [puzzleState, setPuzzleState] = useState<PuzzleState>('playing');
-  const [wrongMoveMessage, setWrongMoveMessage] = useState<string | null>(null);
   const [hintSquare, setHintSquare] = useState<string | null>(null);
   const [moveToPromote, setMoveToPromote] = useState<PendingPromotionMove | null>(null);
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
 
   const startTimeRef = useRef<number>(0);
-  const gameRef = useRef<Chess>(initialGame);
+  const gameRef = useRef<Chess>(game);
   const currentMoveIndexRef = useRef<number>(0);
   const puzzleKeyRef = useRef<string>('');
   const opponentMoveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -109,8 +96,6 @@ export default function ChessBoardComponent({
   const hintTimeoutRef = useRef<number | null>(null);
   const snapbackTimeoutRef = useRef<number | null>(null);
   const initialMoveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const autoAdvanceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [wasSolutionViewed, setWasSolutionViewed] = useState(false);
 
   const boardOrientation = getPuzzleOrientation(puzzle);
 
@@ -155,22 +140,12 @@ export default function ChessBoardComponent({
     }
   }, []);
 
-  const clearAutoAdvanceTimeout = useCallback(() => {
-    if (autoAdvanceTimeoutRef.current) {
-      clearTimeout(autoAdvanceTimeoutRef.current);
-      autoAdvanceTimeoutRef.current = null;
-    }
-  }, []);
-
   const resetPuzzle = useCallback(() => {
-    if (!puzzle) return;
-
     const freshGame = buildInitialGame(puzzle);
     gameRef.current = freshGame;
     setGame(freshGame);
     currentMoveIndexRef.current = 0;
     setPuzzleState('playing');
-    setWrongMoveMessage(null);
     setHintSquare(null);
     setMoveToPromote(null);
     setSelectedSquare(null);
@@ -179,11 +154,9 @@ export default function ChessBoardComponent({
     clearHintTimeout();
     clearSnapbackTimeout();
     clearInitialMoveTimeout();
-    clearAutoAdvanceTimeout();
-    setWasSolutionViewed(false);
     startTimeRef.current = Date.now();
     setHighlightSquares(buildInitialHighlight(puzzle));
-  }, [clearAutoAdvanceTimeout, clearHintTimeout, clearInitialMoveTimeout, clearOpponentMoveTimeout, clearSnapbackTimeout, clearWrongFlashTimeout, puzzle]);
+  }, [clearHintTimeout, clearInitialMoveTimeout, clearOpponentMoveTimeout, clearSnapbackTimeout, clearWrongFlashTimeout, puzzle]);
 
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
@@ -192,10 +165,7 @@ export default function ChessBoardComponent({
     clearHintTimeout();
     clearSnapbackTimeout();
     clearInitialMoveTimeout();
-    clearAutoAdvanceTimeout();
     puzzleKeyRef.current = `${puzzle.id}:${puzzle.fen}:${puzzle.moves.join(' ')}`;
-    setWasSolutionViewed(false);
-    setWrongMoveMessage(null);
     setHintSquare(null);
     setMoveToPromote(null);
     setSelectedSquare(null);
@@ -257,9 +227,8 @@ export default function ChessBoardComponent({
       clearHintTimeout();
       clearSnapbackTimeout();
       clearInitialMoveTimeout();
-      clearAutoAdvanceTimeout();
     };
-  }, [clearAutoAdvanceTimeout, clearHintTimeout, clearInitialMoveTimeout, clearOpponentMoveTimeout, clearSnapbackTimeout, clearWrongFlashTimeout, puzzle, setBoardState]);
+  }, [clearHintTimeout, clearInitialMoveTimeout, clearOpponentMoveTimeout, clearSnapbackTimeout, clearWrongFlashTimeout, puzzle, setBoardState]);
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const scheduleOpponentMove = useCallback((baseGame: Chess, moveIndex: number) => {
@@ -316,7 +285,6 @@ export default function ChessBoardComponent({
   ) => {
     clearSnapbackTimeout();
     setGame(gameRef.current);
-    setWrongMoveMessage(null);
     setHintSquare(null);
     clearHintTimeout();
 
@@ -356,8 +324,6 @@ export default function ChessBoardComponent({
       setHighlightSquares({
         [targetSquare]: { backgroundColor: 'rgba(239, 68, 68, 0.5)' },
       });
-      setWrongMoveMessage('Not the best move - try again');
-
       const scheduledPuzzleKey = puzzleKeyRef.current;
 
       // Snap back after 400ms
@@ -555,7 +521,6 @@ export default function ChessBoardComponent({
   }, [moveToPromote, validateAndMakeMove]);
 
   const handleShowSolution = useCallback(() => {
-    setWasSolutionViewed(true);
     const moveToShow = puzzle.moves[currentMoveIndexRef.current];
     if (!moveToShow) {
       return;
@@ -573,7 +538,6 @@ export default function ChessBoardComponent({
     const nextIndex = currentMoveIndexRef.current + 1;
     setBoardState(nextGame, nextIndex);
     clearWrongFlashTimeout();
-    setWrongMoveMessage(null);
     setHintSquare(null);
     clearHintTimeout();
     setHighlightSquares(
@@ -649,6 +613,7 @@ export default function ChessBoardComponent({
         />
         <Chessboard
           options={{
+            id: 'puzzle-board',
             position: game.fen(),
             boardOrientation,
             squareStyles: displayedSquareStyles,
