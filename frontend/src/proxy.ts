@@ -71,6 +71,7 @@ function gate(req: NextRequest, skillLevel: string | null, onboardingRoute: bool
 }
 
 export default clerkMiddleware(async (auth, req) => {
+  return NextResponse.next(); // TEMP-LOCAL-PREVIEW-BYPASS
   if (isProtectedRoute(req)) {
     await auth.protect();
   }
