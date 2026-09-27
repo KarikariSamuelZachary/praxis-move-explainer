@@ -461,7 +461,12 @@ def run_migrations():
                     ADD COLUMN IF NOT EXISTS opponent_prep_ready BOOLEAN NOT NULL DEFAULT FALSE,
                     ADD COLUMN IF NOT EXISTS repertoire_index_status TEXT NOT NULL DEFAULT 'queued',
                     ADD COLUMN IF NOT EXISTS repertoire_indexed_games INTEGER NOT NULL DEFAULT 0,
-                    ADD COLUMN IF NOT EXISTS repertoire_total_games INTEGER NOT NULL DEFAULT 0
+                    ADD COLUMN IF NOT EXISTS repertoire_total_games INTEGER NOT NULL DEFAULT 0,
+                    -- Non-fatal import problems (e.g. a Chess.com monthly
+                    -- archive that could not be fetched, so the built
+                    -- snapshot is missing that month's games). DEFAULT '[]'
+                    -- keeps pre-existing rows valid.
+                    ADD COLUMN IF NOT EXISTS warnings JSONB NOT NULL DEFAULT '[]'::jsonb
                 """
             )
             cur.execute(
