@@ -8,6 +8,7 @@ import { useRouter } from 'next/navigation';
 
 import type { EndgameRecommendation } from '@/lib/endgame-recommendation';
 import { practiceCategoryLabel } from '@/lib/endgames';
+import { ProviderIcon } from '@/components/icons/PlatformIcons';
 
 const MiniBoard = dynamic(
   () => import('react-chessboard').then((module) => module.Chessboard),
@@ -346,12 +347,13 @@ function OpponentPrepDialog({ onClose }: { onClose: () => void }) {
               type="button"
               onClick={() => setProvider(entry.key)}
               disabled={isImporting}
-              className={`h-10 rounded-[6px] text-sm font-semibold transition disabled:opacity-60 ${
+              className={`inline-flex h-10 items-center justify-center gap-2 rounded-[6px] text-sm font-semibold transition disabled:opacity-60 ${
                 provider === entry.key
                   ? 'bg-[#f7e5c6] text-[#241206]'
                   : 'text-[#f7e5c6]/70 hover:bg-white/8'
               }`}
             >
+              <ProviderIcon provider={entry.key} />
               {entry.label}
             </button>
           ))}
