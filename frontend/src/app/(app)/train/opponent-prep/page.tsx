@@ -82,6 +82,33 @@ type Premove = {
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
+// Traps panel: poll the Stockfish blunder-analysis job while it is still
+// working through the opponent's corpus. 6s keeps the progress line moving
+// without hammering the status endpoint (backend limit: 30/min).
+const ANALYSIS_POLL_INTERVAL_MS = 6000;
+
+// The import job flips to "completed" (which triggers the modal redirect)
+// a few seconds BEFORE try_start_opponent_analysis creates the analysis
+// job row, so the traps panel can legitimately see a 404 right after an
+// import. Retry for ~20s before falling back to the plain empty state.
+const ANALYSIS_JOB_WAIT_ATTEMPTS = 8;
+const ANALYSIS_JOB_WAIT_INTERVAL_MS = 2500;
+
+// One-shot handoff from the import modal (see TrainPageClient): non-fatal
+// import warnings such as a skipped Chess.com monthly archive.
+const IMPORT_WARNINGS_STORAGE_KEY = 'praxis:opponent-import-warnings';
+
+type AnalysisStatusResponse = {
+  status: 'idle' | 'running' | 'complete';
+  analyzed_games: number;
+  total_games: number;
+};
+
+// 'checking' is the brief first status fetch; 'polling' means analyzed <
+// total; 'complete' means every analyzed game is in and traps were
+// refreshed; 'idle' is the no-job/error/total-0 fallback (old empty state).
+type TrapsPhase = 'idle' | 'checking' | 'polling' | 'complete';
+
 const woodBoxStyle: React.CSSProperties = {
   borderRadius: '4px',
   background:
@@ -133,41 +160,53 @@ const DEFAULT_TC_COLOR = '#9ca3af';
 // Time-class row labels + icon mapping for the per-class rating grid.
 const TIME_CLASS_META: Record<
   TimeClassKey,
-  { label: string; icon: React.ReactNode; tone: string }
+  {
+    label: string;
+    // Rating-card icon (large, self-contained praxis tile art).
+    icon: (className: string) => React.ReactNode;
+    // Time Control picker icon (small, transparent flat variant so it sits
+    // on the pill backgrounds). Falls back to `icon` when absent.
+    controlIcon?: (className: string) => React.ReactNode;
+    // Selected-pill styling. Falls back to the cream default when absent.
+    selectedClass?: string;
+    tone: string;
+  }
 > = {
   rapid: {
     label: 'Rapid',
     tone: 'text-emerald-300',
-    icon: (
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
-        <path d="M12 2 4 5v6c0 4.5 3.4 8.7 8 11 4.6-2.3 8-6.5 8-11V5l-8-3Zm0 4.3 5 1.9V11c0 3.1-2.2 6.1-5 7.7-2.8-1.6-5-4.6-5-7.7V8.2l5-1.9Z" />
-      </svg>
-    ),
+    // eslint-disable-next-line @next/next/no-img-element -- static public SVG icon
+    icon: (className) => <img src="/praxis-rapid.svg" alt="" className={className} />,
+    // eslint-disable-next-line @next/next/no-img-element -- static public SVG icon
+    controlIcon: (className) => <img src="/rapid.svg" alt="" className={className} />,
+    // Same green treatment as the Start Game button.
+    selectedClass:
+      'border-[#10b981]/40 bg-[#10b981]/15 text-[#a7f3d0] shadow-[0_8px_24px_rgba(16,185,129,0.15)]',
   },
   blitz: {
     label: 'Blitz',
     tone: 'text-amber-300',
-    icon: (
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-        <path d="M13 2 3 14h7l-1 8 11-14h-7l1-6Z" />
-      </svg>
-    ),
+    // eslint-disable-next-line @next/next/no-img-element -- static public SVG icon
+    icon: (className) => <img src="/praxis-blitz.svg" alt="" className={className} />,
+    // eslint-disable-next-line @next/next/no-img-element -- static public SVG icon
+    controlIcon: (className) => <img src="/blitz.svg" alt="" className={className} />,
   },
   bullet: {
     label: 'Bullet',
     tone: 'text-violet-300',
-    icon: (
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-        <path d="M4.5 16.5c-1.5 1.3-2 3.2-1 4.2s2.9.5 4.2-1c1.4-1.5 3.5-3.5 3.5-7.7L13 8l3-1-1 3-3 3c0 4-2 6-4.5 7.5Z" />
-        <path d="M14 12 21 5l-2-2-7 7" />
-      </svg>
-    ),
+    // eslint-disable-next-line @next/next/no-img-element -- static public SVG icon
+    icon: (className) => <img src="/praxis-bullet.svg" alt="" className={className} />,
+    // eslint-disable-next-line @next/next/no-img-element -- static public SVG icon
+    controlIcon: (className) => <img src="/bullet.svg" alt="" className={className} />,
+    // Same effect as the Start Game button, in brown.
+    selectedClass:
+      'border-[#b07a45]/50 bg-[#b07a45]/20 text-[#f0d3a8] shadow-[0_8px_24px_rgba(176,122,69,0.22)]',
   },
   classical: {
     label: 'Classical',
     tone: 'text-sky-300',
-    icon: (
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+    icon: (className) => (
+      <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden>
         <path d="M12 2 4 5v6c0 4.5 3.4 8.7 8 11 4.6-2.3 8-6.5 8-11V5l-8-3Z" />
       </svg>
     ),
@@ -175,8 +214,8 @@ const TIME_CLASS_META: Record<
   daily: {
     label: 'Daily',
     tone: 'text-stone-300',
-    icon: (
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+    icon: (className) => (
+      <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
         <rect x="3" y="4" width="18" height="17" rx="2" />
         <path d="M3 9h18" />
         <path d="M8 2v4" />
@@ -187,6 +226,34 @@ const TIME_CLASS_META: Record<
 };
 
 const TIME_CLASS_ORDER: TimeClassKey[] = ['rapid', 'blitz', 'bullet'];
+
+// Map a distribution label ("3+2") or canonical bucket name to a coarse
+// time class for the picker. Mirrors the backend's base + inc*40 heuristic;
+// classical maps to rapid (the slowest option the picker offers).
+function timeClassFromLabel(label: string | null | undefined): TimeClassKey | null {
+  if (!label) {
+    return null;
+  }
+  const key = label.trim().toLowerCase();
+  if (key === 'rapid' || key === 'blitz' || key === 'bullet') {
+    return key;
+  }
+  const match = /^(\d+)(?:\+(\d+))?$/.exec(key);
+  if (!match) {
+    return null;
+  }
+  const base = Number(match[1]);
+  const increment = Number(match[2] ?? 0);
+  const seconds = base < 60 ? base * 60 : base;
+  const estimated = seconds + increment * 40;
+  if (estimated < 180) {
+    return 'bullet';
+  }
+  if (estimated < 600) {
+    return 'blitz';
+  }
+  return 'rapid';
+}
 
 export default function OpponentPrepPage() {
   const [profiles, setProfiles] = useState<OpponentProfile[]>([]);
@@ -201,7 +268,8 @@ export default function OpponentPrepPage() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
   const [premove, setPremove] = useState<Premove | null>(null);
-  const [timeControl, setTimeControl] = useState<string>('');
+  const [importWarnings, setImportWarnings] = useState<string[]>([]);
+  const [timeControl, setTimeControl] = useState<TimeClassKey | ''>('');
   const gameRef = useRef(game);
   const botMoveInFlightRef = useRef(false);
   // Every position key since the game started. The game is rebuilt from a
@@ -252,26 +320,51 @@ export default function OpponentPrepPage() {
     };
   }, []);
 
+  // Read-and-clear the one-shot import warnings handed off by the modal
+  // so an incomplete corpus (e.g. a skipped Chess.com archive) is visible
+  // on the panels it affects instead of silently looking fully loaded.
+  useEffect(() => {
+    try {
+      const raw = sessionStorage.getItem(IMPORT_WARNINGS_STORAGE_KEY);
+      if (!raw) {
+        return;
+      }
+      sessionStorage.removeItem(IMPORT_WARNINGS_STORAGE_KEY);
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        setImportWarnings(
+          parsed.filter((item): item is string => typeof item === 'string')
+        );
+      }
+    } catch {
+      // Malformed payload or storage unavailable — nothing to show.
+    }
+  }, []);
+
   const selectedProfile = useMemo(
     () => profiles.find((profile) => profileKey(profile) === selectedKey) ?? null,
     [profiles, selectedKey]
   );
+  // Remount the traps panel when the selected opponent changes so its
+  // polling state resets without a set-state-in-effect.
+  const trapsPanelKey = selectedProfile
+    ? `${selectedProfile.provider}:${selectedProfile.opponent_username.toLowerCase()}`
+    : 'none';
   const botColor = humanColor === 'white' ? 'black' : 'white';
 
-  // Prefill the Time Control dropdown when the selected profile changes.
-  // Uses preferred_time_control when present (the recency-weighted most-
-  // common bucket); falls back to the first key of the distribution when
-  // only the distribution is available. Empty string leaves the dropdown
-  // unselected (the mockup's "-" placeholder).
+  // Prefill the Time Control picker when the selected profile changes.
+  // preferred_time_control (the recency-weighted most-common bucket) is
+  // mapped to its coarse class; falls back to the first key of the
+  // distribution when only that is available. Empty string leaves the
+  // picker unselected.
   useEffect(() => {
-    if (selectedProfile?.preferred_time_control) {
-      setTimeControl(selectedProfile.preferred_time_control);
-    } else if (selectedProfile?.time_control_distribution) {
-      const first = Object.keys(selectedProfile.time_control_distribution)[0];
-      setTimeControl(first ?? '');
-    } else {
-      setTimeControl('');
-    }
+    const preferred = selectedProfile?.preferred_time_control;
+    const firstDistribution = selectedProfile?.time_control_distribution
+      ? Object.keys(selectedProfile.time_control_distribution)[0]
+      : null;
+    setTimeControl(
+      timeClassFromLabel(preferred) ?? timeClassFromLabel(firstDistribution) ?? ''
+    );
   }, [selectedProfile]);
 
   // The right card no longer shows a per-move log - the mockup replaces
@@ -662,19 +755,6 @@ export default function OpponentPrepPage() {
     [hintSquares, highlightSquares]
   );
 
-  // Time-control options for the dropdown. Built from the selected
-  // profile's distribution so the dropdown never offers buckets the
-  // opponent doesn't actually play. Empty when no profile is selected.
-  const timeControlOptions = useMemo<string[]>(() => {
-    if (selectedProfile?.time_control_distribution) {
-      return Object.keys(selectedProfile.time_control_distribution);
-    }
-    if (selectedProfile?.preferred_time_control) {
-      return [selectedProfile.preferred_time_control];
-    }
-    return [];
-  }, [selectedProfile]);
-
   return (
     <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-[10px] pt-6 text-white lg:overflow-hidden lg:px-10 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
       <ReviewShell
@@ -689,8 +769,7 @@ export default function OpponentPrepPage() {
 
             <PlayingStylePill style={selectedProfile?.playing_style ?? null} />
 
-            <TimeControlSelect
-              options={timeControlOptions}
+            <TimeClassSelect
               value={timeControl}
               onChange={setTimeControl}
               disabled={!selectedProfile || isStarted}
@@ -786,9 +865,13 @@ export default function OpponentPrepPage() {
         analysisPanel={
           <aside className={rightPanelClass}>
             <div className="wooden-scroll flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
-              <OpeningsLostAgainst openings={selectedProfile?.openings_lost_against ?? []} />
+              <OpeningsLostAgainst
+                openings={selectedProfile?.openings_lost_against ?? []}
+                gameCount={selectedProfile?.game_count ?? 0}
+                warnings={importWarnings}
+              />
 
-              <TrapsFallenFor traps={selectedProfile?.traps ?? []} />
+              <TrapsFallenFor key={trapsPanelKey} profile={selectedProfile} />
 
               <PreferredTimeControl
                 distribution={selectedProfile?.time_control_distribution ?? null}
@@ -915,10 +998,8 @@ function RatingsRow({
             key={key}
             className="flex cursor-default flex-col items-center gap-1 rounded-2xl border border-black/30 bg-black/30 px-2 py-2.5 transition-colors duration-200 hover:border-emerald-400/30 hover:bg-emerald-400/[0.06]"
           >
-            <div className={meta.tone}>{meta.icon}</div>
-            <div className="text-[10px] font-semibold uppercase tracking-wider text-[#f7e5c6]/55">
-              {meta.label}
-            </div>
+            <div className={meta.tone}>{meta.icon('h-8 w-8')}</div>
+            <span className="sr-only">{meta.label}</span>
             <div className="text-lg font-semibold leading-none text-[#f7e5c6]">
               {value}
             </div>
@@ -952,50 +1033,47 @@ function PlayingStylePill({
   );
 }
 
-function TimeControlSelect({
-  options,
+function TimeClassSelect({
   value,
   onChange,
   disabled,
 }: {
-  options: string[];
-  value: string;
-  onChange: (next: string) => void;
+  value: TimeClassKey | '';
+  onChange: (next: TimeClassKey) => void;
   disabled: boolean;
 }) {
   return (
     <section className="flex flex-col gap-1.5">
-      <label className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#f7e5c6]/55">
+      <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#f7e5c6]/55">
         Time Control
-      </label>
-      <div className="relative">
-        <span className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#f7e5c6]/60">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <circle cx="12" cy="12" r="9" />
-            <path d="M12 7v5l3 2" />
-          </svg>
-        </span>
-        <select
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          disabled={disabled}
-          className="h-11 w-full cursor-pointer appearance-none rounded-2xl border border-black/50 bg-black/60 pl-9 pr-9 text-sm text-white outline-none transition hover:border-emerald-400/30 focus:border-[#10b981]/60 focus:ring-2 focus:ring-[#10b981]/20 disabled:pointer-events-none disabled:opacity-50"
-        >
-          {options.length === 0 ? (
-            <option value="">-</option>
-          ) : (
-            options.map((option) => (
-              <option key={option} value={option}>
-                {option}
-              </option>
-            ))
-          )}
-        </select>
-        <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[#f7e5c6]/60">
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-            <path d="m6 9 6 6 6-6" />
-          </svg>
-        </span>
+      </span>
+      <div
+        role="group"
+        aria-label="Time control"
+        className="grid grid-cols-3 gap-1 rounded-2xl border border-black/40 bg-black/35 p-1"
+      >
+        {TIME_CLASS_ORDER.map((key) => {
+          const meta = TIME_CLASS_META[key];
+          const isSelected = value === key;
+          return (
+            <button
+              key={key}
+              type="button"
+              onClick={() => onChange(key)}
+              disabled={disabled}
+              aria-pressed={isSelected}
+              className={`flex h-10 items-center justify-center gap-1.5 rounded-xl border border-transparent text-xs font-semibold transition-all duration-200 disabled:pointer-events-none disabled:opacity-50 ${
+                isSelected
+                  ? (meta.selectedClass ??
+                    'bg-[#f7e5c6] text-[#20120a] shadow-[0_8px_22px_rgba(0,0,0,0.3)]')
+                  : 'text-[#f7e5c6]/65 hover:bg-white/[0.06] hover:text-[#f7e5c6]'
+              }`}
+            >
+              {(meta.controlIcon ?? meta.icon)('h-4 w-4')}
+              <span>{meta.label}</span>
+            </button>
+          );
+        })}
       </div>
     </section>
   );
@@ -1050,8 +1128,12 @@ function PlayAsSelect({
 
 function OpeningsLostAgainst({
   openings,
+  gameCount,
+  warnings,
 }: {
   openings: { name: string; loss_percentage: number; games: number }[];
+  gameCount: number;
+  warnings: string[];
 }) {
   // Top 5 by descending loss% - the API already sorts this way, but
   // re-sort defensively in case a caller ever hand-builds the array.
@@ -1062,6 +1144,23 @@ function OpeningsLostAgainst({
   return (
     <section className="rounded-[18px] border border-[#f7e5c6]/10 bg-black/25 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
       <SectionHeader icon={<BookIcon />} title="Openings He Lost Against" />
+
+      {/* How many games the snapshot was actually built from, so a thin
+          corpus reads as thin instead of silently looking complete. */}
+      <p className="mt-1 text-[11px] text-[#f7e5c6]/45">
+        Based on {gameCount} imported game{gameCount === 1 ? '' : 's'}
+      </p>
+
+      {warnings.length > 0 && (
+        <div
+          role="alert"
+          className="mt-2 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-2 text-[11px] leading-relaxed text-amber-200"
+        >
+          {warnings.map((warning) => (
+            <p key={warning}>{warning}</p>
+          ))}
+        </div>
+      )}
 
       {top.length === 0 ? (
         <div className="mt-3">
@@ -1116,16 +1215,162 @@ function OpeningsLostAgainst({
   );
 }
 
-function TrapsFallenFor({ traps }: { traps: OpponentTrap[] }) {
+function TrapsFallenFor({ profile }: { profile: OpponentProfile | null }) {
+  const provider = profile?.provider ?? null;
+  const username = profile?.opponent_username ?? null;
+  // The parent keys this panel by opponent, so switching opponents
+  // remounts it and the state below starts from the new profile — no
+  // set-state-in-effect reset.
+  const [traps, setTraps] = useState<OpponentTrap[]>(profile?.traps ?? []);
+  const [phase, setPhase] = useState<TrapsPhase>(
+    provider && username ? 'checking' : 'idle'
+  );
+  const [progress, setProgress] = useState<{ analyzed: number; total: number } | null>(null);
+
+  // Poll the blunder-analysis job for THIS opponent only, and refresh the
+  // traps in panel-local state. Openings/Time Control stay untouched while
+  // the Stockfish pass grinds through hundreds of games.
+  useEffect(() => {
+    if (!provider || !username) {
+      return;
+    }
+    const providerKey = provider;
+    const usernameKey = username;
+
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+
+    async function refreshTraps() {
+      try {
+        const response = await fetch('/api/train/opponents', { cache: 'no-store' });
+        if (!response.ok) {
+          return;
+        }
+        const data = (await response.json()) as { opponents: OpponentProfile[] };
+        if (cancelled) {
+          return;
+        }
+        const match = data.opponents.find(
+          (opponent) =>
+            opponent.provider === providerKey &&
+            opponent.opponent_username.toLowerCase() === usernameKey.toLowerCase()
+        );
+        if (match) {
+          setTraps(match.traps ?? []);
+        }
+      } catch {
+        // Keep the traps already on screen; the refresh is best-effort.
+      }
+    }
+
+    // The job row may not exist yet on the first attempts (see
+    // ANALYSIS_JOB_WAIT_ATTEMPTS); waitAttempt counts consecutive misses.
+    const keepWaiting = (waitAttempt: number) =>
+      !cancelled && waitAttempt < ANALYSIS_JOB_WAIT_ATTEMPTS;
+
+    async function pollAnalysis(waitAttempt = 0) {
+      try {
+        const response = await fetch(
+          `/api/train/opponent-analysis?provider=${providerKey}&opponent_username=${encodeURIComponent(usernameKey)}`,
+          { cache: 'no-store' }
+        );
+        if (!response.ok) {
+          if (keepWaiting(waitAttempt)) {
+            timer = setTimeout(
+              () => pollAnalysis(waitAttempt + 1),
+              ANALYSIS_JOB_WAIT_INTERVAL_MS
+            );
+            return;
+          }
+          if (!cancelled) {
+            setPhase('idle');
+          }
+          return;
+        }
+        const data = (await response.json()) as AnalysisStatusResponse;
+        if (cancelled) {
+          return;
+        }
+        // No job / no games / unanalyzable corpus: fall back to the plain
+        // empty state instead of spinning forever.
+        if (data.total_games <= 0) {
+          setPhase('idle');
+          return;
+        }
+        // Status is authoritative when counts are stale (e.g. a job row
+        // from before the recency cap, or a worker killed mid-run and then
+        // normalized to complete by the next trigger).
+        const analysisComplete =
+          data.status === 'complete' ||
+          data.analyzed_games >= data.total_games;
+        if (!analysisComplete) {
+          setProgress({ analyzed: data.analyzed_games, total: data.total_games });
+          setPhase('polling');
+          timer = setTimeout(pollAnalysis, ANALYSIS_POLL_INTERVAL_MS);
+          return;
+        }
+        // Analysis finished — pull the traps it produced, then stop.
+        setProgress({ analyzed: data.analyzed_games, total: data.total_games });
+        await refreshTraps();
+        if (!cancelled) {
+          setPhase('complete');
+        }
+      } catch {
+        if (keepWaiting(waitAttempt)) {
+          timer = setTimeout(
+            () => pollAnalysis(waitAttempt + 1),
+            ANALYSIS_JOB_WAIT_INTERVAL_MS
+          );
+          return;
+        }
+        if (!cancelled) {
+          setPhase('idle');
+        }
+      }
+    }
+
+    pollAnalysis();
+
+    return () => {
+      cancelled = true;
+      if (timer !== null) {
+        clearTimeout(timer);
+      }
+    };
+  }, [provider, username]);
+
   const top = traps.slice(0, 5);
+  const isAnalyzing = phase === 'polling';
 
   return (
     <section className="rounded-[18px] border border-[#f7e5c6]/10 bg-black/25 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-      <SectionHeader icon={<KnightReliefIcon size="sm" />} title="Traps He's Fallen For" />
+      <SectionHeader icon={<KnightReliefIcon size="sm" />} title="Traps Fallen For" />
+
+      {top.length > 0 && isAnalyzing && (
+        <div className="mt-2 flex items-center gap-2 text-[11px] text-[#f7e5c6]/55">
+          <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400/80" aria-hidden />
+          Analyzing {progress?.analyzed ?? 0}/{progress?.total ?? 0} games…
+        </div>
+      )}
 
       {top.length === 0 ? (
         <div className="mt-3">
-          <EmptyHint text="No recurring traps detected yet." />
+          {phase === 'checking' || phase === 'polling' ? (
+            <div className="flex items-center gap-2 rounded-2xl border border-black/30 bg-black/30 px-3 py-2.5 text-[11px] text-[#f7e5c6]/60">
+              <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400/80" aria-hidden />
+              {phase === 'polling'
+                ? `Analyzing ${progress?.analyzed ?? 0}/${progress?.total ?? 0} games…`
+                : 'Checking analysis progress…'}
+            </div>
+          ) : (
+            <EmptyHint
+              text={
+                phase === 'complete'
+                  ? 'Not enough game data yet for reliable traps.'
+                  : 'No recurring traps detected yet.'
+              }
+            />
+          )}
         </div>
       ) : (
         <div className="mt-3 flex flex-col gap-2">
