@@ -126,7 +126,8 @@ def get_opponent_import_job(*, job_id: str, requested_by_user_id: str) -> Option
                     repertoire_index_status,
                     repertoire_indexed_games,
                     repertoire_total_games,
-                    error_message
+                    error_message,
+                    warnings
                 FROM opponent_import_jobs
                 WHERE id = %s AND requested_by_user_id = %s
                 """,
@@ -169,6 +170,7 @@ def run_opponent_import_job(job_id: str) -> None:
 
         imported_count = 0
         errors: list[str] = []
+        warnings: list[str] = []
 
         if job.get("lichess_username"):
             imported_count += _fetch_and_store_provider_games(
@@ -179,6 +181,7 @@ def run_opponent_import_job(job_id: str) -> None:
                 username=job["lichess_username"],
                 limit=int(job["requested_limit"]),
                 errors=errors,
+                warnings=warnings,
                 profile=profile,
             )
 
@@ -191,6 +194,7 @@ def run_opponent_import_job(job_id: str) -> None:
                 username=job["chesscom_username"],
                 limit=int(job["requested_limit"]),
                 errors=errors,
+                warnings=warnings,
                 profile=profile,
             )
 
@@ -215,10 +219,18 @@ def run_opponent_import_job(job_id: str) -> None:
             )
 
         if errors:
-            _mark_job_failed(conn, job_id, imported_count, "; ".join(errors))
+            _mark_job_failed(
+                conn, job_id, imported_count, "; ".join(errors), warnings
+            )
         else:
-            _mark_job_completed(conn, job_id, imported_count)
+            _mark_job_completed(conn, job_id, imported_count, warnings)
         conn.commit()
+
+        # Cost telemetry: how much opponent_games data this user currently
+        # holds. Never raises (see helper) — it must not fail the import.
+        _log_storage_stats(
+            conn, requested_by_user_id=job["requested_by_user_id"]
+        )
 
         # Build the list of (provider, username) pairs to chain the
         # Stockfish analysis after. Only on a clean import (no errors).
@@ -509,7 +521,12 @@ def _publish_import_progress(conn, job_id: str, imported_count: int, total_games
         )
 
 
-def _mark_job_completed(conn, job_id: str, imported_count: int) -> None:
+def _mark_job_completed(
+    conn,
+    job_id: str,
+    imported_count: int,
+    warnings: Optional[list[str]] = None,
+) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -518,17 +535,24 @@ def _mark_job_completed(conn, job_id: str, imported_count: int) -> None:
                 imported_count = %s,
                 completed_at = NOW(),
                 error_message = NULL,
+                warnings = %s,
                 opponent_prep_ready = TRUE,
                 repertoire_index_status = 'queued',
                 repertoire_indexed_games = 0,
                 repertoire_total_games = %s
             WHERE id = %s
             """,
-            (imported_count, imported_count, job_id),
+            (imported_count, Json(warnings or []), imported_count, job_id),
         )
 
 
-def _mark_job_failed(conn, job_id: str, imported_count: int, error_message: str) -> None:
+def _mark_job_failed(
+    conn,
+    job_id: str,
+    imported_count: int,
+    error_message: str,
+    warnings: Optional[list[str]] = None,
+) -> None:
     with conn.cursor() as cur:
         cur.execute(
             """
@@ -536,10 +560,11 @@ def _mark_job_failed(conn, job_id: str, imported_count: int, error_message: str)
             SET status = 'failed',
                 imported_count = %s,
                 completed_at = NOW(),
-                error_message = %s
+                error_message = %s,
+                warnings = %s
             WHERE id = %s
             """,
-            (imported_count, error_message[:2000], job_id),
+            (imported_count, error_message[:2000], Json(warnings or []), job_id),
         )
 
 
@@ -564,6 +589,7 @@ def _fetch_and_store_provider_games(
     username: str,
     limit: int,
     errors: list[str],
+    warnings: list[str],
     profile: Dict[str, Any],
 ) -> int:
     fetch_started = time.perf_counter()
@@ -573,7 +599,9 @@ def _fetch_and_store_provider_games(
         if provider == "lichess":
             games = fetch_recent_lichess_games(username=username, limit=limit)
         else:
-            games = fetch_recent_chesscom_games(username=username, limit=limit)
+            games = fetch_recent_chesscom_games(
+                username=username, limit=limit, warnings=warnings
+            )
     except Exception as exc:  # noqa: BLE001
         log.exception("Opponent %s import failed for %s", provider, username)
         errors.append(f"{provider} {username}: {exc}")
@@ -694,6 +722,36 @@ def _store_opponent_games(
                 conn.commit()
 
     return inserted_or_updated
+
+
+def _log_storage_stats(conn, *, requested_by_user_id: str) -> None:
+    """Log the user's stored opponent-game volume + approximate payload size.
+
+    Cost telemetry only (no retention/eviction yet): lets us watch how
+    ``opponent_games`` grows per user before deciding on a policy. Never
+    raises — a stats failure must not fail an already-completed import.
+    """
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT COUNT(*)::bigint,
+                       COALESCE(SUM(pg_column_size(t.*)), 0)::bigint
+                FROM opponent_games t
+                WHERE t.requested_by_user_id = %s
+                """,
+                (requested_by_user_id,),
+            )
+            games, approx_bytes = cur.fetchone()
+        log.info(
+            "[IMPORT_PROFILE] phase=storage user=%s games=%d approx_bytes=%d",
+            requested_by_user_id,
+            games,
+            approx_bytes,
+        )
+    except Exception:  # noqa: BLE001 -- telemetry must never fail an import
+        conn.rollback()
+        log.exception("Failed to log opponent-game storage stats")
 
 
 def _log_import_profile(profile: Dict[str, Any]) -> None:
