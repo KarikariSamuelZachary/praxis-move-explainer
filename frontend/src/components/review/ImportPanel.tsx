@@ -2,6 +2,8 @@
 
 import { useId, useState } from 'react';
 
+import { ProviderIcon } from '@/components/icons/PlatformIcons';
+
 export type ImportSource = 'paste' | 'chesscom' | 'lichess';
 
 type GamePlayer = {
@@ -102,12 +104,13 @@ export default function ImportPanel({
               onSourceChange(tab.key);
               setHasFetchedGames(false);
             }}
-              className={`flex-1 cursor-pointer rounded-lg px-2 py-1.5 text-xs font-medium transition ${
+              className={`flex flex-1 cursor-pointer items-center justify-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium transition ${
                 isActive
                   ? 'bg-[#f7e5c6]/15 text-[#f7e5c6] ring-1 ring-[#f7e5c6]/40'
                   : 'text-[#f7e5c6]/70 hover:text-[#f7e5c6]'
               }`}
             >
+              {tab.key !== 'paste' && <ProviderIcon provider={tab.key} className="h-3.5 w-3.5" />}
               {tab.label}
             </button>
           );
