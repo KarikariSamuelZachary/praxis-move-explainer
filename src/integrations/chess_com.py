@@ -11,7 +11,7 @@ import json
 import logging
 import urllib.error
 import urllib.request
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 log = logging.getLogger(__name__)
 
@@ -87,7 +87,11 @@ def _summarize_game(game: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def fetch_recent_chesscom_games(username: str, limit: int = 10) -> List[Dict[str, Any]]:
+def fetch_recent_chesscom_games(
+    username: str,
+    limit: int = 10,
+    warnings: Optional[List[str]] = None,
+) -> List[Dict[str, Any]]:
     """
     Fetch a user's most recent Chess.com games, most-recent first.
 
@@ -98,6 +102,12 @@ def fetch_recent_chesscom_games(username: str, limit: int = 10) -> List[Dict[str
     Args:
         username: A Chess.com username (case-insensitive, normalized to lower).
         limit: Maximum number of games to return.
+        warnings: Optional out-param. A human-readable message is appended
+            for every monthly archive that could not be fetched. Archive
+            failures are non-fatal (the remaining months are still
+            returned) but mean the caller's corpus is incomplete — callers
+            that build snapshots must surface this instead of silently
+            presenting partial data as complete.
 
     Returns:
         A list of dicts, most recent first, each containing:
@@ -124,14 +134,14 @@ def fetch_recent_chesscom_games(username: str, limit: int = 10) -> List[Dict[str
         try:
             month_data = _http_get_json(archive_url)
         except urllib.error.HTTPError as exc:
-            log.warning(
-                "Chess.com archive fetch failed (HTTP %s): %s",
-                exc.code,
-                archive_url,
+            _record_archive_skip(
+                warnings, username, archive_url, f"HTTP {exc.code}"
             )
             continue
         except urllib.error.URLError as exc:
-            log.warning("Chess.com archive request failed: %s (%s)", archive_url, exc.reason)
+            _record_archive_skip(
+                warnings, username, archive_url, str(exc.reason)
+            )
             continue
 
         for game in month_data.get("games", []) or []:
@@ -139,6 +149,38 @@ def fetch_recent_chesscom_games(username: str, limit: int = 10) -> List[Dict[str
 
     games.sort(key=lambda g: g.get("end_time") or 0, reverse=True)
     return games[:limit]
+
+
+def _archive_month_label(archive_url: str) -> str:
+    """Human-readable "YYYY-MM" for a Chess.com archive URL, falling back
+    to the raw URL when the path doesn't match the expected shape."""
+    parts = [part for part in archive_url.rstrip("/").split("/") if part]
+    if len(parts) >= 2 and parts[-2].isdigit() and parts[-1].isdigit():
+        return f"{parts[-2]}-{parts[-1]}"
+    return archive_url
+
+
+def _record_archive_skip(
+    warnings: Optional[List[str]],
+    username: str,
+    archive_url: str,
+    reason: str,
+) -> None:
+    """Log a skipped monthly archive and, when the caller supplied an
+    out-param, record it as a non-fatal import warning."""
+    month = _archive_month_label(archive_url)
+    log.warning(
+        "Chess.com archive %s for '%s' could not be fetched (%s); skipping "
+        "it -- the imported corpus will be missing that month's games",
+        month,
+        username,
+        reason,
+    )
+    if warnings is not None:
+        warnings.append(
+            f"Chess.com archive {month} for '{username}' could not be "
+            f"fetched ({reason}); some games may be missing."
+        )
 
 
 # Public Chess.com profile endpoint. Returns a JSON object with the
