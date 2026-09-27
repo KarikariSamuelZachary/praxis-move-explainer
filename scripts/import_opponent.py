@@ -50,6 +50,7 @@ def main() -> int:
         _mark_job_running(conn, job["job_id"])
         conn.commit()
         errors: list[str] = []
+        warnings: list[str] = []
         n = _fetch_and_store_provider_games(
             conn,
             requested_by_user_id=UID,
@@ -58,13 +59,16 @@ def main() -> int:
             username=username,
             limit=limit,
             errors=errors,
+            warnings=warnings,
         )
         if errors:
-            _mark_job_failed(conn, job["job_id"], n, "; ".join(errors))
+            _mark_job_failed(conn, job["job_id"], n, "; ".join(errors), warnings)
         else:
-            _mark_job_completed(conn, job["job_id"], n)
+            _mark_job_completed(conn, job["job_id"], n, warnings)
         conn.commit()
         print(f"imported {n} games for {username} (job {job['job_id']})")
+        if warnings:
+            print("warnings:", "; ".join(warnings))
         if errors:
             print("errors:", "; ".join(errors))
             return 1
