@@ -1,7 +1,7 @@
 'use client';
 
 import Link from 'next/link';
-import { usePathname } from 'next/navigation';
+import { usePathname, useRouter } from 'next/navigation';
 import { useClerk, useUser } from '@clerk/nextjs';
 import { useEffect, useRef, useState } from 'react';
 
@@ -57,8 +57,28 @@ function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
 function ProfileMenu() {
   const { signOut } = useClerk();
   const { user } = useUser();
+  const router = useRouter();
   const [isOpen, setIsOpen] = useState(false);
+  const [isSigningOut, setIsSigningOut] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+
+  // Sign-out hands the final navigation to Clerk, which awaits Next's router
+  // push to the landing page. Warming that route while the menu is open (or
+  // hovered) means the hand-off is not a cold load of the marketing bundle.
+  const warmLandingRoute = () => {
+    router.prefetch('/');
+  };
+
+  const handleSignOut = () => {
+    if (isSigningOut) return;
+    setIsSigningOut(true);
+    // The menu stays open so the pending item is visible feedback while Clerk
+    // revokes the session and navigates.
+    void signOut({ redirectUrl: '/' }).catch((error) => {
+      console.error('Sign out failed:', error);
+      setIsSigningOut(false);
+    });
+  };
 
   // The mark carries the account's initial. Sign-up collects no name, so the
   // email is the one identifier every account has; its first letter is the
@@ -94,7 +114,12 @@ function ProfileMenu() {
     <div ref={menuRef} className="relative">
       <button
         type="button"
-        onClick={() => setIsOpen((open) => !open)}
+        onClick={() => {
+          if (!isOpen) warmLandingRoute();
+          setIsOpen((open) => !open);
+        }}
+        onPointerEnter={warmLandingRoute}
+        onFocus={warmLandingRoute}
         className={`group flex h-9 w-9 items-center justify-center rounded-full border text-sm font-bold text-black shadow-[inset_0_1px_2px_rgba(255,255,255,0.45),0_3px_10px_rgba(0,0,0,0.28)] transition duration-200 ${
           isOpen
             ? 'border-gold-bright/80 bg-[#d7ae87] ring-2 ring-gold/25 ring-offset-2 ring-offset-walnut-950'
@@ -115,27 +140,32 @@ function ProfileMenu() {
           <button
             type="button"
             role="menuitem"
-            onClick={() => {
-              setIsOpen(false);
-              void signOut();
-            }}
-            className="group mt-1 flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium text-cream/90 transition hover:bg-white/10 hover:text-white"
+            onClick={handleSignOut}
+            disabled={isSigningOut}
+            className="group mt-1 flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium text-cream/90 transition hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-70"
           >
-            <svg
-              aria-hidden
-              className="h-4 w-4 text-gold/80 transition group-hover:text-gold-bright"
-              fill="none"
-              stroke="currentColor"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-              strokeWidth="1.8"
-              viewBox="0 0 24 24"
-            >
-              <path d="M10 17l5-5-5-5" />
-              <path d="M15 12H3" />
-              <path d="M21 4v16" />
-            </svg>
-            Logout
+            {isSigningOut ? (
+              <span
+                aria-hidden
+                className="h-4 w-4 animate-spin rounded-full border-2 border-gold/70 border-t-transparent"
+              />
+            ) : (
+              <svg
+                aria-hidden
+                className="h-4 w-4 text-gold/80 transition group-hover:text-gold-bright"
+                fill="none"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="1.8"
+                viewBox="0 0 24 24"
+              >
+                <path d="M10 17l5-5-5-5" />
+                <path d="M15 12H3" />
+                <path d="M21 4v16" />
+              </svg>
+            )}
+            {isSigningOut ? 'Signing out…' : 'Logout'}
           </button>
         </div>
       )}
