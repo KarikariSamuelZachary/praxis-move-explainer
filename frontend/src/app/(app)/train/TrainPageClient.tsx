@@ -221,6 +221,7 @@ type ImportStatusResponse = {
   imported_count: number;
   total_games?: number;
   error_message?: string | null;
+  warnings?: string[];
 };
 
 type ApiErrorResponse = {
@@ -231,6 +232,10 @@ type ApiErrorResponse = {
 const POLL_INTERVAL_MS = 1500;
 const MAX_POLL_ATTEMPTS = 80;
 const IMPORT_LIMIT = 500;
+// One-shot handoff of non-fatal import warnings (e.g. a skipped Chess.com
+// monthly archive) from the import modal to the Opponent Prep page, which
+// reads and clears it on mount.
+const IMPORT_WARNINGS_STORAGE_KEY = 'praxis:opponent-import-warnings';
 
 function OpponentPrepDialog({ onClose }: { onClose: () => void }) {
   const router = useRouter();
@@ -285,6 +290,17 @@ function OpponentPrepDialog({ onClose }: { onClose: () => void }) {
             throw new Error(
               `No public games found for ${IMPORT_PROVIDERS.find((p) => p.key === provider)?.label} username “${trimmed}”.`
             );
+          }
+          if (pollData.warnings && pollData.warnings.length > 0) {
+            try {
+              sessionStorage.setItem(
+                IMPORT_WARNINGS_STORAGE_KEY,
+                JSON.stringify(pollData.warnings)
+              );
+            } catch {
+              // Storage can be unavailable (private mode) — the import
+              // itself succeeded, so the warning is simply not shown.
+            }
           }
           setProgress(100);
           router.push('/train/opponent-prep');
