@@ -41,6 +41,12 @@ class OpponentImportJobResponse(BaseModel):
     imported_count: int
     total_games: int = 0
     error_message: Optional[str] = None
+    # Non-fatal import problems (e.g. a Chess.com monthly archive that
+    # could not be fetched, so the profile snapshot was built from an
+    # incomplete game set). Empty when the import was clean. The frontend
+    # surfaces these on the Opponent Prep page so a thin corpus is never
+    # silently presented as fully loaded.
+    warnings: List[str] = Field(default_factory=list)
     opponent_prep_ready: bool = False
     repertoire_index_status: Literal["queued", "running", "complete", "failed"] = "queued"
     repertoire_indexed_games: int = 0
