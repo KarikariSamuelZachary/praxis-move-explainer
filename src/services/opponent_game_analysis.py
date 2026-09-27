@@ -82,6 +82,17 @@ HEARTBEAT_STALE_SECONDS = 300
 # opponent's meaningful errors, not a full move-by-move log.
 BLUNDER_CLASSIFICATIONS = {"mistake", "blunder"}
 
+# Upper bound on how many of the MOST RECENT games are eligible for the
+# Stockfish blunder pass (env-overridable). Analysis costs seconds per
+# game, so an unbounded 500-game corpus is by far the dominant bill at
+# scale; the trap/style signals that consume blunders are recency-weighted
+# anyway, and 100 games is far past the trap gates' minimum (>= 5 games
+# total, >= 2 games per position). New imports push fresh games into the
+# window; older games are never analyzed unless they re-enter it.
+MAX_ANALYZED_GAMES_PER_OPPONENT = int(
+    os.getenv("OPPONENT_ANALYSIS_MAX_GAMES", "100")
+)
+
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -106,7 +117,10 @@ def try_start_opponent_analysis(
            is actively in progress).
          - status=running + heartbeat stale (>=5 min): reclaim (crashed
            worker) — proceed to flip.
-         - zero unanalyzed games: no-op (nothing to do).
+         - zero unanalyzed games: normalize the row to status=complete
+           with total_games=already-analyzed (a crashed 'running' row or
+           games outside the recency window would otherwise leave
+           analyzed<total forever), then no-op.
          - otherwise: flip status→running, set started_at=now,
            heartbeat_at=now, total_games=<imported count>,
            analyzed_games=<already-analyzed count>.
@@ -169,6 +183,28 @@ def try_start_opponent_analysis(
 
             # --- Step 3: decision ---
             if len(unanalyzed_ids) == 0:
+                # Nothing eligible left to analyze. Normalize the row to a
+                # terminal, count-consistent state: a worker can die mid-run
+                # (stale 'running'), and with the recency window some older
+                # unanalyzed games are deliberately never eligible — either
+                # way `analyzed < total` could stick forever and make the
+                # frontend poll indefinitely.
+                cur.execute(
+                    """
+                    UPDATE opponent_analysis_jobs
+                    SET status = 'complete',
+                        total_games = %s
+                    WHERE requested_by_user_id = %s
+                      AND provider = %s
+                      AND LOWER(opponent_username) = LOWER(%s)
+                    """,
+                    (
+                        already_analyzed_count,
+                        requested_by_user_id,
+                        provider,
+                        opponent_username,
+                    ),
+                )
                 conn.commit()
                 return {
                     "should_run": False,
@@ -404,20 +440,36 @@ def _fetch_unanalyzed_game_ids(
     opponent_username: str,
 ) -> List[str]:
     """The single indexed query: imported game ids NOT IN
-    opponent_game_analysis.
+    opponent_game_analysis, restricted to the
+    ``MAX_ANALYZED_GAMES_PER_OPPONENT`` most recent games.
 
     Both the trigger (``try_start_opponent_analysis``) and the worker
     (``run_opponent_game_analysis``) call this.  The GET endpoint does NOT
     — it reads the persisted job row state only.
+
+    The recency window is part of ELIGIBILITY, not a per-run LIMIT: games
+    outside the window are never analyzed.  A per-run LIMIT would instead
+    leave the job stuck "running" (the worker's final re-fetch would still
+    see older games) and let every future trigger chew through the rest of
+    the corpus one window at a time — i.e. no real bound on the Stockfish
+    bill.  With eligibility semantics the job reaches "complete" and stays
+    there until a new import pushes fresh games into the window.
     """
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             """
+            WITH newest AS (
+                SELECT g2.id
+                FROM opponent_games g2
+                WHERE g2.requested_by_user_id = %s
+                  AND g2.provider = %s
+                  AND LOWER(g2.opponent_username) = LOWER(%s)
+                ORDER BY g2.end_time DESC, g2.imported_at DESC
+                LIMIT %s
+            )
             SELECT g.id::text AS game_id
             FROM opponent_games g
-            WHERE g.requested_by_user_id = %s
-              AND g.provider = %s
-              AND LOWER(g.opponent_username) = LOWER(%s)
+            WHERE g.id IN (SELECT id FROM newest)
               AND NOT EXISTS (
                   SELECT 1
                   FROM opponent_game_analysis a
@@ -425,7 +477,12 @@ def _fetch_unanalyzed_game_ids(
               )
             ORDER BY g.end_time DESC, g.imported_at DESC
             """,
-            (requested_by_user_id, provider, opponent_username),
+            (
+                requested_by_user_id,
+                provider,
+                opponent_username,
+                MAX_ANALYZED_GAMES_PER_OPPONENT,
+            ),
         )
         return [row["game_id"] for row in cur.fetchall()]
 
