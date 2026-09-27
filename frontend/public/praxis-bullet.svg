@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">
+<defs>
+ <linearGradient id="metal" x1="83" y1="88" x2="209" y2="164" gradientUnits="userSpaceOnUse">
+  <stop stop-color="#FFF0B0"/><stop offset=".3" stop-color="#E5B451"/><stop offset=".7" stop-color="#B87825"/><stop offset="1" stop-color="#FFD978"/>
+ </linearGradient>
+ <linearGradient id="edge" x1="83" y1="84" x2="207" y2="170" gradientUnits="userSpaceOnUse">
+  <stop stop-color="#FFE9A0"/><stop offset="1" stop-color="#8E5C22"/>
+ </linearGradient>
+ <filter id="glow"><feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+</defs>
+<rect x="18" y="18" width="220" height="220" rx="52" fill="#11100E" stroke="#49351D" stroke-width="3"/>
+
+<!-- speed trails -->
+<path d="M40 103H103M31 128H92M43 153H103" stroke="#B87927" stroke-width="8" stroke-linecap="round" opacity=".9"/>
+<path d="M55 91H99M48 165H99" stroke="#E0A64A" stroke-width="5" stroke-linecap="round" opacity=".7"/>
+
+<!-- bullet body -->
+<path d="M91 91H166C174 91 181 95 187 101L210 125C214 129 214 135 210 139L187 155C181 161 174 165 166 165H91C84 165 79 160 79 153V103C79 96 84 91 91 91Z"
+ fill="url(#metal)" stroke="url(#edge)" stroke-width="4" filter="url(#glow)"/>
+
+<!-- pointed nose -->
+<path d="M166 91C179 94 191 104 205 118L216 128C219 131 219 133 216 136L205 146C191 156 179 162 166 165L178 135C180 131 180 125 178 121L166 91Z"
+ fill="#D99934" opacity=".9"/>
+
+<!-- casing bands -->
+<path d="M96 92V164M111 92V164" stroke="#8D5D23" stroke-width="6"/>
+<path d="M101 94V162" stroke="#FFE6A0" stroke-width="3" opacity=".8"/>
+<path d="M126 96H162" stroke="#FFF0B4" stroke-width="6" stroke-linecap="round" opacity=".8"/>
+
+<!-- motion arc -->
+<path d="M63 69C91 45 137 37 179 48" stroke="#9C6A28" stroke-width="5" stroke-linecap="round" opacity=".65"/>
+</svg>
