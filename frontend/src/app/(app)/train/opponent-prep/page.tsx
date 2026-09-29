@@ -938,7 +938,7 @@ export default function OpponentPrepPage() {
         }
         analysisPanel={
           <aside className={rightPanelClass}>
-            <div className="wooden-scroll flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
+            <div className="wood-scrollbar flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
               <WeakOpenings
                 openings={selectedProfile?.openings_lost_against ?? []}
                 warnings={importWarnings}
@@ -1224,9 +1224,154 @@ function WeakOpenings({
     .sort((a, b) => b.loss_rate - a.loss_rate)
     .slice(0, 5);
 
+  const renderOpening = (
+    opening: (typeof top)[number],
+    index: number,
+    featured = false
+  ) => {
+    const percentage = Math.round(opening.loss_rate * 100);
+    const wins = opening.raw_wins ?? 0;
+    const losses = opening.raw_losses ?? 0;
+    const draws = opening.raw_draws ?? 0;
+    const hasCounts =
+      opening.raw_wins !== null &&
+      opening.raw_losses !== null &&
+      opening.raw_draws !== null;
+    const canReview = Boolean(opening.color && provider && username);
+
+    return (
+      <button
+        key={opening.name}
+        type="button"
+        onClick={() => {
+          if (opening.color && provider && username) {
+            setSelectedOpening({ family: opening.family, color: opening.color });
+          }
+        }}
+        disabled={!canReview}
+        title={canReview ? 'Review a game from this opening' : undefined}
+        aria-label={`${canReview ? 'Review' : 'Opening'} ${opening.family}${opening.color ? ` as ${opening.color}` : ''}, ${percentage}% loss rate`}
+        className={`group relative block w-full overflow-hidden rounded-2xl border text-left transition duration-200 enabled:cursor-pointer focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#efd9a7] disabled:cursor-default ${
+          featured
+            ? 'border-rose-300/20 bg-[linear-gradient(115deg,rgba(127,29,29,0.24),rgba(0,0,0,0.42))] p-3.5 shadow-[inset_0_1px_0_rgba(255,255,255,0.05)] hover:border-rose-200/35 hover:bg-[linear-gradient(115deg,rgba(127,29,29,0.31),rgba(0,0,0,0.45))] disabled:hover:border-rose-300/20'
+            : 'border-[#f7e5c6]/[0.08] bg-black/25 px-3 py-2.5 hover:border-rose-300/20 hover:bg-rose-950/20 disabled:hover:border-[#f7e5c6]/[0.08] disabled:hover:bg-black/25'
+        }`}
+      >
+        {featured ? (
+          <>
+            <div className="flex items-center justify-between gap-3">
+              <span className="inline-flex items-center gap-1.5 text-[9px] font-bold uppercase tracking-[0.18em] text-rose-200/80">
+                <span className="h-1.5 w-1.5 rounded-full bg-rose-300 shadow-[0_0_10px_rgba(251,113,133,0.7)]" aria-hidden />
+                Biggest weakness
+              </span>
+            </div>
+
+            <div className="mt-2 flex items-start justify-between gap-3">
+              <div className="flex min-w-0 items-start gap-2.5">
+                <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-lg border border-rose-200/15 bg-rose-300/10 text-[10px] font-bold tabular-nums text-rose-100/90">
+                  01
+                </span>
+                <div className="min-w-0">
+                  <div className="truncate text-[15px] font-semibold text-[#fff2df]">
+                    {opening.family}
+                  </div>
+                  {opening.color === 'white' && (
+                    <div className="mt-0.5 text-[11px] text-[#f7e5c6]/55">
+                      Playing as White
+                    </div>
+                  )}
+                </div>
+              </div>
+              <div className="shrink-0 text-right">
+                <div className="text-[22px] font-semibold leading-none tabular-nums text-rose-200">
+                  {percentage}%
+                </div>
+                <div className="mt-1 text-[9px] font-semibold uppercase tracking-[0.15em] text-[#f7e5c6]/40">
+                  loss rate
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-3 h-2 overflow-hidden rounded-full bg-black/45 ring-1 ring-inset ring-white/[0.04]">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-rose-600 to-amber-300 transition-[width] duration-500 ease-out"
+                style={{ width: `${Math.max(3, Math.min(100, percentage))}%` }}
+              />
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[10px] text-[#f7e5c6]/55">
+              {hasCounts ? (
+                <>
+                  <span className="tabular-nums">
+                    <span className="text-emerald-200/80">{wins}W</span>{' '}
+                    <span className="text-rose-200/90">{losses}L</span>{' '}
+                    <span>{draws}D</span>
+                  </span>
+                </>
+              ) : (
+                <span>Weighted estimate · re-import to refresh</span>
+              )}
+              {opening.low_sample && (
+                <span className="rounded-full border border-amber-300/25 bg-amber-300/[0.08] px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.12em] text-amber-200">
+                  Low sample
+                </span>
+              )}
+            </div>
+          </>
+        ) : (
+          <>
+            <div className="flex items-center justify-between gap-3">
+              <div className="flex min-w-0 items-center gap-2.5">
+                <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg border border-[#f7e5c6]/10 bg-white/[0.04] text-[9px] font-bold tabular-nums text-[#f7e5c6]/55">
+                  {String(index + 1).padStart(2, '0')}
+                </span>
+                <div className="min-w-0">
+                  <div className="truncate text-xs font-semibold text-[#f7e5c6]/90">
+                    {opening.family}
+                    {opening.color === 'white' && (
+                      <span className="ml-1.5 text-[10px] font-normal text-[#f7e5c6]/45">
+                        as White
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+              <span className="shrink-0 text-right text-xs font-semibold tabular-nums text-rose-200/90">
+                {percentage}%
+                <span className="ml-1 text-[9px] font-medium uppercase tracking-wider text-[#f7e5c6]/35">loss</span>
+              </span>
+            </div>
+            <div className="ml-[34px] mt-1.5 flex items-center gap-2.5">
+              <div className="h-1 flex-1 overflow-hidden rounded-full bg-black/45">
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-rose-700 to-amber-300/90 transition-[width] duration-500 ease-out"
+                  style={{ width: `${Math.max(3, Math.min(100, percentage))}%` }}
+                />
+              </div>
+              <div className="shrink-0 text-[9px] tabular-nums text-[#f7e5c6]/45">
+                {hasCounts
+                  ? `${wins}W · ${losses}L · ${draws}D`
+                  : 'weighted estimate · re-import to refresh'}
+                {opening.low_sample && <span className="ml-1.5 text-amber-200/80">· low sample</span>}
+              </div>
+            </div>
+          </>
+        )}
+      </button>
+    );
+  };
+
   return (
     <section className="rounded-[18px] border border-[#f7e5c6]/10 bg-black/25 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-      <SectionHeader title="Weak Openings" />
+      <div className="flex items-center justify-between gap-3 border-b border-white/5 pb-2">
+        <div className="flex min-w-0 items-center gap-2">
+          <OpeningWeaknessReliefIcon />
+          <div className="min-w-0">
+            <h3 className="text-[11px] font-semibold uppercase tracking-[0.2em] text-[#f7e5c6]">
+              Weak Openings
+            </h3>
+          </div>
+        </div>
+      </div>
 
       {warnings.length > 0 && (
         <div
@@ -1245,89 +1390,12 @@ function WeakOpenings({
         </div>
       ) : (
         <div className="mt-3 flex flex-col gap-2">
-          {top.map((opening, index) => {
-            const percentage = Math.round(opening.loss_rate * 100);
-            const wins = opening.raw_wins ?? 0;
-            const losses = opening.raw_losses ?? 0;
-            const draws = opening.raw_draws ?? 0;
-            const hasCounts =
-              opening.raw_wins !== null &&
-              opening.raw_losses !== null &&
-              opening.raw_draws !== null;
-            return (
-              <button
-                key={opening.name}
-                type="button"
-                onClick={() => {
-                  if (opening.color && provider && username) {
-                    setSelectedOpening({
-                      family: opening.family,
-                      color: opening.color,
-                    });
-                  }
-                }}
-                disabled={!opening.color || !provider || !username}
-                title={opening.color ? 'View a game' : undefined}
-                className="group block w-full cursor-pointer rounded-2xl border border-black/30 bg-black/30 px-3 py-2.5 text-left transition-colors duration-200 hover:border-emerald-400/25 hover:bg-emerald-400/[0.05] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#efd9a7] disabled:cursor-default disabled:hover:border-black/30 disabled:hover:bg-black/30"
-              >
-                <div className="flex items-start justify-between gap-3">
-                  <div className="flex min-w-0 items-start gap-2.5">
-                    <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-md border border-[#f7e5c6]/10 bg-[#f7e5c6]/10 text-[10px] font-bold tabular-nums text-[#f7e5c6]/70">
-                      {index + 1}
-                    </span>
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-semibold text-[#f7e5c6]">
-                        {opening.family}
-                        {opening.color && (
-                          <span className="ml-1.5 text-[11px] font-medium text-[#f7e5c6]/50">
-                            as {opening.color === 'white' ? 'White' : 'Black'}
-                          </span>
-                        )}
-                      </div>
-                      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[#f7e5c6]/50">
-                        {hasCounts ? (
-                          <>
-                            <span className="tabular-nums">
-                              <span className="text-emerald-300/80">{wins}W</span>{' '}
-                              <span className="text-rose-300/80">{losses}L</span>{' '}
-                              <span>{draws}D</span>
-                            </span>
-                            <span className="h-1 w-1 rounded-full bg-[#f7e5c6]/25" aria-hidden />
-                            <span className="tabular-nums">
-                              {opening.raw_games} game{opening.raw_games === 1 ? '' : 's'}
-                            </span>
-                          </>
-                        ) : (
-                          <span>weighted estimate · re-import to refresh</span>
-                        )}
-                        {opening.low_sample && (
-                          <span className="shrink-0 rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-amber-200">
-                            low sample
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="shrink-0 text-right">
-                    <div className="text-sm font-semibold tabular-nums text-emerald-300">
-                      {percentage}%
-                    </div>
-                    <div className="text-[10px] uppercase tracking-[0.16em] text-[#f7e5c6]/35">
-                      loss rate
-                    </div>
-                  </div>
-                </div>
-                <div className="mt-2.5 h-1.5 overflow-hidden rounded-full bg-black/45">
-                  <div
-                    className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-emerald-300 transition-[width] duration-500 ease-out"
-                    style={{
-                      width: `${Math.max(3, Math.min(100, opening.loss_rate * 100))}%`,
-                    }}
-                  />
-                </div>
-              </button>
-            );
-          })}
+          {renderOpening(top[0], 0, true)}
+          {top.length > 1 && (
+            <div className="flex flex-col gap-1.5">
+              {top.slice(1).map((opening, index) => renderOpening(opening, index + 1))}
+            </div>
+          )}
         </div>
       )}
 
@@ -2202,43 +2270,58 @@ function PreferredTimeControl({
         }))
         .sort((a, b) => b.fraction - a.fraction)
     : [];
-  const primaryLabel = mostPlayed ?? entries[0]?.label ?? null;
+  const primaryEntry =
+    entries.find((entry) => entry.label === mostPlayed) ?? entries[0] ?? null;
 
   return (
     <section className="rounded-[18px] border border-[#f7e5c6]/10 bg-black/25 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-      <SectionHeader icon={<StopwatchIcon />} title="Preferred Time Control" />
+      <SectionHeader icon={<StopwatchReliefIcon />} title="Preferred Time Control" />
 
       {entries.length === 0 ? (
         <div className="mt-3">
           <EmptyHint text="No time-control data yet." />
         </div>
       ) : (
-        <div className="mt-3 rounded-2xl border border-black/30 bg-black/30 p-3">
-          <div className="grid gap-1.5 text-xs">
-            {entries.map(({ label, fraction, color }) => {
-              const isPrimary = label === primaryLabel;
-              return (
-                <div
-                  key={label}
-                  className={`grid grid-cols-[auto_1fr_auto] items-center gap-2 rounded-xl px-2 py-1.5 transition-colors duration-200 ${
-                    isPrimary
-                      ? 'border border-emerald-400/20 bg-emerald-400/[0.06] text-[#f7e5c6]'
-                      : 'text-[#f7e5c6]/70 hover:bg-white/[0.04]'
-                  }`}
-                >
-                  <span
-                    aria-hidden
-                    className="h-2.5 w-2.5 rounded-full"
-                    style={{ backgroundColor: color }}
-                  />
-                  <span className="truncate">{label}</span>
-                  <span className="tabular-nums">
-                    {Math.round(fraction * 100)}%
+        <div className="mt-3 space-y-2">
+          {entries.map(({ label, fraction, color }) => {
+            const isPrimary = label === primaryEntry?.label;
+            const percentage = Math.round(fraction * 100);
+            return (
+              <div
+                key={label}
+                className={`rounded-xl px-2 py-1.5 transition-colors ${
+                  isPrimary
+                    ? 'border border-[#d9b87c]/10 bg-[#d9b87c]/[0.04]'
+                    : 'hover:bg-white/[0.025]'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span
+                      aria-hidden
+                      className="h-2 w-2 shrink-0 rounded-full shadow-[0_0_8px_rgba(255,255,255,0.12)]"
+                      style={{ backgroundColor: color }}
+                    />
+                    <span className={`truncate text-xs ${isPrimary ? 'font-semibold text-[#f7e5c6]' : 'text-[#f7e5c6]/65'}`}>
+                      {label}
+                    </span>
+                  </div>
+                  <span className={`shrink-0 text-xs tabular-nums ${isPrimary ? 'font-semibold text-[#efd9a7]' : 'text-[#f7e5c6]/60'}`}>
+                    {percentage}%
                   </span>
                 </div>
-              );
-            })}
-          </div>
+                <div className="ml-4 mt-1.5 h-1 overflow-hidden rounded-full bg-black/40">
+                  <div
+                    className="h-full rounded-full transition-[width] duration-500 ease-out"
+                    style={{
+                      width: `${Math.max(0, Math.min(100, fraction * 100))}%`,
+                      backgroundColor: color,
+                    }}
+                  />
+                </div>
+              </div>
+            );
+          })}
         </div>
       )}
     </section>
@@ -2326,6 +2409,30 @@ function SectionHeader({ icon, title }: { icon?: React.ReactNode; title: string 
   );
 }
 
+function OpeningWeaknessReliefIcon() {
+  return (
+    <ReliefBadge size="xs">
+      <svg
+        width="14"
+        height="14"
+        viewBox="0 0 20 20"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M3.5 16.5h13" />
+        <path d="M5 14V5" />
+        <path d="M10 14V8" />
+        <path d="M15 14v-3" />
+        <path d="m4.5 5 4 2 3.5 3 4 2.5" />
+      </svg>
+    </ReliefBadge>
+  );
+}
+
 function EmptyHint({ text }: { text: string }) {
   return (
     <div className="rounded-2xl border border-dashed border-[#f7e5c6]/15 bg-black/20 px-3 py-3 text-center text-[11px] text-[#f7e5c6]/45">
@@ -2334,30 +2441,58 @@ function EmptyHint({ text }: { text: string }) {
   );
 }
 
-function KnightReliefIcon({ size }: { size: 'sm' | 'md' }) {
-  const boxClass = size === 'sm' ? 'h-5 w-5 text-[13px]' : 'h-10 w-10 text-[24px]';
-
+function ReliefBadge({
+  children,
+  size,
+}: {
+  children: React.ReactNode;
+  size: 'xs' | 'sm' | 'md';
+}) {
+  const sizeClass =
+    size === 'xs'
+      ? 'h-7 w-7 text-[14px]'
+      : size === 'sm'
+        ? 'h-5 w-5 text-[13px]'
+        : 'h-10 w-10 text-[24px]';
   return (
     <span
-      className={`relative inline-flex shrink-0 items-center justify-center rounded-full border border-[#f7e5c6]/20 bg-[radial-gradient(circle_at_34%_26%,#fff3cf_0%,#d6a95e_32%,#7a4a1d_68%,#1a0d05_100%)] text-[#2a1609] shadow-[inset_0_1px_1px_rgba(255,255,255,0.55),inset_0_-2px_4px_rgba(0,0,0,0.55),0_8px_18px_rgba(0,0,0,0.35)] ${boxClass}`}
+      className={`relative inline-flex shrink-0 items-center justify-center rounded-full border border-[#f7e5c6]/20 bg-[radial-gradient(circle_at_34%_26%,#fff3cf_0%,#d6a95e_32%,#7a4a1d_68%,#1a0d05_100%)] text-[#2a1609] shadow-[inset_0_1px_1px_rgba(255,255,255,0.55),inset_0_-2px_4px_rgba(0,0,0,0.55),0_8px_18px_rgba(0,0,0,0.35)] ${sizeClass}`}
       aria-hidden
     >
       <span className="absolute inset-[18%] rounded-full bg-black/10 blur-[1px]" />
-      <span className="relative -mt-px font-serif font-black leading-none [filter:drop-shadow(0_1px_0_rgba(255,240,190,0.55))_drop-shadow(0_2px_1px_rgba(0,0,0,0.45))]">
-        ♞
+      <span className="relative -mt-px flex items-center justify-center leading-none [filter:drop-shadow(0_1px_0_rgba(255,240,190,0.55))_drop-shadow(0_2px_1px_rgba(0,0,0,0.45))]">
+        {children}
       </span>
     </span>
   );
 }
 
-function StopwatchIcon() {
+function KnightReliefIcon({ size }: { size: 'sm' | 'md' }) {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <circle cx="12" cy="14" r="8" />
-      <path d="M12 14V10" />
-      <path d="M9 2h6" />
-      <path d="m17 5 3-3" />
-    </svg>
+    <ReliefBadge size={size}>
+      <span className="font-serif font-black">♞</span>
+    </ReliefBadge>
+  );
+}
+
+function StopwatchReliefIcon() {
+  return (
+    <ReliefBadge size="sm">
+      <svg
+        width="13"
+        height="13"
+        viewBox="0 0 20 20"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <circle cx="10" cy="11" r="6.3" />
+        <path d="M10 11V7.5M10 11l2.5 1.5M8 2.5h4M10 2.5v2" />
+      </svg>
+    </ReliefBadge>
   );
 }
 
