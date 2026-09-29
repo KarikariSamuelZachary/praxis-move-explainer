@@ -13,6 +13,7 @@ from llms.groq_explainer import GroqExplainer
 from llms.mock_explainer import MockExplainer
 from llms.openai_explainer import OpenAIExplainer
 from schemas.review_schemas import ReviewMoveResponse, ReviewRequest
+from services.opening_book import is_book_move
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -53,6 +54,7 @@ def _normalize_review_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "color": row["color"],
             "classification": row["classification"],
             "cp_loss": row["cp_loss"],
+            "ep_loss": row.get("ep_loss", 0),
             "eval_cp": row.get("eval_cp", 0),
             "eval_mate": row.get("eval_mate"),
             "best_move_san": row.get("best_move_san"),
@@ -89,7 +91,14 @@ def review_game(
 
     try:
         engine = get_review_stockfish(depth=int(os.getenv("REVIEW_DEPTH", "18")))
-        analyzer = GameAnalyzer(engine=engine, explainer=explainer)
+        analyzer = GameAnalyzer(
+            engine=engine,
+            explainer=explainer,
+            book_lookup=is_book_move,
+            # MultiPV=2 gives the Great-move check the second-best line
+            # ("only good move") without a second search per position.
+            multipv=2,
+        )
         review_rows = analyzer.analyze_full_game(pgn, target_color=body.target_color)
         return _normalize_review_rows(review_rows)
     except ValueError as exc:
