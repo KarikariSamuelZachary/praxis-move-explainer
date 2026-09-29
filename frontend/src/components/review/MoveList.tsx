@@ -10,11 +10,14 @@ type MoveListProps = {
 
 const CLASSIFICATION_DOT: Record<GameReviewMove['classification'], string> = {
   book: 'bg-sky-400/80',
+  brilliant: 'bg-cyan-300',
+  great: 'bg-teal-300',
   best: 'bg-emerald-400',
   excellent: 'bg-teal-400',
   good: 'bg-lime-400',
   inaccuracy: 'bg-amber-400',
   mistake: 'bg-orange-400',
+  miss: 'bg-red-400',
   blunder: 'bg-rose-500',
 };
 
