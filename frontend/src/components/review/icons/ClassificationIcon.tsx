@@ -1,19 +1,25 @@
 export type Classification =
   | 'book'
+  | 'brilliant'
+  | 'great'
   | 'best'
   | 'excellent'
   | 'good'
   | 'inaccuracy'
   | 'mistake'
+  | 'miss'
   | 'blunder';
 
 export const CLASSIFICATION_LABELS: Record<Classification, string> = {
   book: 'Book',
+  brilliant: 'Brilliant',
+  great: 'Great',
   best: 'Best',
   excellent: 'Excellent',
   good: 'Good',
   inaccuracy: 'Inaccuracy',
   mistake: 'Mistake',
+  miss: 'Miss',
   blunder: 'Blunder',
 };
 
@@ -35,6 +41,20 @@ export function ClassificationIcon({
           <circle cx="22" cy="22" r="21" fill="#5f5e5a" stroke="#888780" strokeWidth="0.5" />
           <path d="M14 15h8a3 3 0 013 3v11a2 2 0 00-2-2h-9z" fill="none" stroke="#f1efe8" strokeWidth="1.6" strokeLinejoin="round" />
           <path d="M30 15h-8a3 3 0 00-3 3v11a2 2 0 012-2h9z" fill="none" stroke="#f1efe8" strokeWidth="1.6" strokeLinejoin="round" />
+        </svg>
+      );
+    case 'brilliant':
+      return (
+        <svg {...common}>
+          <circle cx="22" cy="22" r="21" fill="#083D3D" stroke="#2BC4B4" strokeWidth="1" />
+          <text x="22" y="29" textAnchor="middle" fontSize="17" fontWeight="700" fill="#A8F0E6" fontFamily="Georgia,serif">!!</text>
+        </svg>
+      );
+    case 'great':
+      return (
+        <svg {...common}>
+          <circle cx="22" cy="22" r="21" fill="#0B3B2A" stroke="#1D9E75" strokeWidth="0.5" />
+          <text x="22" y="30" textAnchor="middle" fontSize="20" fontWeight="700" fill="#9FE1CB" fontFamily="Georgia,serif">!</text>
         </svg>
       );
     case 'best':
@@ -71,6 +91,13 @@ export function ClassificationIcon({
           <circle cx="22" cy="22" r="21" fill="#4A1B0C" stroke="#D85A30" strokeWidth="0.5" />
           <rect x="20" y="12" width="4" height="14" rx="2" fill="#F0997B" />
           <circle cx="22" cy="31" r="2.4" fill="#F0997B" />
+        </svg>
+      );
+    case 'miss':
+      return (
+        <svg {...common}>
+          <circle cx="22" cy="22" r="21" fill="#3B0A16" stroke="#E24B4A" strokeWidth="0.5" />
+          <path d="M15 15l14 14M29 15L15 29" fill="none" stroke="#F7C1C1" strokeWidth="3" strokeLinecap="round" />
         </svg>
       );
     case 'blunder':
