@@ -23,7 +23,6 @@ type BotSource =
   | 'ready'
   | 'in_book'
   | 'playing_naturally'
-  | 'correcting_blunder'
   | 'thinking'
   | 'error';
 
@@ -43,8 +42,16 @@ type OpponentProfile = {
   opening_results: Record<string, unknown> | null;
   openings_lost_against: {
     name: string;
-    loss_percentage: number;
-    games: number;
+    family: string;
+    color: 'white' | 'black' | null;
+    raw_games: number;
+    raw_wins: number | null;
+    raw_losses: number | null;
+    raw_draws: number | null;
+    loss_rate: number;
+    low_sample: boolean;
+    /** True on rows projected from a pre-raw snapshot (weighted estimate). */
+    legacy?: boolean;
   }[];
   traps: OpponentTrap[];
 };
@@ -57,17 +64,51 @@ type OpponentTrap = {
   game_count: number;
   move_number_min: number;
   move_number_max: number;
+  example_game_id: string;
+  example_ply: number;
+  example_move_san: string;
+  example_classification: 'mistake' | 'blunder';
   tier: 'position';
 };
 
 type SparringMoveResponse = {
   move_uci: string;
   move_san: string;
-  source: 'in_book' | 'playing_naturally' | 'correcting_blunder';
+  source: 'in_book' | 'playing_naturally';
   opponent_elo: number;
   repertoire_frequency?: number | null;
-  cp_loss: number;
-  best_move_san?: string | null;
+};
+
+type OpeningGameBlunder = {
+  move_number: number;
+  ply: number;
+  move_san: string;
+  classification: 'mistake' | 'blunder';
+};
+
+type OpeningGameSummary = {
+  game_id: string;
+  result: 'win' | 'loss' | 'draw' | '*';
+  end_time: number;
+  time_class: string;
+  analyzed: boolean;
+  first_blunder: OpeningGameBlunder | null;
+};
+
+type OpeningGamesResponse = {
+  initial_game_id: string;
+  games: OpeningGameSummary[];
+};
+
+type OpeningGame = {
+  game_id: string;
+  game_url: string;
+  pgn: string;
+  white: string;
+  black: string;
+  result: string;
+  end_time: number;
+  time_class: string;
 };
 
 type ApiErrorResponse = {
@@ -124,6 +165,39 @@ const panelClass =
 
 const rightPanelClass =
   'flex h-full min-h-0 flex-col gap-4 overflow-hidden rounded-[24px] border border-black/50 [background-image:linear-gradient(rgba(0,0,0,0.55),rgba(0,0,0,0.55)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
+
+const modalCardClass =
+  'relative m-auto w-full max-w-md rounded-[24px] border border-black/50 p-4 [background-image:linear-gradient(rgba(0,0,0,0.55),rgba(0,0,0,0.55)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
+
+// Square-board sizing shared by the modals, so the whole card fits inside
+// the viewport without scrolling. Chrome below/above the board measures
+// ~13.6rem: overlay py-6 (3rem) + card p-4 (2rem) + title (1.75rem) +
+// board mt-3 (0.75rem) + control bar h-7 (1.75rem) + info mt-2 + one 11px
+// line (~1.5rem) + blunder mt-3 + row (~2.9rem). 15rem leaves ~1.4rem of
+// slack for wrapped lines; 26rem is the card content width (max-w-md 28rem
+// minus p-4 2rem). So the board is min(content width, viewport - 15rem).
+const modalBoardWidthClass =
+  'mx-auto w-full max-w-[min(26rem,calc(100dvh_-_15rem))]';
+
+// Read-only wood board options shared by the trap position viewer and the
+// opening replay viewer.
+const modalBoardOptions = {
+  allowDragging: false,
+  animationDurationInMs: 0,
+  boardStyle: { width: '100%', height: '100%', borderRadius: '0' },
+  darkSquareStyle: {
+    backgroundImage: 'url(/walnut-dark.webp)',
+    backgroundSize: '110% 110%',
+    backgroundPosition: 'center',
+  },
+  lightSquareStyle: {
+    backgroundImage: 'url(/walnut-light.webp)',
+    backgroundSize: '110% 110%',
+    backgroundPosition: 'center',
+  },
+  darkSquareNotationStyle: { color: '#f0e0c0' },
+  lightSquareNotationStyle: { color: '#3a2410' },
+};
 
 const STYLE_PILL: Record<
   'Passive' | 'Balanced' | 'Aggressive',
@@ -865,13 +939,14 @@ export default function OpponentPrepPage() {
         analysisPanel={
           <aside className={rightPanelClass}>
             <div className="wooden-scroll flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
-              <OpeningsLostAgainst
+              <WeakOpenings
                 openings={selectedProfile?.openings_lost_against ?? []}
-                gameCount={selectedProfile?.game_count ?? 0}
                 warnings={importWarnings}
+                provider={selectedProfile?.provider ?? null}
+                username={selectedProfile?.opponent_username ?? null}
               />
 
-              <TrapsFallenFor key={trapsPanelKey} profile={selectedProfile} />
+              <RecurringBlunders key={trapsPanelKey} profile={selectedProfile} />
 
               <PreferredTimeControl
                 distribution={selectedProfile?.time_control_distribution ?? null}
@@ -1126,30 +1201,32 @@ function PlayAsSelect({
   );
 }
 
-function OpeningsLostAgainst({
+function WeakOpenings({
   openings,
-  gameCount,
   warnings,
+  provider,
+  username,
 }: {
-  openings: { name: string; loss_percentage: number; games: number }[];
-  gameCount: number;
+  openings: OpponentProfile['openings_lost_against'];
   warnings: string[];
+  provider: 'lichess' | 'chesscom' | null;
+  username: string | null;
 }) {
-  // Top 5 by descending loss% - the API already sorts this way, but
-  // re-sort defensively in case a caller ever hand-builds the array.
+  // Bucket currently open in the replay modal (null = modal closed).
+  const [selectedOpening, setSelectedOpening] = useState<{
+    family: string;
+    color: 'white' | 'black';
+  } | null>(null);
+
+  // The API already sorts by shrunk loss rate; re-sort defensively in case
+  // a caller ever hand-builds the array.
   const top = [...openings]
-    .sort((a, b) => b.loss_percentage - a.loss_percentage)
+    .sort((a, b) => b.loss_rate - a.loss_rate)
     .slice(0, 5);
 
   return (
     <section className="rounded-[18px] border border-[#f7e5c6]/10 bg-black/25 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-      <SectionHeader icon={<BookIcon />} title="Openings He Lost Against" />
-
-      {/* How many games the snapshot was actually built from, so a thin
-          corpus reads as thin instead of silently looking complete. */}
-      <p className="mt-1 text-[11px] text-[#f7e5c6]/45">
-        Based on {gameCount} imported game{gameCount === 1 ? '' : 's'}
-      </p>
+      <SectionHeader title="Weak Openings" />
 
       {warnings.length > 0 && (
         <div
@@ -1169,11 +1246,29 @@ function OpeningsLostAgainst({
       ) : (
         <div className="mt-3 flex flex-col gap-2">
           {top.map((opening, index) => {
-            const percentage = Math.round(opening.loss_percentage * 100);
+            const percentage = Math.round(opening.loss_rate * 100);
+            const wins = opening.raw_wins ?? 0;
+            const losses = opening.raw_losses ?? 0;
+            const draws = opening.raw_draws ?? 0;
+            const hasCounts =
+              opening.raw_wins !== null &&
+              opening.raw_losses !== null &&
+              opening.raw_draws !== null;
             return (
-              <div
+              <button
                 key={opening.name}
-                className="group rounded-2xl border border-black/30 bg-black/30 px-3 py-2.5 transition-colors duration-200 hover:border-emerald-400/25 hover:bg-emerald-400/[0.05]"
+                type="button"
+                onClick={() => {
+                  if (opening.color && provider && username) {
+                    setSelectedOpening({
+                      family: opening.family,
+                      color: opening.color,
+                    });
+                  }
+                }}
+                disabled={!opening.color || !provider || !username}
+                title={opening.color ? 'View a game' : undefined}
+                className="group block w-full cursor-pointer rounded-2xl border border-black/30 bg-black/30 px-3 py-2.5 text-left transition-colors duration-200 hover:border-emerald-400/25 hover:bg-emerald-400/[0.05] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#efd9a7] disabled:cursor-default disabled:hover:border-black/30 disabled:hover:bg-black/30"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div className="flex min-w-0 items-start gap-2.5">
@@ -1182,10 +1277,34 @@ function OpeningsLostAgainst({
                     </span>
                     <div className="min-w-0">
                       <div className="truncate text-sm font-semibold text-[#f7e5c6]">
-                        {opening.name}
+                        {opening.family}
+                        {opening.color && (
+                          <span className="ml-1.5 text-[11px] font-medium text-[#f7e5c6]/50">
+                            as {opening.color === 'white' ? 'White' : 'Black'}
+                          </span>
+                        )}
                       </div>
-                      <div className="mt-1 text-[11px] text-[#f7e5c6]/50">
-                        {opening.games} game{opening.games === 1 ? '' : 's'} sampled
+                      <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[#f7e5c6]/50">
+                        {hasCounts ? (
+                          <>
+                            <span className="tabular-nums">
+                              <span className="text-emerald-300/80">{wins}W</span>{' '}
+                              <span className="text-rose-300/80">{losses}L</span>{' '}
+                              <span>{draws}D</span>
+                            </span>
+                            <span className="h-1 w-1 rounded-full bg-[#f7e5c6]/25" aria-hidden />
+                            <span className="tabular-nums">
+                              {opening.raw_games} game{opening.raw_games === 1 ? '' : 's'}
+                            </span>
+                          </>
+                        ) : (
+                          <span>weighted estimate · re-import to refresh</span>
+                        )}
+                        {opening.low_sample && (
+                          <span className="shrink-0 rounded-full border border-amber-400/30 bg-amber-400/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.14em] text-amber-200">
+                            low sample
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -1194,7 +1313,7 @@ function OpeningsLostAgainst({
                       {percentage}%
                     </div>
                     <div className="text-[10px] uppercase tracking-[0.16em] text-[#f7e5c6]/35">
-                      losses
+                      loss rate
                     </div>
                   </div>
                 </div>
@@ -1202,20 +1321,30 @@ function OpeningsLostAgainst({
                   <div
                     className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-emerald-300 transition-[width] duration-500 ease-out"
                     style={{
-                      width: `${Math.max(3, Math.min(100, opening.loss_percentage * 100))}%`,
+                      width: `${Math.max(3, Math.min(100, opening.loss_rate * 100))}%`,
                     }}
                   />
                 </div>
-              </div>
+              </button>
             );
           })}
         </div>
+      )}
+
+      {selectedOpening && provider && username && (
+        <OpeningReplayModal
+          provider={provider}
+          username={username}
+          family={selectedOpening.family}
+          color={selectedOpening.color}
+          onClose={() => setSelectedOpening(null)}
+        />
       )}
     </section>
   );
 }
 
-function TrapsFallenFor({ profile }: { profile: OpponentProfile | null }) {
+function RecurringBlunders({ profile }: { profile: OpponentProfile | null }) {
   const provider = profile?.provider ?? null;
   const username = profile?.opponent_username ?? null;
   // The parent keys this panel by opponent, so switching opponents
@@ -1226,6 +1355,8 @@ function TrapsFallenFor({ profile }: { profile: OpponentProfile | null }) {
     provider && username ? 'checking' : 'idle'
   );
   const [progress, setProgress] = useState<{ analyzed: number; total: number } | null>(null);
+  // Trap row currently open in the position viewer (null = modal closed).
+  const [selectedTrap, setSelectedTrap] = useState<OpponentTrap | null>(null);
 
   // Poll the blunder-analysis job for THIS opponent only, and refresh the
   // traps in panel-local state. Openings/Time Control stay untouched while
@@ -1344,7 +1475,7 @@ function TrapsFallenFor({ profile }: { profile: OpponentProfile | null }) {
 
   return (
     <section className="rounded-[18px] border border-[#f7e5c6]/10 bg-black/25 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-      <SectionHeader icon={<KnightReliefIcon size="sm" />} title="Traps Fallen For" />
+      <SectionHeader icon={<KnightReliefIcon size="sm" />} title="Recurring Blunders" />
 
       {top.length > 0 && isAnalyzing && (
         <div className="mt-2 flex items-center gap-2 text-[11px] text-[#f7e5c6]/55">
@@ -1389,9 +1520,12 @@ function TrapsFallenFor({ profile }: { profile: OpponentProfile | null }) {
               trap.classification === 'blunder' ? 'bg-rose-400' : 'bg-amber-300';
 
             return (
-              <div
+              <button
                 key={trap.position_key}
-                className="group relative overflow-hidden rounded-2xl border border-black/30 bg-black/30 px-3 py-2.5 transition-colors duration-200 hover:border-emerald-400/25 hover:bg-emerald-400/[0.05]"
+                type="button"
+                onClick={() => setSelectedTrap(trap)}
+                title="View position"
+                className="group relative block w-full cursor-pointer overflow-hidden rounded-2xl border border-black/30 bg-black/30 px-3 py-2.5 text-left transition-colors duration-200 hover:border-emerald-400/25 hover:bg-emerald-400/[0.05] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#efd9a7]"
               >
                 <div className={`absolute inset-y-3 left-0 w-1 rounded-r-full ${accent}`} />
                 <div className="flex items-start justify-between gap-3 pl-1.5">
@@ -1414,12 +1548,641 @@ function TrapsFallenFor({ profile }: { profile: OpponentProfile | null }) {
                   </div>
                   <KnightReliefIcon size="md" />
                 </div>
-              </div>
+              </button>
             );
           })}
         </div>
       )}
+
+      {selectedTrap && (
+        <TrapPositionModal
+          trap={selectedTrap}
+          onClose={() => setSelectedTrap(null)}
+        />
+      )}
     </section>
+  );
+}
+
+// Shared modal shell: wood card, Escape/overlay close, dialog semantics.
+// Reused by the trap position viewer now and the opening replay viewer next.
+function ModalShell({
+  title,
+  onClose,
+  children,
+}: {
+  title: string;
+  onClose: () => void;
+  children: React.ReactNode;
+}) {
+  useEffect(() => {
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex overflow-y-auto bg-black/70 px-4 py-6 backdrop-blur-sm"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+    >
+      <div className={modalCardClass} onClick={(event) => event.stopPropagation()}>
+        <div className="flex items-start justify-between gap-3">
+          <h2
+            className="min-w-0 truncate font-display text-lg font-semibold text-[#f7e5c6]"
+            title={title}
+          >
+            {title}
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[#f7e5c6]/70 transition hover:bg-white/8 hover:text-[#f7e5c6]"
+          >
+            <svg
+              className="h-4 w-4"
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth="2"
+              aria-hidden="true"
+            >
+              <path d="M18 6 6 18M6 6l12 12" />
+            </svg>
+          </button>
+        </div>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function TrapPositionModal({
+  trap,
+  onClose,
+}: {
+  trap: OpponentTrap;
+  onClose: () => void;
+}) {
+  // The stored FEN's side to move is the player who erred here, so orient
+  // the board toward them for the whole replay.
+  const erringSide: 'white' | 'black' =
+    trap.fen.split(' ')[1] === 'b' ? 'black' : 'white';
+  const [phase, setPhase] = useState<'loading' | 'error' | 'ready'>('loading');
+  const [positions, setPositions] = useState<string[]>([trap.fen]);
+  const [moveIndex, setMoveIndex] = useState(0);
+  const [copied, setCopied] = useState(false);
+
+  // Fetch the example game (most recent game with this recurring error) so
+  // the user can step back and forward around the position. The static trap
+  // FEN stays rendered while loading and if the fetch fails.
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadGame() {
+      try {
+        const response = await fetch(
+          `/api/train/opponent-opening-game?game_id=${encodeURIComponent(trap.example_game_id)}`,
+          { cache: 'no-store' }
+        );
+        if (!response.ok) {
+          if (!cancelled) {
+            setPhase('error');
+          }
+          return;
+        }
+        const game = (await response.json()) as OpeningGame;
+        if (cancelled) {
+          return;
+        }
+        // Replay locally: positions[i] is the FEN after i plies, so the
+        // position before the error (ply p) is positions[p - 1].
+        const replay = new Chess();
+        replay.loadPgn(game.pgn);
+        const stepper = new Chess();
+        const nextPositions = [START_FEN];
+        for (const san of replay.history()) {
+          stepper.move(san);
+          nextPositions.push(stepper.fen());
+        }
+        setPositions(nextPositions);
+        setMoveIndex(Math.max(0, trap.example_ply - 1));
+        setPhase('ready');
+      } catch {
+        if (!cancelled) {
+          setPhase('error');
+        }
+      }
+    }
+
+    loadGame();
+    return () => {
+      cancelled = true;
+    };
+  }, [trap.example_game_id, trap.example_ply]);
+
+  const lastMoveIndex = positions.length - 1;
+  const position = positions[moveIndex] ?? trap.fen;
+  const sideToMove: 'white' | 'black' =
+    position.split(' ')[1] === 'b' ? 'black' : 'white';
+  const navButtonClass =
+    'flex h-7 w-7 items-center justify-center rounded-lg border border-[#f7e5c6]/20 bg-black/40 text-xs text-[#f7e5c6]/80 transition hover:bg-black/60 disabled:pointer-events-none disabled:opacity-35';
+
+  async function copyFen() {
+    try {
+      await navigator.clipboard.writeText(position);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard can be unavailable (permissions / insecure context).
+    }
+  }
+
+  const moveLabel =
+    trap.example_move_san || (trap.moves.length > 0 ? trap.moves[0] : '?');
+  const moveRange =
+    trap.move_number_min === trap.move_number_max
+      ? `move ${trap.move_number_min}`
+      : `moves ${trap.move_number_min}-${trap.move_number_max}`;
+  const classificationTone =
+    trap.example_classification === 'blunder'
+      ? 'border-rose-400/30 bg-rose-500/10 text-rose-200'
+      : 'border-amber-400/30 bg-amber-500/10 text-amber-200';
+
+  return (
+    <ModalShell title="Recurring blunder" onClose={onClose}>
+      <p className="mt-1 text-[11px] text-[#f7e5c6]/50">
+        {moveRange} · {trap.game_count} game{trap.game_count === 1 ? '' : 's'} ·{' '}
+        {sideToMove === 'white' ? 'White' : 'Black'} to move
+      </p>
+
+      <div
+        className={`mt-3 overflow-hidden rounded-2xl border border-black/50 ${modalBoardWidthClass}`}
+      >
+        <div className="relative aspect-square w-full">
+          <Chessboard
+            options={{
+              position,
+              boardOrientation: erringSide,
+              ...modalBoardOptions,
+            }}
+          />
+        </div>
+      </div>
+
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+        <div
+          className={`flex items-center gap-1 transition-opacity ${
+            phase === 'ready' ? '' : 'pointer-events-none opacity-40'
+          }`}
+        >
+          <button
+            type="button"
+            onClick={() => setMoveIndex(0)}
+            disabled={moveIndex === 0}
+            aria-label="First position"
+            className={navButtonClass}
+          >
+            «
+          </button>
+          <button
+            type="button"
+            onClick={() => setMoveIndex((current) => Math.max(0, current - 1))}
+            disabled={moveIndex === 0}
+            aria-label="Previous move"
+            className={navButtonClass}
+          >
+            ‹
+          </button>
+          <button
+            type="button"
+            onClick={() =>
+              setMoveIndex((current) => Math.min(lastMoveIndex, current + 1))
+            }
+            disabled={moveIndex >= lastMoveIndex}
+            aria-label="Next move"
+            className={navButtonClass}
+          >
+            ›
+          </button>
+          <button
+            type="button"
+            onClick={() => setMoveIndex(lastMoveIndex)}
+            disabled={moveIndex >= lastMoveIndex}
+            aria-label="Last position"
+            className={navButtonClass}
+          >
+            »
+          </button>
+          <span className="ml-1 text-[11px] tabular-nums text-[#f7e5c6]/50">
+            {phase === 'ready' ? `${moveIndex} / ${lastMoveIndex}` : '– / –'}
+          </span>
+        </div>
+        <button
+          type="button"
+          onClick={copyFen}
+          className="shrink-0 rounded-full border border-[#f7e5c6]/25 bg-black/45 px-3 py-1.5 text-[11px] font-semibold text-[#f7e5c6]/80 transition hover:bg-black/65"
+        >
+          {copied ? 'Copied' : 'Copy FEN'}
+        </button>
+      </div>
+
+      <div className="mt-2 flex items-center justify-between gap-3">
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-sm font-semibold text-[#f7e5c6]">
+            Played {moveLabel}
+          </span>
+          <span
+            className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] ${classificationTone}`}
+          >
+            {trap.example_classification}
+          </span>
+        </div>
+        {phase === 'error' && (
+          <span className="shrink-0 text-[10px] text-[#f7e5c6]/40">
+            Game unavailable
+          </span>
+        )}
+      </div>
+    </ModalShell>
+  );
+}
+
+function OpeningReplayModal({
+  provider,
+  username,
+  family,
+  color,
+  onClose,
+}: {
+  provider: 'lichess' | 'chesscom';
+  username: string;
+  family: string;
+  color: 'white' | 'black';
+  onClose: () => void;
+}) {
+  const [phase, setPhase] = useState<'loading' | 'error' | 'ready'>('loading');
+  const [games, setGames] = useState<OpeningGameSummary[]>([]);
+  const [gameIndex, setGameIndex] = useState(0);
+  const [gamePhase, setGamePhase] = useState<'loading' | 'error' | 'ready'>(
+    'loading'
+  );
+  const [game, setGame] = useState<OpeningGame | null>(null);
+  const [positions, setPositions] = useState<string[]>([START_FEN]);
+  const [moveIndex, setMoveIndex] = useState(0);
+  const gameCache = useRef(new Map<string, OpeningGame>());
+
+  // Load the bucket's ordered game list once; open on the server-chosen
+  // game (newest blunder-loss, else newest loss, else the newest game).
+  useEffect(() => {
+    let cancelled = false;
+    gameCache.current.clear();
+
+    async function loadGames() {
+      try {
+        const response = await fetch(
+          `/api/train/opponent-opening-games?provider=${provider}&opponent_username=${encodeURIComponent(username)}&family=${encodeURIComponent(family)}&color=${color}`,
+          { cache: 'no-store' }
+        );
+        if (!response.ok) {
+          if (!cancelled) {
+            setPhase('error');
+          }
+          return;
+        }
+        const data = (await response.json()) as OpeningGamesResponse;
+        if (cancelled) {
+          return;
+        }
+        const initialIndex = data.games.findIndex(
+          (entry) => entry.game_id === data.initial_game_id
+        );
+        setGames(data.games);
+        setGameIndex(initialIndex >= 0 ? initialIndex : 0);
+        setPhase('ready');
+      } catch {
+        if (!cancelled) {
+          setPhase('error');
+        }
+      }
+    }
+
+    loadGames();
+    return () => {
+      cancelled = true;
+    };
+  }, [provider, username, family, color]);
+
+  // Fetch (or reuse) the selected game's PGN and replay it into positions.
+  // Games are cached by id, so stepping back and forth is instant.
+  useEffect(() => {
+    if (phase !== 'ready') {
+      return;
+    }
+    const selected = games[gameIndex];
+    if (!selected) {
+      return;
+    }
+    let cancelled = false;
+
+    async function loadGame() {
+      setGamePhase('loading');
+      try {
+        let next = gameCache.current.get(selected.game_id) ?? null;
+        if (!next) {
+          const response = await fetch(
+            `/api/train/opponent-opening-game?game_id=${encodeURIComponent(selected.game_id)}`,
+            { cache: 'no-store' }
+          );
+          if (!response.ok) {
+            if (!cancelled) {
+              setGamePhase('error');
+            }
+            return;
+          }
+          next = (await response.json()) as OpeningGame;
+          gameCache.current.set(selected.game_id, next);
+        }
+        if (cancelled) {
+          return;
+        }
+        // Replay locally: positions[i] is the FEN after i plies, so the
+        // position before ply p is positions[p - 1] (the blunder jump).
+        const replay = new Chess();
+        replay.loadPgn(next.pgn);
+        const stepper = new Chess();
+        const nextPositions = [START_FEN];
+        for (const san of replay.history()) {
+          stepper.move(san);
+          nextPositions.push(stepper.fen());
+        }
+        setGame(next);
+        setPositions(nextPositions);
+        setMoveIndex(0);
+        setGamePhase('ready');
+      } catch {
+        if (!cancelled) {
+          setGamePhase('error');
+        }
+      }
+    }
+
+    loadGame();
+    return () => {
+      cancelled = true;
+    };
+  }, [phase, games, gameIndex]);
+
+  const summary = games[gameIndex] ?? null;
+  const lastMoveIndex = positions.length - 1;
+  const position = positions[moveIndex] ?? START_FEN;
+  const navButtonClass =
+    'flex h-7 w-7 items-center justify-center rounded-lg border border-[#f7e5c6]/20 bg-black/40 text-xs text-[#f7e5c6]/80 transition hover:bg-black/60 disabled:pointer-events-none disabled:opacity-35';
+
+  const goToGame = (nextIndex: number) => {
+    if (nextIndex < 0 || nextIndex >= games.length || nextIndex === gameIndex) {
+      return;
+    }
+    setGameIndex(nextIndex);
+  };
+
+  return (
+    <ModalShell
+      title={`${family} · as ${color === 'white' ? 'White' : 'Black'}`}
+      onClose={onClose}
+    >
+      {phase === 'loading' && (
+        <div className="mt-6 flex items-center justify-center gap-2 py-10 text-xs text-[#f7e5c6]/60">
+          <span className="h-3 w-3 rounded-full border-2 border-[#f7e5c6]/35 border-t-[#f7e5c6] animate-spin" />
+          Loading games…
+        </div>
+      )}
+
+      {phase === 'error' && (
+        <div className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-3 text-xs leading-relaxed text-amber-200">
+          No games found for this opening. The opponent may have been
+          re-imported since this row was built — refresh and try again.
+        </div>
+      )}
+
+      {phase === 'ready' && summary && (
+        <>
+          <div
+            className={`mt-3 overflow-hidden rounded-2xl border border-black/50 ${modalBoardWidthClass}`}
+          >
+            <div className="relative aspect-square w-full">
+              {gamePhase === 'ready' && game ? (
+                <Chessboard
+                  options={{
+                    position,
+                    boardOrientation: color,
+                    ...modalBoardOptions,
+                  }}
+                />
+              ) : (
+                <div className="flex h-full w-full flex-col items-center justify-center gap-2 bg-black/40 text-xs text-[#f7e5c6]/60">
+                  {gamePhase === 'error' ? (
+                    'Could not load this game.'
+                  ) : (
+                    <>
+                      <span className="h-3 w-3 rounded-full border-2 border-[#f7e5c6]/35 border-t-[#f7e5c6] animate-spin" />
+                      Loading game…
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* One control bar: game nav on the left (losses lead the list,
+              newest first, so ‹ steps towards newer games) and move nav on
+              the right, so the modal stays inside short viewports. The move
+              group is dimmed until the selected game's PGN is replayed. */}
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => goToGame(gameIndex - 1)}
+                disabled={gameIndex <= 0}
+                aria-label="Previous game"
+                className={navButtonClass}
+              >
+                ‹
+              </button>
+              <button
+                type="button"
+                onClick={() => goToGame(gameIndex + 1)}
+                disabled={gameIndex >= games.length - 1}
+                aria-label="Next game"
+                className={navButtonClass}
+              >
+                ›
+              </button>
+              <span className="ml-1 text-[11px] tabular-nums text-[#f7e5c6]/50">
+                Game {gameIndex + 1} / {games.length}
+              </span>
+            </div>
+            <div
+              className={`flex items-center gap-1 transition-opacity ${
+                gamePhase === 'ready' && game
+                  ? ''
+                  : 'pointer-events-none opacity-40'
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => setMoveIndex(0)}
+                disabled={moveIndex === 0}
+                aria-label="First position"
+                className={navButtonClass}
+              >
+                «
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setMoveIndex((current) => Math.max(0, current - 1))
+                }
+                disabled={moveIndex === 0}
+                aria-label="Previous move"
+                className={navButtonClass}
+              >
+                ‹
+              </button>
+              <button
+                type="button"
+                onClick={() =>
+                  setMoveIndex((current) =>
+                    Math.min(lastMoveIndex, current + 1)
+                  )
+                }
+                disabled={moveIndex >= lastMoveIndex}
+                aria-label="Next move"
+                className={navButtonClass}
+              >
+                ›
+              </button>
+              <button
+                type="button"
+                onClick={() => setMoveIndex(lastMoveIndex)}
+                disabled={moveIndex >= lastMoveIndex}
+                aria-label="Last position"
+                className={navButtonClass}
+              >
+                »
+              </button>
+              <span className="ml-1 text-[11px] tabular-nums text-[#f7e5c6]/50">
+                {gamePhase === 'ready' && game
+                  ? `${moveIndex} / ${lastMoveIndex}`
+                  : '– / –'}
+              </span>
+            </div>
+          </div>
+
+          {/* Game meta: result badge + date come from the summary; players,
+              score and time class need the fetched PGN. */}
+          <div className="mt-2 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[#f7e5c6]/60">
+            <OpeningResultBadge result={summary.result} />
+            <span>{new Date(summary.end_time * 1000).toLocaleDateString()}</span>
+            {gamePhase === 'ready' && game && (
+              <>
+                <span
+                  className="h-1 w-1 rounded-full bg-[#f7e5c6]/25"
+                  aria-hidden
+                />
+                <span className="truncate">
+                  {game.white} vs {game.black}
+                </span>
+                <span
+                  className="h-1 w-1 rounded-full bg-[#f7e5c6]/25"
+                  aria-hidden
+                />
+                <span>{game.result}</span>
+                <span
+                  className="h-1 w-1 rounded-full bg-[#f7e5c6]/25"
+                  aria-hidden
+                />
+                <span>{game.time_class}</span>
+              </>
+            )}
+          </div>
+
+          {gamePhase === 'ready' && game && summary.first_blunder && (
+            <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-black/30 bg-black/30 px-3 py-2">
+              <span className="min-w-0 truncate text-[11px] text-[#f7e5c6]/70">
+                First {summary.first_blunder.classification}: move{' '}
+                {summary.first_blunder.move_number} ·{' '}
+                {summary.first_blunder.move_san}
+              </span>
+              <button
+                type="button"
+                onClick={() =>
+                  setMoveIndex(
+                    Math.max(0, (summary.first_blunder?.ply ?? 1) - 1)
+                  )
+                }
+                className="shrink-0 rounded-full border border-rose-400/30 bg-rose-500/10 px-3 py-1.5 text-[11px] font-semibold text-rose-200 transition hover:bg-rose-500/20"
+              >
+                Jump to blunder
+              </button>
+            </div>
+          )}
+
+          {gamePhase === 'ready' && game && !summary.first_blunder && (
+            <p className="mt-3 text-[11px] leading-relaxed text-[#f7e5c6]/45">
+              {summary.analyzed
+                ? 'No mistakes or blunders found in this game.'
+                : 'This game was not analyzed (the Stockfish pass covers the most recent games), so there is no move review for it.'}
+            </p>
+          )}
+        </>
+      )}
+    </ModalShell>
+  );
+}
+
+function OpeningResultBadge({
+  result,
+}: {
+  result: OpeningGameSummary['result'];
+}) {
+  const meta =
+    result === 'win'
+      ? {
+          label: 'Win',
+          className: 'border-emerald-400/30 bg-emerald-400/10 text-emerald-200',
+        }
+      : result === 'loss'
+        ? {
+            label: 'Loss',
+            className: 'border-rose-400/30 bg-rose-500/10 text-rose-200',
+          }
+        : result === 'draw'
+          ? {
+              label: 'Draw',
+              className: 'border-[#f7e5c6]/20 bg-white/5 text-[#f7e5c6]/70',
+            }
+          : {
+              label: 'Unfinished',
+              className: 'border-[#f7e5c6]/15 bg-black/30 text-[#f7e5c6]/45',
+            };
+
+  return (
+    <span
+      className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide ${meta.className}`}
+    >
+      {meta.label}
+    </span>
   );
 }
 
@@ -1552,10 +2315,10 @@ function StatusStrip({
   );
 }
 
-function SectionHeader({ icon, title }: { icon: React.ReactNode; title: string }) {
+function SectionHeader({ icon, title }: { icon?: React.ReactNode; title: string }) {
   return (
     <div className="flex items-center gap-2 border-b border-white/5 pb-2 text-[#f7e5c6]">
-      <span className="text-emerald-300/75">{icon}</span>
+      {icon && <span className="text-emerald-300/75">{icon}</span>}
       <h3 className="text-[11px] font-semibold uppercase tracking-[0.22em]">
         {title}
       </h3>
@@ -1568,15 +2331,6 @@ function EmptyHint({ text }: { text: string }) {
     <div className="rounded-2xl border border-dashed border-[#f7e5c6]/15 bg-black/20 px-3 py-3 text-center text-[11px] text-[#f7e5c6]/45">
       {text}
     </div>
-  );
-}
-
-function BookIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
-      <path d="M4 4h12a4 4 0 0 1 4 4v12H8a4 4 0 0 1-4-4V4Z" />
-      <path d="M4 16a4 4 0 0 1 4-4h12" />
-    </svg>
   );
 }
 
@@ -1621,7 +2375,6 @@ function displayProvider(provider: 'lichess' | 'chesscom') {
 function sourceLabel(status: BotSource) {
   if (status === 'in_book') return 'In book';
   if (status === 'playing_naturally') return 'Playing naturally';
-  if (status === 'correcting_blunder') return 'Correcting a blunder';
   if (status === 'thinking') return 'Thinking';
   if (status === 'error') return 'Needs attention';
   return 'Ready';
