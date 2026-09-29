@@ -8,11 +8,6 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Qu
 from core import database
 from core.rate_limit import limit_by_clerk_user_id
 from engines.maia_engine import MaiaUnavailableError, get_maia3, is_maia_available
-from engines.stockfish_engine import (
-    StockfishEngine,
-    get_stockfish_singleton,
-    reset_stockfish_singleton,
-)
 from schemas.train_schemas import (
     EngineSparringMoveRequest,
     EngineSparringMoveResponse,
@@ -22,6 +17,8 @@ from schemas.train_schemas import (
     OpponentImportJobResponse,
     OpponentImportRequest,
     OpponentImportStartResponse,
+    OpponentOpeningGameResponse,
+    OpponentOpeningGamesResponse,
     OpponentProfileInfoResponse,
     OpponentProfileListResponse,
     OpponentProfileResponse,
@@ -49,6 +46,8 @@ from services.opponent_import import (
 )
 from services.opponent_repertoire import (
     ensure_opponent_repertoire,
+    find_opening_games,
+    get_opening_game,
     get_opponent_rating,
     list_opponent_profiles,
     pick_near_repertoire_moves,
@@ -268,6 +267,22 @@ def list_train_opponents(
 # gets its own copy — fine for a non-critical display hint.
 _CHESSCOM_PROFILE_TTL_SECONDS = 3600
 _chesscom_profile_cache: dict[tuple[str, str], tuple[float, Dict[str, Any]]] = {}
+
+# --- Weak Openings representative-game cache ------------------------------
+#
+# Listing a bucket scans the opponent's PGNs to re-derive family/color, so a
+# repeated click must not pay that parse again. Same process-local TTL
+# pattern as the caches above; 10 min is short enough that a re-import's
+# fresh PGNs show up quickly. Negative results are cached too (an empty
+# bucket is a 404 until the corpus changes). Single-game fetches cache by
+# game id under the same TTL so stepping through the list is instant.
+_OPENING_GAME_CACHE_TTL_SECONDS = 600
+_opening_games_cache: dict[
+    tuple[str, str, str, str, str], tuple[float, Optional[Dict[str, Any]]]
+] = {}
+_opening_game_cache: dict[
+    tuple[str, str], tuple[float, Optional[Dict[str, Any]]]
+] = {}
 
 
 # --- style + traps in-memory cache (sparring hot path) --------------------
@@ -554,6 +569,125 @@ def get_opponent_analysis(
     return OpponentAnalysisStatusResponse(**status)
 
 
+@router.get(
+    "/train/opponent-opening-games",
+    response_model=OpponentOpeningGamesResponse,
+)
+def get_opponent_opening_games(
+    request: Request,
+    provider: Literal["lichess", "chesscom"] = Query(
+        ..., description="Provider the opponent was imported from."
+    ),
+    opponent_username: str = Query(..., min_length=1, max_length=100),
+    family: str = Query(
+        ...,
+        min_length=1,
+        max_length=200,
+        description="Opening family label from the Weak Openings row.",
+    ),
+    color: Literal["white", "black"] = Query(
+        ..., description="The side the opponent played in that bucket."
+    ),
+    _: None = Depends(limit_by_clerk_user_id(limit=30, window=60)),
+):
+    """Every game in one Weak Openings bucket, ordered for review.
+
+    Resolved server-side from our own `opponent_games` — the client sends the
+    bucket identity, never a game URL. Losses first, then draws, then wins,
+    newest first within each group; `initial_game_id` is the game the modal
+    opens on (newest loss with a blunder row, else newest loss). PGNs are
+    NOT included; the UI fetches a single game by id on demand. 404 when the
+    bucket has no parseable game.
+    """
+    clerk_id = request.headers.get("X-Clerk-User-Id")
+    if not clerk_id:
+        raise HTTPException(status_code=400, detail="Missing X-Clerk-User-Id header")
+
+    cache_key = (
+        clerk_id,
+        provider,
+        opponent_username.strip().lower(),
+        family.strip().lower(),
+        color,
+    )
+    now = time.time()
+    cached = _opening_games_cache.get(cache_key)
+    if cached is not None and now - cached[0] < _OPENING_GAME_CACHE_TTL_SECONDS:
+        result = cached[1]
+    else:
+        conn = database.connection_pool.getconn()
+        try:
+            result = find_opening_games(
+                conn,
+                requested_by_user_id=clerk_id,
+                provider=provider,
+                opponent_username=opponent_username,
+                family=family,
+                color=color,
+            )
+        finally:
+            database.connection_pool.putconn(conn)
+        _opening_games_cache[cache_key] = (now, result)
+
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No games found for this opening.",
+        )
+
+    return OpponentOpeningGamesResponse(**result)
+
+
+@router.get(
+    "/train/opponent-opening-game",
+    response_model=OpponentOpeningGameResponse,
+)
+def get_opponent_opening_game(
+    request: Request,
+    game_id: str = Query(
+        ...,
+        min_length=1,
+        max_length=64,
+        description="Stored game id from the opening-games list endpoint.",
+    ),
+    _: None = Depends(limit_by_clerk_user_id(limit=30, window=60)),
+):
+    """One stored game (with PGN) for the replay board.
+
+    Scoped to the requesting user's own corpus; the client only ever sends
+    ids it received from `/train/opponent-opening-games`. 404 when the game
+    does not exist or belongs to another user.
+    """
+    clerk_id = request.headers.get("X-Clerk-User-Id")
+    if not clerk_id:
+        raise HTTPException(status_code=400, detail="Missing X-Clerk-User-Id header")
+
+    cache_key = (clerk_id, game_id)
+    now = time.time()
+    cached = _opening_game_cache.get(cache_key)
+    if cached is not None and now - cached[0] < _OPENING_GAME_CACHE_TTL_SECONDS:
+        result = cached[1]
+    else:
+        conn = database.connection_pool.getconn()
+        try:
+            result = get_opening_game(
+                conn,
+                requested_by_user_id=clerk_id,
+                game_id=game_id,
+            )
+        finally:
+            database.connection_pool.putconn(conn)
+        _opening_game_cache[cache_key] = (now, result)
+
+    if result is None:
+        raise HTTPException(
+            status_code=404,
+            detail="No game found.",
+        )
+
+    return OpponentOpeningGameResponse(**result)
+
+
 @router.post(
     "/train/sparring-move",
     response_model=SparringMoveResponse,
@@ -640,10 +774,9 @@ def get_sparring_move(
         # subprocess liveness check (not just a boot-time flag), so it
         # returns False both when Maia never started at boot AND when it
         # crashed mid-session. Short-circuit here with a clear typed 503
-        # rather than letting an unhandled chess.engine exception fall
-        # through into the Stockfish `except` block below (which mislabels
-        # everything as a Stockfish failure). 503 = the request was fine;
-        # the dependency is down.
+        # rather than letting an unhandled chess.engine exception surface
+        # as an opaque 500. 503 = the request was fine; the dependency is
+        # down.
         if not is_maia_available():
             raise HTTPException(
                 status_code=503,
@@ -770,7 +903,7 @@ def get_sparring_move(
                 # matching list_opponent_profiles' connection-acquisition
                 # pattern, the same pattern the sibling
                 # compute_opponent_traps call uses for the Opponent Prep
-                # page's "Traps He's Fallen For" UI). On any failure the
+                # page's "Recurring Blunders" UI). On any failure the
                 # trap set is None so the reranker stays in mirror-mode;
                 # the existing sac/qt/setup/castle biasing is NOT blocked.
                 if not traps_ok:
@@ -956,42 +1089,16 @@ def get_sparring_move(
     if candidate_move not in board.legal_moves:
         raise HTTPException(status_code=502, detail="Engine returned an illegal move")
 
-    try:
-        # Long-lived singleton (booted at startup) instead of a fresh
-        # Stockfish subprocess per move — spawning + UCI handshake cost
-        # ~0.3-0.7s on EVERY move before either evaluation even started.
-        stockfish = get_stockfish_singleton()
-        eval_before = stockfish.evaluate(board, pov=bot_color)
-        candidate_board = board.copy(stack=False)
-        candidate_board.push(candidate_move)
-        eval_after = stockfish.evaluate(candidate_board, pov=bot_color)
-        cp_loss = max(0, round(eval_before.score_cp - eval_after.score_cp))
-
-        if cp_loss >= body.catastrophic_loss_cp and eval_before.best_move_uci:
-            stockfish_move = chess.Move.from_uci(eval_before.best_move_uci)
-            if stockfish_move in board.legal_moves:
-                candidate_move = stockfish_move
-                move_uci = eval_before.best_move_uci
-                move_san = eval_before.best_move_san
-                source = "correcting_blunder"
-    except Exception as exc:  # noqa: BLE001
-        # The singleton handle may be dead (mid-session engine crash) or in
-        # an unknown state after a failed/timeout analyse — drop it so the
-        # next request starts a fresh subprocess instead of retrying into a
-        # poisoned engine.
-        reset_stockfish_singleton()
-        log.exception("Sparring move safety check failed")
-        raise HTTPException(status_code=502, detail=f"Stockfish safety check failed: {exc}") from exc
-
+    # No engine safety override: the clone plays exactly what the book /
+    # Maia + style re-ranker chose, including its human-like mistakes. That
+    # is the point of opponent prep — the imported blunders (and the Traps
+    # panel) only mean something if the clone is allowed to repeat them.
     return SparringMoveResponse(
         move_uci=move_uci,
         move_san=move_san or board.san(candidate_move),
         source=source,
         opponent_elo=opponent_elo,
         repertoire_frequency=repertoire_frequency,
-        cp_loss=cp_loss,
-        best_move_uci=eval_before.best_move_uci,
-        best_move_san=eval_before.best_move_san,
     )
 
 
