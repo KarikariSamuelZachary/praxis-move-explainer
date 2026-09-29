@@ -1,0 +1,224 @@
+"""
+Opening-book lookup for Game Review move classification.
+
+Chess.com classifies a move as "Book" when it is a conventional opening
+move, and their 2023 Game Review update explicitly overhauled the book to
+align with well-known opening theory. Their corpus is proprietary, so this
+module approximates it with an open, local book:
+
+  * theory lines from the CC0 `lichess-org/chess-openings` dataset, and/or
+  * frequency-counted moves from a masters/high-rated PGN dump.
+
+Both are written to the `opening_book_moves` table (position_key -> move)
+by `scripts/build_opening_book.py`, keyed by the first 4 FEN fields
+(board, side to move, castling, en passant) so transpositions match. The
+lookup is an in-process cache with a TTL, so a rebuilt book is picked up
+within `_BOOK_CACHE_TTL_SECONDS` without restarting the backend.
+
+Contiguity ("once a game leaves the book it never re-enters") is enforced
+by the caller (`core.game_analyzer.GameAnalyzer`), not here.
+"""
+import logging
+import threading
+import time
+from io import StringIO
+from typing import Dict, FrozenSet, Iterable, Iterator, List, Optional, Tuple
+
+import chess
+import chess.pgn
+from psycopg2.extras import execute_values
+
+from core import database
+
+log = logging.getLogger(__name__)
+
+# A rebuilt book (new source rows) becomes visible after this TTL without a
+# backend restart; the build script runs in its own process and cannot clear
+# this process's cache directly.
+_BOOK_CACHE_TTL_SECONDS = 600
+
+_book_cache: Optional[Tuple[float, Dict[str, FrozenSet[str]]]] = None
+_book_lock = threading.Lock()
+
+
+def position_key(board: chess.Board) -> str:
+    """First 4 FEN fields — the transposition key shared by the repo.
+
+    Same convention as the repertoire sampler's position key and the
+    `opponent_game_blunders.position_key` column: board, side to move,
+    castling rights, en-passant target. Move counters are excluded.
+    """
+    return " ".join(board.fen().split(" ")[:4])
+
+
+# ---------------------------------------------------------------------------
+# Lookup (hot path)
+# ---------------------------------------------------------------------------
+
+def _load_book_from_db() -> Dict[str, FrozenSet[str]]:
+    if database.connection_pool is None:
+        return {}
+    conn = database.connection_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT position_key, move_uci FROM opening_book_moves")
+            rows = cur.fetchall()
+    finally:
+        database.connection_pool.putconn(conn)
+
+    book: Dict[str, set] = {}
+    for key, move_uci in rows:
+        book.setdefault(key, set()).add(move_uci)
+    return {key: frozenset(moves) for key, moves in book.items()}
+
+
+def _get_book() -> Dict[str, FrozenSet[str]]:
+    global _book_cache
+    cached = _book_cache
+    now = time.time()
+    if cached is not None and now - cached[0] < _BOOK_CACHE_TTL_SECONDS:
+        return cached[1]
+
+    with _book_lock:
+        cached = _book_cache
+        if cached is not None and now - cached[0] < _BOOK_CACHE_TTL_SECONDS:
+            return cached[1]
+        try:
+            book = _load_book_from_db()
+        except Exception:  # noqa: BLE001 — review must survive a missing table
+            log.exception("Opening book load failed; continuing without book")
+            book = {}
+        _book_cache = (now, book)
+        return book
+
+
+def is_book_move(board: chess.Board, move: chess.Move) -> bool:
+    """True when the move is present in the book for this position.
+
+    Presence means book: the builders already apply their own thresholds
+    (ECO lines are theory by definition; PGN corpora are filtered by
+    `--min-count`), so the hot path is a set lookup. Fails soft to False
+    when the book is unavailable.
+    """
+    moves = _get_book().get(position_key(board))
+    return moves is not None and move.uci() in moves
+
+
+def invalidate_cache() -> None:
+    """Drop the cached book (tests / same-process rebuilds)."""
+    global _book_cache
+    _book_cache = None
+
+
+# ---------------------------------------------------------------------------
+# Build helpers (used by scripts/build_opening_book.py)
+# ---------------------------------------------------------------------------
+
+def iter_eco_rows(tsv_text: str) -> Iterator[Tuple[str, str, str]]:
+    """Yield (eco, name, pgn) rows from a chess-openings TSV file."""
+    for line in tsv_text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        parts = line.split("\t")
+        if len(parts) < 3:
+            continue
+        yield parts[0].strip(), parts[1].strip(), parts[2].strip()
+
+
+def _record_move(
+    book: Dict[Tuple[str, str], Tuple[int, str]],
+    board: chess.Board,
+    move: chess.Move,
+) -> None:
+    key = (position_key(board), move.uci())
+    san = board.san(move)
+    existing = book.get(key)
+    if existing is None:
+        book[key] = (1, san)
+    else:
+        book[key] = (existing[0] + 1, existing[1])
+
+
+def collect_moves_from_lines(
+    pgn_lines: Iterable[str],
+) -> Dict[Tuple[str, str], Tuple[int, str]]:
+    """Count (position_key, move_uci) -> (occurrences, san) over PGN lines."""
+    book: Dict[Tuple[str, str], Tuple[int, str]] = {}
+    for pgn_line in pgn_lines:
+        game = chess.pgn.read_game(StringIO(pgn_line))
+        if game is None:
+            continue
+        board = game.board()
+        for move in game.mainline_moves():
+            _record_move(book, board, move)
+            board.push(move)
+    return book
+
+
+def _game_meets_elo(game: chess.pgn.Game, min_elo: int) -> bool:
+    if min_elo <= 0:
+        return True
+    for header in ("WhiteElo", "BlackElo"):
+        raw = (game.headers.get(header) or "").strip()
+        try:
+            if int(raw) < min_elo:
+                return False
+        except ValueError:
+            return False
+    return True
+
+
+def collect_moves_from_games(
+    games: Iterable[chess.pgn.Game],
+    *,
+    max_ply: int = 30,
+    min_elo: int = 0,
+) -> Dict[Tuple[str, str], Tuple[int, str]]:
+    """Count book-move candidates over a game stream.
+
+    Only the first `max_ply` plies are walked (the book ends long before
+    move 30 in practice; the cap bounds table size on huge corpora), and
+    games below `min_elo` on either side are skipped when `min_elo > 0`.
+    """
+    book: Dict[Tuple[str, str], Tuple[int, str]] = {}
+    for game in games:
+        if not _game_meets_elo(game, min_elo):
+            continue
+        board = game.board()
+        for ply, move in enumerate(game.mainline_moves()):
+            if ply >= max_ply:
+                break
+            _record_move(book, board, move)
+            board.push(move)
+    return book
+
+
+def replace_book_rows(
+    conn,
+    *,
+    source: str,
+    rows: Iterable[Tuple[str, str, str, int]],
+) -> int:
+    """Replace all rows for `source` with `rows` (position, uci, san, count).
+
+    Delete-then-insert makes the build idempotent: re-running a source
+    never duplicates rows and always reflects the current input.
+    """
+    data: List[Tuple[str, str, str, int, str]] = [
+        (key, uci, san, count, source) for key, uci, san, count in rows
+    ]
+    with conn.cursor() as cur:
+        cur.execute("DELETE FROM opening_book_moves WHERE source = %s", (source,))
+        if data:
+            execute_values(
+                cur,
+                """
+                INSERT INTO opening_book_moves
+                    (position_key, move_uci, move_san, count, source)
+                VALUES %s
+                """,
+                data,
+            )
+    conn.commit()
+    return len(data)
