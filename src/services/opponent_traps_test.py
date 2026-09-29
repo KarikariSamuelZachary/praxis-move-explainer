@@ -231,8 +231,24 @@ def test_compute_opponent_traps():
     assert posA["tier"] == "position", (
         f"Expected tier='position'; got {posA['tier']}"
     )
+    # Replay example: most recent game (all fake rows have no end_time, so
+    # the move_number tiebreak picks g1's move 10), White to move -> ply 19.
+    assert posA["example_game_id"] == "g1", (
+        f"Expected example_game_id='g1'; got {posA['example_game_id']}"
+    )
+    assert posA["example_ply"] == 19, (
+        f"Expected example_ply=19 (White move 10); got {posA['example_ply']}"
+    )
+    assert posA["example_move_san"] == "Nf3", (
+        f"Expected example_move_san='Nf3'; got {posA['example_move_san']}"
+    )
+    assert posA["example_classification"] == "blunder", (
+        f"Expected example_classification='blunder'; got "
+        f"{posA['example_classification']}"
+    )
     print("[PASS] posA trap fields: fen, moves (sorted distinct), "
-          "classification (worst=blunder), game_count, move_number range, tier")
+          "classification (worst=blunder), game_count, move_number range, "
+          "tier, replay example")
 
     # --- Assertion 6: posD trap has correct fields ---
     posD = traps[0]
