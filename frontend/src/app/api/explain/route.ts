@@ -45,11 +45,14 @@ function isValidSanMove(move: string): boolean {
 
 function isValidClassification(value: unknown): value is MoveClassification {
   return value === 'book'
+    || value === 'brilliant'
+    || value === 'great'
     || value === 'best'
     || value === 'excellent'
     || value === 'good'
     || value === 'inaccuracy'
     || value === 'mistake'
+    || value === 'miss'
     || value === 'blunder';
 }
 
