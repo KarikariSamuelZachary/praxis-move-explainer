@@ -24,11 +24,14 @@ const CLASSIFICATION_ROW: Record<
   { label: string; icon: string; tone: string }
 > = {
   book: { label: 'Book', icon: '📘', tone: 'text-sky-300' },
+  brilliant: { label: 'Brilliant', icon: '!!', tone: 'text-cyan-300' },
+  great: { label: 'Great', icon: '!', tone: 'text-teal-200' },
   best: { label: 'Best Move', icon: '⭐', tone: 'text-emerald-300' },
   excellent: { label: 'Excellent', icon: '✨', tone: 'text-teal-300' },
   good: { label: 'Good', icon: '👍', tone: 'text-lime-300' },
   inaccuracy: { label: 'Inaccuracy', icon: '!', tone: 'text-amber-300' },
   mistake: { label: 'Mistake', icon: '?', tone: 'text-orange-300' },
+  miss: { label: 'Miss', icon: '✕', tone: 'text-red-300' },
   blunder: { label: 'Blunder', icon: '✗', tone: 'text-rose-300' },
 };
 
