@@ -238,6 +238,7 @@ class StockfishEngine:
         depth_limit: Optional[int] = None,
         pov: Optional[chess.Color] = None,
         time_limit: Optional[float] = None,
+        multipv: int = 1,
     ) -> Evaluation:
         if not self.engine:
             raise RuntimeError("Engine not started. Use context manager or call start()")
@@ -250,10 +251,20 @@ class StockfishEngine:
             info = self.engine.analyse(
                 board,
                 chess.engine.Limit(time=effective_time, depth=effective_depth),
+                multipv=max(1, int(multipv)),
             )
 
-        score = info.get("score")
-        pv = info.get("pv", [])
+        # python-chess returns a single info dict for multipv=1 and a ranked
+        # list for multipv>1; normalize both shapes here.
+        if isinstance(info, list):
+            primary = info[0] if info else {}
+            second = info[1] if len(info) > 1 else None
+        else:
+            primary = info or {}
+            second = None
+
+        score = primary.get("score")
+        pv = primary.get("pv", [])
 
         # Convert score to centipawns from the requested side's perspective.
         if score:
@@ -264,6 +275,11 @@ class StockfishEngine:
         else:
             cp_score = 0
             mate = None
+
+        second_best_cp = None
+        if second is not None and second.get("score") is not None:
+            score_pov = pov if pov is not None else board.turn
+            second_best_cp = self._score_to_centipawns(second["score"], score_pov)
 
         # Extract best move and convert to UCI/SAN
         if pv:
@@ -279,6 +295,7 @@ class StockfishEngine:
             best_move_uci=best_move_uci,
             best_move_san=best_move_san,
             mate=mate,
+            second_best_cp=second_best_cp,
         )
 
     def suggest(
