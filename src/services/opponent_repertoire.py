@@ -10,6 +10,8 @@ from psycopg2.extras import Json, RealDictCursor
 
 from core import database
 from services.opponent_style import (
+    _analyze_game,
+    _blunder_ply,
     compute_opening_results,
     compute_time_control_distribution,
 )
@@ -300,13 +302,19 @@ def build_opponent_profile_snapshot(
 
     pgns = row.get("pgns") or []
     end_times = row.get("end_times") or []
+    time_classes = row.get("time_classes") or []
     games = [
         {
             "pgn": pgn,
             "end_time": end_time,
+            # DB time_class is the primary source for the per-class opening
+            # breakdown; `compute_opening_results` falls back to the PGN
+            # [TimeControl] header when it's empty, so backfilled and freshly
+            # imported snapshots bucket identically.
+            "time_class": time_class,
             "opponent_username": opponent_username,
         }
-        for pgn, end_time in zip(pgns, end_times)
+        for pgn, end_time, time_class in zip(pgns, end_times, time_classes)
     ]
     opening_results = compute_opening_results(games) if games else None
     tc_profile = compute_time_control_distribution(games) if games else None
@@ -426,7 +434,6 @@ def list_opponent_profiles(*, requested_by_user_id: str) -> list[Dict[str, Any]]
                     preferred_time_control,
                     time_control_distribution,
                     opening_results,
-                    openings_lost_against,
                     avatar_url,
                     verified
                 FROM opponent_profile_snapshots
@@ -491,7 +498,14 @@ def list_opponent_profiles(*, requested_by_user_id: str) -> list[Dict[str, Any]]
                     "preferred_time_control": row.get("preferred_time_control"),
                     "time_control_distribution": row.get("time_control_distribution"),
                     "opening_results": row.get("opening_results"),
-                    "openings_lost_against": row.get("openings_lost_against") or [],
+                    # Projected AT READ TIME from the stored raw buckets so
+                    # the floor/shrinkage knobs in this module can change
+                    # without a re-import. The snapshot's stored
+                    # `openings_lost_against` column is no longer read here
+                    # (the import/backfill still writes it for compatibility).
+                    "openings_lost_against": _openings_lost_against(
+                        row.get("opening_results") or None
+                    ),
                     "avatar_url": row.get("avatar_url"),
                     "verified": bool(row.get("verified")),
                     "traps": compute_opponent_traps(
@@ -528,20 +542,24 @@ def list_opponent_profiles(*, requested_by_user_id: str) -> list[Dict[str, Any]]
                 {
                     "pgn": pgn,
                     "end_time": end_time,
+                    # Same per-class opening breakdown source as the snapshot
+                    # builder above (DB column primary, PGN header fallback).
+                    "time_class": time_class,
                     "opponent_username": opponent_username,
                 }
-                for pgn, end_time in zip(pgns, end_times)
+                for pgn, end_time, time_class in zip(pgns, end_times, time_classes)
             ]
             # Time control: gated internally by MIN_STYLE_GAMES; for
             # opponents below the floor the distribution/most_common come
             # back None and the sparring page just doesn't prefill the
             # Time Control field.
             tc_profile = compute_time_control_distribution(games) if games else None
-            # Opening W/L/D: NO floor here (the spec for "Openings He Lost
-            # Against" is deliberately floor-less — every bucket with at
-            # least one game is shown, however small). by_opening is {} for
-            # a row set with no parseable PGNs, which the Opponent Prep
-            # page renders as an empty "no openings data" panel.
+            # Opening W/L/D: NO floor at storage — every bucket with at
+            # least one parseable game is kept raw (the Weak Openings panel
+            # applies its own projection-time floor/shrinkage later, so it
+            # can change without a re-import). by_opening is {} for a row
+            # set with no parseable PGNs, which the Opponent Prep page
+            # renders as an empty "no openings data" panel.
             opening_results = compute_opening_results(games) if games else None
             # Traps: read/aggregation over opponent_game_blunders.
             # Returns [] when zero groups qualify — the common case for
@@ -1069,40 +1087,349 @@ def _ratings_by_time_class(
     return {label: round(sum(rs) / len(rs)) for label, rs in buckets.items()}
 
 
-def _openings_lost_against(
-    by_opening: Optional[Dict[str, Dict[str, Any]]],
+# --- Weak Openings projection knobs ----------------------------------------
+#
+# These are PROJECTION-time knobs. Storage keeps every bucket raw (counts by
+# color and time class — see compute_opening_results), so tuning any of them
+# costs no re-import. The floor is deliberately on the RAW game count, never
+# on recency-weighted effective samples: a weighted floor silently purges
+# small-but-real buckets (the documented style-signal gap we're avoiding).
+OPENING_MIN_RAW_GAMES = 5           # floor for a normal (ranked) row
+OPENING_LOW_SAMPLE_MIN_GAMES = 3    # backfill floor when too few qualify
+OPENING_MIN_QUALIFIED_BUCKETS = 3   # below this, backfill with low-sample rows
+OPENING_LOSS_SHRINKAGE_PRIOR = 5.0  # pseudo-games; ~the floor size
+
+
+def _shrunk_loss_rate(
+    losses: int, decided_or_drawn: int, prior_rate: float
+) -> float:
+    """Empirical-Bayes shrink of a bucket's loss rate toward the opponent's
+    overall loss rate (`prior_rate`), with `OPENING_LOSS_SHRINKAGE_PRIOR`
+    pseudo-games of prior weight. A 1/1 bucket no longer reads 100% unless
+    the opponent loses everything everywhere."""
+    return (losses + OPENING_LOSS_SHRINKAGE_PRIOR * prior_rate) / (
+        decided_or_drawn + OPENING_LOSS_SHRINKAGE_PRIOR
+    )
+
+
+def _legacy_openings_lost_against(
+    by_opening: Dict[str, Dict[str, Any]],
 ) -> list[Dict[str, Any]]:
-    """Project opening_results into the "Lost Against" panel's row shape.
+    """Pre-raw projection for snapshots built before raw counts existed.
 
-    For each bucket, computes `loss_percentage =
-    weighted_losses / (weighted_wins + weighted_losses + weighted_draws)`
-    over the same recency-weighted W/L/D counts opening_results exposes.
-    Buckets whose decided-or-drawn total is 0 (every game was "*"
-    aborted, OR the bucket is empty) are excluded — same contract
-    `win_rate`'s not-None case signals, so the percentage is always
-    meaningful when shown.
-
-    Sorted by descending loss_percentage so the Opponent Prep panel's
-    "most-lost-against-first" ordering is preserved at the API layer
-    (the frontend doesn't need to re-sort). Empty list when by_opening
-    is None (no parseable PGNs at all).
+    Kept until the backfill script (or the next import) rewrites old
+    snapshots. `_unknown` is dropped here too so the panel copy is
+    consistent across both paths. Rows carry the same transitional display
+    keys (`name`, `loss_percentage`, `games`) plus `legacy=True` so the UI
+    can tag them.
     """
-    if not by_opening:
-        return []
     rows: list[Dict[str, Any]] = []
     for name, stats in by_opening.items():
+        if name == "_unknown":
+            continue
         weighted_wins = float(stats.get("weighted_wins") or 0.0)
         weighted_losses = float(stats.get("weighted_losses") or 0.0)
         weighted_draws = float(stats.get("weighted_draws") or 0.0)
         decided_or_drawn = weighted_wins + weighted_losses + weighted_draws
         if decided_or_drawn <= 0.0:
             continue
+        loss_percentage = round(weighted_losses / decided_or_drawn, 4)
+        games = int(round(stats.get("weighted_count") or 0))
         rows.append(
             {
                 "name": name,
-                "loss_percentage": round(weighted_losses / decided_or_drawn, 4),
-                "games": int(round(stats.get("weighted_count") or 0)),
+                "family": name,
+                "color": None,
+                "raw_games": games,
+                "raw_wins": None,
+                "raw_losses": None,
+                "raw_draws": None,
+                "loss_rate": loss_percentage,
+                "low_sample": False,
+                "legacy": True,
+                "loss_percentage": loss_percentage,
+                "games": games,
             }
         )
     rows.sort(key=lambda row: row["loss_percentage"], reverse=True)
     return rows
+
+
+def _openings_lost_against(
+    by_opening: Optional[Dict[str, Dict[str, Any]]],
+) -> list[Dict[str, Any]]:
+    """Project opening_results into the "Weak Openings" panel's row shape.
+
+    RAW path (snapshots with the stored per-color raw counts):
+      * one row per (family, color) — sides are never merged;
+      * floor `OPENING_MIN_RAW_GAMES` on the RAW count (aborted games
+        included, matching the stored bucket size);
+      * loss rate shrunk toward the opponent's OVERALL loss rate (computed
+        over every stored bucket, `_unknown` included, so projection-time
+        filters can't bias the prior);
+      * `_unknown` family dropped from the rows (still in the prior);
+      * when fewer than `OPENING_MIN_QUALIFIED_BUCKETS` rows clear the
+        floor, backfill with `OPENING_LOW_SAMPLE_MIN_GAMES`-to-floor rows
+        tagged `low_sample=True` so the panel never empties out on a thin
+        corpus.
+
+    LEGACY path (snapshot predates raw counts): the original weighted
+    projection, so a stale snapshot still renders until backfilled.
+
+    Empty list when by_opening is None (no parseable PGNs at all).
+    """
+    if not by_opening:
+        return []
+
+    # Legacy iff any bucket lacks raw counts. A partially-migrated snapshot
+    # cannot occur in practice; treating it as legacy keeps the two paths
+    # from mixing units.
+    if not all("raw_count" in stats for stats in by_opening.values()):
+        return _legacy_openings_lost_against(by_opening)
+
+    total_wins = sum(int(s.get("raw_wins") or 0) for s in by_opening.values())
+    total_losses = sum(int(s.get("raw_losses") or 0) for s in by_opening.values())
+    total_draws = sum(int(s.get("raw_draws") or 0) for s in by_opening.values())
+    overall_decided = total_wins + total_losses + total_draws
+    prior_rate = (total_losses / overall_decided) if overall_decided > 0 else 0.5
+
+    qualified: list[Dict[str, Any]] = []
+    low_sample: list[Dict[str, Any]] = []
+
+    for family, stats in by_opening.items():
+        if family == "_unknown":
+            continue
+        for color, counts in (stats.get("raw_by_color") or {}).items():
+            raw_games = int(counts.get("count") or 0)
+            wins = int(counts.get("wins") or 0)
+            losses = int(counts.get("losses") or 0)
+            draws = int(counts.get("draws") or 0)
+            decided = wins + losses + draws
+            if decided <= 0:
+                # Every game in this side of the family was "*" aborted:
+                # no result signal, so no loss rate to show.
+                continue
+            loss_rate = round(_shrunk_loss_rate(losses, decided, prior_rate), 4)
+            row = {
+                "name": f"{family} · as {color.capitalize()}",
+                "family": family,
+                "color": color,
+                "raw_games": raw_games,
+                "raw_wins": wins,
+                "raw_losses": losses,
+                "raw_draws": draws,
+                "loss_rate": loss_rate,
+                "low_sample": raw_games < OPENING_MIN_RAW_GAMES,
+                # Transitional keys for the current UI; the UI sub-step
+                # switches to the structured fields above.
+                "loss_percentage": loss_rate,
+                "games": raw_games,
+            }
+            if raw_games >= OPENING_MIN_RAW_GAMES:
+                qualified.append(row)
+            elif raw_games >= OPENING_LOW_SAMPLE_MIN_GAMES:
+                low_sample.append(row)
+
+    def _sort_key(row: Dict[str, Any]) -> tuple:
+        return (-row["loss_rate"], -row["raw_games"], row["name"])
+
+    qualified.sort(key=_sort_key)
+    low_sample.sort(key=_sort_key)
+
+    if len(qualified) < OPENING_MIN_QUALIFIED_BUCKETS:
+        needed = OPENING_MIN_QUALIFIED_BUCKETS - len(qualified)
+        return qualified + low_sample[:needed]
+    return qualified
+
+
+_OPENING_RESULT_RANK = {"loss": 0, "draw": 1, "win": 2}
+
+
+def _opening_game_sort_key(game: Dict[str, Any]) -> tuple:
+    """Losses first, then draws, then wins; newest first inside each group.
+
+    "*" (unresolved/aborted) sinks to the end. The Weak Openings panel is a
+    weakness view, so the games the opponent lost lead the list; recency
+    orders the games within each result group.
+    """
+    return (
+        _OPENING_RESULT_RANK.get(str(game.get("result") or ""), 3),
+        -int(game.get("end_time") or 0),
+    )
+
+
+def _order_opening_games(games: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return sorted(games, key=_opening_game_sort_key)
+
+
+def _initial_opening_game_id(games: List[Dict[str, Any]]) -> Optional[str]:
+    """The game the replay modal opens on.
+
+    `games` is already ordered (losses newest-first), so this is the first
+    loss with an opponent-side blunder row — the same game the old
+    representative lookup returned — falling back to the newest loss, then
+    the newest game.
+    """
+    for game in games:
+        if game.get("result") == "loss" and game.get("first_blunder"):
+            return game["game_id"]
+    for game in games:
+        if game.get("result") == "loss":
+            return game["game_id"]
+    return games[0]["game_id"] if games else None
+
+
+def _blunder_precedence(entry: Dict[str, Any]) -> tuple:
+    """Sort key for picking the error a game's jump points at.
+
+    Blunders outrank mistakes (a blunder is the more instructive moment),
+    and within a class the earliest ply wins. So the jump is the earliest
+    blunder in the game, or — when the game has no blunder — the earliest
+    mistake.
+    """
+    return (
+        0 if entry.get("classification") == "blunder" else 1,
+        int(entry.get("ply") or 0),
+    )
+
+
+def find_opening_games(
+    conn,
+    *,
+    requested_by_user_id: str,
+    provider: str,
+    opponent_username: str,
+    family: str,
+    color: str,
+) -> Optional[Dict[str, Any]]:
+    """Every stored game in one Weak Openings bucket, ordered for review.
+
+    Resolution is server-side only: the client supplies the bucket identity
+    (provider/username/family/color), never a game URL, and the family is
+    re-derived from the PGN with the SAME `_analyze_game` binning the Weak
+    Openings projection uses — so the list always matches the bucket row it
+    was opened from. Summaries come back WITHOUT the PGN (real buckets hold
+    100+ games); the UI fetches one game by `game_id` on demand.
+
+    Returns None when the bucket has no parseable game (deleted corpus,
+    stale UI row, wrong filter) — the endpoint turns that into a clean 404.
+    """
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT g.id::text AS game_id, g.pgn, g.end_time, g.time_class,
+                   EXISTS (
+                       SELECT 1 FROM opponent_game_analysis a
+                       WHERE a.game_id = g.id
+                   ) AS analyzed
+            FROM opponent_games g
+            WHERE g.requested_by_user_id = %s
+              AND g.provider = %s
+              AND LOWER(g.opponent_username) = LOWER(%s)
+            ORDER BY g.end_time DESC
+            """,
+            (requested_by_user_id, provider, opponent_username),
+        )
+        games = [dict(row) for row in cur.fetchall()]
+
+        cur.execute(
+            """
+            SELECT game_id::text AS game_id, fen, move_number,
+                   move_san, classification
+            FROM opponent_game_blunders
+            WHERE requested_by_user_id = %s
+              AND provider = %s
+              AND LOWER(opponent_username) = LOWER(%s)
+            """,
+            (requested_by_user_id, provider, opponent_username),
+        )
+        blunder_rows = [dict(row) for row in cur.fetchall()]
+
+    # Jump target per game: earliest BLUNDER, else earliest mistake (see
+    # `_blunder_precedence`). Analysis already targets only the opponent's
+    # color, but the FEN turn is re-checked defensively so the other
+    # player's move can never surface as "his" error.
+    first_blunder_by_game: Dict[str, Dict[str, Any]] = {}
+    for row in blunder_rows:
+        fen = row.get("fen") or ""
+        parts = fen.split(" ")
+        side = "white" if len(parts) > 1 and parts[1] == "w" else "black"
+        if side != color:
+            continue
+        move_number = int(row.get("move_number") or 0)
+        entry = {
+            "move_number": move_number,
+            "ply": _blunder_ply(move_number, side),
+            "move_san": row.get("move_san") or "",
+            "classification": row.get("classification") or "mistake",
+        }
+        existing = first_blunder_by_game.get(row["game_id"])
+        if existing is None or _blunder_precedence(entry) < _blunder_precedence(existing):
+            first_blunder_by_game[row["game_id"]] = entry
+
+    bucket_games: List[Dict[str, Any]] = []
+    for game in games:
+        analyzed = _analyze_game(game.get("pgn") or "", opponent_username)
+        if analyzed is None:
+            continue
+        if analyzed["family"] != family or analyzed["opponent_color"] != color:
+            continue
+        bucket_games.append(
+            {
+                "game_id": game["game_id"],
+                "result": analyzed["result"],
+                "end_time": int(game.get("end_time") or 0),
+                "time_class": game.get("time_class") or "",
+                "analyzed": bool(game.get("analyzed")),
+                "first_blunder": first_blunder_by_game.get(game["game_id"]),
+            }
+        )
+
+    if not bucket_games:
+        return None
+
+    ordered = _order_opening_games(bucket_games)
+    return {
+        "initial_game_id": _initial_opening_game_id(ordered),
+        "games": ordered,
+    }
+
+
+def get_opening_game(
+    conn,
+    *,
+    requested_by_user_id: str,
+    game_id: str,
+) -> Optional[Dict[str, Any]]:
+    """One stored game (with its PGN) by id, scoped to its owner.
+
+    The client only ever receives ids from `find_opening_games`; scoping the
+    lookup to `requested_by_user_id` keeps another user's corpus unreachable
+    even if an id is guessed.
+    """
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT id::text AS game_id, game_url, pgn,
+                   white_player, black_player, result, end_time, time_class
+            FROM opponent_games
+            WHERE id::text = %s AND requested_by_user_id = %s
+            """,
+            (game_id, requested_by_user_id),
+        )
+        row = cur.fetchone()
+
+    if row is None:
+        return None
+
+    game = dict(row)
+    return {
+        "game_id": game["game_id"],
+        "game_url": game.get("game_url") or "",
+        "pgn": game.get("pgn") or "",
+        "white": (game.get("white_player") or {}).get("username") or "",
+        "black": (game.get("black_player") or {}).get("username") or "",
+        "result": game.get("result") or "",
+        "end_time": int(game.get("end_time") or 0),
+        "time_class": game.get("time_class") or "",
+    }
