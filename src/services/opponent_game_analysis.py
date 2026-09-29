@@ -67,6 +67,7 @@ from core import database
 from core.game_analyzer import GameAnalyzer
 from engines.stockfish_engine import StockfishEngine
 from llms.mock_explainer import MockExplainer
+from services.opening_book import is_book_move
 
 log = logging.getLogger(__name__)
 
@@ -318,7 +319,11 @@ def run_opponent_game_analysis(
                 depth=int(os.getenv("REVIEW_DEPTH", "18")),
             )
             engine.start()
-            analyzer = GameAnalyzer(engine=engine, explainer=MockExplainer())
+            analyzer = GameAnalyzer(
+                engine=engine,
+                explainer=MockExplainer(),
+                book_lookup=is_book_move,
+            )
 
         for game_id in unanalyzed_ids:
             try:
