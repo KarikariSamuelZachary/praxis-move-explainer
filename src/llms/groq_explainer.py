@@ -41,7 +41,11 @@ class GroqExplainer(LLMExplainer):
         eval_before = mistake.evaluation_before.score_cp / 100
         eval_after = mistake.evaluation_after.score_cp / 100
         eval_drop = mistake.eval_drop_cp / 100
-        classification = "blunder" if mistake.eval_drop_cp > 300 else "mistake"
+        # Prefer the classifier's label (Expected Points model); fall back to
+        # the legacy cp heuristic for hand-built Mistake objects.
+        classification = mistake.classification or (
+            "blunder" if mistake.eval_drop_cp > 300 else "mistake"
+        )
 
         prompt = f"""You are a chess coach explaining a mistake to a student.
 
