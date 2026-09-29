@@ -9,8 +9,10 @@ Covers the review performance fix:
      P+1 engine searches (previously 2P) and every position must be
      searched at most once.
   B. Classification parity (fake engine): prescribed per-position scores
-     produce the exact expected book/best/excellent/good/inaccuracy/
-     mistake/blunder rows, with explanations only for mistake/blunder.
+     produce the exact expected book/excellent/good/inaccuracy/mistake/
+     blunder rows under Chess.com's Expected Points model (including the
+     2023 "blunder must lose material or allow mate" rule), with
+     explanations only for mistake/blunder.
   C. target_color filtering and include_explanations=False behavior.
   D. LIVE: the long-lived review Stockfish singleton is reused across
      calls, a reset creates a fresh process, and analyze_full_game runs
@@ -27,7 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import chess
 import chess.pgn
 
-from core.game_analyzer import GameAnalyzer
+from core.game_analyzer import GameAnalyzer, expected_points
 from engines.stockfish_engine import (
     close_review_stockfish,
     get_review_stockfish,
@@ -54,14 +56,14 @@ SCORES = [
 
 EXPECTED_CLASSES = [
     *(["book"] * 10),
-    "best",        # k=10  cp_loss =  30 + -20 =  10
-    "excellent",   # k=11  cp_loss = -20 +  50 =  30
-    "good",        # k=12  cp_loss =  50 +   0 =  50
-    "inaccuracy",  # k=13  cp_loss =   0 +  80 =  80
-    "mistake",     # k=14  cp_loss =  80 +  70 = 150
-    "blunder",     # k=15  cp_loss =  70 + 350 = 420
-    "good",        # k=16  cp_loss = 350 + -300 = 50
-    "inaccuracy",  # k=17  cp_loss = -300 + 390 = 90
+    "excellent",   # k=10  EP loss 0.0092
+    "good",        # k=11  EP loss 0.0275
+    "good",        # k=12  EP loss 0.0459
+    "inaccuracy",  # k=13  EP loss 0.0731
+    "mistake",     # k=14  EP loss 0.1372
+    "blunder",     # k=15  EP loss 0.3480 + allows mate (fake engine)
+    "good",        # k=16  EP loss 0.0328
+    "inaccuracy",  # k=17  EP loss 0.0567
 ]
 
 EXPECTED_LOSSES = [
@@ -69,21 +71,32 @@ EXPECTED_LOSSES = [
     10, 30, 50, 80, 150, 420, 50, 90,
 ]
 
+EXPECTED_EP_LOSSES = [
+    *([0.0] * 10),
+    0.0092, 0.0275, 0.0459, 0.0731, 0.1372, 0.3480, 0.0328, 0.0567,
+]
+
 
 class _FakeEngine:
     """Deterministic engine keyed on the full FEN; records every FEN searched."""
 
-    def __init__(self, scores_by_fen):
+    def __init__(self, scores_by_fen, mates_by_fen=None, second_best_by_fen=None):
         self._scores = scores_by_fen
+        self._mates = mates_by_fen or {}
+        self._second_best = second_best_by_fen or {}
         self.calls = []
 
-    def evaluate(self, board):
+    def evaluate(self, board, multipv=1):
         fen = board.fen()
         self.calls.append(fen)
         return Evaluation(
             score_cp=float(self._scores[fen]),
             best_move_uci="e2e4",
             best_move_san="e4",
+            mate=self._mates.get(fen),
+            second_best_cp=(
+                self._second_best.get(fen) if int(multipv) > 1 else None
+            ),
         )
 
 
@@ -111,10 +124,18 @@ def _position_fens(pgn: str):
     return fens
 
 
+def _book_lookup(board, move):
+    """Stand-in for services.opening_book.is_book_move: first 10 plies."""
+    return board.ply() < 10
+
+
 def _fake_engine_and_explainer():
     fens = _position_fens(PGN)
     assert len(fens) == len(SCORES), f"expected {len(SCORES)} positions, got {len(fens)}"
-    engine = _FakeEngine(dict(zip(fens, SCORES)))
+    # The position after ply 15 (Black's O-O) carries a mate score for the
+    # side to move (White), so Black's move satisfies the 2023 blunder rule
+    # ("allows checkmate") and lands on blunder instead of mistake.
+    engine = _FakeEngine(dict(zip(fens, SCORES)), mates_by_fen={fens[16]: 3})
     explainer = _FakeExplainer()
     return engine, explainer
 
@@ -124,7 +145,7 @@ def _fake_engine_and_explainer():
 # ---------------------------------------------------------------------------
 def test_single_evaluation_per_ply():
     engine, explainer = _fake_engine_and_explainer()
-    analyzer = GameAnalyzer(engine=engine, explainer=explainer)
+    analyzer = GameAnalyzer(engine=engine, explainer=explainer, book_lookup=_book_lookup)
 
     rows = analyzer.analyze_full_game(PGN)
 
@@ -145,15 +166,19 @@ def test_single_evaluation_per_ply():
 # ---------------------------------------------------------------------------
 def test_classification_parity():
     engine, explainer = _fake_engine_and_explainer()
-    analyzer = GameAnalyzer(engine=engine, explainer=explainer)
+    analyzer = GameAnalyzer(engine=engine, explainer=explainer, book_lookup=_book_lookup)
 
     rows = analyzer.analyze_full_game(PGN)
     move_rows = rows[1:]
 
     classes = [row["classification"] for row in move_rows]
     losses = [row["cp_loss"] for row in move_rows]
+    ep_losses = [round(row["ep_loss"], 4) for row in move_rows]
     assert classes == EXPECTED_CLASSES, f"classes mismatch:\n{classes}\n{EXPECTED_CLASSES}"
     assert losses == EXPECTED_LOSSES, f"losses mismatch:\n{losses}\n{EXPECTED_LOSSES}"
+    assert ep_losses == EXPECTED_EP_LOSSES, (
+        f"ep losses mismatch:\n{ep_losses}\n{EXPECTED_EP_LOSSES}"
+    )
 
     explained = [i for i, row in enumerate(move_rows) if "explanation" in row]
     assert explained == [14, 15], f"explained plies should be [14, 15], got {explained}"
@@ -166,7 +191,7 @@ def test_classification_parity():
 
 def test_include_explanations_false():
     engine, explainer = _fake_engine_and_explainer()
-    analyzer = GameAnalyzer(engine=engine, explainer=explainer)
+    analyzer = GameAnalyzer(engine=engine, explainer=explainer, book_lookup=_book_lookup)
 
     rows = analyzer.analyze_full_game(PGN, include_explanations=False)
 
@@ -180,7 +205,7 @@ def test_include_explanations_false():
 # ---------------------------------------------------------------------------
 def test_target_color_filtering():
     engine, explainer = _fake_engine_and_explainer()
-    analyzer = GameAnalyzer(engine=engine, explainer=explainer)
+    analyzer = GameAnalyzer(engine=engine, explainer=explainer, book_lookup=_book_lookup)
 
     rows = analyzer.analyze_full_game(PGN, target_color="white")
 
@@ -189,7 +214,7 @@ def test_target_color_filtering():
     assert len(rows) == 10, f"expected Start + 9 white rows, got {len(rows)}"
     assert len(engine.calls) == len(SCORES), "engine search count changed under filtering"
     classes = [row["classification"] for row in rows[1:]]
-    expected = ["book", "book", "book", "book", "book", "best", "good", "mistake", "good"]
+    expected = ["book", "book", "book", "book", "book", "excellent", "good", "mistake", "good"]
     assert classes == expected, f"white rows mismatch: {classes}"
     assert all(row["color"] == "white" for row in rows[1:]), "non-white row leaked"
     print("  [PASS] target_color=white returns Start + 9 white plies with exact classes")
@@ -200,7 +225,7 @@ def test_target_color_filtering():
 # ---------------------------------------------------------------------------
 def test_analyze_pgn_matches_full_review():
     engine, explainer = _fake_engine_and_explainer()
-    analyzer = GameAnalyzer(engine=engine, explainer=explainer)
+    analyzer = GameAnalyzer(engine=engine, explainer=explainer, book_lookup=_book_lookup)
 
     mistakes = analyzer.analyze_pgn(PGN)
 
@@ -232,7 +257,11 @@ def test_live_review_singleton_and_analysis():
         assert engine_b is not engine_a, "reset should drop the old subprocess"
 
         try:
-            analyzer = GameAnalyzer(engine=engine_b, explainer=MockExplainer())
+            analyzer = GameAnalyzer(
+                engine=engine_b,
+                explainer=MockExplainer(),
+                book_lookup=_book_lookup,
+            )
             rows = analyzer.analyze_full_game("1. e4 e5 2. Nf3 Nc6")
             assert len(rows) == 5, f"expected Start + 4 rows, got {len(rows)}"
             assert all(row["classification"] == "book" for row in rows), rows
@@ -244,6 +273,253 @@ def test_live_review_singleton_and_analysis():
         close_review_stockfish()
 
 
+# ---------------------------------------------------------------------------
+# F. Expected Points model / book plumbing (unit-level)
+# ---------------------------------------------------------------------------
+def test_expected_points_model():
+    assert expected_points(0, 1500) == 0.5
+    assert expected_points(10000, 1500) > 0.999
+    assert expected_points(-10000, 1500) < 0.001
+    for cp in (-500, -100, 0, 100, 500):
+        assert abs(expected_points(cp, 1500) + expected_points(-cp, 1500) - 1.0) < 1e-9
+    assert expected_points(200, 2400) > expected_points(200, 800), (
+        "higher-rated players must gain more expected points from the same advantage"
+    )
+    assert expected_points(0, None) == 0.5, "missing rating must default to 1500"
+    assert expected_points(0, 99999) == expected_points(0, 3500), "rating is clamped"
+    print("  [PASS] EP logistic: symmetric, saturating, rating-scaled, clamped")
+
+
+def test_best_move_equality_and_blunder_gate():
+    engine, explainer = _fake_engine_and_explainer()
+    analyzer = GameAnalyzer(engine=engine, explainer=explainer, book_lookup=_book_lookup)
+
+    # Engine's top choice -> "best" even if search noise moved the eval.
+    best = analyzer.classify_move(
+        Evaluation(score_cp=100, best_move_uci="e2e4", best_move_san="e4"),
+        Evaluation(score_cp=-200, best_move_uci="g8f6", best_move_san="Nf6"),
+        "white",
+        move_uci="e2e4",
+        player_rating=1500,
+    )
+    assert best == "best", f"expected best, got {best}"
+
+    # Huge EP loss without material/mate consequence -> mistake (2023 rule).
+    # eval_after is scored from the OPPONENT's POV, so a mover drop is
+    # positive there.
+    drop_before = Evaluation(score_cp=0, best_move_uci="", best_move_san="")
+    drop_after = Evaluation(score_cp=500, best_move_uci="", best_move_san="")
+    without = analyzer.classify_move(
+        drop_before, drop_after, "white", player_rating=1500
+    )
+    with_consequence = analyzer.classify_move(
+        drop_before,
+        drop_after,
+        "white",
+        player_rating=1500,
+        blunder_consequence=True,
+    )
+    assert without == "mistake", f"expected mistake, got {without}"
+    assert with_consequence == "blunder", f"expected blunder, got {with_consequence}"
+
+    # Mating move short-circuit (terminal position has no engine score).
+    mating = analyzer.classify_move(
+        drop_before, drop_after, "white", player_rating=1500, delivers_mate=True
+    )
+    assert mating == "best", f"expected best for a mating move, got {mating}"
+    print("  [PASS] best-by-move-equality, blunder consequence gate, mate shortcut")
+
+
+def test_rating_scaling():
+    engine, explainer = _fake_engine_and_explainer()
+    analyzer = GameAnalyzer(engine=engine, explainer=explainer, book_lookup=_book_lookup)
+    eval_before = Evaluation(score_cp=0, best_move_uci="", best_move_san="")
+    eval_after = Evaluation(score_cp=200, best_move_uci="", best_move_san="")
+
+    low = analyzer.classify_move(
+        eval_before, eval_after, "white", player_rating=800, blunder_consequence=True
+    )
+    high = analyzer.classify_move(
+        eval_before, eval_after, "white", player_rating=2400, blunder_consequence=True
+    )
+    assert low == "mistake" and high == "blunder", (
+        f"same 200cp drop should be mistake at 800 / blunder at 2400; got {low}/{high}"
+    )
+    print("  [PASS] the same eval swing is rated more severely for higher ratings")
+
+
+def test_book_contiguity():
+    pgn = "1. e4 e5 2. Nf3 Nc6 3. Bb5 a6"
+    fens = _position_fens(pgn)
+    engine = _FakeEngine({fen: 0 for fen in fens})
+    # Book claims plies 0..2 and the position before ply 5, but NOT ply 3.
+    book_fens = set(fens[:3]) | {fens[5]}
+    analyzer = GameAnalyzer(
+        engine=engine,
+        explainer=_FakeExplainer(),
+        book_lookup=lambda board, move: board.fen() in book_fens,
+    )
+    rows = analyzer.analyze_full_game(pgn)
+    classes = [row["classification"] for row in rows[1:]]
+    assert classes[:3] == ["book", "book", "book"], classes
+    assert "book" not in classes[3:], (
+        f"game left the book at ply 3 and must not re-enter; got {classes}"
+    )
+    print("  [PASS] book is contiguous: a deviation ends book for the rest of the game")
+
+
+def test_material_consequence_helper():
+    engine, explainer = _fake_engine_and_explainer()
+    analyzer = GameAnalyzer(engine=engine, explainer=explainer, book_lookup=_book_lookup)
+
+    # Position after White's Qh5?? — Black's best reply Nxh5 wins the queen.
+    board = chess.Board("rnbqkb1r/pppppppp/5n2/7Q/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1")
+    capturing = Evaluation(score_cp=200, best_move_uci="f6h5", best_move_san="Nxh5")
+    quiet = Evaluation(score_cp=10, best_move_uci="e7e6", best_move_san="e6")
+    assert analyzer._loses_material_after_best_reply(board, capturing, "white") is True
+    assert analyzer._loses_material_after_best_reply(board, quiet, "white") is False
+    print("  [PASS] material consequence: best-reply capture detected, quiet reply not")
+
+
+# ---------------------------------------------------------------------------
+# G. Special labels: Brilliant / Great / Miss + SEE sacrifice detection
+# ---------------------------------------------------------------------------
+def test_see_sacrifice_detection():
+    from core.game_analyzer import _sacrifice_material
+
+    # Bxf7+ then Kxf7: bishop (330) sacrificed for a pawn (100) -> 230.
+    board = chess.Board(
+        "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/8/PPPP1PPP/RNBQK1NR w KQkq - 4 4"
+    )
+    move = chess.Move.from_uci("c4f7")
+    after = board.copy()
+    after.push(move)
+    assert _sacrifice_material(board, move, after) == 230, (
+        _sacrifice_material(board, move, after)
+    )
+
+    # Quiet queen move onto a knight's square: full 900 at risk.
+    # (Black knight on f6; the e2 pawn is removed so Qd1-h5 is legal.)
+    before = chess.Board("rnbqkb1r/pppppppp/5n2/8/8/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1")
+    qh5 = chess.Move.from_uci("d1h5")
+    after_qh5 = before.copy()
+    after_qh5.push(qh5)
+    assert _sacrifice_material(before, qh5, after_qh5) == 900, (
+        _sacrifice_material(before, qh5, after_qh5)
+    )
+
+    # A normal developing move gives nothing away.
+    start = chess.Board()
+    nf3 = chess.Move.from_uci("g1f3")
+    after_nf3 = start.copy()
+    after_nf3.push(nf3)
+    assert _sacrifice_material(start, nf3, after_nf3) == 0
+    print("  [PASS] SEE sacrifice detection: bishop sac 230, hanging queen 900, "
+          "quiet development 0")
+
+
+def test_brilliant_rules():
+    engine, explainer = _fake_engine_and_explainer()
+    analyzer = GameAnalyzer(engine=engine, explainer=explainer, book_lookup=_book_lookup)
+
+    # Competitive position, near-best, playable after -> brilliant.
+    before = Evaluation(score_cp=100, best_move_uci="c4f7", best_move_san="Bxf7+")
+    after = Evaluation(score_cp=-100, best_move_uci="e8f7", best_move_san="Kxf7")
+    assert analyzer.classify_move(
+        before, after, "white", move_uci="c4f7", player_rating=1500, sacrifice_cp=230
+    ) == "brilliant"
+
+    # Already completely winning before the move -> never brilliant.
+    winning = Evaluation(score_cp=900, best_move_uci="c4f7", best_move_san="Bxf7+")
+    assert analyzer.classify_move(
+        winning, after, "white", move_uci="c4f7", player_rating=1500, sacrifice_cp=230
+    ) != "brilliant"
+
+    # Bad position after the sacrifice -> never brilliant.
+    bad_after = Evaluation(score_cp=600, best_move_uci="e8f7", best_move_san="Kxf7")
+    assert analyzer.classify_move(
+        before, bad_after, "white", move_uci="c4f7", player_rating=1500, sacrifice_cp=230
+    ) != "brilliant"
+
+    # Pawn sacrifices count only below the rating cutoff (1600).
+    assert analyzer.classify_move(
+        before, after, "white", move_uci="c4f7", player_rating=1500, sacrifice_cp=100
+    ) == "brilliant"
+    assert analyzer.classify_move(
+        before, after, "white", move_uci="c4f7", player_rating=2000, sacrifice_cp=100
+    ) != "brilliant"
+    print("  [PASS] Brilliant: sacrifice + near-best + competitive + playable; "
+          "pawn sacs rating-gated")
+
+
+def test_great_only_good_move():
+    engine, explainer = _fake_engine_and_explainer()
+    analyzer = GameAnalyzer(engine=engine, explainer=explainer, book_lookup=_book_lookup)
+
+    # Best move far ahead of the second-best line -> the only good move.
+    before = Evaluation(
+        score_cp=0, best_move_uci="e2e4", best_move_san="e4", second_best_cp=-400
+    )
+    after = Evaluation(score_cp=0, best_move_uci="e7e5", best_move_san="e5")
+    assert analyzer.classify_move(
+        before, after, "white", move_uci="e2e4", player_rating=1500
+    ) == "great"
+
+    # Second-best line nearly as good -> not Great (it is Best).
+    close = Evaluation(
+        score_cp=0, best_move_uci="e2e4", best_move_san="e4", second_best_cp=-20
+    )
+    assert analyzer.classify_move(
+        close, after, "white", move_uci="e2e4", player_rating=1500
+    ) == "best"
+    print("  [PASS] Great: only-good-move gap >= 0.15 EP; small gap stays Best")
+
+
+def test_miss_rules():
+    engine, explainer = _fake_engine_and_explainer()
+    analyzer = GameAnalyzer(engine=engine, explainer=explainer, book_lookup=_book_lookup)
+
+    # Opponent just blundered, the winning chance is not converted.
+    before = Evaluation(score_cp=800, best_move_uci="d1h5", best_move_san="Qh5")
+    equal_after = Evaluation(score_cp=0, best_move_uci="g8f6", best_move_san="Nf6")
+    cls = analyzer.classify_move(
+        before,
+        equal_after,
+        "white",
+        move_uci="f3g5",
+        player_rating=1500,
+        opponent_prev_ep_loss=0.35,
+    )
+    assert cls == "miss", cls
+
+    # Same gift, but the move keeps the winning position -> not Miss.
+    keeps_winning = Evaluation(
+        score_cp=-700, best_move_uci="g8f6", best_move_san="Nf6"
+    )
+    cls2 = analyzer.classify_move(
+        before,
+        keeps_winning,
+        "white",
+        move_uci="f3g5",
+        player_rating=1500,
+        opponent_prev_ep_loss=0.35,
+    )
+    assert cls2 != "miss", cls2
+
+    # Forced mate slipped, even without an opponent blunder.
+    mate_before = Evaluation(
+        score_cp=10000, best_move_uci="d1h5", best_move_san="Qh5", mate=2
+    )
+    mate_after = Evaluation(
+        score_cp=0, best_move_uci="g8f6", best_move_san="Nf6", mate=None
+    )
+    cls3 = analyzer.classify_move(
+        mate_before, mate_after, "white", move_uci="f3g5", player_rating=1500
+    )
+    assert cls3 == "miss", cls3
+    print("  [PASS] Miss: opponent gift or slipped mate + winning chance lost")
+
+
 def main() -> int:
     print("=== Running GameAnalyzer review-loop tests ===")
     tests = [
@@ -252,6 +528,15 @@ def main() -> int:
         test_include_explanations_false,
         test_target_color_filtering,
         test_analyze_pgn_matches_full_review,
+        test_expected_points_model,
+        test_best_move_equality_and_blunder_gate,
+        test_rating_scaling,
+        test_book_contiguity,
+        test_material_consequence_helper,
+        test_see_sacrifice_detection,
+        test_brilliant_rules,
+        test_great_only_good_move,
+        test_miss_rules,
         test_live_review_singleton_and_analysis,
     ]
     for test in tests:
