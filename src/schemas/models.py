@@ -13,6 +13,10 @@ class Evaluation:
     best_move_uci:str
     best_move_san:str
     mate: Optional[int] = None
+    # Score of the second-best MultiPV line (side-to-move POV, cp), when the
+    # caller asked the engine for more than one PV. Feeds the "only good
+    # move" Great-move check; None when unavailable (single-PV search).
+    second_best_cp: Optional[float] = None
 
 @dataclass
 class Mistake:
@@ -22,6 +26,10 @@ class Mistake:
     evaluation_before:Evaluation
     evaluation_after:Evaluation
     eval_drop_cp:float
+    # The classifier's label for this move ("mistake"/"blunder" today).
+    # Optional so hand-built Mistake objects keep working; explainers
+    # prefer it over re-deriving a label from centipawns.
+    classification: Optional[str] = None
 
 @dataclass
 class Explanation:
