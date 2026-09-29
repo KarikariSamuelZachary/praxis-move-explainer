@@ -140,6 +140,7 @@ def run_migrations():
                     user_id          TEXT NOT NULL,
                     solved_correctly BOOLEAN NOT NULL,
                     time_taken_ms    INT NOT NULL,
+                    hints_used       INTEGER NOT NULL DEFAULT 0,
                     attempted_at     TIMESTAMP DEFAULT NOW()
                 )
                 """
@@ -149,6 +150,16 @@ def run_migrations():
             cur.execute("DROP INDEX IF EXISTS idx_woodpecker_attempts_entry_cycle")
             cur.execute(
                 "ALTER TABLE woodpecker_attempts DROP COLUMN IF EXISTS cycle_number"
+            )
+            # Upgrade installs that predate the hint column: mirrors
+            # endgame_woodpecker_attempts.hints_used. solved_correctly stays
+            # the board verdict; hints_used > 0 is why a solved review was
+            # scheduled as not-clean (FSRS Again) -- see routers/woodpecker.py.
+            cur.execute(
+                """
+                ALTER TABLE woodpecker_attempts
+                    ADD COLUMN IF NOT EXISTS hints_used INTEGER NOT NULL DEFAULT 0
+                """
             )
             cur.execute(
                 """
@@ -1277,6 +1288,32 @@ def run_migrations():
                 """
                 CREATE INDEX IF NOT EXISTS idx_endgame_woodpecker_attempts_entry_id
                     ON endgame_woodpecker_attempts(entry_id)
+                """
+            )
+
+            # --- opening_book_moves -----------------------------------------
+            # Opening-theory book for Game Review's "book" classification,
+            # replacing the old hardcoded "first 10 plies" rule. Keyed by the
+            # first 4 FEN fields (board, turn, castling, en passant) so
+            # transpositions match. Populated by
+            # scripts/build_opening_book.py from lichess-org/chess-openings
+            # (source='eco') and/or a masters PGN dump (source='pgn').
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS opening_book_moves (
+                    position_key TEXT NOT NULL,
+                    move_uci     TEXT NOT NULL,
+                    move_san     TEXT,
+                    count        INTEGER NOT NULL DEFAULT 0,
+                    source       TEXT NOT NULL DEFAULT 'eco',
+                    PRIMARY KEY (position_key, move_uci, source)
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_opening_book_moves_position
+                    ON opening_book_moves (position_key)
                 """
             )
         conn.commit()
