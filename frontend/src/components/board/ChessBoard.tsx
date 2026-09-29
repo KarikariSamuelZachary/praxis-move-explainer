@@ -25,6 +25,12 @@ interface ChessBoardProps {
    */
   onPuzzleWrongMove?: () => void;
   onPuzzleEnd?: () => void;
+  /** Fires when a hint actually highlights the piece to move. The review
+   *  queue counts it into hints_used; the unrated loops ignore it. */
+  onHintRevealed?: () => void;
+  /** Fires when "Solution" actually plays a solution move. Counted the
+   *  same as a hint -- a solution-assisted pass is not clean. */
+  onSolutionRevealed?: () => void;
   apiRef?: React.MutableRefObject<BoardApi | null>;
 }
 
@@ -86,6 +92,8 @@ export default function ChessBoardComponent({
   onPuzzleFailed,
   onPuzzleWrongMove,
   onPuzzleEnd,
+  onHintRevealed,
+  onSolutionRevealed,
   apiRef,
 }: ChessBoardProps) {
   const [game, setGame] = useState<Chess>(() => buildInitialGame(puzzle));
@@ -104,6 +112,13 @@ export default function ChessBoardComponent({
   const hintTimeoutRef = useRef<number | null>(null);
   const snapbackTimeoutRef = useRef<number | null>(null);
   const initialMoveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const onHintRevealedRef = useRef(onHintRevealed);
+  const onSolutionRevealedRef = useRef(onSolutionRevealed);
+
+  useEffect(() => {
+    onHintRevealedRef.current = onHintRevealed;
+    onSolutionRevealedRef.current = onSolutionRevealed;
+  });
 
   const boardOrientation = getPuzzleOrientation(puzzle);
 
@@ -530,6 +545,13 @@ export default function ChessBoardComponent({
   }, [moveToPromote, validateAndMakeMove]);
 
   const handleShowSolution = useCallback(() => {
+    // Same guard as the hint: during the setup animation, the defender's
+    // think, or after the puzzle resolves there is no user move to reveal --
+    // reveal during the defender's think would even play the wrong side.
+    if (puzzleState !== 'playing') {
+      return;
+    }
+
     const moveToShow = puzzle.moves[currentMoveIndexRef.current];
     if (!moveToShow) {
       return;
@@ -549,6 +571,9 @@ export default function ChessBoardComponent({
     clearWrongFlashTimeout();
     setHintSquare(null);
     clearHintTimeout();
+    // A solution move was actually played: the review queue counts it before
+    // the board can resolve (the final-move branch hands off to onPuzzleEnd).
+    onSolutionRevealedRef.current?.();
     setHighlightSquares(
       buildHighlight(
         moveToShow.slice(0, 2),
@@ -565,7 +590,7 @@ export default function ChessBoardComponent({
 
     setPuzzleState('showing_solution');
     scheduleOpponentMove(nextGame, nextIndex);
-  }, [clearHintTimeout, clearWrongFlashTimeout, onPuzzleEnd, puzzle.moves, scheduleOpponentMove, setBoardState]);
+  }, [clearHintTimeout, clearWrongFlashTimeout, onPuzzleEnd, puzzle.moves, puzzleState, scheduleOpponentMove, setBoardState]);
 
   const showHint = useCallback(() => {
     if (puzzleState !== 'playing') {
@@ -584,6 +609,7 @@ export default function ChessBoardComponent({
       setHintSquare(null);
       hintTimeoutRef.current = null;
     }, 4000);
+    onHintRevealedRef.current?.();
   }, [clearHintTimeout, puzzle.moves, puzzleState]);
 
   useEffect(() => {
