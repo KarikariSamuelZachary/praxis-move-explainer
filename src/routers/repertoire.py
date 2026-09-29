@@ -92,10 +92,12 @@ class CreateRepertoireBody(BaseModel):
     color: str  # validated against ('white', 'black') below
 
 
-# Mirrors woodpecker's RecordAttemptBody shape exactly. The position
+# Mirrors woodpecker's RecordAttemptBody shape. The position
 # being reviewed is identified by the URL path (`{position_id}`), not
 # by a body field — so the body drops woodpecker's `entry_id` and
-# keeps its `solved_correctly: bool` + `time_taken_ms: int` fields.
+# keeps its `solved_correctly: bool` + `time_taken_ms: int` fields
+# (woodpecker's `hints_used` has no repertoire equivalent: review mode
+# has no assists).
 # `time_taken_ms` is accepted for parity but, just like in woodpecker,
 # is NOT fed into the FSRS scheduler (FSRS uses the binary
 # solved/not-solved signal via `rating_for`); it would only be used if
