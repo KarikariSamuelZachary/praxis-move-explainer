@@ -377,7 +377,7 @@ DESIGN DECISIONS (recorded here because they shape the whole module)
     trap 2+ moves away; fuzzy/family-based trap matching; a "trap-
     avoidance" mirror mode (steering AWAY from positions where the
     opponent plays well); any UI surfacing of trap_mode_active (the
-    existing Opponent Prep page's "Traps He's Fallen For" section stays
+    existing Opponent Prep page's "Recurring Blunders" section stays
     as-is; this spec only touches move-selection, not display).
 
 (7) AVERAGE-GAME-LENGTH CALIBRATION -- REMOVED (diagnostic 2026-08-23).
