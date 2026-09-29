@@ -454,7 +454,7 @@ def _fixture_time_controls_recency_tilt():
 #     win_rate = 2 / (2+1+0) = 0.6667
 #
 #   "Scotch Game":       1 game (1 loss as white) — the single-game
-#                        "Openings He Lost Against" bucket the spec
+#                        "Weak Openings" bucket the spec
 #                        explicitly wants surfaced (NO floor).
 #     weighted_wins=0, weighted_losses=1, weighted_draws=0
 #     win_rate = 0 / (0+1+0) = 0.0
