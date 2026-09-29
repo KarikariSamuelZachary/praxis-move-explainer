@@ -1,3 +1,19 @@
+"""
+Puzzle Woodpecker queue endpoints.
+
+HINT-ASSISTED PASSES DO NOT GRADUATE
+====================================
+The queue exists to confirm the user has genuinely learned the puzzle, so a
+review solved with an assist ("Hint" / "Solution") must not advance the card
+the way a clean pass does. The attempt carries the client-owned hints_used
+count; when it is > 0 the FSRS write takes the SAME path a real failed
+attempt already uses -- rating_for(solved=False) -> Again -- instead of
+Good. Concretely: no state promotion, no mastery, and the card comes back
+soon. The attempt row stays factual: solved_correctly is the BOARD verdict,
+and hints_used records how it was reached. This mirrors the endgame queue
+(see routers/endgame_woodpecker.py) so both review queues schedule a hinted
+pass identically.
+"""
 import logging
 import time
 from typing import Optional
@@ -38,6 +54,10 @@ class RecordAttemptBody(BaseModel):
     entry_id: UUID
     solved_correctly: bool
     time_taken_ms: int
+    # How many hints / solution reveals THIS review needed (client-owned).
+    # solved_correctly stays the board verdict; hints_used > 0 is why a
+    # solved review still schedules as Again.
+    hints_used: int = 0
 
 
 def _get_user_id(request: Request) -> str:
@@ -189,6 +209,8 @@ def record_attempt(request: Request, body: RecordAttemptBody, conn=Depends(get_d
     user_id = _get_user_id(request)
     if body.time_taken_ms < 0:
         raise HTTPException(status_code=400, detail="time_taken_ms cannot be negative")
+    if body.hints_used < 0:
+        raise HTTPException(status_code=400, detail="hints_used cannot be negative")
 
     review_at = now_utc()
 
@@ -219,7 +241,12 @@ def record_attempt(request: Request, body: RecordAttemptBody, conn=Depends(get_d
         # --- FSRS scheduling ---
         card = card_from_row(row)
         prior_state = card.state
-        rating = rating_for(body.solved_correctly)
+        # A hint-assisted solve is not a clean pass (module docstring
+        # HINT-ASSISTED PASSES DO NOT GRADUATE): it takes the same FSRS
+        # path as a real failure -- Again, never Good. The attempt row
+        # below still records the board verdict and the hint count.
+        clean_solve = body.solved_correctly and body.hints_used == 0
+        rating = rating_for(clean_solve)
         reviewed_card, _ = scheduler.review_card(
             card=card, rating=rating, review_datetime=review_at
         )
@@ -266,15 +293,17 @@ def record_attempt(request: Request, body: RecordAttemptBody, conn=Depends(get_d
                 entry_id,
                 user_id,
                 solved_correctly,
-                time_taken_ms
+                time_taken_ms,
+                hints_used
             )
-            VALUES (%s, %s, %s, %s)
+            VALUES (%s, %s, %s, %s, %s)
             RETURNING
                 id,
                 entry_id,
                 user_id,
                 solved_correctly,
                 time_taken_ms,
+                hints_used,
                 attempted_at
             """,
             (
@@ -282,6 +311,7 @@ def record_attempt(request: Request, body: RecordAttemptBody, conn=Depends(get_d
                 user_id,
                 body.solved_correctly,
                 body.time_taken_ms,
+                body.hints_used,
             ),
         )
         attempt = cur.fetchone()
