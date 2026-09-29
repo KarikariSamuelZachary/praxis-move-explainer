@@ -10,6 +10,7 @@ from core import database
 from core.game_analyzer import GameAnalyzer
 from engines.stockfish_engine import StockfishEngine
 from llms.mock_explainer import MockExplainer
+from services.opening_book import is_book_move
 
 log = logging.getLogger(__name__)
 
@@ -128,7 +129,11 @@ def run_weakness_profile_job(job_id: str) -> None:
             raise ValueError("No games found for the selected profile source.")
 
         engine.start()
-        analyzer = GameAnalyzer(engine=engine, explainer=MockExplainer())
+        analyzer = GameAnalyzer(
+            engine=engine,
+            explainer=MockExplainer(),
+            book_lookup=is_book_move,
+        )
         summary = _analyze_corpus(conn, analyzer, job, games)
         _mark_job_completed(conn, job_id, summary)
         conn.commit()
