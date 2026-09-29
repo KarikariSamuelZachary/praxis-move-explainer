@@ -1,10 +1,13 @@
 export type MoveClassification =
   | 'book'
+  | 'brilliant'
+  | 'great'
   | 'best'
   | 'excellent'
   | 'good'
   | 'inaccuracy'
   | 'mistake'
+  | 'miss'
   | 'blunder';
 
 export interface Puzzle {
@@ -314,6 +317,8 @@ export interface GameReviewMove {
   color: 'white' | 'black';
   classification: MoveClassification;
   cp_loss: number;
+  /** Expected-points loss (Chess.com Classification V2 model). */
+  ep_loss?: number;
   eval_cp: number;
   eval_mate?: number | null;
   best_move_san?: string | null;
