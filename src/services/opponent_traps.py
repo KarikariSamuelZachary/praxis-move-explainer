@@ -3,7 +3,7 @@ Trap clustering for opponent preparation.
 
 Groups an opponent's blunders (from ``opponent_game_blunders``) into
 recurring "traps" — positions the opponent has blundered in across 2+
-DIFFERENT games.  Used by the "Traps He's Fallen For" section of the
+DIFFERENT games.  Used by the "Recurring Blunders" section of the
 Opponent Preparation page.
 
 This is a read/aggregation over existing data, NOT a new job.  It is a
@@ -37,6 +37,7 @@ from psycopg2.extras import RealDictCursor
 
 from services.opponent_style import (
     STYLE_RECENCY_DECAY_LAMBDA_PER_YEAR,
+    _blunder_ply,
     _game_tc_weight,
     _time_control_bucket,
 )
@@ -136,8 +137,9 @@ def compute_opponent_traps(
       * ``position_key``      — first 4 FEN fields (same convention as
                                  the repertoire sampler's
                                  ``_position_key(board)``).
-      * ``fen``               — one representative full FEN from the
-                                 group (the first row encountered).
+      * ``fen``               — representative full FEN from the example
+                                 game's row (a ``fen_before`` FEN, so the
+                                 side to move is the player who erred).
       * ``moves``             — sorted distinct ``move_san`` values
                                  played at this position.
       * ``classification``    — worst of ``blunder``/``mistake`` in the
@@ -145,6 +147,15 @@ def compute_opponent_traps(
       * ``game_count``        — number of DISTINCT games in the group.
       * ``move_number_min``   — earliest move_number in the group.
       * ``move_number_max``   — latest move_number in the group.
+      * ``example_game_id``   — most recent game in the group; the UI
+                                 fetches its PGN by id for the replay.
+      * ``example_ply``       — 1-based ply of the error in that game
+                                 (the UI starts at ``example_ply - 1``,
+                                 the position before the move).
+      * ``example_move_san``  — the move actually played in the example
+                                 game at this position.
+      * ``example_classification`` — that move's own classification
+                                 (may be softer than the group's worst).
       * ``tier``              — always ``"position"`` (the only tier
                                  implemented; opening-family fallback
                                  is intentionally not built).
@@ -155,16 +166,18 @@ def compute_opponent_traps(
         cur.execute(
             """
             SELECT
-                position_key,
-                fen,
-                move_san,
-                classification,
-                game_id,
-                move_number
-            FROM opponent_game_blunders
-            WHERE requested_by_user_id = %s
-              AND provider = %s
-              AND LOWER(opponent_username) = LOWER(%s)
+                b.position_key,
+                b.fen,
+                b.move_san,
+                b.classification,
+                b.game_id::text AS game_id,
+                b.move_number,
+                g.end_time
+            FROM opponent_game_blunders b
+            JOIN opponent_games g ON g.id = b.game_id
+            WHERE b.requested_by_user_id = %s
+              AND b.provider = %s
+              AND LOWER(b.opponent_username) = LOWER(%s)
             """,
             (requested_by_user_id, provider, opponent_username),
         )
@@ -190,15 +203,41 @@ def compute_opponent_traps(
         moves = sorted({r["move_san"] for r in group_rows})
         move_numbers = [r["move_number"] for r in group_rows]
 
+        # Replay example: the most recent game in the group (newest
+        # end_time), earliest occurrence inside it. The UI fetches this
+        # game's PGN by id and steps through it; `example_ply` is the
+        # position BEFORE the move, matching `fen` (a fen_before row).
+        representative = sorted(
+            group_rows,
+            key=lambda r: (
+                -int(r.get("end_time") or 0),
+                int(r.get("move_number") or 0),
+            ),
+        )[0]
+        rep_fen = representative.get("fen") or ""
+        rep_fen_parts = rep_fen.split(" ")
+        rep_side = (
+            "white"
+            if len(rep_fen_parts) > 1 and rep_fen_parts[1] == "w"
+            else "black"
+        )
+
         traps.append(
             {
                 "position_key": position_key,
-                "fen": group_rows[0]["fen"],
+                "fen": rep_fen,
                 "moves": moves,
                 "classification": worst,
                 "game_count": len(game_ids),
                 "move_number_min": min(move_numbers),
                 "move_number_max": max(move_numbers),
+                "example_game_id": representative["game_id"],
+                "example_ply": _blunder_ply(
+                    int(representative.get("move_number") or 0), rep_side
+                ),
+                "example_move_san": representative.get("move_san") or "",
+                "example_classification": representative.get("classification")
+                or "mistake",
                 "tier": "position",
             }
         )
