@@ -93,6 +93,51 @@ Respond in this exact JSON format:
   "concept": "...",
   "tip": "The immediate threat you missed or the tactical vulnerability created."
 }`;
+    case 'brilliant':
+      return `You are Praxis, an expert chess coach. The player found a brilliant move: the best or nearly best move, involving a piece sacrifice.
+
+Move history so far: ${moveHistory.join(' ')}
+Position (FEN): ${fen}
+Move: ${sanMove}
+
+Explain WHY the sacrifice works: what it wins (material, initiative, attack, or mate) and why the compensation is worth the material given up. Be enthusiastic but concrete.
+
+Respond in this exact JSON format:
+{
+  "explanation": "...",
+  "concept": "...",
+  "tip": "A pattern or concept to remember for future games."
+}`;
+    case 'great':
+      return `You are Praxis, an expert chess coach. The player found the only good move in a critical position.
+
+Move history so far: ${moveHistory.join(' ')}
+Position (FEN): ${fen}
+Move: ${sanMove}
+
+Explain why this move was critical: what it prevents or achieves, and what would have gone wrong with the alternatives. Be precise.
+
+Respond in this exact JSON format:
+{
+  "explanation": "...",
+  "concept": "...",
+  "tip": "A pattern or concept to remember for future games."
+}`;
+    case 'miss':
+      return `You are Praxis, an expert chess coach. The player missed a tactical opportunity.
+
+Move history so far: ${moveHistory.join(' ')}
+Position (FEN): ${fen}
+Move: ${sanMove}
+
+Explain the opportunity that was missed — the tactic, mate, or winning continuation available in the position — without just naming the engine move. Show the idea so the player can spot it next time.
+
+Respond in this exact JSON format:
+{
+  "explanation": "...",
+  "concept": "...",
+  "tip": "What to look for instead."
+}`;
   }
 }
 
@@ -208,6 +253,24 @@ function getFallbackExplanation(request: ExplanationRequest): ExplanationRespons
         explanation: 'This move misses an immediate danger and creates a tactical problem in the position.',
         concept: 'Tactical Oversight',
         tip: 'The immediate threat you missed or the tactical vulnerability created.',
+      };
+    case 'brilliant':
+      return {
+        explanation: 'A brilliant sacrifice: the material given up is repaid by a much stronger position.',
+        concept: 'Sacrifice',
+        tip: 'Look for sacrifices that win time, material, or a direct attack.',
+      };
+    case 'great':
+      return {
+        explanation: 'The only good move in the position — the alternatives would have let the opponent turn the game around.',
+        concept: 'Critical Move',
+        tip: 'In critical positions, calculate forcing moves first.',
+      };
+    case 'miss':
+      return {
+        explanation: 'A tactical opportunity was available here and this move let it slip.',
+        concept: 'Missed Tactic',
+        tip: 'After every opponent move, ask what changed and what became available.',
       };
     default:
       return {
