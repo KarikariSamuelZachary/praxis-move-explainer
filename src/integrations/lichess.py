@@ -161,6 +161,13 @@ def fetch_recent_lichess_games(username: str, limit: int = 10) -> List[Dict[str,
     games returned upstream. The response is parsed as NDJSON (one JSON
     object per line), not as a single JSON array.
 
+    `opening=true` is REQUIRED for the opening breakdown: Lichess omits the
+    `[Opening "..."]` / `[ECO "..."]` PGN headers by default (verified
+    against the API spec), which made every Lichess game bucket as
+    `_unknown` in `_opening_family` (empty Weak Openings panel, degraded
+    style family lean). Chess.com PGNs carry `[ECOUrl]` instead, so this
+    parameter is Lichess-specific.
+
     Args:
         username: A Lichess username (case-sensitive on Lichess — preserved as-is).
         limit: Maximum number of games to return.
@@ -179,7 +186,7 @@ def fetch_recent_lichess_games(username: str, limit: int = 10) -> List[Dict[str,
     if not username:
         raise ValueError("username must not be empty")
 
-    url = "{base}?max={limit}&pgnInJson=true".format(
+    url = "{base}?max={limit}&pgnInJson=true&opening=true".format(
         base=GAMES_URL.format(username=username),
         limit=limit,
     )
