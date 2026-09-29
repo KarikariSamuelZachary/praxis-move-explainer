@@ -1,3 +1,4 @@
+from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
@@ -97,9 +98,9 @@ class OpponentTrapResponse(BaseModel):
     # groups qualify — an expected, common case for opponents with
     # sparse blunder data, not a failure state.
     position_key: str
-    # One representative full FEN from the group (the first row
-    # encountered). The frontend uses this to render the board position
-    # for the "Traps He's Fallen For" section.
+    # Representative full FEN from the example game's row (a fen_before
+    # FEN, so the side to move is the player who erred). The frontend
+    # renders this while the replay game loads and if it cannot load.
     fen: str
     # Sorted distinct move_san values the opponent played at this
     # position that were classified as mistake or blunder. Multiple
@@ -116,6 +117,15 @@ class OpponentTrapResponse(BaseModel):
     game_count: int
     move_number_min: int
     move_number_max: int
+    # Replay example: the most recent game in the group. The frontend
+    # fetches its PGN through the single-game endpoint and steps through
+    # it; `example_ply` is the 1-based ply of the error, so the initial
+    # board is `example_ply - 1` (the position before the move, matching
+    # `fen`).
+    example_game_id: str
+    example_ply: int
+    example_move_san: str
+    example_classification: Literal["mistake", "blunder"]
     # Always "position" — the only tier implemented. An opening-family
     # fallback tier is intentionally NOT built (scope creep for this
     # task). If a later task adds it, this field becomes a Literal
@@ -178,16 +188,23 @@ class OpponentProfileResponse(BaseModel):
     # at least one parseable game is shown (the spec: "show every bucket
     # with at least one game, however small. This is deliberate, don't add
     # filtering"). None at the response level iff the opponent had zero
-    # parseable PGNs.
+    # parseable PGNs. (The Weak Openings panel applies its own
+    # projection-time floor/shrinkage on top — see openings_lost_against.)
     opening_results: Optional[Dict[str, Dict[str, Any]]] = None
     # Openings the opponent has LOST in, projected to the Opponent Prep
-    # page's "Openings He Lost Against" panel. Each item is
-    # `{name: str, loss_percentage: float, games: int}` where
-    # `loss_percentage` is `weighted_losses / (weighted_wins +
-    # weighted_losses + weighted_draws)` over the same recency-weighted
-    # W/L/D counts `opening_results` exposes (0.0-1.0; multiply by 100
-    # for display). Sorted by descending loss_percentage so the panel's
-    # "most-lost-against-first" ordering is preserved at the API layer.
+    # page's "Weak Openings" panel. One row per (family, side), built from
+    # the stored RAW counts with projection-time floor + shrinkage:
+    #   {name, family, color, raw_games, raw_wins, raw_losses, raw_draws,
+    #    loss_rate, low_sample, legacy?, loss_percentage, games}
+    # `loss_rate` (0.0-1.0) is the bucket's raw loss share shrunk toward
+    # the opponent's OVERALL loss rate (all stored buckets, `_unknown`
+    # included) with OPENING_LOSS_SHRINKAGE_PRIOR pseudo-games.
+    # `loss_percentage`/`games` are transitional mirrors of
+    # `loss_rate`/`raw_games` for the pre-rename UI. Sorted by descending
+    # `loss_rate`; `_unknown` is never displayed. `low_sample` marks 3-4
+    # game backfill rows (shown only when fewer than 3 buckets clear the
+    # floor); `legacy` marks rows from a pre-raw snapshot (weighted-only,
+    # no color split) until the backfill script or next import replaces it.
     # Empty list when no parseable games (mirrors the opening_results
     # None contract). A bucket is included only if it had at least one
     # decided-or-drawn game — pure-"*" buckets are excluded so the
@@ -237,8 +254,66 @@ class OpponentAnalysisStatusResponse(BaseModel):
     status: Literal["idle", "running", "complete"]
     analyzed_games: int
     total_games: int
-    started_at: Optional[str] = None
-    heartbeat_at: Optional[str] = None
+    # psycopg2 returns TIMESTAMPTZ columns as datetime objects; typing these
+    # as `str` made Pydantic v2 reject every non-NULL row (500 on the poll
+    # endpoint for any opponent whose job had started). FastAPI serializes
+    # `datetime` to an ISO-8601 string in the JSON response.
+    started_at: Optional[datetime] = None
+    heartbeat_at: Optional[datetime] = None
+
+
+class OpponentOpeningBlunder(BaseModel):
+    # Jump target in an opening game, from `opponent_game_blunders` (same
+    # GameAnalyzer thresholds as the Recurring Blunders panel): the EARLIEST
+    # blunder of the opponent, or — when the game has no blunder — the
+    # earliest mistake. `ply` is the explicit 1-based ply of the move
+    # (move_number + side converted server-side); the UI jumps to the
+    # position BEFORE it.
+    move_number: int
+    ply: int
+    move_san: str
+    classification: Literal["mistake", "blunder"]
+
+
+class OpponentOpeningGameSummary(BaseModel):
+    # One game inside a Weak Openings bucket, listed WITHOUT the PGN (real
+    # buckets hold 100+ games; the UI fetches a single game on demand by
+    # `game_id`). `result` is opponent-POV; `first_blunder` is the jump
+    # target from `opponent_game_blunders` (earliest blunder, else earliest
+    # mistake — same thresholds as Recurring Blunders), so the UI can jump
+    # without the PGN. `analyzed` distinguishes "the analyzer found no
+    # mistake/blunder" from "this game was never run through the Stockfish
+    # pass" — both have an empty first_blunder but mean different things.
+    game_id: str
+    result: Literal["win", "loss", "draw", "*"]
+    end_time: int
+    time_class: str
+    analyzed: bool
+    first_blunder: Optional[OpponentOpeningBlunder] = None
+
+
+class OpponentOpeningGamesResponse(BaseModel):
+    # Full game list for one Weak Openings bucket, ordered losses -> draws
+    # -> wins, newest first within each group. `initial_game_id` is the game
+    # the modal opens on: newest loss with a blunder row, else newest loss,
+    # else the newest game.
+    initial_game_id: str
+    games: List[OpponentOpeningGameSummary]
+
+
+class OpponentOpeningGameResponse(BaseModel):
+    # Single stored game for the replay board, fetched by `game_id` from the
+    # list endpoint and scoped to the requesting user. `pgn` is our stored
+    # copy; the UI replays it locally. `game_url` is kept for future use
+    # (the UI no longer renders an "Open game" link).
+    game_id: str
+    game_url: str
+    pgn: str
+    white: str
+    black: str
+    result: str
+    end_time: int
+    time_class: str
 
 
 class SparringMoveRequest(BaseModel):
@@ -246,7 +321,6 @@ class SparringMoveRequest(BaseModel):
     opponent_username: str = Field(..., min_length=1, max_length=100)
     fen: str = Field(..., min_length=1, max_length=200)
     bot_color: Literal["white", "black"]
-    catastrophic_loss_cp: int = Field(300, ge=100, le=2000)
     maia_temperature: float = Field(0.15, ge=0, le=2)
     # The current sparring session's time control, so the style-bias
     # re-ranker can prefer games from the same (or similar) time control
@@ -269,12 +343,9 @@ class SparringMoveRequest(BaseModel):
 class SparringMoveResponse(BaseModel):
     move_uci: str
     move_san: str
-    source: Literal["in_book", "playing_naturally", "correcting_blunder"]
+    source: Literal["in_book", "playing_naturally"]
     opponent_elo: int
     repertoire_frequency: Optional[int] = None
-    cp_loss: int = 0
-    best_move_uci: Optional[str] = None
-    best_move_san: Optional[str] = None
 
 
 class SparringWarmupRequest(BaseModel):
@@ -364,9 +435,7 @@ class GambitBookMove(BaseModel):
 
 class EngineSparringMoveResponse(BaseModel):
     # The persona's chosen move plus the transparency numbers the Sparring UI
-    # shows. Where SparringMoveResponse surfaces `cp_loss` (how much the
-    # safety check's blunder gate cost the chosen move vs the engine's best),
-    # this response surfaces the persona rerank directly:
+    # shows. This response surfaces the persona rerank directly:
     #   * engine_score_cp  -- the chosen move's RAW engine score (suggest()'s
     #     score_cp, side-to-move POV, mate coerced to +/-10000);
     #   * engine_norm_cp   -- that score minus the engine's best candidate's
