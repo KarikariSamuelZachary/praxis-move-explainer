@@ -498,6 +498,50 @@ def _time_control_bucket(raw: Optional[str], pgn: str = "") -> str:
     return "unknown"
 
 
+# Time-class buckets stored on every opening bucket. Unlike the sparring-TC
+# weighting above (where "daily"/"correspondence" intentionally resolve to
+# "unknown" so they don't bias online-speed stats), opening stats keep
+# daily/correspondence as their OWN class — the UI must be able to ask "how
+# does he do in daily games", and the per-class counts must sum exactly to
+# the aggregate (a game silently falling out would break that invariant).
+_OPENING_TIME_CLASSES = (
+    "bullet", "blitz", "rapid", "classical", "daily", "unknown",
+)
+
+
+def _opening_time_class(time_class: str, pgn: str) -> str:
+    """Total mapping of one game to exactly one stored time-class bucket.
+
+    Reuses `_time_control_bucket` for the online speeds (bullet/blitz/
+    rapid/classical) so opening stats and the sparring-TC weighting agree
+    on those boundaries. `daily`/`correspondence` — which
+    `_time_control_bucket` deliberately maps to "unknown" — are promoted
+    to their own "daily" bucket here. Anything unclassifiable (no DB
+    `time_class` AND no parseable PGN `[TimeControl]`) lands in the stored
+    "unknown" bucket rather than being dropped, so the per-class counts
+    always sum to the bucket aggregate. `pgn` is the fallback source the
+    live path uses; the DB `time_class` column is the primary one, so
+    backfilled and freshly imported snapshots bucket identically.
+    """
+    raw = (time_class or "").strip().lower()
+    if raw in ("daily", "correspondence"):
+        return "daily"
+    bucket = _time_control_bucket(time_class, pgn)
+    return bucket if bucket in _OPENING_TIME_CLASSES else "unknown"
+
+
+def _blunder_ply(move_number: int, side: str) -> int:
+    """Explicit full-move-number + side -> 1-based ply conversion.
+
+    White's Nth move is ply 2N-1; Black's Nth move is ply 2N. Getting this
+    wrong is exactly the "off by one when the opponent is Black" bug the
+    opening/trap replay jumps would inherit, so it lives in its own
+    testable helper shared by the repertoire and trap layers.
+    """
+    n = max(1, int(move_number))
+    return (n - 1) * 2 + (1 if side == "white" else 2)
+
+
 def _game_tc_weight(
     game_bucket: str, sparring_bucket: Optional[str]
 ) -> float:
@@ -942,7 +986,7 @@ def _analyze_game(
     # Normalized to "win"/"loss"/"draw"/"*" from the OPPONENT's POV — the
     # game-level result is flipped for the opponent-of-the-opponent. Used by
     # `compute_opening_results` for the per-opening W/L/D breakdown (the
-    # spec for "Openings He Lost Against"); sharing the same `_analyze_game`
+    # spec for "Weak Openings"); sharing the same `_analyze_game`
     # pass the other signals use means opening_family_lean and the new
     # per-opening W/L/D use the EXACT same bucketing `_opening_family`
     # produces (no forked/reimplemented binning).
@@ -1278,12 +1322,12 @@ def compute_time_control_distribution(games) -> Dict[str, Any]:
     }
 
 
-# --- per-opening win/loss/draw breakdown (Opponent Prep "Openings He Lost") -
+# --- per-opening win/loss/draw breakdown (Opponent Prep "Weak Openings") ----
 #
 # The Train page's "Most Played Openings" view already shows opening
 # FREQUENCY via `opening_family_lean`. The Opponent Preparation page needs
 # a SECOND view of the SAME buckets: the opponent's actual result in each
-# one — for the "Openings He Lost Against" panel. The contract (the spec):
+# one — for the "Weak Openings" panel. The contract (the spec):
 #
 #   * Reuse the EXACT same opening-bucketing logic as opening_family_lean
 #     — same `_opening_family` extractor, same bins. Do NOT reimplement or
@@ -1297,14 +1341,15 @@ def compute_time_control_distribution(games) -> Dict[str, Any]:
 #     already used everywhere else in this module
 #     (`STYLE_RECENCY_DECAY_LAMBDA_PER_YEAR` via `_game_recency_weight`).
 #
-#   * NO minimum-sample floor (the spec: "show every bucket with at least
-#     one game, however small. This is deliberate, don't add filtering").
-#     A 1-game opponent with a lone loss in the Sicilian WILL show a
-#     Sicilian bucket with win_rate 0.0 — this is signal, not noise, for
-#     a preparation page whose explicit purpose is "Openings He Lost
-#     Against". This intentionally diverges from compute_opponent_style /
-#     compute_time_control_distribution, which both gate on
-#     MIN_STYLE_GAMES.
+#   * NO minimum-sample floor AT STORAGE (the spec: "show every bucket with
+#     at least one game, however small. This is deliberate, don't add
+#     filtering"). A 1-game opponent with a lone loss in the Sicilian WILL
+#     have a Sicilian bucket with win_rate 0.0 stored. The Weak Openings
+#     panel applies its own projection-time floor/shrinkage on top (see
+#     `_openings_lost_against` in opponent_repertoire.py), so that floor can
+#     change without a re-import. This intentionally diverges from
+#     compute_opponent_style / compute_time_control_distribution, which both
+#     gate on MIN_STYLE_GAMES.
 #
 # DENOMINATOR / COUNT CONTRACT:
 #   * `weighted_count` of each bucket = sum of that bucket's per-game
@@ -1323,23 +1368,42 @@ def compute_time_control_distribution(games) -> Dict[str, Any]:
 #   * Unparseable PGNs (and games where the opponent's color can't be
 #     resolved) are excluded from every count here, matching the
 #     denominator-consistency contract the other signals use.
+def _empty_result_counts() -> Dict[str, int]:
+    """One raw accumulator: total games + opponent-POV W/L/D."""
+    return {"count": 0, "wins": 0, "losses": 0, "draws": 0}
+
+
+def _bump_result_counts(counts: Dict[str, int], result: str) -> None:
+    """Increment a raw accumulator. "*" (aborted) increments count only."""
+    counts["count"] += 1
+    if result == "win":
+        counts["wins"] += 1
+    elif result == "loss":
+        counts["losses"] += 1
+    elif result == "draw":
+        counts["draws"] += 1
+
+
 def compute_opening_results(games) -> Dict[str, Any]:
     """Per-opening W/L/D breakdown for one opponent, weighted by recency.
 
-    `games` is an iterable of dicts each with keys {"pgn", "end_time"} —
-    the same row shape `compute_opponent_style` and
-    `compute_time_control_distribution` read. Each PGN is parsed through
-    the existing `_analyze_game` (the one `compute_opponent_style` uses
-    for every other signal), so the `family` label assigned here is the
-    EXACT label `opening_family_lean` assigns — no forked/reimplemented
-    binning. The new `result` field `_analyze_game` now returns is
-    consumed here; nothing else in `_analyze_game` was changed to serve
-    this signal.
+    `games` is an iterable of dicts each with keys {"pgn", "end_time",
+    "time_class", ...} — the same row shape the snapshot builder and the
+    legacy profile-list path read. `time_class` may be missing/empty
+    (fixtures, manual imports); those games fall into the stored
+    "unknown" class bucket rather than being dropped.
+
+    Each PGN is parsed through the existing `_analyze_game` (the one
+    `compute_opponent_style` uses for every other signal), so the `family`
+    label assigned here is the EXACT label `opening_family_lean` assigns —
+    no forked/reimplemented binning. The `result` and `opponent_color`
+    fields `_analyze_game` returns are consumed here; nothing else in
+    `_analyze_game` was changed to serve this signal.
 
     NO minimum-sample floor: EVERY bucket with at least one parseable
     game is reported, however small (the spec is explicit — do not add
     filtering). A 1-game single-loss bucket shows `win_rate=0.0`; that's
-    signal, not noise, for a "Lost Against" panel.
+    signal, not noise, for a "Weak Openings" panel.
 
     Returns a dict shaped:
         {
@@ -1359,19 +1423,43 @@ def compute_opening_results(games) -> Dict[str, Any]:
           # playing-style pill on the Opponent Preparation page.
           "weighted_sacrifice_frequency": float | None,
           "by_opening": dict,                # {family: {
+                                             #   # legacy weighted view
                                              #   "weighted_count": float,
                                              #   "weighted_wins":   float,
                                              #   "weighted_losses": float,
                                              #   "weighted_draws":  float,
                                              #   "win_rate":        float|None,
-                                             # }} — win_rate is None iff
-                                             # the bucket has zero
+                                             #   # raw counts: stored for
+                                             #   # every bucket so the
+                                             #   # projection step can apply
+                                             #   # / change the floor and
+                                             #   # filters without another
+                                             #   # re-import
+                                             #   "raw_count":  int,
+                                             #   "raw_wins":   int,
+                                             #   "raw_losses": int,
+                                             #   "raw_draws":  int,
+                                             #   "raw_by_color": {
+                                             #     "white"|"black": {
+                                             #       "count"/"wins"/"losses"/"draws": int}},
+                                             #   "raw_by_time_class": {
+                                             #     "bullet"|"blitz"|"rapid"|"classical"|"daily"|"unknown": {
+                                             #       "count"/"wins"/"losses"/"draws": int}},
+                                             # }}
+                                             # INVARIANT: per bucket, the
+                                             # color-map and class-map
+                                             # counts each sum exactly to
+                                             # raw_count (every game lands
+                                             # in exactly one color and one
+                                             # class); "unknown" is stored,
+                                             # never dropped. win_rate is
+                                             # None iff the bucket has zero
                                              # decided/drawn games (every
                                              # game in it was "*" aborted
                                              # OR the bucket is empty).
                                              # Sorted by descending
                                              # weighted_count so the
-                                             # "Openings He Lost Against"
+                                             # "Weak Openings"
                                              # panel's most-played-first
                                              # ordering matches the
                                              # frequency panel's.
@@ -1407,6 +1495,12 @@ def compute_opening_results(games) -> Dict[str, Any]:
     bucket_wins: Dict[str, float] = {}
     bucket_losses: Dict[str, float] = {}
     bucket_draws: Dict[str, float] = {}
+    # Raw (unweighted) counts, stored by bucket, color and time class.
+    # The projection (floor / shrinkage / filtering) reads these, so those
+    # knobs can change without re-parsing the corpus.
+    bucket_raw: Dict[str, Dict[str, int]] = {}
+    bucket_raw_by_color: Dict[str, Dict[str, Dict[str, int]]] = {}
+    bucket_raw_by_time_class: Dict[str, Dict[str, Dict[str, int]]] = {}
 
     for row in rows:
         end_time = int(row.get("end_time") or 0)
@@ -1430,6 +1524,8 @@ def compute_opening_results(games) -> Dict[str, Any]:
 
         family = analyzed["family"]
         result = analyzed["result"]
+        color = analyzed["opponent_color"]
+        time_class = _opening_time_class(row.get("time_class") or "", pgn)
 
         bucket_weight[family] = bucket_weight.get(family, 0.0) + weight
         # "*" (unfinished/aborted) contributes to the bucket's
@@ -1444,12 +1540,32 @@ def compute_opening_results(games) -> Dict[str, Any]:
             bucket_draws[family] = bucket_draws.get(family, 0.0) + weight
         # result == "*" -> no W/L/D accumulator touch.
 
+        # Raw counts, always bumped (including "*" games, which contribute
+        # to count only). Each game lands in exactly one color bucket and
+        # exactly one time-class bucket, so both maps sum to raw_count.
+        _bump_result_counts(
+            bucket_raw.setdefault(family, _empty_result_counts()), result
+        )
+        _bump_result_counts(
+            bucket_raw_by_color.setdefault(family, {}).setdefault(
+                color, _empty_result_counts()
+            ),
+            result,
+        )
+        _bump_result_counts(
+            bucket_raw_by_time_class.setdefault(family, {}).setdefault(
+                time_class, _empty_result_counts()
+            ),
+            result,
+        )
+
     by_opening: Dict[str, Dict[str, Any]] = {}
     for family in bucket_weight:
         w_count = bucket_weight[family]
         w_wins = bucket_wins.get(family, 0.0)
         w_losses = bucket_losses.get(family, 0.0)
         w_draws = bucket_draws.get(family, 0.0)
+        raw = bucket_raw[family]
         decided_or_drawn = w_wins + w_losses + w_draws
         if decided_or_drawn > 0.0:
             win_rate = w_wins / decided_or_drawn
@@ -1468,9 +1584,15 @@ def compute_opening_results(games) -> Dict[str, Any]:
             "weighted_losses": round(w_losses, 4),
             "weighted_draws": round(w_draws, 4),
             "win_rate": (round(win_rate, 4) if win_rate is not None else None),
+            "raw_count": raw["count"],
+            "raw_wins": raw["wins"],
+            "raw_losses": raw["losses"],
+            "raw_draws": raw["draws"],
+            "raw_by_color": bucket_raw_by_color.get(family, {}),
+            "raw_by_time_class": bucket_raw_by_time_class.get(family, {}),
         }
 
-    # Sort by descending weighted_count so the "Openings He Lost Against"
+    # Sort by descending weighted_count so the "Weak Openings"
     # panel's most-played-first ordering matches the frequency panel's
     # (opening_family_lean also sorts by descending weight). Stable sort
     # preserves insertion order for ties, which on equal-weight buckets
