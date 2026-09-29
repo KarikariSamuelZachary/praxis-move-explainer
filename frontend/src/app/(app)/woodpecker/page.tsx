@@ -7,6 +7,7 @@ import Link from 'next/link';
 import type { BoardApi } from '@/components/board/ChessBoard';
 import type { EndgameBoardProps } from '@/components/board/EndgameBoard';
 import DrillStatusPanel from '@/components/endgames/DrillStatusPanel';
+import PuzzleStatusPanel from '@/components/puzzles/PuzzleStatusPanel';
 import {
   EndgamePlayoutStatus,
   fetchEndgameWoodpeckerQueue,
@@ -71,26 +72,6 @@ function ExitIcon() {
       <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
       <path d="m16 17 5-5-5-5" />
       <path d="M21 12H9" />
-    </svg>
-  );
-}
-
-function CheckCircleIcon({ className = 'h-5 w-5' }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.18" />
-      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="1.5" />
-      <path d="m7.5 12.5 3 3 6-6" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
-  );
-}
-
-function XCircleIcon({ className = 'h-5 w-5' }: { className?: string }) {
-  return (
-    <svg className={className} viewBox="0 0 24 24" fill="none" aria-hidden="true">
-      <circle cx="12" cy="12" r="10" fill="currentColor" opacity="0.18" />
-      <circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="1.5" />
-      <path d="m8.5 8.5 7 7M15.5 8.5l-7 7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" />
     </svg>
   );
 }
@@ -655,31 +636,9 @@ function QueueSwitcher({
   );
 }
 
-function getSideToMove(puzzle: Puzzle | null) {
+function getSideToMove(puzzle: Puzzle | null): 'White' | 'Black' {
   if (!puzzle) return 'White';
   return (puzzle.fen || '').split(/\s+/)[1] === 'b' ? 'Black' : 'White';
-}
-
-function formatTheme(theme: string): string {
-  // Convert Lichess camelCase theme keys ('mateIn2', 'xRayAttack') to
-  // readable labels ('Mate in 2', 'X ray attack').
-  const spaced = theme
-    .replace(/([a-z])([A-Z])/g, '$1 $2')
-    .replace(/([a-zA-Z])([0-9])/g, '$1 $2')
-    .replace(/([0-9])([a-zA-Z])/g, '$1 $2')
-    .trim();
-  return spaced.charAt(0).toUpperCase() + spaced.slice(1).toLowerCase();
-}
-
-function formatSourceReason(reason: string): string {
-  switch (reason) {
-    case 'wrong_answer':
-      return 'You missed this one';
-    case 'slow_solution':
-      return 'You solved it slowly';
-    default:
-      return formatTheme(reason);
-  }
 }
 
 export default function WoodpeckerPage() {
@@ -688,6 +647,13 @@ export default function WoodpeckerPage() {
   const boardApi = useRef<BoardApi | null>(null);
   const startTimeRef = useRef<number>(0);
   const advanceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // The puzzle review tab's running assist count ("Hint" / "Solution"), sent
+  // with every attempt; a hinted solve is scheduled as not-clean on the
+  // backend. A ref, not state: only the request body needs it.
+  const puzzleHintsUsedRef = useRef(0);
+  // Once-per-puzzle scoring guard, synchronous so a solved final move cannot
+  // be recorded twice (onPuzzleSolved fires, then onPuzzleEnd).
+  const puzzleScoredRef = useRef(false);
 
   const [queue, setQueue] = useState<WoodpeckerEntry[] | null>(null);
   const [puzzles, setPuzzles] = useState<Record<string, Puzzle>>({});
@@ -789,6 +755,8 @@ export default function WoodpeckerPage() {
       setCurrentIndex(0);
       setCompletedCount(0);
       setFeedback('idle');
+      puzzleScoredRef.current = false;
+      puzzleHintsUsedRef.current = 0;
 
       const uniqueIds = Array.from(new Set(entries.map((e) => e.puzzle_id)));
       const fetched: Record<string, Puzzle> = {};
@@ -924,6 +892,8 @@ export default function WoodpeckerPage() {
 
   useEffect(() => {
     startTimeRef.current = Date.now();
+    puzzleScoredRef.current = false;
+    puzzleHintsUsedRef.current = 0;
     return () => clearAdvanceTimeout();
   }, [currentIndex, clearAdvanceTimeout]);
 
@@ -960,6 +930,9 @@ export default function WoodpeckerPage() {
             entry_id: currentEntry.id,
             solved_correctly: solved,
             time_taken_ms: Date.now() - startTimeRef.current,
+            // The backend schedules solved_correctly=true with hints_used>0
+            // as Again: the board verdict stands, the card does not graduate.
+            hints_used: puzzleHintsUsedRef.current,
           }),
         });
       } catch (err) {
@@ -969,28 +942,56 @@ export default function WoodpeckerPage() {
     [currentEntry]
   );
 
+  const schedulePuzzleAdvance = useCallback(() => {
+    if (!autoAdvance) return;
+    clearAdvanceTimeout();
+    advanceTimeoutRef.current = setTimeout(advanceToNext, 1500);
+  }, [advanceToNext, autoAdvance, clearAdvanceTimeout]);
+
   const handlePuzzleSolved = useCallback(() => {
-    if (feedback !== 'idle') return;
+    // The ref, not `feedback`, is the once-per-puzzle guard: onPuzzleSolved
+    // and onPuzzleEnd can fire in the same synchronous move, before React
+    // commits the feedback state.
+    if (puzzleScoredRef.current) return;
+    puzzleScoredRef.current = true;
     setFeedback('correct');
     recordAttempt(true);
-    if (autoAdvance) {
-      clearAdvanceTimeout();
-      advanceTimeoutRef.current = setTimeout(advanceToNext, 1500);
-    }
-  }, [advanceToNext, autoAdvance, clearAdvanceTimeout, feedback, recordAttempt]);
+    schedulePuzzleAdvance();
+  }, [recordAttempt, schedulePuzzleAdvance]);
 
   const handlePuzzleFailed = useCallback(() => {
-    if (feedback !== 'idle') return;
+    if (puzzleScoredRef.current) return;
+    puzzleScoredRef.current = true;
     setFeedback('mistake');
     recordAttempt(false);
-    if (autoAdvance) {
-      clearAdvanceTimeout();
-      advanceTimeoutRef.current = setTimeout(advanceToNext, 1500);
-    }
-  }, [advanceToNext, autoAdvance, clearAdvanceTimeout, feedback, recordAttempt]);
+    schedulePuzzleAdvance();
+  }, [recordAttempt, schedulePuzzleAdvance]);
 
   const handlePuzzleEnd = useCallback(() => {
-    // No-op: state transitions are driven by solved/failed handlers.
+    // No solved/failed verdict reached scoring: the line ended because
+    // "Solution" played its final move (or the stored line ends on the
+    // defender's reply). The board verdict is solved, but any reveal is
+    // already in hints_used, so the backend schedules it as not-clean
+    // exactly like a hinted solve.
+    if (puzzleScoredRef.current) return;
+    puzzleScoredRef.current = true;
+    setFeedback('correct');
+    recordAttempt(true);
+    schedulePuzzleAdvance();
+  }, [recordAttempt, schedulePuzzleAdvance]);
+
+  const handlePuzzleAssistRevealed = useCallback(() => {
+    // "Hint" and "Solution" both count: a solve reached through either was
+    // not found unaided, and the backend treats hints_used > 0 as not-clean.
+    puzzleHintsUsedRef.current += 1;
+  }, []);
+
+  const handlePuzzleHint = useCallback(() => {
+    boardApi.current?.showHint();
+  }, []);
+
+  const handlePuzzleShowSolution = useCallback(() => {
+    boardApi.current?.showSolution();
   }, []);
 
   const handleNextClick = useCallback(() => {
@@ -1116,7 +1117,6 @@ export default function WoodpeckerPage() {
   const queueIsEmpty = !isLoading && queue !== null && queue.length === 0;
   const queueFinished = !isLoading && queue !== null && currentIndex >= queue.length;
 
-  const showResult = feedback !== 'idle';
   const hasQueueRemaining = !isLoading && queue !== null && !queueFinished && !queueIsEmpty;
   const showingBoard = !!currentPuzzle && hasQueueRemaining;
   const puzzleUnavailable = hasQueueRemaining && !currentPuzzle;
@@ -1272,6 +1272,8 @@ export default function WoodpeckerPage() {
                 onPuzzleSolved={handlePuzzleSolved}
                 onPuzzleFailed={handlePuzzleFailed}
                 onPuzzleEnd={handlePuzzleEnd}
+                onHintRevealed={handlePuzzleAssistRevealed}
+                onSolutionRevealed={handlePuzzleAssistRevealed}
                 apiRef={boardApi}
               />
             </div>
@@ -1362,94 +1364,15 @@ export default function WoodpeckerPage() {
           </div>
         </section>
 
-        {/* ============== RIGHT CARD ============== */}
+        {/* ============== RIGHT CARD: PUZZLES PAGE PANEL ============== */}
         <section className="hidden min-h-0 min-w-0 xl:block">
-          <div className={`${CARD_CLASS} flex h-fit w-full flex-col gap-5 p-5 shadow-2xl shadow-black/25`}>
-            {/* Top: result banner (after move) OR "your move" header */}
-            {showResult ? (
-              <div
-                className={`flex flex-col gap-3 rounded-xl border p-4 ${
-                  feedback === 'correct'
-                    ? 'border-emerald-400/30 bg-emerald-500/10'
-                    : 'border-rose-400/30 bg-rose-500/10'
-                }`}
-              >
-                <div className="flex items-center gap-2.5">
-                  {feedback === 'correct' ? (
-                    <CheckCircleIcon className="h-5 w-5 shrink-0 text-emerald-400" />
-                  ) : (
-                    <XCircleIcon className="h-5 w-5 shrink-0 text-rose-400" />
-                  )}
-                  <span
-                    className={`text-[11px] font-bold uppercase tracking-[0.25em] ${
-                      feedback === 'correct' ? 'text-emerald-400' : 'text-rose-400'
-                    }`}
-                  >
-                    Result
-                  </span>
-                </div>
-                <h2
-                  className={`text-2xl font-semibold leading-snug ${
-                    feedback === 'correct' ? 'text-emerald-200' : 'text-rose-200'
-                  }`}
-                >
-                  {feedback === 'correct' ? 'Nice - keep going' : 'Logged for review'}
-                </h2>
-              </div>
-            ) : (
-              <div className="flex flex-col gap-3">
-                <div className="flex items-center gap-2.5">
-                  <span
-                    className={`inline-block h-2.5 w-2.5 rounded-full ${
-                      sideToMove === 'White' ? 'bg-white' : 'bg-zinc-800 ring-1 ring-white/40'
-                    }`}
-                  />
-                  <span className="text-[11px] font-bold uppercase tracking-[0.3em] text-[#f7e5c6]/60">
-                    Your Move
-                  </span>
-                </div>
-                <h2 className="text-3xl font-semibold leading-snug text-[#f7e5c6]">
-                  Find the best move for {sideToMove}.
-                </h2>
-              </div>
-            )}
-
-            {/* Puzzle details */}
-            <div className="flex flex-col gap-5">
-              <div>
-                <div className="text-[11px] font-bold uppercase tracking-[0.25em] text-white/40">
-                  This Puzzle
-                </div>
-                <div className="mt-2.5 flex flex-wrap gap-1.5">
-                  {(currentPuzzle?.themes ?? []).map((t) => (
-                    <span
-                      key={t}
-                      className="rounded-full border border-[#f7e5c6]/20 bg-[#f7e5c6]/5 px-2.5 py-1 text-xs font-medium text-[#f7e5c6]/80"
-                    >
-                      {formatTheme(t)}
-                    </span>
-                  ))}
-                </div>
-              </div>
-              <div className="flex flex-col gap-2.5 border-t border-white/5 pt-4 text-sm">
-                <div className="flex items-baseline justify-between">
-                  <span className="text-white/40">Rating</span>
-                  <span className="font-semibold text-[#f7e5c6]">
-                    {currentPuzzle?.rating ?? '-'}
-                  </span>
-                </div>
-                {currentEntry?.source_reason && (
-                  <div className="flex items-baseline justify-between">
-                    <span className="text-white/40">Added because</span>
-                    <span className="text-xs font-medium text-white/70">
-                      {formatSourceReason(currentEntry.source_reason)}
-                    </span>
-                  </div>
-                )}
-                </div>
-            </div>
-
-          </div>
+          <PuzzleStatusPanel
+            sideToMoveLabel={sideToMove}
+            themeLabel={null}
+            result={feedback === 'correct' ? 'solved' : feedback === 'mistake' ? 'failed' : null}
+            onHint={handlePuzzleHint}
+            onShowSolution={handlePuzzleShowSolution}
+          />
         </section>
       </div>
     );
