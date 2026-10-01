@@ -1,19 +1,19 @@
-import { NextRequest, NextResponse } from 'next/server';
-import { redis } from '@/lib/redis';
-import { getCachedExplanation } from '@/lib/groq';
-import { ExplanationRequest, MoveClassification } from '@/types';
+import { NextRequest, NextResponse } from "next/server";
+import { redis } from "@/lib/redis";
+import { getCachedExplanation } from "@/lib/groq";
+import { ExplanationRequest, MoveClassification } from "@/types";
 
 const MAX_BODY_BYTES = 4 * 1024;
 const MAX_REQUESTS_PER_WINDOW = 10;
 const RATE_LIMIT_WINDOW_SECONDS = 60;
 
 function getClientIp(request: NextRequest): string {
-  const forwardedFor = request.headers.get('x-forwarded-for');
+  const forwardedFor = request.headers.get("x-forwarded-for");
   if (forwardedFor) {
-    return forwardedFor.split(',')[0].trim();
+    return forwardedFor.split(",")[0].trim();
   }
 
-  return 'unknown';
+  return "unknown";
 }
 
 async function isRateLimited(ip: string): Promise<boolean> {
@@ -44,19 +44,23 @@ function isValidSanMove(move: string): boolean {
 }
 
 function isValidClassification(value: unknown): value is MoveClassification {
-  return value === 'book'
-    || value === 'brilliant'
-    || value === 'great'
-    || value === 'best'
-    || value === 'excellent'
-    || value === 'good'
-    || value === 'inaccuracy'
-    || value === 'mistake'
-    || value === 'miss'
-    || value === 'blunder';
+  return (
+    value === "book" ||
+    value === "brilliant" ||
+    value === "great" ||
+    value === "best" ||
+    value === "excellent" ||
+    value === "good" ||
+    value === "inaccuracy" ||
+    value === "mistake" ||
+    value === "miss" ||
+    value === "blunder"
+  );
 }
 
-function sanitizeRequest(body: Partial<ExplanationRequest>): ExplanationRequest | null {
+function sanitizeRequest(
+  body: Partial<ExplanationRequest>,
+): ExplanationRequest | null {
   const fen = body.fen?.trim();
   const move = body.move?.trim();
   const classification = isValidClassification(body.classification)
@@ -72,17 +76,17 @@ function sanitizeRequest(body: Partial<ExplanationRequest>): ExplanationRequest 
     move,
     moveHistory: Array.isArray(body.moveHistory)
       ? body.moveHistory
-          .filter((entry): entry is string => typeof entry === 'string')
+          .filter((entry): entry is string => typeof entry === "string")
           .map((entry) => entry.trim())
           .filter(Boolean)
           .slice(0, 200)
       : [],
     classification,
-    isCorrect: typeof body.isCorrect === 'boolean' ? body.isCorrect : undefined,
+    isCorrect: typeof body.isCorrect === "boolean" ? body.isCorrect : undefined,
     playerElo: Math.min(Math.max(body.playerElo ?? 1100, 100), 3200),
     puzzleThemes: Array.isArray(body.puzzleThemes)
       ? body.puzzleThemes
-          .filter((theme): theme is string => typeof theme === 'string')
+          .filter((theme): theme is string => typeof theme === "string")
           .map((theme) => theme.trim())
           .filter(Boolean)
           .slice(0, 10)
@@ -92,17 +96,26 @@ function sanitizeRequest(body: Partial<ExplanationRequest>): ExplanationRequest 
 
 export async function POST(request: NextRequest) {
   try {
-    const contentLengthHeader = request.headers.get('content-length');
+    const contentLengthHeader = request.headers.get("content-length");
     const contentLength = contentLengthHeader ? Number(contentLengthHeader) : 0;
-    if (contentLengthHeader && (!Number.isFinite(contentLength) || contentLength > MAX_BODY_BYTES)) {
-      return NextResponse.json({ error: 'Request body too large' }, { status: 413 });
+    if (
+      contentLengthHeader &&
+      (!Number.isFinite(contentLength) || contentLength > MAX_BODY_BYTES)
+    ) {
+      return NextResponse.json(
+        { error: "Request body too large" },
+        { status: 413 },
+      );
     }
 
     const ip = getClientIp(request);
     if (await isRateLimited(ip)) {
       return NextResponse.json(
-        { detail: 'Too many requests. Please wait before requesting another explanation.' },
-        { status: 429 }
+        {
+          detail:
+            "Too many requests. Please wait before requesting another explanation.",
+        },
+        { status: 429 },
       );
     }
 
@@ -111,8 +124,8 @@ export async function POST(request: NextRequest) {
     const explanationRequest = sanitizeRequest(body);
     if (!explanationRequest) {
       return NextResponse.json(
-        { error: 'Invalid request payload' },
-        { status: 400 }
+        { error: "Invalid request payload" },
+        { status: 400 },
       );
     }
 
@@ -120,14 +133,14 @@ export async function POST(request: NextRequest) {
 
     return NextResponse.json(explanation);
   } catch (error) {
-    console.error('Explanation API error:', error);
+    console.error("Explanation API error:", error);
     return NextResponse.json(
       {
-        explanation: 'This move creates a decisive tactical advantage.',
-        concept: 'Tactics',
-        tip: 'Always calculate forcing moves first: checks, captures, and threats.',
+        explanation: "This move creates a decisive tactical advantage.",
+        concept: "Tactics",
+        tip: "Always calculate forcing moves first: checks, captures, and threats.",
       },
-      { status: 200 } // Return fallback instead of error for better UX
+      { status: 200 }, // Return fallback instead of error for better UX
     );
   }
 }
