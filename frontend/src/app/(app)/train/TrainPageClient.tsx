@@ -565,11 +565,11 @@ export default function TrainPageClient({
   );
 
   return (
-    <div className="relative h-[calc(100vh-3rem)] w-full overflow-hidden px-6 py-6 text-white lg:px-12 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
-      <div className="mx-auto flex h-full max-w-[1600px] flex-col justify-center gap-5">
+    <div className="relative flex min-h-full w-full flex-col px-6 py-6 text-white lg:px-12 xl:h-full xl:overflow-y-auto [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
+      <div className="m-auto flex w-full max-w-[1600px] flex-col justify-center gap-5 2xl:max-w-[1760px]">
         <RecommendedPanel recommendation={recommendation} />
 
-        <section className="grid grid-cols-1 gap-5 sm:grid-cols-2 xl:grid-cols-4" aria-label="Training modes">
+        <section className="grid grid-cols-1 gap-5 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4" aria-label="Training modes">
           {wiredModes.map((mode) => (
             <TrainingModeCard key={mode.key} mode={mode} />
           ))}
