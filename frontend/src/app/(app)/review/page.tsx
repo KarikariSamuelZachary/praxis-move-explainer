@@ -16,7 +16,7 @@ import { GameReviewMove } from '@/types';
 const BoardPanel = dynamic(() => import('@/components/review/BoardPanel'), {
   ssr: false,
   loading: () => (
-    <div className="mx-auto aspect-square w-full max-w-[calc(100vh-70px)] animate-pulse rounded-[10px] border border-white/10 bg-black/40" />
+    <div className="mx-auto aspect-square w-full max-w-[calc(100svh-7rem)] animate-pulse rounded-[10px] border border-white/10 bg-black/40" />
   ),
 });
 
@@ -145,7 +145,7 @@ export default function ReviewPage() {
       : null;
 
   return (
-    <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-[10px] pt-6 text-white lg:overflow-hidden lg:px-10 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
+    <div className="min-h-full w-full px-6 pb-3 pt-6 text-white xl:h-full xl:overflow-hidden xl:px-10 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
       <ReviewShell
         importPanel={
           <ImportPanel
