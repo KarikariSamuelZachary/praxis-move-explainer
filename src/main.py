@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from core.database import init_db
 from core.migrations import run_migrations
 from services import endgame_seeding
+from services.opening_book import log_book_status
 from services.tablebase import set_persistent_cache
 from services.tablebase_cache import PostgresProbeCache
 from engines.maia_engine import close_maia3, start_maia3, verify_maia3_patch
@@ -191,6 +192,12 @@ def startup():
 
     init_db()
     run_migrations()
+
+    # Opening-book presence check. The book is DATA, not schema (per
+    # environment table), and an empty table silently degrades every
+    # opening label to engine eval. Loud warning only; lookups already
+    # fail soft to non-book, so this must never break boot.
+    log_book_status()
 
     # Endgame content seeding. The library is DATA, not schema (migrations
     # create empty tables), and had only ever been seeded by hand -- which is

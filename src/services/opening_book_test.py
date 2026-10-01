@@ -10,6 +10,8 @@ Covers the pure pieces (no database needed):
 
 Run: cd src && ../venv/bin/python services/opening_book_test.py
 """
+import contextlib
+import logging
 import os
 import sys
 import time
@@ -111,6 +113,127 @@ def test_collect_moves_from_games_elo_and_ply():
     print("  [PASS] collect_moves_from_games: Elo filter + ply cap respected")
 
 
+def _reset_loader_state():
+    mod.invalidate_cache()
+    return mod._load_book_from_db, mod._BOOK_EMPTY_RETRY_SECONDS
+
+
+def test_empty_load_not_cached_and_reload_picks_up_populated():
+    real_loader, real_retry = _reset_loader_state()
+    mod._BOOK_EMPTY_RETRY_SECONDS = 0
+    try:
+        mod._load_book_from_db = lambda: {}
+        assert mod._get_book() == {}, "empty load must fail soft to {}"
+        assert mod._book_cache is None, "empty load must not populate the cache"
+        populated = {"k": frozenset({"e2e4"})}
+        mod._load_book_from_db = lambda: populated
+        assert mod._get_book() == populated, (
+            "a later populated load must be picked up on retry"
+        )
+        assert mod._book_cache is not None
+    finally:
+        mod._load_book_from_db = real_loader
+        mod._BOOK_EMPTY_RETRY_SECONDS = real_retry
+        mod.invalidate_cache()
+    print("  [PASS] empty load not cached; populated reload picked up")
+
+
+def test_db_exception_not_cached():
+    real_loader, real_retry = _reset_loader_state()
+    mod._BOOK_EMPTY_RETRY_SECONDS = 0
+    try:
+        def boom():
+            raise RuntimeError("db down")
+        mod._load_book_from_db = boom
+        assert mod._get_book() == {}, "exception must fail soft to {}"
+        assert mod._book_cache is None, "exception must not populate the cache"
+        populated = {"k": frozenset({"e2e4"})}
+        mod._load_book_from_db = lambda: populated
+        assert mod._get_book() == populated, (
+            "load after an exception must be retried, not stuck empty"
+        )
+    finally:
+        mod._load_book_from_db = real_loader
+        mod._BOOK_EMPTY_RETRY_SECONDS = real_retry
+        mod.invalidate_cache()
+    print("  [PASS] DB exception not cached; retry recovers")
+
+
+def test_populated_load_cached_for_ttl():
+    _reset_loader_state()
+    real_loader = mod._load_book_from_db
+    calls = []
+    try:
+        def counting_loader():
+            calls.append(1)
+            return {"k": frozenset({"e2e4"})}
+        mod._load_book_from_db = counting_loader
+        first = mod._get_book()
+        second = mod._get_book()
+        assert first == second == {"k": frozenset({"e2e4"})}
+        assert len(calls) == 1, f"second call within TTL must not reload, got {len(calls)}"
+        mod._book_cache = (time.time() - mod._BOOK_CACHE_TTL_SECONDS - 1, first)
+        assert mod._get_book() == first
+        assert len(calls) == 2, "expired TTL must reload exactly once"
+    finally:
+        mod._load_book_from_db = real_loader
+        mod.invalidate_cache()
+    print("  [PASS] populated load cached for TTL; expiry reloads")
+
+
+def test_startup_warning_on_empty_table():
+    real_counter = mod.count_book_rows
+    logger = logging.getLogger("services.opening_book")
+    records = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = _Capture()
+    logger.addHandler(handler)
+    try:
+        mod.count_book_rows = lambda: 0
+        assert mod.log_book_status() == 0
+        warns = [r for r in records if r.levelno >= logging.WARNING]
+        assert warns and "EMPTY" in warns[0].getMessage(), (
+            "empty table must log a loud warning"
+        )
+        records.clear()
+        mod.count_book_rows = lambda: 8067
+        assert mod.log_book_status() == 8067
+        assert not [r for r in records if r.levelno >= logging.WARNING], (
+            "populated table must not warn"
+        )
+        records.clear()
+
+        def boom():
+            raise RuntimeError("db down")
+        mod.count_book_rows = boom
+        assert mod.log_book_status() == -1
+    finally:
+        mod.count_book_rows = real_counter
+        logger.removeHandler(handler)
+    print("  [PASS] startup warning fires on empty table; -1 on DB error")
+
+
+@contextlib.contextmanager
+def _captured_logs():
+    logger = logging.getLogger("services.opening_book")
+    records = []
+
+    class _Capture(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = _Capture()
+    logger.addHandler(handler)
+    try:
+        yield records
+    finally:
+        logger.removeHandler(handler)
+
+
 def main() -> int:
     print("=== Running opening_book tests ===")
     tests = [
@@ -119,6 +242,10 @@ def main() -> int:
         test_iter_eco_rows,
         test_collect_moves_from_lines,
         test_collect_moves_from_games_elo_and_ply,
+        test_empty_load_not_cached_and_reload_picks_up_populated,
+        test_db_exception_not_cached,
+        test_populated_load_cached_for_ttl,
+        test_startup_warning_on_empty_table,
     ]
     for test in tests:
         try:

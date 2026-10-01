@@ -38,6 +38,11 @@ log = logging.getLogger(__name__)
 _BOOK_CACHE_TTL_SECONDS = 600
 
 _book_cache: Optional[Tuple[float, Dict[str, FrozenSet[str]]]] = None
+# Timestamp of the last empty/failed load. Empty and failed loads are never
+# cached (so a later rebuild is picked up); this only rate-limits retries to
+# avoid hammering the database on every lookup while the table is missing.
+_BOOK_EMPTY_RETRY_SECONDS = 15
+_book_empty_since: Optional[float] = None
 _book_lock = threading.Lock()
 
 
@@ -73,21 +78,52 @@ def _load_book_from_db() -> Dict[str, FrozenSet[str]]:
 
 
 def _get_book() -> Dict[str, FrozenSet[str]]:
-    global _book_cache
-    cached = _book_cache
+    """Cached opening book with fail-soft empty/error loads.
+
+    Only successful non-empty loads populate the cache (600s TTL). Empty or
+    failed loads return {} for that call only and are retried after a short
+    backoff, so a rebuilt table is picked up without waiting out the TTL.
+    """
+    global _book_cache, _book_empty_since
     now = time.time()
+    cached = _book_cache
     if cached is not None and now - cached[0] < _BOOK_CACHE_TTL_SECONDS:
         return cached[1]
+    if (
+        _book_empty_since is not None
+        and now - _book_empty_since < _BOOK_EMPTY_RETRY_SECONDS
+    ):
+        return {}
 
     with _book_lock:
         cached = _book_cache
+        now = time.time()
         if cached is not None and now - cached[0] < _BOOK_CACHE_TTL_SECONDS:
             return cached[1]
+        if (
+            _book_empty_since is not None
+            and now - _book_empty_since < _BOOK_EMPTY_RETRY_SECONDS
+        ):
+            return {}
         try:
             book = _load_book_from_db()
         except Exception:  # noqa: BLE001 — review must survive a missing table
-            log.exception("Opening book load failed; continuing without book")
-            book = {}
+            log.exception(
+                "Opening book load failed (0 rows loaded); "
+                "fail-soft empty book for this call"
+            )
+            _book_empty_since = now
+            return {}
+        total = sum(len(moves) for moves in book.values())
+        if total == 0:
+            log.error(
+                "Opening book load returned 0 rows; "
+                "fail-soft empty book for this call "
+                "(run scripts/build_opening_book.py in this environment)"
+            )
+            _book_empty_since = now
+            return {}
+        _book_empty_since = None
         _book_cache = (now, book)
         return book
 
@@ -105,9 +141,49 @@ def is_book_move(board: chess.Board, move: chess.Move) -> bool:
 
 
 def invalidate_cache() -> None:
-    """Drop the cached book (tests / same-process rebuilds)."""
-    global _book_cache
+    """Drop the cached book and any empty-load backoff (tests / rebuilds)."""
+    global _book_cache, _book_empty_since
     _book_cache = None
+    _book_empty_since = None
+
+
+def count_book_rows() -> int:
+    """SELECT COUNT(*) FROM opening_book_moves. Raises on DB error."""
+    if database.connection_pool is None:
+        raise RuntimeError("no database connection pool")
+    conn = database.connection_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM opening_book_moves")
+            row = cur.fetchone()
+    finally:
+        database.connection_pool.putconn(conn)
+    return int(row[0]) if row else 0
+
+
+def log_book_status() -> int:
+    """Startup check: loud warning when the book table is empty.
+
+    Returns the row count, or -1 when the table cannot be read. Never
+    raises; lookups already fail soft to non-book in those cases.
+    """
+    try:
+        total = count_book_rows()
+    except Exception:  # noqa: BLE001 — status check must never break boot
+        log.exception(
+            "Opening book status check failed; "
+            "book lookups will fail soft to non-book"
+        )
+        return -1
+    if total == 0:
+        log.warning(
+            "OPENING BOOK EMPTY (0 rows in opening_book_moves): Game Review "
+            "will label opening moves by engine eval instead of Book -- run "
+            "scripts/build_opening_book.py in this environment"
+        )
+    else:
+        log.info("Opening book ready: %d rows", total)
+    return total
 
 
 # ---------------------------------------------------------------------------
