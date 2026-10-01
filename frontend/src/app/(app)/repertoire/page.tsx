@@ -782,8 +782,8 @@ export default function RepertoireListPage() {
   }
 
   return (
-    <div className="wood-scrollbar relative h-[calc(100vh-3rem)] w-full overflow-y-auto px-6 py-6 text-white lg:px-10 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
-      <div className="mx-auto flex max-w-3xl flex-col gap-5">
+    <div className="wood-scrollbar relative min-h-full w-full px-6 py-6 text-white lg:px-10 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
+      <div className="mx-auto flex max-w-3xl flex-col gap-5 2xl:max-w-4xl">
         <header
           className="flex items-center justify-between pt-2"
           aria-labelledby={titleId}
