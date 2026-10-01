@@ -371,8 +371,8 @@ export default function PuzzlesPage() {
   const themeLabel = selectedTheme ? puzzleThemeLabel(selectedTheme) : null;
 
   return (
-    <div className="min-h-[calc(100vh-2.5rem)] -mt-2 text-white [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center] xl:h-[calc(100vh-2.5rem)] xl:overflow-hidden">
-      <div className="mx-auto flex flex-col px-6 pb-1 lg:px-10 xl:h-full">
+    <div className="min-h-full w-full text-white xl:h-full xl:overflow-hidden [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
+      <div className="mx-auto flex w-full max-w-[1600px] flex-col px-6 pb-6 lg:px-10 2xl:max-w-[1760px] xl:h-full xl:pb-1">
         {isLoading && puzzles.length === 0 && !themeLoadError ? (
           <div className="flex h-[70vh] items-center justify-center">
             <div className={`${PUZZLE_CARD_CLASS} px-10 py-8 text-center shadow-2xl shadow-black/30`}>
@@ -400,9 +400,9 @@ export default function PuzzlesPage() {
             </div>
           </div>
         ) : (
-        <div className="grid gap-6 xl:min-h-0 xl:flex-1 xl:grid-cols-[20rem_minmax(0,1fr)_22rem] xl:pt-5">
+        <div className="grid grid-cols-1 gap-6 xl:min-h-0 xl:flex-1 xl:grid-cols-[20rem_minmax(0,1fr)_22rem] 2xl:grid-cols-[22rem_minmax(0,1fr)_24rem] xl:pt-5">
           {/* ============ LEFT: RATING + THEME LIST ============ */}
-          <section className="order-2 mt-6 flex min-h-0 flex-col gap-5 xl:order-none xl:mt-0">
+          <section className="order-2 mt-6 flex min-h-0 flex-col gap-5 xl:order-none xl:mt-0 xl:min-h-0 xl:overflow-hidden">
             <div
               className={`${WOOD_PANEL_CLASS} flex shrink-0 items-center gap-4 p-5`}
               style={WOOD_PANEL_STYLE}
@@ -446,8 +446,8 @@ export default function PuzzlesPage() {
           </section>
 
           {/* ============ CENTER: CHESSBOARD ============ */}
-          <section className="order-1 min-h-0 min-w-0 xl:order-none xl:mt-0">
-            <div className="relative mx-auto mt-6 aspect-square w-full max-w-[calc(100vh-70px)] xl:mt-0">
+          <section className="order-1 min-h-0 min-w-0 xl:order-none xl:mt-0 xl:flex xl:min-h-0 xl:items-center xl:justify-center">
+            <div className="relative mx-auto mt-6 aspect-square w-full max-w-[calc(100svh-7rem)] xl:mt-0 xl:max-h-full">
               {currentPuzzle && (
                 <>
                   <div className="w-full">
@@ -555,7 +555,7 @@ export default function PuzzlesPage() {
           </section>
 
           {/* ============ RIGHT: STATUS + WOODPECKER ============ */}
-          <section className="order-3 mx-auto flex w-full max-w-[420px] flex-col gap-5 xl:order-none xl:mx-0 xl:mt-0 xl:max-w-none xl:min-h-0">
+          <section className="order-3 mx-auto flex w-full max-w-[420px] flex-col gap-5 xl:order-none xl:mx-0 xl:mt-0 xl:max-w-none xl:min-h-0 xl:overflow-hidden">
             {/* Invisible scroll fallback, same as the trainer's right
                 column: only the tall resolved states on a short screen
                 ever need it; the Next control below stays pinned. */}
