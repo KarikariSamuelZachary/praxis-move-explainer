@@ -160,7 +160,7 @@ export default function OnboardingPage() {
   }
 
   return (
-    <div className="h-[calc(100vh-3rem)] overflow-y-auto text-white [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
+    <div className="min-h-[calc(100svh-3rem)] text-white [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
       <div className="flex min-h-full flex-col items-center justify-center px-4 py-8">
         {/* Praxis logo - the same KnightMark + gold wordmark the app nav
             and landing page use (TopNav.tsx:77-78, LandingNav.tsx:62-65). */}
