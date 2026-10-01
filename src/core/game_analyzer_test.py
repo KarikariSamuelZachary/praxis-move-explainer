@@ -49,6 +49,7 @@ PGN = (
 # ply boundary. For the mover of ply k, cp_loss = base[k] + base[k+1]
 # (eval_after is negated into the mover's frame), which yields the exact
 # classification sequence asserted in EXPECTED_CLASSES below.
+# EP values reflect the five-game calibration fit at the reference rating.
 SCORES = [
     30, 25, 20, 30, 15, 25, 40, 20, 10, 5,
     30, -20, 50, 0, 80, 70, 350, -300, 390,
@@ -56,14 +57,14 @@ SCORES = [
 
 EXPECTED_CLASSES = [
     *(["book"] * 10),
-    "excellent",   # k=10  EP loss 0.0092
-    "good",        # k=11  EP loss 0.0275
-    "good",        # k=12  EP loss 0.0459
-    "inaccuracy",  # k=13  EP loss 0.0731
-    "mistake",     # k=14  EP loss 0.1372
-    "blunder",     # k=15  EP loss 0.3480 + allows mate (fake engine)
-    "good",        # k=16  EP loss 0.0328
-    "inaccuracy",  # k=17  EP loss 0.0567
+    "excellent",   # k=10  EP loss 0.0112
+    "good",        # k=11  EP loss 0.0335
+    "inaccuracy",  # k=12  EP loss 0.0560
+    "inaccuracy",  # k=13  EP loss 0.0890
+    "miss",        # k=14  EP loss 0.1671 after opponent's 0.0890 EP error
+    "blunder",     # k=15  EP loss 0.4066 + allows mate (fake engine)
+    "good",        # k=16  EP loss 0.0344
+    "inaccuracy",  # k=17  EP loss 0.0585
 ]
 
 EXPECTED_LOSSES = [
@@ -73,7 +74,7 @@ EXPECTED_LOSSES = [
 
 EXPECTED_EP_LOSSES = [
     *([0.0] * 10),
-    0.0092, 0.0275, 0.0459, 0.0731, 0.1372, 0.3480, 0.0328, 0.0567,
+    0.0112, 0.0335, 0.0560, 0.0890, 0.1671, 0.4066, 0.0344, 0.0585,
 ]
 
 
@@ -181,12 +182,12 @@ def test_classification_parity():
     )
 
     explained = [i for i, row in enumerate(move_rows) if "explanation" in row]
-    assert explained == [14, 15], f"explained plies should be [14, 15], got {explained}"
-    assert explainer.calls == 2, f"expected 2 explanation calls, got {explainer.calls}"
+    assert explained == [15], f"explained plies should be [15], got {explained}"
+    assert explainer.calls == 1, f"expected 1 explanation call, got {explainer.calls}"
 
     assert rows[0]["san"] == "Start" and rows[0]["classification"] == "book"
     print("  [PASS] all classifications/cp_losses exact; explanations only for "
-          "mistake/blunder (plies 14, 15)")
+          "mistake/blunder (ply 15)")
 
 
 def test_include_explanations_false():
@@ -214,7 +215,7 @@ def test_target_color_filtering():
     assert len(rows) == 10, f"expected Start + 9 white rows, got {len(rows)}"
     assert len(engine.calls) == len(SCORES), "engine search count changed under filtering"
     classes = [row["classification"] for row in rows[1:]]
-    expected = ["book", "book", "book", "book", "book", "excellent", "good", "mistake", "good"]
+    expected = ["book", "book", "book", "book", "book", "excellent", "inaccuracy", "miss", "good"]
     assert classes == expected, f"white rows mismatch: {classes}"
     assert all(row["color"] == "white" for row in rows[1:]), "non-white row leaked"
     print("  [PASS] target_color=white returns Start + 9 white plies with exact classes")
@@ -233,8 +234,8 @@ def test_analyze_pgn_matches_full_review():
         f"expected {len(SCORES)} searches, got {len(engine.calls)}"
     )
     moves = [analyzed.the_mistake.move_played for analyzed in mistakes]
-    assert moves == ["c3", "O-O"], f"expected mistake/blunder moves c3, O-O; got {moves}"
-    assert explainer.calls == 2, f"expected 2 explanation calls, got {explainer.calls}"
+    assert moves == ["O-O"], f"expected only the blunder move O-O; got {moves}"
+    assert explainer.calls == 1, f"expected 1 explanation call, got {explainer.calls}"
     print("  [PASS] analyze_pgn returns the same mistake/blunder set with N+1 searches")
 
 
@@ -303,6 +304,23 @@ def test_best_move_equality_and_blunder_gate():
         player_rating=1500,
     )
     assert best == "best", f"expected best, got {best}"
+
+    # Keep Best tied to the engine's top move. The depth-18 calibration set
+    # improved when a 0.005 EP tolerance was removed: near-best alternatives
+    # were commonly Chess.com Excellent.
+    near_before = Evaluation(score_cp=0, best_move_uci="e2e4", best_move_san="e4")
+    near_after = Evaluation(score_cp=4, best_move_uci="g8f6", best_move_san="Nf6")
+    near = analyzer.classify_move(
+        near_before, near_after, "white", move_uci="f1c4", player_rating=1500
+    )
+    outside_after = Evaluation(
+        score_cp=5, best_move_uci="g8f6", best_move_san="Nf6"
+    )
+    outside = analyzer.classify_move(
+        near_before, outside_after, "white", move_uci="f1c4", player_rating=1500
+    )
+    assert near == "excellent", f"expected non-top near-best move to be excellent, got {near}"
+    assert outside == "excellent", f"expected non-top move to be excellent, got {outside}"
 
     # Huge EP loss without material/mate consequence -> mistake (2023 rule).
     # eval_after is scored from the OPPONENT's POV, so a mover drop is
@@ -378,7 +396,20 @@ def test_material_consequence_helper():
     quiet = Evaluation(score_cp=10, best_move_uci="e7e6", best_move_san="e6")
     assert analyzer._loses_material_after_best_reply(board, capturing, "white") is True
     assert analyzer._loses_material_after_best_reply(board, quiet, "white") is False
-    print("  [PASS] material consequence: best-reply capture detected, quiet reply not")
+
+    # A quiet checking reply reveals a rook loss three plies later. The
+    # principal variation check finds it after White has had a response.
+    fork_line = chess.Board("8/8/8/4b3/8/8/8/R3K2k b - - 0 1")
+    deeper = Evaluation(
+        score_cp=300,
+        best_move_uci="e5c3",
+        best_move_san="Bc3+",
+        principal_variation_uci=["e5c3", "e1d1", "c3a1", "d1e1"],
+    )
+    assert analyzer._loses_material_after_best_reply(
+        fork_line, deeper, "white"
+    ) is True
+    print("  [PASS] material consequence: immediate capture and 4-ply fork found")
 
 
 # ---------------------------------------------------------------------------
@@ -429,11 +460,28 @@ def test_brilliant_rules():
         before, after, "white", move_uci="c4f7", player_rating=1500, sacrifice_cp=230
     ) == "brilliant"
 
-    # Already completely winning before the move -> never brilliant.
-    winning = Evaluation(score_cp=900, best_move_uci="c4f7", best_move_san="Bxf7+")
+    # Completely winning before the move (EP > 0.995) -> never brilliant.
+    winning = Evaluation(score_cp=2000, best_move_uci="c4f7", best_move_san="Bxf7+")
     assert analyzer.classify_move(
         winning, after, "white", move_uci="c4f7", player_rating=1500, sacrifice_cp=230
     ) != "brilliant"
+
+    # Winning but not "completely": Chess.com awarded Brilliant at EP 0.94
+    # and 0.99 in the calibration games, so the cap only excludes saturation.
+    winning_ish = Evaluation(score_cp=900, best_move_uci="c4f7", best_move_san="Bxf7+")
+    assert analyzer.classify_move(
+        winning_ish, after, "white", move_uci="c4f7", player_rating=1500,
+        sacrifice_cp=230,
+    ) == "brilliant"
+
+    # Sacrifices use their own 0.05 near-best tolerance (calibration: one
+    # Chess.com Brilliant gave up 0.028 EP, past the 0.02 Excellent band).
+    slightly_off = Evaluation(score_cp=100, best_move_uci="d1h5", best_move_san="Qh5")
+    off_after = Evaluation(score_cp=-73, best_move_uci="e8f7", best_move_san="Kxf7")
+    assert analyzer.classify_move(
+        slightly_off, off_after, "white", move_uci="c4f7", player_rating=1500,
+        sacrifice_cp=230,
+    ) == "brilliant"
 
     # Bad position after the sacrifice -> never brilliant.
     bad_after = Evaluation(score_cp=600, best_move_uci="e8f7", best_move_san="Kxf7")
@@ -441,13 +489,17 @@ def test_brilliant_rules():
         before, bad_after, "white", move_uci="c4f7", player_rating=1500, sacrifice_cp=230
     ) != "brilliant"
 
-    # Pawn sacrifices count only below the rating cutoff (1600).
+    # Pawn sacrifices count only below the rating cutoff (1600); exchange
+    # sacrifices (rook for minor = 170cp) count at any rating.
     assert analyzer.classify_move(
         before, after, "white", move_uci="c4f7", player_rating=1500, sacrifice_cp=100
     ) == "brilliant"
     assert analyzer.classify_move(
         before, after, "white", move_uci="c4f7", player_rating=2000, sacrifice_cp=100
     ) != "brilliant"
+    assert analyzer.classify_move(
+        before, after, "white", move_uci="c4f7", player_rating=2000, sacrifice_cp=170
+    ) == "brilliant"
     print("  [PASS] Brilliant: sacrifice + near-best + competitive + playable; "
           "pawn sacs rating-gated")
 
@@ -472,7 +524,15 @@ def test_great_only_good_move():
     assert analyzer.classify_move(
         close, after, "white", move_uci="e2e4", player_rating=1500
     ) == "best"
-    print("  [PASS] Great: only-good-move gap >= 0.15 EP; small gap stays Best")
+
+    # A capture that is the only good move stays Best (calibration: Chess.com
+    # never marked a capture Great in the labeled games).
+    assert analyzer.classify_move(
+        before, after, "white", move_uci="e2e4", player_rating=1500,
+        move_is_capture=True,
+    ) != "great"
+    print("  [PASS] Great: only-good-move gap >= 0.15 EP; captures excluded; "
+          "small gap stays Best")
 
 
 def test_miss_rules():
@@ -517,7 +577,158 @@ def test_miss_rules():
         mate_before, mate_after, "white", move_uci="f3g5", player_rating=1500
     )
     assert cls3 == "miss", cls3
-    print("  [PASS] Miss: opponent gift or slipped mate + winning chance lost")
+
+    # The missed mate still wins even when the played line drops material
+    # (old "Missed Win" semantics)...
+    cls3b = analyzer.classify_move(
+        mate_before,
+        mate_after,
+        "white",
+        move_uci="f3g5",
+        player_rating=1500,
+        played_line_loss=-900,
+    )
+    assert cls3b == "miss", cls3b
+
+    # ...but a move that itself allows mate is a Blunder, not a Miss.
+    mate_allowed_before = Evaluation(
+        score_cp=10000, best_move_uci="d1h5", best_move_san="Qh5", mate=2
+    )
+    mate_allowed_after = Evaluation(
+        score_cp=10000, best_move_uci="g8f6", best_move_san="Nf6", mate=2
+    )
+    cls3c = analyzer.classify_move(
+        mate_allowed_before,
+        mate_allowed_after,
+        "white",
+        move_uci="f3g5",
+        player_rating=1500,
+        blunder_consequence=True,
+    )
+    assert cls3c == "blunder", cls3c
+
+    # A reply loss below the 0.10 gate is Inaccuracy-band, not a Miss
+    # (calibration: false Misses clustered at 0.05-0.10 EP).
+    modest_before = Evaluation(score_cp=0, best_move_uci="d1h5", best_move_san="Qh5")
+    modest_after = Evaluation(score_cp=60, best_move_uci="g8f6", best_move_san="Nf6")
+    cls4 = analyzer.classify_move(
+        modest_before,
+        modest_after,
+        "white",
+        move_uci="f3g5",
+        player_rating=1500,
+        opponent_prev_ep_loss=0.10,
+    )
+    assert cls4 == "inaccuracy", cls4
+
+    # Above the gate the opponent error + a non-losing best line is a Miss.
+    bigger_after = Evaluation(score_cp=200, best_move_uci="g8f6", best_move_san="Nf6")
+    cls4b = analyzer.classify_move(
+        modest_before,
+        bigger_after,
+        "white",
+        move_uci="f3g5",
+        player_rating=1500,
+        opponent_prev_ep_loss=0.10,
+    )
+    assert cls4b == "miss", cls4b
+
+    # A concrete material loss along the played line keeps it a Blunder even
+    # when the move also failed to punish an opponent error (2023 rules:
+    # Miss and Blunder are mutually exclusive).
+    blunder_after = Evaluation(
+        score_cp=500, best_move_uci="g8f6", best_move_san="Nf6"
+    )
+    cls5 = analyzer.classify_move(
+        modest_before,
+        blunder_after,
+        "white",
+        move_uci="f3g5",
+        player_rating=1500,
+        blunder_consequence=True,
+        opponent_prev_ep_loss=0.30,
+        played_line_loss=-600,
+    )
+    assert cls5 == "blunder", cls5
+
+    # Allowing a forced mate is concrete too.
+    mate_allowed_after = Evaluation(
+        score_cp=500, best_move_uci="g8f6", best_move_san="Nf6", mate=3
+    )
+    cls6 = analyzer.classify_move(
+        modest_before,
+        mate_allowed_after,
+        "white",
+        move_uci="f3g5",
+        player_rating=1500,
+        blunder_consequence=True,
+        opponent_prev_ep_loss=0.30,
+    )
+    assert cls6 == "blunder", cls6
+
+    # A gift while already worse (best line below the EP floor) is not a
+    # missed winning chance -- it stays in the normal bands.
+    worse_before = Evaluation(score_cp=-300, best_move_uci="d1h5", best_move_san="Qh5")
+    cls7 = analyzer.classify_move(
+        worse_before,
+        blunder_after,
+        "white",
+        move_uci="f3g5",
+        player_rating=1500,
+        opponent_prev_ep_loss=0.30,
+    )
+    assert cls7 == "mistake", cls7
+
+    # Missed forcing tactic, no gift needed: the best move banks material
+    # the reply skips, without hanging anything (Be1 calibration case).
+    # Still needs a meaningful EP loss -- Qa8/Ke3 showed tiny give-ups
+    # with tactical best lines are just Inaccuracy/Good.
+    cls8 = analyzer.classify_move(
+        modest_before,
+        bigger_after,
+        "white",
+        move_uci="f3g5",
+        player_rating=1500,
+        missed_tactic=True,
+    )
+    assert cls8 == "miss", cls8
+
+    tiny_after = Evaluation(score_cp=30, best_move_uci="g8f6", best_move_san="Nf6")
+    cls8b = analyzer.classify_move(
+        modest_before,
+        tiny_after,
+        "white",
+        move_uci="f3g5",
+        player_rating=1500,
+        missed_tactic=True,
+    )
+    assert cls8b == "good", cls8b
+
+    # ...but not when the reply hangs material itself.
+    cls9 = analyzer.classify_move(
+        modest_before,
+        bigger_after,
+        "white",
+        move_uci="f3g5",
+        player_rating=1500,
+        missed_tactic=True,
+        played_line_loss=-200,
+    )
+    assert cls9 != "miss", cls9
+
+    # ...and a tactic never overrides allowing mate.
+    cls10 = analyzer.classify_move(
+        modest_before,
+        mate_allowed_after,
+        "white",
+        move_uci="f3g5",
+        player_rating=1500,
+        blunder_consequence=True,
+        missed_tactic=True,
+    )
+    assert cls10 == "blunder", cls10
+    print("  [PASS] Miss: 0.10 reply gate, EP floor, missed mate, missed "
+          "tactic; concrete loss/mate stays Blunder")
 
 
 def main() -> int:

@@ -33,7 +33,11 @@ from llms.base import LLMExplainer
 # steeper for higher ratings (Chess.com: the same eval swing is worth less
 # to a beginner and more to a master). Every constant below is a calibration
 # target, not a verified Chess.com value.
-EP_LOGISTIC_K_REFERENCE = 0.00368208  # Lichess's published slope (1500 anchor)
+# The k sweep was re-fit on the deterministic depth-18 replay (five games,
+# 379 plies) with an exact offline simulator: k=0.0045 scored 228/379 versus
+# 222/379 at k=0.005, 222 at 0.004, and 216 at 0.006. This is an empirical
+# local fit; Chess.com's exact evaluation mapping remains proprietary.
+EP_LOGISTIC_K_REFERENCE = 0.0045
 EP_RATING_REFERENCE = 1500
 EP_RATING_SENSITIVITY = 0.00035  # k scales by 1 + sensitivity*(rating - ref)
 EP_K_FACTOR_MIN = 0.55
@@ -92,6 +96,114 @@ def _material_for(board: chess.Board, color: bool) -> int:
     )
 
 
+def _material_balance(board: chess.Board, color: bool) -> int:
+    """Signed material balance (color minus opponent) in centipawns."""
+    return _material_for(board, color) - _material_for(board, not color)
+
+
+def _min_balance_swing(
+    board: chess.Board, pv: List[str], mover_is_white: bool, plies: int
+) -> int:
+    """Most negative material-balance change along a PV for the mover.
+
+    Walks the already-computed principal variation (no extra engine search)
+    and returns the worst signed balance delta, 0 when material is never
+    given away. This is the "concrete material loss" signal Chess.com's
+    2023 Blunder rule requires, measured as a balance so sacrifices that
+    win the material back are not flagged.
+    """
+    probe = board.copy()
+    base = _material_balance(board, mover_is_white)
+    worst = 0
+    for uci in pv[:plies]:
+        try:
+            move = chess.Move.from_uci(uci)
+        except (ValueError, chess.InvalidMoveError):
+            break
+        if move not in probe.legal_moves:
+            break
+        probe.push(move)
+        worst = min(worst, _material_balance(probe, mover_is_white) - base)
+    return worst
+
+
+def _max_balance_gain_after_reply(
+    board: chess.Board, pv: List[str], mover_is_white: bool, plies: int
+) -> int:
+    """Best material-balance improvement visible after the opponent replies.
+
+    Walks the already-computed principal variation (no extra engine search)
+    and returns the largest signed balance delta at an even ply (i.e. after
+    the opponent has answered), 0 when the line never improves. Even plies
+    only: a first-move capture the opponent immediately recaptures is not a
+    won tactic. This is the "missed winning tactic" signal for Miss.
+    """
+    probe = board.copy()
+    base = _material_balance(board, mover_is_white)
+    best = 0
+    for ply_index, uci in enumerate(pv[:plies], start=1):
+        try:
+            move = chess.Move.from_uci(uci)
+        except (ValueError, chess.InvalidMoveError):
+            break
+        if move not in probe.legal_moves:
+            break
+        probe.push(move)
+        if ply_index % 2 == 0:
+            gain = _material_balance(probe, mover_is_white) - base
+            if gain > best:
+                best = gain
+    return best
+
+
+def _missed_tactic(
+    board_before: chess.Board,
+    eval_before: Evaluation,
+    eval_after: Evaluation,
+    move_uci: str,
+    mover_is_white: bool,
+) -> bool:
+    """Whether the engine's best move was a forcing tactic the reply skipped.
+
+    Requires the best move itself to be a capture or check (a concrete
+    tactic, not a quiet positional try), the best line to bank material
+    after the opponent's reply, and the played line not to match it. Uses
+    only already-computed PVs, so no extra engine search.
+    """
+    best_uci = eval_before.best_move_uci or ""
+    try:
+        best_move = chess.Move.from_uci(best_uci)
+    except (ValueError, chess.InvalidMoveError):
+        return False
+    if best_move not in board_before.legal_moves:
+        return False
+    if not (
+        board_before.is_capture(best_move) or board_before.gives_check(best_move)
+    ):
+        return False
+    best_gain = _max_balance_gain_after_reply(
+        board_before,
+        eval_before.principal_variation_uci,
+        mover_is_white,
+        MISS_TACTIC_PLIES,
+    )
+    if best_gain < MISS_TACTIC_GAIN_CP:
+        return False
+    try:
+        played_move = chess.Move.from_uci(move_uci)
+    except (ValueError, chess.InvalidMoveError):
+        return False
+    if played_move not in board_before.legal_moves:
+        return False
+    played_gain = _max_balance_gain_after_reply(
+        board_before,
+        [move_uci] + eval_after.principal_variation_uci,
+        mover_is_white,
+        MISS_TACTIC_PLIES,
+    )
+    return (best_gain - max(0, played_gain)) >= MISS_TACTIC_GAP_CP
+
+
 # --- Special labels (Brilliant / Great / Miss) ------------------------------
 #
 # Chess.com defines these beyond the EP bands (help center + 2023 update):
@@ -105,14 +217,50 @@ def _material_for(board: chess.Board, color: bool) -> int:
 # Every value is a calibration target — Chess.com's exact rules are
 # proprietary. EP is already rating-normalized, so the thresholds are EP
 # constants; the sacrifice definition is the one rating-aware knob.
-BRILLIANT_MAX_EP_BEFORE = 0.85  # "not already completely winning"
+BRILLIANT_MAX_EP_BEFORE = 0.995  # "not already completely winning"
 BRILLIANT_MIN_EP_AFTER = 0.35  # "not in a bad position after"
-BRILLIANT_MIN_SACRIFICE_CP = 180  # exchange sacrifice or bigger
+# Chess.com still awards Brilliant in already-winning positions (both
+# calibration examples we missed were ep_best 0.94/0.99) and tolerates a
+# small EP give-up (0.028 on one of them), so sacrifices use their own
+# near-best tolerance instead of the Excellent band.
+BRILLIANT_NEAR_BEST_EP = 0.05
+BRILLIANT_MIN_SACRIFICE_CP = 150  # exchange sac (rook for minor = 170cp) counts
 BRILLIANT_PAWN_SAC_CP = 100  # pure pawn sacrifices...
 BRILLIANT_PAWN_SAC_MAX_RATING = 1600  # ...count only for newer players
-GREAT_ONLY_GOOD_GAP_EP = 0.15  # second-best line at least this much worse
-WINNING_EP_THRESHOLD = 0.75  # "winning position" in the EP model
-MISS_OPPONENT_EP_LOSS = 0.20  # opponent's previous move was a blunder
+# At k=0.005, the depth-18 replay had two true Great moves at gaps 0.179 and
+# 0.223. A 0.15 cutoff recovers both; 0.25 missed them. The fast replay was
+# noisier, but the default-depth evidence supports the original threshold.
+GREAT_ONLY_GOOD_GAP_EP = 0.15
+# Miss (Chess.com 2023 rules): "a blunder must lose material or allow a
+# forced checkmate; previously, a good move that missed an opportunity would
+# be considered a blunder or a mistake -- now such moves are a Miss". So Miss
+# and Blunder are mutually exclusive: Miss = failed to punish an opponent
+# error / missed a tactic, but the played move did not hand over material
+# concretely. Calibration evidence (five games, depth 18):
+#   * most Misses followed an opponent error (ep loss >= 0.08);
+#   * false Misses were replies losing only 0.05-0.10 EP -- those are the
+#     Inaccuracy band on Chess.com, so the reply gate is 0.10;
+#   * gift-path Misses need a non-losing best line (ep_best >= 0.50);
+#     below that the move is just a Mistake/Blunder;
+#   * some Misses have no gift at all (hxg5, Qc2, Be1) -- those are missed
+#     forcing tactics, caught by the missed_tactic branch instead.
+MISS_OPPONENT_EP_LOSS = 0.08  # opponent's previous move was an error
+MISS_MIN_EP_LOSS = 0.10  # the reply itself gave the chance away
+MISS_MATE_MIN_EP_LOSS = 0.05  # missed forced mates still count below 0.10
+MISS_WINNING_EP_MIN = 0.50  # best line must at least hold (EP floor)
+MISS_CONCRETE_LOSS_CP = 500  # balance drop along the played line: piece+
+MISS_LINE_PLIES = 6  # how far along the played PV to look for the loss
+# Missed-tactic branch (no opponent gift or winning position required):
+# the best move is a capture/check whose line banks material after the
+# opponent's reply, and the played line does not match it. Calibration
+# evidence (five games, depth 18): catches no-gift Misses like hxg5 and
+# Be1 while the capture/check requirement keeps quiet-best-move positions
+# (Qe4, Nc5, Rb1) out.
+MISS_TACTIC_GAIN_CP = 100  # best line must bank at least a pawn after reply
+MISS_TACTIC_GAP_CP = 100  # ...and beat what the played line achieves
+MISS_TACTIC_MIN_EP_LOSS = 0.10  # same "meaningful loss" bar as the gift path
+MISS_TACTIC_MAX_PLAYED_LOSS_CP = 100  # played move must not hang material itself
+MISS_TACTIC_PLIES = 10  # how far along each PV to look for the tactic
 
 
 def _brilliant_sacrifice_threshold(player_rating: Optional[int]) -> int:
@@ -275,6 +423,9 @@ class GameAnalyzer:
         delivers_mate: bool = False,
         sacrifice_cp: int = 0,
         opponent_prev_ep_loss: Optional[float] = None,
+        move_is_capture: bool = False,
+        played_line_loss: int = 0,
+        missed_tactic: bool = False,
     ) -> str:
         """Classify a move with Chess.com's Expected Points model.
 
@@ -307,7 +458,7 @@ class GameAnalyzer:
         # Brilliant: best/nearly-best good piece sacrifice that leaves a
         # playable position and was not already completely winning.
         if (
-            near_best
+            (is_top or ep_loss <= BRILLIANT_NEAR_BEST_EP)
             and sacrifice_cp >= _brilliant_sacrifice_threshold(player_rating)
             and ep_best <= BRILLIANT_MAX_EP_BEFORE
             and ep_played >= BRILLIANT_MIN_EP_AFTER
@@ -315,13 +466,23 @@ class GameAnalyzer:
             return "brilliant"
 
         # Great: the only good move — the second-best line is clearly worse.
-        if near_best and eval_before.second_best_cp is not None:
+        # Empirically (Chess.com-labeled calibration games) Great is never a
+        # capture: recaptures and obvious material grabs are the only good
+        # move by nature but Chess.com calls them Best. Exclude captures.
+        if (
+            near_best
+            and not move_is_capture
+            and eval_before.second_best_cp is not None
+        ):
             second_ep = expected_points(eval_before.second_best_cp, player_rating)
             if ep_best - second_ep >= GREAT_ONLY_GOOD_GAP_EP:
                 return "great"
 
-        # Miss: failed to convert a winning chance the opponent handed over
-        # (or a forced mate slipped) and the position is no longer winning.
+        # Miss (2023 rule): failed to punish an opponent error or missed a
+        # forced mate, but did NOT hand over material concretely -- that
+        # combination is a Blunder instead, so Miss is checked first under a
+        # concrete-loss guard. `ep_best` is already rating-normalized, so the
+        # EP floor encodes Chess.com's rating-dependent winning threshold.
         missed_mate = (
             eval_before.mate is not None
             and eval_before.mate > 0
@@ -331,12 +492,34 @@ class GameAnalyzer:
             opponent_prev_ep_loss is not None
             and opponent_prev_ep_loss >= MISS_OPPONENT_EP_LOSS
         )
-        if (
-            (opponent_gift or missed_mate)
-            and ep_best >= WINNING_EP_THRESHOLD
-            and ep_played < WINNING_EP_THRESHOLD
+        allows_mate = eval_after.mate is not None and eval_after.mate > 0
+        concrete_loss = allows_mate or played_line_loss <= -MISS_CONCRETE_LOSS_CP
+        # A missed forced mate is the canonical Miss (the old "Missed Win"
+        # class) even when the played move also gives material away, as long
+        # as it does not allow mate itself -- that stays a Blunder.
+        if missed_mate and not allows_mate and ep_loss >= MISS_MATE_MIN_EP_LOSS:
+            return "miss"
+        if not concrete_loss and (
+            opponent_gift
+            and ep_best >= MISS_WINNING_EP_MIN
+            and ep_loss >= MISS_MIN_EP_LOSS
         ):
             return "miss"
+        # Missed tactic: the best move was a forcing capture/check whose
+        # line banks material, and the reply skipped it without hanging
+        # anything itself. Needs neither an opponent gift nor a winning
+        # position (e.g. hxg5 missing Qxe5+, Be1 missing Qxg7).
+        if (
+            missed_tactic
+            and not allows_mate
+            and played_line_loss > -MISS_TACTIC_MAX_PLAYED_LOSS_CP
+            and ep_loss >= MISS_TACTIC_MIN_EP_LOSS
+        ):
+            return "miss"
+
+        # Blunder: big EP drop AND a concrete material/mate consequence.
+        if ep_loss > EP_MISTAKE_MAX and blunder_consequence:
+            return "blunder"
 
         if is_top:
             return "best"
@@ -375,27 +558,36 @@ class GameAnalyzer:
     ) -> bool:
         """Approximate "loses material" for the 2023 blunder rule.
 
-        Applies the opponent's engine-best reply to the position after the
-        played move and compares static material from the mover's POV. This
-        catches hanging pieces and bad captures; it is a one-ply
-        approximation until the stage-3 sacrifice/SEE machinery lands.
+        Checks the opponent's first best reply, then continues along the
+        already-computed principal variation for up to four plies. Material
+        is checked after the first reply (preserving the immediate hanging
+        piece check) and after each complete pair of replies, so a follow-up
+        fork or discovered attack can count when the first move is quiet.
+        This adds no engine search or MultiPV cost.
         """
-        reply_uci = eval_after.best_move_uci or ""
-        if not reply_uci:
-            return False
-        try:
-            reply = chess.Move.from_uci(reply_uci)
-        except ValueError:
-            return False
-        if reply not in board_after.legal_moves:
+        pv = eval_after.principal_variation_uci or []
+        if not pv and eval_after.best_move_uci:
+            pv = [eval_after.best_move_uci]
+        if not pv:
             return False
 
         mover_is_white = mover_color == "white"
         before = _material_for(board_after, mover_is_white)
         probe = board_after.copy()
-        probe.push(reply)
-        after = _material_for(probe, mover_is_white)
-        return after < before
+        for ply, move_uci in enumerate(pv[:4], start=1):
+            try:
+                move = chess.Move.from_uci(move_uci)
+            except ValueError:
+                break
+            if move not in probe.legal_moves:
+                break
+            probe.push(move)
+            # Keep the existing immediate check, then verify that the loss
+            # remains after the mover has had a best-response turn.
+            if ply == 1 or ply % 2 == 0:
+                if _material_for(probe, mover_is_white) < before:
+                    return True
+        return False
 
     @staticmethod
     def _ratings_from_headers(game: chess.pgn.Game) -> Dict[str, int]:
@@ -500,6 +692,7 @@ class GameAnalyzer:
             fen_before = board.fen()
             move_number = board.fullmove_number
             move_san = board.san(move)
+            move_is_capture = board.is_capture(move)
 
             if in_book and self.book_lookup is not None:
                 is_book_move = bool(self.book_lookup(board, move))
@@ -520,15 +713,29 @@ class GameAnalyzer:
             eval_after = self.engine.evaluate(board, multipv=self.multipv)
             previous_eval = eval_after
 
+            # Raw EP impact is tracked even for book moves: Chess.com does
+            # not share our opening book, so a book move can still be the
+            # opponent error the next move fails to punish (e.g. Game 2's
+            # 2...d5, book for us but a mistake for them). Displayed
+            # ep_loss/cp_loss stay 0 for book moves.
+            raw_ep_loss = self.expected_points_loss(
+                eval_before, eval_after, move_color, player_rating
+            )
             if is_book_move:
                 cp_loss = 0
                 ep_loss = 0.0
+                ep_best = 0.0
                 blunder_consequence = False
                 sacrifice_cp = 0
+                played_line_loss = 0
+                missed_tactic = False
             else:
                 cp_loss = self._compute_cp_loss(eval_before, eval_after, move_color)
                 ep_loss = self.expected_points_loss(
                     eval_before, eval_after, move_color, player_rating
+                )
+                ep_best = expected_points(
+                    self._score_for_mover(eval_before, move_color), player_rating
                 )
                 allows_mate = eval_after.mate is not None and eval_after.mate > 0
                 blunder_consequence = (
@@ -542,11 +749,24 @@ class GameAnalyzer:
                     if delivers_mate
                     else _sacrifice_material(chess.Board(fen_before), move, board)
                 )
+                played_line_loss = _min_balance_swing(
+                    chess.Board(fen_before),
+                    [move.uci()] + eval_after.principal_variation_uci,
+                    move_color == "white",
+                    MISS_LINE_PLIES,
+                )
+                missed_tactic = _missed_tactic(
+                    chess.Board(fen_before),
+                    eval_before,
+                    eval_after,
+                    move.uci(),
+                    move_color == "white",
+                )
 
             # The next ply's Miss check needs THIS ply's EP loss, including
             # for plies filtered out of the response by target_color.
             opponent_prev_ep_loss = previous_ep_loss
-            previous_ep_loss = ep_loss
+            previous_ep_loss = raw_ep_loss
 
             if target_color != "both" and target_color != move_color:
                 continue
@@ -562,6 +782,9 @@ class GameAnalyzer:
                 delivers_mate=delivers_mate,
                 sacrifice_cp=sacrifice_cp,
                 opponent_prev_ep_loss=opponent_prev_ep_loss,
+                move_is_capture=move_is_capture,
+                played_line_loss=played_line_loss,
+                missed_tactic=missed_tactic,
             )
 
             turn_entry: Dict[str, Any] = {
@@ -573,6 +796,15 @@ class GameAnalyzer:
                 "classification": classification,
                 "cp_loss": cp_loss,
                 "ep_loss": round(ep_loss, 4),
+                # Calibration/debug fields. Not part of the review API
+                # response (the router forwards a fixed field set), but the
+                # calibration harness reads them from the raw rows.
+                "ep_best": round(ep_best, 4) if not is_book_move else 0.0,
+                "second_best_cp": eval_before.second_best_cp,
+                "player_rating": player_rating,
+                "sacrifice_cp": sacrifice_cp,
+                "played_line_loss": played_line_loss,
+                "missed_tactic": missed_tactic,
                 # Position evaluation from White's perspective (positive =
                 # White better). `eval_after` is scored from the side to move
                 # after the move, which is the opponent of `move_color`.
@@ -640,6 +872,7 @@ class GameAnalyzer:
             fen_before = board.fen()
             move_number = board.fullmove_number
             move_san = board.san(move)
+            move_is_capture = board.is_capture(move)
 
             if in_book and self.book_lookup is not None:
                 is_book_move = bool(self.book_lookup(board, move))
@@ -660,10 +893,16 @@ class GameAnalyzer:
             eval_after = self.engine.evaluate(board, multipv=self.multipv)
             previous_eval = eval_after
 
+            # Raw EP impact is tracked even for book moves (see analyze_full_game).
+            raw_ep_loss = self.expected_points_loss(
+                eval_before, eval_after, move_color, player_rating
+            )
             if is_book_move:
                 ep_loss = 0.0
                 blunder_consequence = False
                 sacrifice_cp = 0
+                played_line_loss = 0
+                missed_tactic = False
             else:
                 ep_loss = self.expected_points_loss(
                     eval_before, eval_after, move_color, player_rating
@@ -680,9 +919,22 @@ class GameAnalyzer:
                     if delivers_mate
                     else _sacrifice_material(chess.Board(fen_before), move, board)
                 )
+                played_line_loss = _min_balance_swing(
+                    chess.Board(fen_before),
+                    [move.uci()] + eval_after.principal_variation_uci,
+                    move_color == "white",
+                    MISS_LINE_PLIES,
+                )
+                missed_tactic = _missed_tactic(
+                    chess.Board(fen_before),
+                    eval_before,
+                    eval_after,
+                    move.uci(),
+                    move_color == "white",
+                )
 
             opponent_prev_ep_loss = previous_ep_loss
-            previous_ep_loss = ep_loss
+            previous_ep_loss = raw_ep_loss
 
             if target_color != "both" and target_color != move_color:
                 continue
@@ -698,6 +950,9 @@ class GameAnalyzer:
                 delivers_mate=delivers_mate,
                 sacrifice_cp=sacrifice_cp,
                 opponent_prev_ep_loss=opponent_prev_ep_loss,
+                move_is_capture=move_is_capture,
+                played_line_loss=played_line_loss,
+                missed_tactic=missed_tactic,
             )
 
             if classification not in {"mistake", "blunder"}:

@@ -1,5 +1,5 @@
-from dataclasses import dataclass
-from typing import Optional
+from dataclasses import dataclass, field
+from typing import List, Optional
 
 @dataclass
 class Position:
@@ -17,6 +17,9 @@ class Evaluation:
     # caller asked the engine for more than one PV. Feeds the "only good
     # move" Great-move check; None when unavailable (single-PV search).
     second_best_cp: Optional[float] = None
+    # Engine continuation already returned with the score; used by the
+    # blunder consequence check without issuing another search.
+    principal_variation_uci: List[str] = field(default_factory=list)
 
 @dataclass
 class Mistake:

@@ -296,6 +296,7 @@ class StockfishEngine:
             best_move_san=best_move_san,
             mate=mate,
             second_best_cp=second_best_cp,
+            principal_variation_uci=[move.uci() for move in (pv or [])],
         )
 
     def suggest(
