@@ -157,7 +157,7 @@ export default function BoardPanel({
   const evaluationBar = getEvaluationBarState(currentMove);
 
   return (
-    <div className="relative mx-auto aspect-square w-full max-w-[calc(100vh-70px)]">
+    <div className="relative mx-auto aspect-square w-full max-w-[calc(100svh-7rem)] xl:max-h-full">
       {hasGame && (
         <div
           aria-hidden
