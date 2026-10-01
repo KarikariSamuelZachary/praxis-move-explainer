@@ -1215,10 +1215,10 @@ export default function WoodpeckerPage() {
     if (!showingBoard) return null;
 
     return (
-      <div className="grid min-h-full grid-cols-1 gap-6 xl:h-full xl:min-h-0 xl:grid-cols-[20rem_minmax(0,1fr)_22rem] 2xl:grid-cols-[22rem_minmax(0,1fr)_24rem]">
+      <div className="grid h-full grid-cols-1 gap-6 lg:grid-cols-[18rem_minmax(0,1fr)_22rem] xl:grid-cols-[20rem_minmax(0,1fr)_22rem]">
         {/* ============== LEFT CARD ============== */}
-        <section className="order-2 min-h-0 min-w-0 xl:order-none">
-          <div className={`${CARD_CLASS} flex h-full w-full flex-col justify-between gap-6 p-6 shadow-2xl shadow-black/25`}>
+        <section className="hidden min-h-0 min-w-0 lg:block">
+          <div className={`${CARD_CLASS} flex h-full w-full flex-col justify-between p-6 shadow-2xl shadow-black/25`}>
             {/* Top: identity & progress */}
             <div className="flex flex-col items-center">
               <Image
@@ -1264,8 +1264,8 @@ export default function WoodpeckerPage() {
         </section>
 
         {/* ============== CENTER: CHESSBOARD ============== */}
-        <section className="order-1 min-h-0 min-w-0 xl:order-none xl:flex xl:min-h-0 xl:items-center xl:justify-center">
-          <div className="relative mx-auto aspect-square w-full max-w-[calc(100svh-7rem)] xl:max-h-full">
+        <section className="min-h-0 min-w-0">
+          <div className="relative mx-auto aspect-square w-full max-w-[calc(100vh-70px)]">
             <div className="w-full">
               <ChessBoard
                 puzzle={currentPuzzle}
@@ -1365,7 +1365,7 @@ export default function WoodpeckerPage() {
         </section>
 
         {/* ============== RIGHT CARD: PUZZLES PAGE PANEL ============== */}
-        <section className="order-3 min-h-0 min-w-0 xl:order-none">
+        <section className="hidden min-h-0 min-w-0 xl:block">
           <PuzzleStatusPanel
             sideToMoveLabel={sideToMove}
             themeLabel={null}
@@ -1444,10 +1444,10 @@ export default function WoodpeckerPage() {
     if (!endgamePosition || !currentEndgameEntry) return null;
 
     return (
-      <div className="grid min-h-full grid-cols-1 gap-6 xl:h-full xl:min-h-0 xl:grid-cols-[20rem_minmax(0,1fr)_22rem] 2xl:grid-cols-[22rem_minmax(0,1fr)_24rem]">
+      <div className="grid h-full grid-cols-1 gap-6 lg:grid-cols-[18rem_minmax(0,1fr)_22rem] xl:grid-cols-[20rem_minmax(0,1fr)_22rem]">
         {/* ============== LEFT CARD ============== */}
-        <section className="order-2 min-h-0 min-w-0 xl:order-none">
-          <div className={`${CARD_CLASS} flex h-full w-full flex-col justify-between gap-6 p-6 shadow-2xl shadow-black/25`}>
+        <section className="hidden min-h-0 min-w-0 lg:block">
+          <div className={`${CARD_CLASS} flex h-full w-full flex-col justify-between p-6 shadow-2xl shadow-black/25`}>
             {/* Top: identity & progress */}
             <div className="flex flex-col items-center">
               <Image
@@ -1493,8 +1493,8 @@ export default function WoodpeckerPage() {
         </section>
 
         {/* ============== CENTER: FULL-RESOLUTION ENDGAME BOARD ============== */}
-        <section className="order-1 min-h-0 min-w-0 xl:order-none xl:flex xl:min-h-0 xl:items-center xl:justify-center">
-          <div className="relative mx-auto aspect-square w-full max-w-[calc(100svh-7rem)] xl:max-h-full">
+        <section className="min-h-0 min-w-0">
+          <div className="relative mx-auto aspect-square w-full max-w-[calc(100vh-70px)]">
             <div className="w-full">
               <EndgameBoard
                 key={`${currentEndgameEntry.id}:${endgameRetryKey}`}
@@ -1602,8 +1602,8 @@ export default function WoodpeckerPage() {
         </section>
 
         {/* ============== RIGHT CARD: SHARED THREE-STATE PANEL ============== */}
-        <section className="order-3 min-h-0 min-w-0 xl:order-none xl:min-h-0 xl:overflow-hidden">
-          <div className="flex h-full flex-col gap-4 xl:min-h-0 xl:overflow-y-auto xl:pr-1">
+        <section className="hidden min-h-0 min-w-0 xl:block">
+          <div className="flex h-full flex-col gap-4 overflow-y-auto pr-1">
             <DrillStatusPanel
               key={currentEndgameEntry.id}
               context="review"
@@ -1634,8 +1634,8 @@ export default function WoodpeckerPage() {
   };
 
   return (
-    <div className="min-h-full w-full px-6 pb-3 pt-6 text-white xl:h-full xl:overflow-hidden lg:px-10 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
-      <div className="mx-auto flex min-h-full w-full max-w-[1600px] flex-col 2xl:max-w-[1760px] xl:h-full xl:min-h-0">
+    <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-hidden px-6 pb-[10px] pt-6 text-white lg:px-10 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
+      <div className="mx-auto flex h-full w-full max-w-[1760px] flex-col">
         {/* Two queues, one page: the seeds are separate on the backend, so
             the switcher only ever swaps which queue is being reviewed. Its
             handle floats in the top-left corner -- no layout row, so the
@@ -1652,7 +1652,7 @@ export default function WoodpeckerPage() {
         <div
           role="tabpanel"
           aria-label={activeTab === 'puzzles' ? 'Puzzle reviews' : 'Endgame reviews'}
-          className="min-h-0 flex-1 xl:min-h-0"
+          className="min-h-0 flex-1"
         >
           {activeTab === 'puzzles' ? renderPuzzleReview() : renderEndgameReview()}
         </div>

@@ -82,7 +82,7 @@ type DrillSource = 'rated' | string;
  * and never scrolls. Only the category list inside the left card scrolls --
  * it owns `min-h-0`/`flex-1` inside that card, so it takes whatever height is
  * left under the card's heading. The board follows the game review page's
-  * exact contract (fill the middle column, capped at calc(100svh-7rem), no
+ * exact contract (fill the middle column, capped at calc(100vh-70px), no
  * page max-width), so the two boards render the same on-screen size and a
  * short laptop screen shrinks the board instead of pushing the columns
  * off-screen. The right column keeps an invisible scroll fallback for the
@@ -354,8 +354,8 @@ export default function EndgamesPage() {
   }, [switchSession]);
 
   return (
-    <div className="min-h-full w-full text-white xl:h-full xl:overflow-hidden [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
-      <div className="mx-auto flex w-full max-w-[1600px] flex-col px-6 pb-6 lg:px-10 2xl:max-w-[1760px] xl:h-full xl:pb-1">
+    <div className="min-h-[calc(100vh-2.5rem)] -mt-2 text-white [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center] xl:h-[calc(100vh-2.5rem)] xl:overflow-hidden">
+      <div className="mx-auto flex flex-col px-6 pb-1 lg:px-10 xl:h-full">
         {loadState.kind === 'loading' ? (
           <div className="flex h-[70vh] items-center justify-center">
             <div className={`${CARD_CLASS} px-10 py-8 text-center shadow-2xl shadow-black/30`}>
@@ -382,9 +382,9 @@ export default function EndgamesPage() {
             </div>
           </div>
         ) : (
-          <div className="grid grid-cols-1 gap-6 xl:min-h-0 xl:flex-1 xl:grid-cols-[20rem_minmax(0,1fr)_22rem] 2xl:grid-cols-[22rem_minmax(0,1fr)_24rem] xl:pt-5">
+          <div className="grid gap-6 xl:min-h-0 xl:flex-1 xl:grid-cols-[20rem_minmax(0,1fr)_22rem] xl:pt-5">
             {/* ============ LEFT: RATING + CATEGORY LIST ============ */}
-            <section className="order-2 mt-6 flex min-h-0 flex-col gap-5 xl:order-none xl:mt-0 xl:min-h-0 xl:overflow-hidden">
+            <section className="order-2 mt-6 flex min-h-0 flex-col gap-5 xl:order-none xl:mt-0">
               <div
                 className={`${WOOD_PANEL_CLASS} flex shrink-0 items-center gap-4 p-5`}
                 style={WOOD_PANEL_STYLE}
@@ -439,11 +439,11 @@ export default function EndgamesPage() {
             </section>
 
             {/* ============ CENTER: CHESSBOARD ============ */}
-            <section className="order-1 min-h-0 min-w-0 xl:order-none xl:mt-0 xl:flex xl:min-h-0 xl:items-center xl:justify-center">
+            <section className="order-1 min-h-0 min-w-0 xl:order-none xl:mt-0">
               {/* Same sizing contract as the game review page (BoardPanel):
-                  fill the column, capped at calc(100svh-7rem) so the square
+                  fill the column, capped at calc(100vh-70px) so the square
                   plus its frame always fits the viewport height. */}
-              <div className="relative mx-auto mt-6 aspect-square w-full max-w-[calc(100svh-7rem)] xl:mt-0 xl:max-h-full">
+              <div className="relative mx-auto mt-6 aspect-square w-full max-w-[calc(100vh-70px)] xl:mt-0">
                 <EndgameBoard
                   key={`${position.id}:${drillKey}`}
                   position={position}
@@ -482,7 +482,7 @@ export default function EndgamesPage() {
             </section>
 
             {/* ============ RIGHT: STATUS + ACTION ============ */}
-            <section className="order-3 mx-auto flex w-full max-w-[420px] flex-col gap-5 xl:order-none xl:mx-0 xl:mt-0 xl:max-w-none xl:min-h-0 xl:overflow-hidden">
+            <section className="order-3 mx-auto flex w-full max-w-[420px] flex-col gap-5 xl:order-none xl:mx-0 xl:mt-0 xl:max-w-none xl:min-h-0">
               {/* Invisible scroll fallback: only the tall resolved states on
                   a short screen ever need it; the Next control below stays
                   pinned either way. */}

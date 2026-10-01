@@ -819,7 +819,7 @@ export default function RepertoireTrainPage({
 
   if (phase === 'config') {
     return (
-      <div className="relative min-h-[calc(100svh-3rem)] w-full px-4 py-4 text-white sm:px-6 sm:py-6 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
+      <div className="relative h-[calc(100vh-3rem)] w-full overflow-y-auto px-4 py-4 text-white sm:px-6 sm:py-6 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
         {/* Back button - top-left, sits above the centered card so
             it doesn't drag the card off-center. */}
         <button
@@ -962,7 +962,7 @@ export default function RepertoireTrainPage({
     const pct =
       attemptTotal > 0 ? Math.round((correctCount / attemptTotal) * 100) : 0;
     return (
-      <div className="relative min-h-[calc(100svh-3rem)] w-full px-4 py-4 text-white sm:px-6 sm:py-6 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
+      <div className="relative h-[calc(100vh-3rem)] w-full overflow-y-auto px-4 py-4 text-white sm:px-6 sm:py-6 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
         {/* Back button - top-left, sits above the centered card. */}
         <button
           type="button"
@@ -1045,7 +1045,7 @@ export default function RepertoireTrainPage({
   // ----- Phase: SESSION ---------------------------------------------
 
   return (
-    <div className="min-h-full w-full px-6 pb-3 pt-6 text-white xl:h-full xl:overflow-hidden lg:px-10 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
+    <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-[10px] pt-6 text-white lg:overflow-hidden lg:px-10 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
       {/*
         Session layout - mirrored from the build page (ReviewShell) so a
         user moving between the two routes sees no board-size jump.
@@ -1068,7 +1068,7 @@ export default function RepertoireTrainPage({
           </button>
         }
         boardPanel={
-          <div className="relative mx-auto aspect-square w-full max-w-[calc(100svh-7rem)] xl:max-h-full">
+          <div className="relative mx-auto aspect-square w-full max-w-[calc(100vh-70px)]">
             {/*
               Board - the current position's FEN is 4-field (matches
               `_normalize_fen` server-side); react-chessboard only

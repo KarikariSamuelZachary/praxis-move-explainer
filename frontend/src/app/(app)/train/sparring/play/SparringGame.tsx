@@ -743,7 +743,7 @@ export default function SparringGame({
   }, [history]);
 
   return (
-    <div className="relative min-h-full w-full overflow-x-clip px-6 pb-3 pt-16 text-white sm:pt-16 lg:px-10 xl:h-full xl:overflow-hidden xl:pt-6 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
+    <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto overflow-x-hidden px-6 pb-[10px] pt-16 text-white lg:overflow-hidden lg:px-10 lg:pt-6 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
       {/* Back button - top-left, same placement as the repertoire subpages. */}
       <button
         type="button"
@@ -755,13 +755,13 @@ export default function SparringGame({
       </button>
 
       {/* Board + side panel travel as one centered group; the max width is
-          capped by both the viewport (board + gap + card) and a hard rem
-          cap so ultrawide screens stay focused instead of stretching. */}
-      <div className="mx-auto grid min-h-full w-full grid-cols-1 gap-6 xl:h-full xl:min-h-0 xl:w-auto xl:max-w-[min(100rem,calc(100svh-7rem+1.5rem+22rem))] xl:grid-cols-[minmax(0,1fr)_20rem] 2xl:grid-cols-[minmax(0,1fr)_22rem]">
+          exactly board + gap + card so the card hugs the board and the pair
+          stays centered on wide screens. */}
+      <div className="grid h-full w-full grid-cols-1 gap-6 lg:mx-auto lg:max-w-[calc(100vh-70px+1.5rem+20rem)] lg:grid-cols-[minmax(0,1fr)_20rem]">
         {/* ============ LEFT: CHESSBOARD ============ */}
         <section className="order-1 flex min-h-0 items-center justify-center">
           {/* Same board sizing contract as the review and puzzles pages. */}
-          <div className="relative aspect-square w-full max-w-[calc(100svh-7rem)] xl:max-h-full">
+          <div className="relative aspect-square w-full max-w-[calc(100vh-70px)]">
             {/* Defender's seat badge, attached to the board's top-left corner. */}
             <div className={`${seatBadgeClass} -left-3 -top-3`}>
               <Image
@@ -841,7 +841,7 @@ export default function SparringGame({
         </section>
 
         {/* ============ RIGHT: MOVE LIST + ACTIONS ============ */}
-        <section className="order-2 flex min-h-0 flex-col gap-5 xl:h-full xl:min-h-0 xl:overflow-hidden">
+        <section className="order-2 flex min-h-0 flex-col gap-5">
           {/* Move-history box: every ply played, click to review that position. */}
           <div className={`${CARD_CLASS} flex min-h-0 flex-1 flex-col p-5`}>
             <div className="flex shrink-0 items-center justify-between gap-2">
