@@ -227,3 +227,8 @@ backups/
 #Database url
 url
 
+
+# Local Chess.com calibration data: hand-recorded labels and fetched PGNs.
+# Personal game data -- kept local, not part of the repo.
+/Game 1.txt
+/Game *.pgn
