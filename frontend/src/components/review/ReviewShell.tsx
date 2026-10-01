@@ -22,20 +22,23 @@ export default function ReviewShell({
 
   const gridCols = (() => {
     if (leftCollapsed && rightCollapsed) {
-      return 'xl:grid-cols-[3.25rem_minmax(0,1fr)_3.25rem]';
+      return 'xl:grid-cols-[3.25rem_minmax(0,1fr)_3.25rem] 2xl:grid-cols-[3.25rem_minmax(0,1fr)_3.25rem]';
     }
     if (leftCollapsed) {
-      return 'xl:grid-cols-[3.25rem_minmax(0,1fr)_22rem]';
+      return 'xl:grid-cols-[3.25rem_minmax(0,1fr)_22rem] 2xl:grid-cols-[3.25rem_minmax(0,1fr)_24rem]';
     }
     if (rightCollapsed) {
-      return 'xl:grid-cols-[20rem_minmax(0,1fr)_3.25rem]';
+      return 'xl:grid-cols-[20rem_minmax(0,1fr)_3.25rem] 2xl:grid-cols-[22rem_minmax(0,1fr)_3.25rem]';
     }
-    return 'xl:grid-cols-[20rem_minmax(0,1fr)_22rem]';
+    return 'xl:grid-cols-[20rem_minmax(0,1fr)_22rem] 2xl:grid-cols-[22rem_minmax(0,1fr)_24rem]';
   })();
 
   return (
-    <div className="relative h-full w-full">
-      <div className={`grid h-full grid-cols-1 gap-6 transition-all duration-300 ease-in-out lg:grid-cols-[18rem_minmax(0,1fr)] ${gridCols}`}>
+    <div className="relative mx-auto min-h-full w-full max-w-[1600px] 2xl:max-w-[1760px]">
+      {/* Single column until xl so left/center/right stack with page
+          scroll instead of wrapping a 3-item grid into 2 columns (which
+          clipped the right card under overflow-hidden). */}
+      <div className={`grid min-h-full grid-cols-1 gap-6 transition-all duration-300 ease-in-out xl:h-full xl:min-h-0 ${gridCols}`}>
         <CollapseRail
           side="left"
           collapsed={leftCollapsed}
@@ -75,28 +78,34 @@ function CollapseRail({
 
   if (collapsed) {
     return (
-      <div className="hidden h-full xl:flex items-start justify-start">
-        <button
-          type="button"
-          onClick={onToggle}
-          aria-label={expandLabel}
-          title={expandLabel}
-          className="mt-2 inline-flex h-10 w-10 items-center justify-center rounded-full border border-[#f7e5c6]/30 bg-black/60 text-[#f7e5c6] shadow-lg shadow-black/40 transition hover:border-[#f7e5c6]/60 hover:bg-[#f7e5c6]/5"
-        >
-          <svg
-            className={`h-4 w-4 transition ${chevronClass}`}
-            fill="none"
-            stroke="currentColor"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth="2"
-            viewBox="0 0 24 24"
-            aria-hidden
+      <>
+        {/* Collapsed rail button only exists at xl: below xl the panel
+            always renders full so cards can never vanish on narrower
+            or scaled viewports. */}
+        <div className="hidden h-full xl:flex items-start justify-start">
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-label={expandLabel}
+            title={expandLabel}
+            className="mt-2 inline-flex h-10 w-10 items-center justify-center rounded-full border border-[#f7e5c6]/30 bg-black/60 text-[#f7e5c6] shadow-lg shadow-black/40 transition hover:border-[#f7e5c6]/60 hover:bg-[#f7e5c6]/5"
           >
-            <path d="m9 18 6-6-6-6" />
-          </svg>
-        </button>
-      </div>
+            <svg
+              className={`h-4 w-4 transition ${chevronClass}`}
+              fill="none"
+              stroke="currentColor"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth="2"
+              viewBox="0 0 24 24"
+              aria-hidden
+            >
+              <path d="m9 18 6-6-6-6" />
+            </svg>
+          </button>
+        </div>
+        <div className="min-h-0 min-w-0 xl:hidden">{children}</div>
+      </>
     );
   }
 
@@ -106,7 +115,7 @@ function CollapseRail({
       : 'left-2 xl:-left-3 top-2';
 
   return (
-    <div className="h-full min-h-0 min-w-0">
+    <div className="min-h-0 min-w-0 xl:h-full xl:min-h-0">
       <div className="relative h-full">
         {children}
         <button
