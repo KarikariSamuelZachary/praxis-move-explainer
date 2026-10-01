@@ -835,7 +835,7 @@ export default function RepertoireDetailPage({
   const currentSide = currentFen.split(/\s+/)[1] ?? 'w';
 
   return (
-    <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-[10px] pt-6 text-white lg:overflow-hidden lg:px-10 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
+    <div className="min-h-full w-full px-6 pb-3 pt-6 text-white xl:h-full xl:overflow-hidden lg:px-10 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
       <ReviewShell
         importPanel={
           <aside className={`${CARD_CLASS} flex w-full flex-col p-5`}>
@@ -898,7 +898,7 @@ export default function RepertoireDetailPage({
           </aside>
         }
         boardPanel={
-          <div className="relative mx-auto aspect-square w-full max-w-[calc(100vh-70px)]">
+          <div className="relative mx-auto aspect-square w-full max-w-[calc(100svh-7rem)] xl:max-h-full">
             {color === null ? (
               <div
                 className="h-full w-full animate-pulse rounded-md bg-black/35"
