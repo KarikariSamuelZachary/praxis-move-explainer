@@ -19,6 +19,7 @@ Contiguity ("once a game leaves the book it never re-enters") is enforced
 by the caller (`core.game_analyzer.GameAnalyzer`), not here.
 """
 import logging
+import os
 import threading
 import time
 from io import StringIO
@@ -184,6 +185,76 @@ def log_book_status() -> int:
     else:
         log.info("Opening book ready: %d rows", total)
     return total
+
+
+# Vendored CC0 theory lines (see opening_book_data/NOTICE). Read by the
+# startup seeder below so fresh databases need no network access.
+ECO_TSV_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "opening_book_data")
+ECO_TSV_FILES = ("a.tsv", "b.tsv", "c.tsv", "d.tsv", "e.tsv")
+
+
+def seed_eco_book_if_empty(eco_dir: Optional[str] = None) -> int:
+    """Insert vendored ECO theory rows, but only when no eco rows exist.
+
+    Offline (reads the vendored TSVs, no network). Idempotent: existing
+    eco rows (other sources' rows are never touched) are left alone.
+    Race-safe across replicas: concurrent seeders converge via the
+    (position_key, move_uci, source) primary key plus ON CONFLICT DO
+    NOTHING, so no duplicates are possible. The insert is a single
+    statement in a single transaction: any mid-insert failure rolls back
+    to zero eco rows. Returns rows inserted (0 when eco already present).
+    Never raises: failures log at ERROR and the caller proceeds without
+    a book.
+    """
+    directory = eco_dir or ECO_TSV_DIR
+    try:
+        if database.connection_pool is None:
+            raise RuntimeError("no database connection pool")
+        conn = database.connection_pool.getconn()
+    except Exception:  # noqa: BLE001 — seeding must never break boot
+        log.exception("Opening book seeding failed; continuing without a book")
+        return 0
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT COUNT(*) FROM opening_book_moves WHERE source='eco'"
+            )
+            if int(cur.fetchone()[0]) > 0:
+                return 0
+        lines: List[str] = []
+        for filename in ECO_TSV_FILES:
+            with open(os.path.join(directory, filename), encoding="utf-8") as handle:
+                lines.extend(
+                    pgn for _eco, _name, pgn in iter_eco_rows(handle.read())
+                )
+        book = collect_moves_from_lines(lines)
+        data = [
+            (key, uci, san, count, "eco")
+            for (key, uci), (count, san) in book.items()
+        ]
+        with conn.cursor() as cur:
+            execute_values(
+                cur,
+                """
+                INSERT INTO opening_book_moves
+                    (position_key, move_uci, move_san, count, source)
+                VALUES %s
+                ON CONFLICT (position_key, move_uci, source) DO NOTHING
+                """,
+                data,
+            )
+        conn.commit()
+        log.info("Opening book seeded: %d rows (source=eco)", len(data))
+        return len(data)
+    except Exception:  # noqa: BLE001 — seeding must never break boot
+        try:
+            conn.rollback()
+        except Exception:  # noqa: BLE001 — best effort on a broken connection
+            pass
+        log.exception("Opening book seeding failed; continuing without a book")
+        return 0
+    finally:
+        database.connection_pool.putconn(conn)
 
 
 # ---------------------------------------------------------------------------

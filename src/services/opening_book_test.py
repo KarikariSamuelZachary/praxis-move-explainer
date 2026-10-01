@@ -14,7 +14,9 @@ import contextlib
 import logging
 import os
 import sys
+import threading
 import time
+import urllib.parse
 from io import StringIO
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -217,6 +219,129 @@ def test_startup_warning_on_empty_table():
     print("  [PASS] startup warning fires on empty table; -1 on DB error")
 
 
+_DB_READY = None
+
+
+def _is_test_dbname(dbname):
+    """True for the `test`, `test_*`, `*_test` database names."""
+    return (
+        dbname == "test"
+        or dbname.startswith("test_")
+        or dbname.endswith("_test")
+    )
+
+
+def _effective_dbname(url):
+    """Database name libpq would actually use: the URL path, falling back
+    to PGDATABASE when the URL names none (explicit URL parts win over
+    the environment, mirroring libpq). Host is intentionally ignored: a
+    localhost tunnel to prod must NOT pass on host alone."""
+    try:
+        path_db = (urllib.parse.urlparse(url).path or "").lstrip("/").split("?")[0]
+    except Exception:
+        path_db = ""
+    return path_db or os.getenv("PGDATABASE") or ""
+
+
+def _db_allowlisted(url):
+    """(allowed, reason). Destructive tests wipe opening_book_moves, so they
+    run only against a test-named database with explicit opt-in. Host plays
+    no part in the decision."""
+    dbname = _effective_dbname(url)
+    opt_in = os.getenv("PRAXIS_ALLOW_DESTRUCTIVE_DB_TESTS") == "1"
+    if _is_test_dbname(dbname) and opt_in:
+        return True, (
+            f"test database {dbname!r} with PRAXIS_ALLOW_DESTRUCTIVE_DB_TESTS=1"
+        )
+    reasons = []
+    if not _is_test_dbname(dbname):
+        reasons.append(
+            f"dbname={dbname!r} is not test/test_*/ *_test "
+            "(URL path, else PGDATABASE fallback)"
+        )
+    if not opt_in:
+        reasons.append("PRAXIS_ALLOW_DESTRUCTIVE_DB_TESTS != 1")
+    return False, (
+        "; ".join(reasons)
+        + " -- refusing to wipe opening_book_moves"
+    )
+
+
+def _require_db():
+    """Init the real database pool once; refuse unless test-named + opt-in.
+
+    The allowlist is checked before opening any connection, so a refused
+    run never touches the database.
+    """
+    global _DB_READY
+    if _DB_READY is not None:
+        return _DB_READY
+    url = os.getenv("DATABASE_URL")
+    if not url:
+        print("  [SKIP] no DATABASE_URL; skipping live-DB book seeding tests")
+        _DB_READY = False
+        return False
+    allowed, reason = _db_allowlisted(url)
+    if not allowed:
+        print(f"  [REFUSE] {reason}")
+        _DB_READY = False
+        return False
+    from core import database
+    database.init_db()
+    _DB_READY = True
+    return True
+
+
+def _expected_eco_rows():
+    """Row count the vendored TSVs should produce (no DB needed)."""
+    lines = []
+    for filename in mod.ECO_TSV_FILES:
+        with open(os.path.join(mod.ECO_TSV_DIR, filename), encoding="utf-8") as handle:
+            lines.extend(pgn for _eco, _name, pgn in mod.iter_eco_rows(handle.read()))
+    return len(mod.collect_moves_from_lines(lines))
+
+
+@contextlib.contextmanager
+def _emptied_book_table():
+    """Snapshot the full book table, wipe it, yield; restore on exit."""
+    from core import database
+    from psycopg2.extras import execute_values
+    conn = database.connection_pool.getconn()
+    snapshot = []
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT position_key, move_uci, move_san, count, source "
+                "FROM opening_book_moves;"
+            )
+            snapshot = cur.fetchall()
+            cur.execute("DELETE FROM opening_book_moves;")
+        conn.commit()
+        yield snapshot
+    finally:
+        try:
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM opening_book_moves;")
+                if snapshot:
+                    execute_values(
+                        cur,
+                        "INSERT INTO opening_book_moves "
+                        "(position_key, move_uci, move_san, count, source) "
+                        "VALUES %s "
+                        "ON CONFLICT (position_key, move_uci, source) DO NOTHING",
+                        snapshot,
+                    )
+            conn.commit()
+            with conn.cursor() as cur:
+                cur.execute("SELECT COUNT(*) FROM opening_book_moves;")
+                restored = cur.fetchone()[0]
+            assert restored == len(snapshot), (
+                f"restore failed: {restored} rows vs {len(snapshot)} snapshotted"
+            )
+        finally:
+            database.connection_pool.putconn(conn)
+
+
 @contextlib.contextmanager
 def _captured_logs():
     logger = logging.getLogger("services.opening_book")
@@ -234,6 +359,168 @@ def _captured_logs():
         logger.removeHandler(handler)
 
 
+def _table_count():
+    from core import database
+    conn = database.connection_pool.getconn()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM opening_book_moves;")
+            return cur.fetchone()[0]
+    finally:
+        database.connection_pool.putconn(conn)
+
+
+def test_seed_if_empty_seeds_and_noop_when_populated():
+    if not _require_db():
+        return
+    expected = _expected_eco_rows()
+    with _emptied_book_table():
+        assert _table_count() == 0
+        inserted = mod.seed_eco_book_if_empty()
+        assert inserted == expected, f"seeded {inserted}, expected {expected}"
+        assert _table_count() == expected
+        assert mod.seed_eco_book_if_empty() == 0, "second run must be a no-op"
+        assert _table_count() == expected, "second run must not change rows"
+    print("  [PASS] seed-if-empty seeds once, no-op when populated")
+
+
+def test_concurrent_seeders_no_duplicates():
+    if not _require_db():
+        return
+    expected = _expected_eco_rows()
+    with _emptied_book_table():
+        barrier = threading.Barrier(2)
+        results = []
+        errors = []
+
+        def work():
+            try:
+                barrier.wait(timeout=60)
+                results.append(mod.seed_eco_book_if_empty())
+            except Exception as exc:  # noqa: BLE001 -- record, don't fail the thread
+                errors.append(exc)
+
+        threads = [threading.Thread(target=work) for _ in range(2)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(180)
+        assert not errors, f"seeder threads raised: {errors}"
+        assert len(results) == 2, "both racing seeders must return without error"
+        from core import database
+        conn = database.connection_pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM opening_book_moves WHERE source='eco';"
+                )
+                total = cur.fetchone()[0]
+                cur.execute(
+                    "SELECT COUNT(*) FROM (SELECT position_key, move_uci, source "
+                    "FROM opening_book_moves GROUP BY 1, 2, 3 HAVING COUNT(*) > 1) d;"
+                )
+                dupes = cur.fetchone()[0]
+        finally:
+            database.connection_pool.putconn(conn)
+        assert total == expected, f"concurrent seed gave {total}, expected {expected}"
+        assert dupes == 0, f"concurrent seed produced {dupes} duplicate key groups"
+    print("  [PASS] two racing seeders both return; eco count exact, no duplicates")
+
+
+def test_seed_with_non_eco_row_present_still_seeds_eco():
+    if not _require_db():
+        return
+    from core import database
+    expected = _expected_eco_rows()
+    with _emptied_book_table():
+        conn = database.connection_pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO opening_book_moves "
+                    "(position_key, move_uci, move_san, count, source) "
+                    "VALUES ('__probe__', '__probe__', 'x', 1, 'pgn')"
+                )
+            conn.commit()
+        finally:
+            database.connection_pool.putconn(conn)
+        inserted = mod.seed_eco_book_if_empty()
+        assert inserted == expected, f"seeded {inserted}, expected {expected}"
+        conn = database.connection_pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM opening_book_moves WHERE source='eco';"
+                )
+                assert cur.fetchone()[0] == expected
+                cur.execute(
+                    "SELECT COUNT(*) FROM opening_book_moves "
+                    "WHERE position_key='__probe__';"
+                )
+                assert cur.fetchone()[0] == 1, "non-eco rows must be untouched"
+                cur.execute("DELETE FROM opening_book_moves WHERE position_key='__probe__';")
+            conn.commit()
+        finally:
+            database.connection_pool.putconn(conn)
+    print("  [PASS] non-eco row present: eco still seeds, other rows untouched")
+
+
+def test_seed_failure_mid_insert_leaves_zero_eco_rows():
+    if not _require_db():
+        return
+    real_collect = mod.collect_moves_from_lines
+
+    def poisoned(lines):
+        book = real_collect(lines)
+        book[("__probe_key__", "__probe_uci__")] = (None, "x")
+        return book
+
+    with _emptied_book_table():
+        mod.collect_moves_from_lines = poisoned
+        try:
+            with _captured_logs() as records:
+                assert mod.seed_eco_book_if_empty() == 0
+            errors = [r for r in records if r.levelno >= logging.ERROR]
+            assert errors, "mid-insert failure must log at ERROR"
+        finally:
+            mod.collect_moves_from_lines = real_collect
+        from core import database
+        conn = database.connection_pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT COUNT(*) FROM opening_book_moves WHERE source='eco';"
+                )
+                assert cur.fetchone()[0] == 0, (
+                    "aborted insert must leave zero eco rows"
+                )
+        finally:
+            database.connection_pool.putconn(conn)
+    print("  [PASS] mid-insert failure rolls back to zero eco rows")
+
+
+def test_seed_failure_logs_error_without_crash():
+    from core import database
+    real_pool = database.connection_pool
+    database.connection_pool = None
+    try:
+        with _captured_logs() as records:
+            assert mod.seed_eco_book_if_empty() == 0
+        errors = [r for r in records if r.levelno >= logging.ERROR]
+        assert errors, "seed failure must log at ERROR"
+    finally:
+        database.connection_pool = real_pool
+    if not _require_db():
+        return
+    with _emptied_book_table():
+        with _captured_logs() as records:
+            assert mod.seed_eco_book_if_empty(eco_dir="/nonexistent-xyz") == 0
+        errors = [r for r in records if r.levelno >= logging.ERROR]
+        assert errors, "missing TSV dir must log at ERROR"
+        assert _table_count() == 0, "failed seed must not write partial rows"
+    print("  [PASS] seed failure logs at ERROR and never raises")
+
+
 def main() -> int:
     print("=== Running opening_book tests ===")
     tests = [
@@ -246,6 +533,11 @@ def main() -> int:
         test_db_exception_not_cached,
         test_populated_load_cached_for_ttl,
         test_startup_warning_on_empty_table,
+        test_seed_if_empty_seeds_and_noop_when_populated,
+        test_concurrent_seeders_no_duplicates,
+        test_seed_with_non_eco_row_present_still_seeds_eco,
+        test_seed_failure_mid_insert_leaves_zero_eco_rows,
+        test_seed_failure_logs_error_without_crash,
     ]
     for test in tests:
         try:

@@ -1,0 +1,11 @@
+Vendored opening theory lines for offline Game Review book seeding.
+
+Source: https://github.com/lichess-org/chess-openings
+Files: a.tsv, b.tsv, c.tsv, d.tsv, e.tsv (tab-separated ECO code, name, PGN)
+Retrieved: 2026-10-01
+License: CC0-1.0 public-domain dedication, as documented for this dataset
+in the upstream repository and in services/opening_book.py.
+
+These files exist so fresh databases can seed the opening book without
+network access (see seed_eco_book_if_empty in services/opening_book.py).
+To refresh from upstream, re-download the five TSVs into this directory.

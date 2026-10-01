@@ -14,7 +14,7 @@ from dotenv import load_dotenv
 from core.database import init_db
 from core.migrations import run_migrations
 from services import endgame_seeding
-from services.opening_book import log_book_status
+from services.opening_book import log_book_status, seed_eco_book_if_empty
 from services.tablebase import set_persistent_cache
 from services.tablebase_cache import PostgresProbeCache
 from engines.maia_engine import close_maia3, start_maia3, verify_maia3_patch
@@ -198,6 +198,17 @@ def startup():
     # opening label to engine eval. Loud warning only; lookups already
     # fail soft to non-book, so this must never break boot.
     log_book_status()
+
+    # Opening-book seeding for fresh databases. Same policy as endgame
+    # content above: offline vendored CC0 lines, idempotent
+    # (seed-if-empty), race-safe across replicas (primary key +
+    # ON CONFLICT DO NOTHING), never raises. Daemon thread so boot is
+    # not delayed; the hardening check above warns while this fills in.
+    threading.Thread(
+        target=seed_eco_book_if_empty,
+        name="opening-book-seed",
+        daemon=True,
+    ).start()
 
     # Endgame content seeding. The library is DATA, not schema (migrations
     # create empty tables), and had only ever been seeded by hand -- which is
