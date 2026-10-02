@@ -384,7 +384,7 @@ export default function EndgamesPage() {
         ) : (
           <div className="grid gap-6 xl:min-h-0 xl:flex-1 xl:grid-cols-[20rem_minmax(0,1fr)_22rem] xl:pt-5">
             {/* ============ LEFT: RATING + CATEGORY LIST ============ */}
-            <section className="order-2 mt-6 flex min-h-0 flex-col gap-5 xl:order-none xl:mt-0">
+            <section className="order-2 mt-6 flex min-h-0 flex-col gap-5 xl:order-none xl:mt-0 xl:h-[min(calc(100vw-800px),calc(100vh-70px))]">
               <div
                 className={`${WOOD_PANEL_CLASS} flex shrink-0 items-center gap-4 p-5`}
                 style={WOOD_PANEL_STYLE}
@@ -482,7 +482,7 @@ export default function EndgamesPage() {
             </section>
 
             {/* ============ RIGHT: STATUS + ACTION ============ */}
-            <section className="order-3 mx-auto flex w-full max-w-[420px] flex-col gap-5 xl:order-none xl:mx-0 xl:mt-0 xl:max-w-none xl:min-h-0">
+            <section className="order-3 mx-auto flex w-full max-w-[420px] flex-col gap-5 xl:order-none xl:mx-0 xl:mt-0 xl:max-w-none xl:min-h-0 xl:h-[min(calc(100vw-800px),calc(100vh-70px))]">
               {/* Invisible scroll fallback: only the tall resolved states on
                   a short screen ever need it; the Next control below stays
                   pinned either way. */}
