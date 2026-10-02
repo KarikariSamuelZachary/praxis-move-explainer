@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "test:repertoire-logic": "tsc \"src/app/(app)/repertoire/[id]/train/train-logic.ts\" \"src/app/(app)/repertoire/[id]/train/train-logic.test.ts\" --outDir .test-build --module commonjs --moduleResolution node --target es2020 --esModuleInterop --skipLibCheck && node .test-build/train-logic.test.js"
   },
   "dependencies": {
     "@clerk/nextjs": "^7.4.2",
