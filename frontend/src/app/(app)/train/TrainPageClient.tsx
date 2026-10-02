@@ -500,7 +500,7 @@ function RecommendedPanel({
   const label = practiceCategoryLabel(recommendation.category);
 
   return (
-    <section className={`${CARD_CLASS} flex flex-col gap-2 p-3 self-end shadow-2xl shadow-black/25`} aria-label="Recommended for you">
+    <section className={`${CARD_CLASS} flex w-[314px] max-w-full flex-col gap-2 p-3 self-end shadow-2xl shadow-black/25`} aria-label="Recommended for you">
       <header className="flex items-center gap-2">
         <span className="text-[#f7e5c6]/70">
           <StarIcon />
