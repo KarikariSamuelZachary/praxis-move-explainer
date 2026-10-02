@@ -16,14 +16,22 @@
  *      train for this mode" we render the detail string inline in
  *      the modal rather than navigating anywhere.
  *
- *   2. SESSION - quiz screen: one stored position at a time. The
- *      board shows the position's FEN (owner-to-move). The user
- *      drags a legal move; we compare UCI vs the stored
- *      position.move field client-side, fire
- *      POST /positions/{position_id}/review with the comparison
- *      result, and tally correct/incorrect counters. After the
- *      last position we POST /sessions/{session_id}/complete with
- *      the final tally and transition to DONE.
+ *   2. SESSION - quiz screen: one stored owner position at a time.
+ *      The board shows the position's FEN (owner-to-move). The user
+ *      plays ANY saved move at that position - the session quizzes
+ *      the POSITION, so the first sideline, second sideline, or
+ *      mainline may all come first. A move matching a stored row is
+ *      correct; that ROW is marked completed (tracked by id, NOT by a
+ *      queue index, so playing a sibling branch never consumes the
+ *      presented item - no saved move can be skipped). The client
+ *      fires POST /positions/{position_id}/review against the played
+ *      row, auto-plays a prepared opponent reply, and follows that
+ *      branch to the next uncompleted row (preferring the reply's
+ *      position; otherwise the next row in tree order, which is a
+ *      first-visit DFS that puts the earliest-created "main line"
+ *      first). When the last uncompleted row is answered we POST
+ *      /sessions/{session_id}/complete with the final tally and
+ *      transition to DONE.
  *
  *      Recording-honesty contract (here, not in the backend): the
  *      client tallies counters from its own UCI comparison. A WRONG
@@ -65,10 +73,12 @@
  *   * The scope filter exposed here is only `main_lines_only`. No
  *     depth-range, no train-as-opponent. Per the project's earlier
  *     decision.
- *   * The hint button is a no-op (visible "not yet available"
- *     message) - there is no hint source anywhere in the schema, so
- *     the reference's "Show hint" affordance is honored visually but
- *     not fabricated.
+ *   * The assists mirror the puzzles board: "Hint" highlights the
+ *     piece to move (green, ~4s) and "Solution" plays the stored move
+ *     on the board (blue). Either reveal costs one incorrect for the
+ *     position - it can no longer count as solved unaided - and
+ *     "Solution" then records the position as not solved and runs the
+ *     same reply/advance sequence a correct solve does.
  *   * The "opponent's last move" prompt prefix from reference-5
  *     ("Black just played d6.") is NOT derivable from the schema
  *     alone (positions don't store their parent move and the session
@@ -95,7 +105,9 @@ import ReviewShell from '@/components/review/ReviewShell';
 import {
   applyUci,
   buildQuizItems,
+  chooseReplyFen,
   findLinePath,
+  nextQuizItem,
   normalizeFen,
   type RepertoireColor,
   type RepertoirePositionRow,
@@ -151,60 +163,50 @@ function SearchBackIcon() {
   );
 }
 
-function TrainIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M5 12h14" />
-      <path d="m13 5 7 7-7 7" />
-      <path d="M9 5 3 12l6 7" />
-    </svg>
-  );
-}
+// Assist button styles, lifted verbatim from the puzzles
+// PuzzleStatusPanel so the train page's Hint/Solution pair is visually
+// identical to the puzzle solver's.
+const GOLD_BUTTON_CLASS =
+  'relative flex w-full items-center justify-center gap-2.5 rounded-xl bg-gradient-to-b from-[#eacb90] to-[#c1954f] px-4 py-3.5 text-sm font-bold text-[#2a1a06] shadow-[0_10px_22px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.55)] transition hover:from-[#f2d8a4] hover:to-[#cda261] disabled:cursor-not-allowed disabled:opacity-50';
 
-function BookIcon() {
-  return (
-    <svg
-      width="20"
-      height="20"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.7"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M4 19.5v-15A2.5 2.5 0 0 1 6.5 2H20v20H6.5a2.5 2.5 0 0 1 0-5H20" />
-    </svg>
-  );
-}
+const SECONDARY_BUTTON_CLASS =
+  'relative flex w-full items-center justify-center gap-2.5 rounded-xl border border-white/15 bg-white/5 px-4 py-3.5 text-sm font-bold text-white/80 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50';
 
-function LightbulbIcon() {
+/** The Hint button's mark, matching the puzzles solver's. */
+function BulbIcon() {
   return (
     <svg
-      width="14"
-      height="14"
-      viewBox="0 0 24 24"
+      className="h-[18px] w-[18px]"
       fill="none"
       stroke="currentColor"
-      strokeWidth="2"
       strokeLinecap="round"
       strokeLinejoin="round"
+      strokeWidth="1.9"
+      viewBox="0 0 24 24"
       aria-hidden="true"
     >
       <path d="M9 18h6" />
-      <path d="M10 22h4" />
-      <path d="M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2Z" />
+      <path d="M10 21h4" />
+      <path d="M12 3a6 6 0 0 0-3.6 10.8c.5.4.8 1 .9 1.6l.1.6h5.2l.1-.6c.1-.6.4-1.2.9-1.6A6 6 0 0 0 12 3Z" />
+    </svg>
+  );
+}
+
+/** The Solution button's mark, matching the puzzles solver's. */
+function EyeIcon() {
+  return (
+    <svg
+      className="h-[18px] w-[18px]"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="1.9"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+    >
+      <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" />
+      <circle cx="12" cy="12" r="3" />
     </svg>
   );
 }
@@ -247,14 +249,31 @@ export default function RepertoireTrainPage({
 
   const [sessionId, setSessionId] = useState<string | null>(null);
   const [sessionPositions, setSessionPositions] = useState<RepertoirePositionRow[]>([]);
-  const [currentIdx, setCurrentIdx] = useState(0);
+  // Quiz items the session has ANSWERED (one owner row per completed
+  // move). Tracked by row id, NOT by a list index: the user may answer
+  // a different saved move than the one presented (any saved line can
+  // come first), so the presented item must stay uncompleted when they
+  // branch away, and the played row is the one that counts.
+  const [completedIds, setCompletedIds] = useState<ReadonlySet<string>>(
+    new Set()
+  );
+  // The owner row whose position is currently on the board. null only
+  // between session start and the first render after /sessions/start.
+  const [currentItemId, setCurrentItemId] = useState<string | null>(null);
   const [correctCount, setCorrectCount] = useState(0);
   const [incorrectCount, setIncorrectCount] = useState(0);
   const [startPending, setStartPending] = useState(false);
   const [startError, setStartError] = useState<string | null>(null);
   const [reviewPending, setReviewPending] = useState(false);
   const [completePending, setCompletePending] = useState(false);
-  const [hintMessage, setHintMessage] = useState<string | null>(null);
+  // Assist highlights for the current position: the Hint reveal paints
+  // the from-square green, the Solution reveal paints from/to blue -
+  // the same colors the puzzles board uses. Cleared when the position
+  // resolves or the hint timeout lapses.
+  const [highlightSquares, setHighlightSquares] = useState<
+    Record<string, React.CSSProperties>
+  >({});
+  const hintTimeoutRef = useRef<number | null>(null);
   // Transient wrong-attempt feedback ("Incorrect - try again"). The
   // session no longer advances on a wrong move, so the user needs an
   // explicit signal the attempt was registered and rejected.
@@ -303,24 +322,21 @@ export default function RepertoireTrainPage({
   // since this position was shown). useRef avoids re-renders on read.
   const shownAtRef = useRef<number>(Date.now());
 
-  // Quiz items: EVERY owner-side row is its own quiz item - one per
-  // saved move, even when several moves share the same position FEN
-  // (e.g. both e4 AND f4 stored against the start position). Deduping
-  // by FEN used to collapse diverging branches into a single item and
-  // silently dropped moves like f4 from the session. The opponent's
-  // stored reply is still auto-played on the board after each correct
-  // answer instead of being its own quiz. sessionPositions keeps the
-  // full row list so the auto-reply lookup can find the opponent's
-  // chosen response.
+  // Quiz items in tree order (see buildQuizItems): every saved owner
+  // move, with the earliest-created branch first. sessionPositions
+  // keeps the full row list so the auto-reply lookup can find the
+  // opponent's prepared response to whichever branch the user plays.
   const quizItems = useMemo(
     () => buildQuizItems(sessionPositions, color),
     [sessionPositions, color]
   );
 
-  const currentPosition =
-    currentIdx < quizItems.length ? quizItems[currentIdx] : null;
+  const currentItem = useMemo(
+    () => quizItems.find((p) => p.id === currentItemId) ?? null,
+    [quizItems, currentItemId]
+  );
   const total = quizItems.length;
-  const completedCount = currentIdx; // # of positions fully attempted
+  const completedCount = completedIds.size;
 
   // Board orientation is FIXED to the repertoire owner's color for
   // the whole session - even when the quiz reaches an opponent ply,
@@ -436,9 +452,14 @@ export default function RepertoireTrainPage({
       if (!data?.session?.id || !Array.isArray(data.positions)) {
         throw new Error('Backend returned an unexpected start-session payload');
       }
+      // First presentation: the root's earliest-created branch (tree
+      // order), so the session begins at the start position. All
+      // completed-tracking starts empty for the new session.
+      const items = buildQuizItems(data.positions, color);
       setSessionId(data.session.id);
       setSessionPositions(data.positions);
-      setCurrentIdx(0);
+      setCompletedIds(new Set());
+      setCurrentItemId(items[0]?.id ?? null);
       setCorrectCount(0);
       setIncorrectCount(0);
       setAutoMoveFen(null);
@@ -456,47 +477,22 @@ export default function RepertoireTrainPage({
     } finally {
       setStartPending(false);
     }
-  }, [id, mainLinesOnly, startPending]);
+  }, [color, id, mainLinesOnly, startPending]);
 
-  // --- Quiz attempt handler. "Accept either move": a position with
-  // several saved branches counts the attempt correct when the played
-  // UCI matches ANY row stored at this position's FEN - the session
-  // quizzed the POSITION, not one specific branch. The /review POST
-  // is fired against the MATCHING row's id (the branch actually
-  // played) so the FSRS scheduling update lands on the right row.
-  // Fire POST /review, tally counters, advance. If this was the last
-  // position, call /complete and transition to DONE.
-  const handleAttempt = useCallback(
-    async (uci: string) => {
-      if (reviewPending) return;
-      if (!currentPosition || !sessionId) return;
-      // A new user attempt wipes any auto-reply overlay from the
-      // prior position so the dragged piece lands on the real
-      // current item's position.
-      setAutoMoveFen(null);
-      const posKey = normalizeFen(currentPosition.fen);
-      const matchingRow = sessionPositions.find(
-        (p) => normalizeFen(p.fen) === posKey && p.move === uci
-      );
-      const correct = Boolean(matchingRow);
-      const reviewedRowId = matchingRow ? matchingRow.id : currentPosition.id;
-      const timeTakenMs = Math.max(
-        0,
-        Date.now() - shownAtRef.current
-      );
-
-      setReviewPending(true);
-      // Fire the /review FSRS recording in the BACKGROUND. It must NOT
-      // gate the move feedback / reply animation - awaiting the HTTP
-      // round-trip on every move is what makes the flow feel laggy.
-      // The promise still surfaces failures (non-2xx or throw) into
-      // `reviewFailureCount` so the recording-honesty banner appears.
-      // NOTE: the URL has no `/review` suffix - the Next.js proxy
-      // route lives at /api/repertoires/positions/[position_id] and
-      // its POST handler appends `/review` when forwarding to the
-      // backend (see src/app/api/repertoires/positions/[position_id]/
-      // route.ts). Calling `/…/{id}/review` directly would 404 on the
-      // proxy and (wrongly) trip the recording-honesty banner below.
+  // --- Fire the /review FSRS recording for one resolved position in
+  // the BACKGROUND. It must NOT gate the move feedback / reply
+  // animation - awaiting the HTTP round-trip on every move is what
+  // makes the flow feel laggy. The promise still surfaces failures
+  // (non-2xx or throw) into `reviewFailureCount` so the
+  // recording-honesty banner appears. NOTE: the URL has no `/review`
+  // suffix - the Next.js proxy route lives at
+  // /api/repertoires/positions/[position_id] and its POST handler
+  // appends `/review` when forwarding to the backend (see
+  // src/app/api/repertoires/positions/[position_id]/route.ts).
+  // Calling `/…/{id}/review` directly would 404 on the proxy and
+  // (wrongly) trip the recording-honesty banner below.
+  const recordReview = useCallback(
+    (reviewedRowId: string, solvedCorrectly: boolean, timeTakenMs: number) => {
       void (async () => {
         try {
           const res = await fetch(
@@ -505,7 +501,7 @@ export default function RepertoireTrainPage({
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
-                solved_correctly: correct,
+                solved_correctly: solvedCorrectly,
                 time_taken_ms: timeTakenMs,
               }),
             }
@@ -532,68 +528,100 @@ export default function RepertoireTrainPage({
           setReviewFailureCount((c) => c + 1);
         }
       })();
-      // Tally. A WRONG move stays on the SAME position for a retry -
-      // it only bumps the incorrect counter (and fires /review above
-      // with solved_correctly=false). Only a CORRECT move advances.
-      if (!correct) {
-        // Only the FIRST miss on this position adds an incorrect
-        // (subsequent wrong moves - or hint clicks - on the same
-        // position don't stack). The session still stays on the
-        // position for a retry regardless.
-        if (incorrectCountedPosRef.current !== currentPosition.id) {
-          setIncorrectCount((c) => c + 1);
-          incorrectCountedPosRef.current = currentPosition.id;
-        }
-        shownAtRef.current = Date.now();
-        setAttemptFeedback('Incorrect - try again.');
-        window.setTimeout(() => setAttemptFeedback(null), 3000);
-        setReviewPending(false);
-        return;
+    },
+    []
+  );
+
+  // --- Resolve a saved move at the CURRENT position: record the
+  // /review result, mark the PLAYED row completed, then auto-play the
+  // opponent's stored reply and follow that branch to the next
+  // uncompleted item (or /complete when none remain). Shared by a
+  // correct drag (solvedCorrectly=true) and the Solution reveal
+  // (solvedCorrectly=false, blue highlight).
+  //
+  // Branch-following rules:
+  //   * The played row is what gets completed, NOT the presented item.
+  //     "Any saved line can come first": if the user plays a sibling
+  //     branch, that branch is credited and the presented item stays
+  //     queued for a later pass - no item is silently skipped.
+  //   * If the played row was already completed, it still counts as a
+  //     correct move (and its /review lands) but completes nothing.
+  //   * The next item is the first uncompleted row at the reply's
+  //     position when one exists (follow the branch), else the first
+  //     uncompleted row in tree order (line-switch back to untouched
+  //     material).
+  const finishResolvedPosition = useCallback(
+    (
+      playedUci: string,
+      reviewedRowId: string,
+      solvedCorrectly: boolean,
+      wasNewCompletion: boolean,
+      highlight: Record<string, React.CSSProperties> = {}
+    ) => {
+      if (!currentItem || !sessionId) return;
+      const timeTakenMs = Math.max(0, Date.now() - shownAtRef.current);
+      setReviewPending(true);
+      recordReview(reviewedRowId, solvedCorrectly, timeTakenMs);
+
+      const completedAfter = new Set(completedIds);
+      completedAfter.add(reviewedRowId);
+
+      const newlyCountedIncorrect =
+        !solvedCorrectly &&
+        incorrectCountedPosRef.current !== currentItem.id;
+      if (wasNewCompletion) {
+        if (solvedCorrectly) setCorrectCount((c) => c + 1);
+        setCompletedIds(completedAfter);
       }
-      setCorrectCount((c) => c + 1);
-      const nextIdx = currentIdx + 1;
+      if (!solvedCorrectly && newlyCountedIncorrect) {
+        setIncorrectCount((c) => c + 1);
+        incorrectCountedPosRef.current = currentItem.id;
+      }
+
       shownAtRef.current = Date.now();
-      // Auto-play the opponent's stored reply: look up the row whose
-      // FEN equals the position after the user's move, briefly show
-      // that intermediate position, then show the reply and advance.
-      // If no reply exists (line ended), just advance. The whole
-      // sequence runs with reviewPending=true so drops are blocked.
-      const afterUser = applyUci(currentPosition.fen, uci);
-      const isFinalItem = nextIdx >= total;
-      // Opponent reply to the user's just-played move: the stored row
-      // whose FEN equals the position after the user's move.
-      const replyRow = afterUser
-        ? sessionPositions.find(
-            (p) => normalizeFen(p.fen) === normalizeFen(afterUser)
-          )
+      // Paint the assist highlight (empty for a normal correct drag,
+      // which also clears any lingering hint green) for the duration
+      // of the reply animation.
+      setHighlightSquares(highlight);
+
+      const afterUser = applyUci(currentItem.fen, playedUci);
+      const uncompletedFens = new Set(
+        quizItems
+          .filter((p) => !completedAfter.has(p.id))
+          .map((p) => normalizeFen(p.fen))
+      );
+      // The opponent reply to auto-play: prefer the prepared reply
+      // that leads toward the user's uncompleted material.
+      const replyFen = afterUser
+        ? chooseReplyFen(sessionPositions, afterUser, uncompletedFens)
         : null;
-      const replyFen =
-        afterUser && replyRow ? applyUci(afterUser, replyRow.move) : null;
+      const nextItem = nextQuizItem(quizItems, completedAfter, replyFen);
 
       const doAdvance = () => {
-        // Clear the auto-reply overlay BEFORE the index advances so
-        // the board renders the NEXT item's real FEN. Keeping it
-        // pinned here was the bug: when the next quiz item belongs
-        // to a different line (e.g. the start position has several
-        // first moves), the board stayed frozen on the just-finished
-        // line's last position and the session appeared stuck. The
-        // applyUci EP-strip makes the reply FEN equal to the next
-        // same-line item's stored FEN, so clearing the overlay does
-        // not hide the opponent's last move - the next item shows the
-        // same position.
+        // Clear the auto-reply overlay BEFORE the handoff so the board
+        // renders the NEXT item's real FEN. Keeping it pinned here was
+        // the bug: when the next quiz item belongs to a different line
+        // the board stayed frozen on the just-finished line's last
+        // position and the session appeared stuck.
         setAutoMoveFen(null);
-        if (isFinalItem) {
-          // Last quiz item attempted - call /complete and transition.
-          // Build the FINAL tally at call time (not from state
-          // closures) so the value we send matches the visible
-          // counters.
-          const finalCorrect = correctCount + 1;
+        setHighlightSquares({});
+        if (nextItem === null) {
+          // Every quiz item has been answered - call /complete and
+          // transition to DONE. Build the FINAL tally at call time
+          // (not from state closures). A reveal
+          // (solvedCorrectly=false) contributes no correct answer; its
+          // incorrect delta is added explicitly because the setState
+          // above hasn't committed yet.
+          const finalCorrect =
+            correctCount + (solvedCorrectly && wasNewCompletion ? 1 : 0);
           // Total attempts: every solved position plus every position
-          // that needed a retry or a hint. This is the SAME number the
-          // DONE screen below displays as the score denominator, and
-          // the backend stores it so the repertoire list's "Last Score"
-          // shows the same accuracy this screen shows.
-          const attemptsTotal = finalCorrect + incorrectCount;
+          // that needed a retry, a hint, or the solution. This is the
+          // SAME number the DONE screen below displays as the score
+          // denominator, and the backend stores it so the repertoire
+          // list's "Last Score" shows the same accuracy this screen
+          // shows.
+          const attemptsTotal =
+            finalCorrect + incorrectCount + (newlyCountedIncorrect ? 1 : 0);
           setCompletePending(true);
           // Default to "recorded" - flipped to true on any failure
           // path below. Either way, the catch / !ok blocks set
@@ -632,12 +660,11 @@ export default function RepertoireTrainPage({
             }
           })();
         } else {
-          const nextItem = quizItems[nextIdx];
           const sameLine =
             replyFen !== null &&
             normalizeFen(nextItem.fen) === normalizeFen(replyFen);
           const handoff = () => {
-            setCurrentIdx(nextIdx);
+            setCurrentItemId(nextItem.id);
             setReviewPending(false);
           };
           if (sameLine) {
@@ -699,15 +726,76 @@ export default function RepertoireTrainPage({
       return;
     },
     [
-      currentPosition,
-      currentIdx,
+      completedIds,
       correctCount,
+      currentItem,
       incorrectCount,
       quizItems,
-      reviewPending,
+      recordReview,
       sessionId,
       sessionPositions,
-      total,
+    ]
+  );
+
+  // --- Quiz attempt handler. "Accept either move": a position with
+  // several saved branches counts the attempt correct when the played
+  // UCI matches ANY row stored at this position's FEN - the session
+  // quizzes the POSITION, and any saved line may be played first. The
+  // /review POST is fired against the MATCHING row's id (the branch
+  // actually played) so the FSRS scheduling update lands on the right
+  // row, and that row is the one marked completed - the presented item
+  // stays queued when the user branches away, so no saved move is ever
+  // skipped. A wrong move stays on the position for a retry.
+  const handleAttempt = useCallback(
+    async (uci: string) => {
+      if (reviewPending) return;
+      if (!currentItem || !sessionId) return;
+      // A new user attempt wipes any auto-reply overlay from the
+      // prior position so the dragged piece lands on the real
+      // current item's position.
+      setAutoMoveFen(null);
+      const posKey = normalizeFen(currentItem.fen);
+      const matchingRow = sessionPositions.find(
+        (p) => normalizeFen(p.fen) === posKey && p.move === uci
+      );
+      if (!matchingRow) {
+        // Tally. A WRONG move stays on the SAME position for a retry -
+        // it only bumps the incorrect counter (and fires /review with
+        // solved_correctly=false). Only the FIRST miss on this
+        // position adds an incorrect (subsequent wrong moves - or
+        // hint clicks - on the same position don't stack). The
+        // session still stays on the position for a retry regardless.
+        setReviewPending(true);
+        recordReview(
+          currentItem.id,
+          false,
+          Math.max(0, Date.now() - shownAtRef.current)
+        );
+        if (incorrectCountedPosRef.current !== currentItem.id) {
+          setIncorrectCount((c) => c + 1);
+          incorrectCountedPosRef.current = currentItem.id;
+        }
+        shownAtRef.current = Date.now();
+        setAttemptFeedback('Incorrect - try again.');
+        window.setTimeout(() => setAttemptFeedback(null), 3000);
+        setReviewPending(false);
+        return;
+      }
+      finishResolvedPosition(
+        uci,
+        matchingRow.id,
+        true,
+        !completedIds.has(matchingRow.id)
+      );
+    },
+    [
+      completedIds,
+      currentItem,
+      finishResolvedPosition,
+      recordReview,
+      reviewPending,
+      sessionPositions,
+      sessionId,
     ]
   );
 
@@ -722,7 +810,7 @@ export default function RepertoireTrainPage({
       targetSquare: string,
       promotion?: string
     ): boolean => {
-      if (!color || reviewPending || !currentPosition) return false;
+      if (!color || reviewPending || !currentItem) return false;
       // Every stored row is its side-to-move by construction;
       // canDragPiece already restricts drags to the moving side's
       // pieces, so no extra color gate is needed here.
@@ -731,7 +819,7 @@ export default function RepertoireTrainPage({
       // chess.js's validator is happy (4-field alone fails
       // validation; the rest of the board rendering only uses the
       // first field anyway).
-      const fenForValidation = `${normalizeFen(currentPosition.fen)} 0 1`;
+      const fenForValidation = `${normalizeFen(currentItem.fen)} 0 1`;
       let nextUci = `${sourceSquare}${targetSquare}`;
       try {
         const game = new Chess(fenForValidation);
@@ -752,43 +840,53 @@ export default function RepertoireTrainPage({
       void handleAttempt(nextUci);
       return true;
     },
-    [color, currentPosition, handleAttempt, reviewPending]
+    [color, currentItem, handleAttempt, reviewPending]
   );
 
-  // --- Hint button handler. Shows the SAN of one correct move at
-  // the current position AND costs one incorrect - revealing the
-  // answer means the position can't also count as solved unaided.
-  // Any saved move at this FEN counts as
-  // correct (the "accept either move" rule), so we pick the current
-  // quiz row's stored move - its SAN is computed from the position's
-  // FEN + UCI via chess.js. Falls back to the raw UCI if chess.js
-  // can't parse the move (stale/corrupt row - shouldn't happen).
-  const handleShowHint = useCallback(() => {
-    if (!currentPosition) {
-      setHintMessage('No position to hint.');
-      window.setTimeout(() => setHintMessage(null), 3000);
-      return;
-    }
+  // --- Hint button: highlights the piece to move (green, ~4s) like
+  // the puzzles board's "Hint", and costs one incorrect per position -
+  // revealing the answer means the position can't also count as
+  // solved unaided. Any saved move at this FEN counts as correct (the
+  // "accept either move" rule), so we highlight the current quiz
+  // row's stored move.
+  const handleHint = useCallback(() => {
+    if (!currentItem || reviewPending) return;
     // A hint costs ONE incorrect per position - once this position has
     // already registered its incorrect (from a wrong move or a prior
-    // hint), further hint clicks add nothing.
-    if (incorrectCountedPosRef.current !== currentPosition.id) {
+    // reveal), further hint clicks add nothing.
+    if (incorrectCountedPosRef.current !== currentItem.id) {
       setIncorrectCount((c) => c + 1);
-      incorrectCountedPosRef.current = currentPosition.id;
+      incorrectCountedPosRef.current = currentItem.id;
     }
-    try {
-      const game = new Chess(`${normalizeFen(currentPosition.fen)} 0 1`);
-      const m = game.move({
-        from: currentPosition.move.slice(0, 2),
-        to: currentPosition.move.slice(2, 4),
-        promotion: currentPosition.move.length > 4 ? currentPosition.move[4] : undefined,
-      });
-      setHintMessage(`Try: ${m.san}`);
-    } catch {
-      setHintMessage(`Try: ${currentPosition.move}`);
+    setHighlightSquares({
+      [currentItem.move.slice(0, 2)]: {
+        backgroundColor: 'rgba(16, 185, 129, 0.4)',
+      },
+    });
+    if (hintTimeoutRef.current !== null) {
+      window.clearTimeout(hintTimeoutRef.current);
     }
-    window.setTimeout(() => setHintMessage(null), 5000);
-  }, [currentPosition]);
+    hintTimeoutRef.current = window.setTimeout(() => {
+      setHighlightSquares({});
+      hintTimeoutRef.current = null;
+    }, 4000);
+  }, [currentItem, reviewPending]);
+
+  // --- Solution button: plays the stored move on the board (blue
+  // highlight from/to, like the puzzles board's "Solution"), records
+  // the position as not solved, then runs the same reply/advance
+  // sequence a correct solve does. The presented row is what gets
+  // revealed (and completed) - a solution always resolves the item the
+  // session is currently asking for.
+  const handleShowSolution = useCallback(() => {
+    if (!currentItem || !sessionId || reviewPending) return;
+    const move = currentItem.move;
+    if (!applyUci(currentItem.fen, move)) return;
+    finishResolvedPosition(move, currentItem.id, false, true, {
+      [move.slice(0, 2)]: { backgroundColor: 'rgba(100, 150, 255, 0.6)' },
+      [move.slice(2, 4)]: { backgroundColor: 'rgba(100, 150, 255, 0.6)' },
+    });
+  }, [currentItem, finishResolvedPosition, reviewPending, sessionId]);
 
   // --- Back to detail page (config back button + DONE "Back to
   // repertoire" link both reuse this).
@@ -810,10 +908,6 @@ export default function RepertoireTrainPage({
     }
     return { kind: 'exact' as const, value: totalPositionCount };
   }, [mainLinesOnly, totalPositionCount]);
-
-  const configScopeTitle = mainLinesOnly
-    ? 'Main lines only'
-    : 'Entire repertoire';
 
   // ----- Phase: CONFIG ---------------------------------------------
 
@@ -837,15 +931,10 @@ export default function RepertoireTrainPage({
         <div className="flex min-h-full items-center justify-center py-12">
           <div className={`${CARD_CLASS} w-full max-w-md p-6 sm:p-8`}>
             <div className="flex flex-col gap-6">
-              {/* Scope title */}
-              <div className="flex items-center gap-3">
-                <span className="text-2xl text-[#efd9a7]" aria-hidden="true">
-                  <BookIcon />
-                </span>
-                <h2 className="font-display text-xl font-bold text-[#efd9a7]">
-                  {configScopeTitle}
-                </h2>
-              </div>
+              {/* Modal heading */}
+              <h2 className="text-center font-display text-xl font-bold text-[#efd9a7]">
+                Training session
+              </h2>
 
               {/* Position count display */}
               <div className="flex flex-col items-center gap-2 py-2">
@@ -886,11 +975,7 @@ export default function RepertoireTrainPage({
                 {startPending ? (
                   <span className="animate-pulse">Starting…</span>
                 ) : (
-                  <>
-                    <TrainIcon />
-                    <span>Train</span>
-                    <ArrowRightIcon />
-                  </>
+                  <span>Train</span>
                 )}
               </button>
 
@@ -937,10 +1022,12 @@ export default function RepertoireTrainPage({
 
   if (phase === 'done') {
     const total = quizItems.length;
-    // Wrong moves (and hint clicks) no longer advance the session, so
-    // correctCount always ends at `total` - the honest score is
-    // ACCURACY: correct solves over total attempts (retries + hints
-    // included in the denominator via incorrectCount).
+    // Wrong moves no longer advance, so the session reaches DONE with
+    // every item completed. `correctCount` counts only UNAIDED solves -
+    // a Solution reveal completes its item without a correct - so the
+    // honest score is ACCURACY: correct solves over total attempts
+    // (retries + hints + reveals in the denominator via
+    // incorrectCount).
     const attemptTotal = correctCount + incorrectCount;
     const pct =
       attemptTotal > 0 ? Math.round((correctCount / attemptTotal) * 100) : 0;
@@ -1032,14 +1119,14 @@ export default function RepertoireTrainPage({
       {/*
         Session layout - mirrored from the build page (ReviewShell) so a
         user moving between the two routes sees no board-size jump.
-        Import panel (left) carries only the back button (the build
+        The fixed left rail carries only the back button (the build
         page's name + Train button chrome is intentionally omitted
         here - the train flow has nothing to author or label). Board
         panel (center) holds the quiz board. Analysis panel (right)
-        holds the "White to move / What's your move?" prompt card with
-        counters + hint.
+        holds the "What's your move?" prompt card with counters + hint.
       */}
       <ReviewShell
+        leftCollapsible={false}
         importPanel={
           <button
             type="button"
@@ -1061,18 +1148,18 @@ export default function RepertoireTrainPage({
               dialog the puzzles page uses, so the train flow's board
               is visually + interactionally identical.
             */}
-            {currentPosition ? (
+            {currentItem ? (
               <BoardShell
-                position={autoMoveFen ?? currentPosition.fen}
+                position={autoMoveFen ?? currentItem.fen}
                 orientation={boardOrientation}
                 allowDragging={!reviewPending}
                 canDragPiece={({ piece }) => {
-                  if (reviewPending || !color || !currentPosition) return false;
+                  if (reviewPending || !color || !currentItem) return false;
                   // The session includes BOTH sides' plies, so the
                   // draggable pieces are whichever color is on turn
                   // in the CURRENT position (not the repertoire
                   // owner's color).
-                  const side = currentPosition.fen.split(/\s+/)[1];
+                  const side = currentItem.fen.split(/\s+/)[1];
                   return piece.pieceType[0] === side;
                 }}
                 onMove={(source, target, promotion) =>
@@ -1080,6 +1167,7 @@ export default function RepertoireTrainPage({
                     ? true
                     : false
                 }
+                squareStyles={highlightSquares}
               />
             ) : (
               <div
@@ -1091,22 +1179,19 @@ export default function RepertoireTrainPage({
           </div>
         }
         analysisPanel={
-          <aside className="flex h-full flex-col gap-4 overflow-hidden">
-            {currentPosition && (
-              <div className={`${CARD_CLASS} flex flex-col gap-4 p-5`}>
-                {/* Prompt. Per the task: opponent's prior move is NOT
-                    derivable from the schema, so we use the suggested
-                    fallback wording ("What's your move here?"). We DO
-                    derive the owner color from the position's side-to-
-                    move field so the prompt reflects whose move it is. */}
-                <p className="text-center text-base font-medium text-[#efd9a7]">
-                  {(() => {
-                    const side = currentPosition.fen.split(/\s+/)[1];
-                    const label =
-                      side === 'w' ? 'White' : side === 'b' ? 'Black' : 'Your';
-                    return `${label} to move. What\u2019s your move?`;
-                  })()}
-                </p>
+          <aside className="wood-scrollbar flex h-full min-h-0 flex-col gap-4 overflow-y-auto pr-1">
+            {currentItem && (
+              <div className={`${CARD_CLASS} relative flex flex-col gap-4 overflow-hidden p-5`}>
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute -right-14 -top-16 h-40 w-40 rounded-full bg-[#d9b87c]/10 blur-3xl"
+                />
+
+                <div className="relative">
+                  <h2 className="font-display text-2xl font-semibold leading-tight tracking-tight text-[#f7e5c6]">
+                    What&apos;s your move?
+                  </h2>
+                </div>
 
                 {/* Wrong-attempt feedback - a rejected move keeps the
                     user on this position, so say so explicitly. */}
@@ -1114,29 +1199,84 @@ export default function RepertoireTrainPage({
                   <p
                     role="status"
                     aria-live="polite"
-                    className="rounded-full border border-red-400/30 bg-red-400/10 px-3 py-1 text-center text-xs text-red-300"
+                    className="rounded-xl border border-red-400/30 bg-red-400/10 px-3 py-2 text-center text-xs text-red-200"
                   >
                     {attemptFeedback}
                   </p>
                 )}
 
-                {/* Counters row + progress bar (matches reference-5
-                    layout) */}
-                <div className="flex w-full flex-col gap-3">
-                  <div className="flex items-center justify-between gap-4 px-2 text-sm">
-                    <span className="font-display font-bold text-emerald-300">
-                      {correctCount} correct
+                <div className="grid grid-cols-2 divide-x divide-white/[0.08] overflow-hidden rounded-xl border border-white/[0.08] bg-black/25">
+                  <div className="flex items-center gap-2.5 px-3.5 py-3">
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-emerald-300/20 bg-emerald-300/[0.08] text-emerald-200/90">
+                      <svg
+                        className="h-4 w-4"
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        aria-hidden="true"
+                      >
+                        <path d="m4.5 10.2 3.4 3.3 7.6-7.1" />
+                      </svg>
                     </span>
-                    <span className="font-display font-bold text-red-300">
-                      {incorrectCount} incorrect
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#a79b8a]">
+                        Correct
+                      </p>
+                      <p className="mt-0.5 font-display text-xl font-semibold leading-none tabular-nums text-[#e4d6bd]">
+                        {correctCount}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2.5 px-3.5 py-3">
+                    <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full border border-rose-300/15 bg-rose-300/[0.06] text-rose-200/80">
+                      <svg
+                        className="h-3.5 w-3.5"
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth="1.8"
+                        strokeLinecap="round"
+                        aria-hidden="true"
+                      >
+                        <path d="m6 6 8 8M14 6l-8 8" />
+                      </svg>
                     </span>
-                    <span className="font-display text-[#a79b8a]">
-                      {completedCount}/{total} positions completed
+                    <div className="min-w-0">
+                      <p className="text-[10px] font-semibold uppercase tracking-[0.14em] text-[#a79b8a]">
+                        Incorrect
+                      </p>
+                      <p className="mt-0.5 font-display text-xl font-semibold leading-none tabular-nums text-[#e4d6bd]">
+                        {incorrectCount}
+                      </p>
+                    </div>
+                  </div>
+                </div>
+
+                <section
+                  aria-label="Session progress"
+                  className="rounded-xl border border-white/[0.08] bg-black/25 px-3.5 py-3"
+                >
+                  <div className="mb-2 flex items-center justify-between gap-3">
+                    <span className="text-[10px] font-semibold uppercase tracking-[0.18em] text-[#a79b8a]">
+                      Progress
+                    </span>
+                    <span className="font-mono text-xs font-semibold tabular-nums text-[#efd9a7]">
+                      {completedCount} / {total}
                     </span>
                   </div>
-                  <div className="relative h-2 overflow-hidden rounded-full bg-black/45">
+                  <div
+                    role="progressbar"
+                    aria-label="Positions completed"
+                    aria-valuemin={0}
+                    aria-valuemax={total}
+                    aria-valuenow={completedCount}
+                    className="h-2 overflow-hidden rounded-full bg-black/60 ring-1 ring-white/[0.06]"
+                  >
                     <div
-                      className="absolute inset-y-0 left-0 rounded-full bg-[#d9b87c]/80 transition-[width] duration-300"
+                      className="h-full rounded-full bg-gradient-to-r from-[#b98c4b] to-[#efd9a7] shadow-[0_0_12px_rgba(217,184,124,0.3)] transition-[width] duration-300"
                       style={{
                         width: `${
                           total > 0 ? Math.max(0, Math.min(100, (completedCount / total) * 100)) : 0
@@ -1144,28 +1284,36 @@ export default function RepertoireTrainPage({
                       }}
                     />
                   </div>
-                </div>
-
-                {/* Hint button - no-op with visible "not yet available"
-                    message, per the task: no hint source in the schema,
-                    so we honor the reference-5 affordance visually but
-                    don't fabricate content. */}
-                <button
-                  type="button"
-                  onClick={handleShowHint}
-                  className="flex h-11 items-center justify-center gap-2 rounded-full border border-[#d9b87c]/40 bg-black/40 px-5 text-sm font-medium text-[#efd9a7] transition hover:border-[#d9b87c] hover:bg-[#d9b87c]/10"
-                >
-                  <LightbulbIcon />
-                  <span>Show hint</span>
-                </button>
-                {hintMessage && (
-                  <p
-                    role="status"
-                    className="rounded-full border border-[#a79b8a]/30 bg-black/30 px-3 py-1 text-xs text-[#a79b8a]"
-                  >
-                    {hintMessage}
+                  <p className="mt-2 text-xs text-[#a79b8a]/80">
+                    {completedCount} of {total} positions completed
                   </p>
-                )}
+                </section>
+
+                {/* Assists - the puzzles solver's Hint/Solution pair:
+                    the same gold/secondary buttons and icons. "Hint"
+                    highlights the piece to move; "Solution" plays the
+                    stored move and advances. Either reveal costs one
+                    incorrect for the position. */}
+                <div className="border-t border-white/10 pt-4">
+                  <div className="grid grid-cols-2 gap-3">
+                    <button
+                      type="button"
+                      onClick={handleHint}
+                      className={GOLD_BUTTON_CLASS}
+                    >
+                      <BulbIcon />
+                      <span>Hint</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleShowSolution}
+                      className={SECONDARY_BUTTON_CLASS}
+                    >
+                      <EyeIcon />
+                      <span>Solution</span>
+                    </button>
+                  </div>
+                </div>
 
                 {/* Recording-honesty banner - appears as soon as ANY
                     /review call in this session has failed (non-2xx OR
@@ -1181,7 +1329,7 @@ export default function RepertoireTrainPage({
                     <span>
                       Some attempts couldn&apos;t be recorded - your
                       session may not be fully saved. ({reviewFailureCount}/
-                      {currentIdx + (reviewPending ? 0 : 1)} so far.)
+                      {completedCount} so far.)
                     </span>
                   </div>
                 )}
