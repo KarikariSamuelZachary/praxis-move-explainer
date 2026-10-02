@@ -1217,7 +1217,7 @@ export default function WoodpeckerPage() {
     return (
       <div className="grid h-full grid-cols-1 gap-6 lg:grid-cols-[18rem_minmax(0,1fr)_22rem] xl:grid-cols-[20rem_minmax(0,1fr)_22rem]">
         {/* ============== LEFT CARD ============== */}
-        <section className="hidden min-h-0 min-w-0 lg:block">
+        <section className="hidden min-h-0 min-w-0 lg:block xl:h-[min(calc(100vw-800px),calc(100vh-70px))]">
           <div className={`${CARD_CLASS} flex h-full w-full flex-col justify-between p-6 shadow-2xl shadow-black/25`}>
             {/* Top: identity & progress */}
             <div className="flex flex-col items-center">
@@ -1446,7 +1446,7 @@ export default function WoodpeckerPage() {
     return (
       <div className="grid h-full grid-cols-1 gap-6 lg:grid-cols-[18rem_minmax(0,1fr)_22rem] xl:grid-cols-[20rem_minmax(0,1fr)_22rem]">
         {/* ============== LEFT CARD ============== */}
-        <section className="hidden min-h-0 min-w-0 lg:block">
+        <section className="hidden min-h-0 min-w-0 lg:block xl:h-[min(calc(100vw-800px),calc(100vh-70px))]">
           <div className={`${CARD_CLASS} flex h-full w-full flex-col justify-between p-6 shadow-2xl shadow-black/25`}>
             {/* Top: identity & progress */}
             <div className="flex flex-col items-center">
@@ -1634,8 +1634,8 @@ export default function WoodpeckerPage() {
   };
 
   return (
-    <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-hidden px-6 pb-[10px] pt-6 text-white lg:px-10 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
-      <div className="mx-auto flex h-full w-full max-w-[1760px] flex-col">
+    <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-hidden px-6 pb-1 pt-6 text-white lg:px-10 xl:pt-5 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
+      <div className="mx-auto flex h-full w-full flex-col">
         {/* Two queues, one page: the seeds are separate on the backend, so
             the switcher only ever swaps which queue is being reviewed. Its
             handle floats in the top-left corner -- no layout row, so the
