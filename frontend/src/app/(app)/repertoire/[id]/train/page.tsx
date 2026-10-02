@@ -790,8 +790,8 @@ export default function RepertoireTrainPage({
     window.setTimeout(() => setHintMessage(null), 5000);
   }, [currentPosition]);
 
-  // --- Cancel/back to detail page (config modal Cancel + DONE
-  // "Back to repertoire" link both reuse this).
+  // --- Back to detail page (config back button + DONE "Back to
+  // repertoire" link both reuse this).
   const handleBackToDetail = useCallback(() => {
     void router.push(`/repertoire/${encodeURIComponent(id)}`);
   }, [id, router]);
@@ -926,16 +926,6 @@ export default function RepertoireTrainPage({
                   {startError}
                 </div>
               )}
-
-              <div className="flex items-center justify-end gap-3 border-t border-white/5 pt-4 text-sm">
-                <button
-                  type="button"
-                  onClick={handleBackToDetail}
-                  className="font-bold uppercase tracking-wider text-[#d9b87c] transition hover:text-[#efd9a7]"
-                >
-                  Cancel
-                </button>
-              </div>
             </div>
           </div>
         </div>
