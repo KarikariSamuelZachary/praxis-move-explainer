@@ -8,6 +8,7 @@ type ReviewShellProps = {
   analysisPanel: ReactNode;
   defaultLeftCollapsed?: boolean;
   defaultRightCollapsed?: boolean;
+  leftCollapsible?: boolean;
 };
 
 export default function ReviewShell({
@@ -16,9 +17,11 @@ export default function ReviewShell({
   analysisPanel,
   defaultLeftCollapsed = false,
   defaultRightCollapsed = false,
+  leftCollapsible = true,
 }: ReviewShellProps) {
-  const [leftCollapsed, setLeftCollapsed] = useState(defaultLeftCollapsed);
+  const [leftCollapsedState, setLeftCollapsed] = useState(defaultLeftCollapsed);
   const [rightCollapsed, setRightCollapsed] = useState(defaultRightCollapsed);
+  const leftCollapsed = leftCollapsible && leftCollapsedState;
 
   const gridCols = (() => {
     if (leftCollapsed && rightCollapsed) {
@@ -47,6 +50,7 @@ export default function ReviewShell({
         <CollapseRail
           side="left"
           collapsed={leftCollapsed}
+          collapsible={leftCollapsible}
           onToggle={() => setLeftCollapsed((value) => !value)}
           expandedHeightClass={leftCardHeight}
         >
@@ -71,12 +75,14 @@ export default function ReviewShell({
 function CollapseRail({
   side,
   collapsed,
+  collapsible = true,
   onToggle,
   expandedHeightClass = '',
   children,
 }: {
   side: 'left' | 'right';
   collapsed: boolean;
+  collapsible?: boolean;
   onToggle: () => void;
   expandedHeightClass?: string;
   children: ReactNode;
@@ -121,26 +127,28 @@ function CollapseRail({
     <div className={`h-full min-h-0 min-w-0 ${expandedHeightClass}`}>
       <div className="relative h-full">
         {children}
-        <button
-          type="button"
-          onClick={onToggle}
-          aria-label={collapseLabel}
-          title={collapseLabel}
-          className={`hidden xl:inline-flex absolute z-10 h-7 w-7 items-center justify-center rounded-full border border-[#f7e5c6]/30 bg-black/70 text-[#f7e5c6]/80 shadow-lg shadow-black/50 transition hover:border-[#f7e5c6]/60 hover:text-[#f7e5c6] ${collapseButtonPosition}`}
-        >
-          <svg
-            className={`h-3.5 w-3.5 transition ${chevronClass}`}
-            fill="none"
-            stroke="currentColor"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-            strokeWidth="2"
-            viewBox="0 0 24 24"
-            aria-hidden
+        {collapsible && (
+          <button
+            type="button"
+            onClick={onToggle}
+            aria-label={collapseLabel}
+            title={collapseLabel}
+            className={`hidden xl:inline-flex absolute z-10 h-7 w-7 items-center justify-center rounded-full border border-[#f7e5c6]/30 bg-black/70 text-[#f7e5c6]/80 shadow-lg shadow-black/50 transition hover:border-[#f7e5c6]/60 hover:text-[#f7e5c6] ${collapseButtonPosition}`}
           >
-            <path d="m15 18-6-6 6-6" />
-          </svg>
-        </button>
+            <svg
+              className={`h-3.5 w-3.5 transition ${chevronClass}`}
+              fill="none"
+              stroke="currentColor"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              strokeWidth="2"
+              viewBox="0 0 24 24"
+              aria-hidden
+            >
+              <path d="m15 18-6-6 6-6" />
+            </svg>
+          </button>
+        )}
       </div>
     </div>
   );
