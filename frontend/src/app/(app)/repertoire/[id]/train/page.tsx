@@ -850,7 +850,7 @@ export default function RepertoireTrainPage({
               {/* Position count display */}
               <div className="flex flex-col items-center gap-2 py-2">
                 <p className="text-sm text-[#a79b8a]">
-                  Positions that will be trained:
+                  Positions that will be trained
                 </p>
                 {countLoading ? (
                   <div
@@ -927,14 +927,7 @@ export default function RepertoireTrainPage({
                 </div>
               )}
 
-              {/* Footer actions - matches the reference's
-                  "Additional training settings" + "Cancel" layout,
-                  with the settings link collapsed to a static label
-                  (out of scope for v1). */}
-              <div className="flex items-center justify-between gap-3 border-t border-white/5 pt-4 text-sm">
-                <span className="text-[#a79b8a]/60">
-                  Additional training settings
-                </span>
+              <div className="flex items-center justify-end gap-3 border-t border-white/5 pt-4 text-sm">
                 <button
                   type="button"
                   onClick={handleBackToDetail}
@@ -1045,7 +1038,7 @@ export default function RepertoireTrainPage({
   // ----- Phase: SESSION ---------------------------------------------
 
   return (
-    <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-[10px] pt-6 text-white lg:overflow-hidden lg:px-10 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
+    <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-1 pt-6 text-white lg:overflow-hidden lg:px-10 xl:pt-5 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
       {/*
         Session layout - mirrored from the build page (ReviewShell) so a
         user moving between the two routes sees no board-size jump.
