@@ -36,11 +36,11 @@ export function normalizeFen(fen: string): string {
 
 // Apply a UCI move to a (4-field) FEN; returns the resulting 4-field
 // FEN, or null if chess.js rejects the move (illegal / corrupt). The
-// en-passant square is reset to "-" so the returned FEN matches the
-// convention used by stored repertoire_positions rows (the persistence
-// path doesn't carry the EP target); without this the opponent-reply
-// lookup would miss the row whenever the just-played move was a
-// two-square pawn push.
+// en-passant field is KEPT as the board reports it (chess.js only emits
+// a target when a legal en-passant capture exists), matching the FEN
+// convention `_normalize_fen` persists server-side. Forcing '-' here
+// used to make a reply lookup miss whenever the played move was a
+// two-square pawn push that enabled an en-passant capture.
 export function applyUci(fen4: string, uci: string): string | null {
   try {
     const game = new Chess(`${fen4} 0 1`);
@@ -50,9 +50,7 @@ export function applyUci(fen4: string, uci: string): string | null {
       promotion: uci.length > 4 ? uci[4] : undefined,
     });
     if (!played) return null;
-    const fields = normalizeFen(game.fen()).split(/\s+/);
-    fields[3] = '-';
-    return fields.join(' ');
+    return normalizeFen(game.fen());
   } catch {
     return null;
   }
@@ -94,31 +92,128 @@ export function findLinePath(
   return [];
 }
 
-// Quiz items: EVERY owner-side row is its own quiz item - one per saved
-// move, even when several moves share the same position FEN (e.g. both
-// e4 AND f4 stored against the start position). Deduping by FEN used to
-// collapse diverging branches into a single item and silently dropped
-// moves. We dedupe defensively by row id (the backend's unique
-// (repertoire_id, fen, move) constraint already guarantees no dupes) and
-// order stably by created_at so the sequence is deterministic.
+// Stable row order: earliest created first, id as the deterministic
+// tiebreak. Matches the backend classifier's fork order
+// (created_at, str(id)) and the session-order convention.
+function byCreatedThenId(
+  a: RepertoirePositionRow,
+  b: RepertoirePositionRow
+): number {
+  return a.created_at === b.created_at
+    ? a.id.localeCompare(b.id)
+    : a.created_at.localeCompare(b.created_at);
+}
+
+// Quiz items: every owner-side row is one quiz item (one per saved
+// owner move - diverging moves at the same FEN are ALL quizzed, never
+// deduped away). Items are emitted in TREE order: a first-visit-wins
+// DFS from the standard start that takes each position's stored rows in
+// (created_at, id) order and recurses into the first child's subtree
+// before its siblings. So the earliest-created branch is the "main"
+// line, and every side branch follows, exactly like the backend's
+// classify_repertoire_lines walk - which is what makes the training
+// session start at the root and present lines in a stable order.
+// Rows not reachable from the start (non-standard root, stale row) are
+// appended afterwards in (created_at, id) order so they are still
+// quizzed.
 export function buildQuizItems(
   rows: RepertoirePositionRow[],
   color: RepertoireColor | null
 ): RepertoirePositionRow[] {
   if (!color) return [];
   const ownerLetter = color === 'white' ? 'w' : 'b';
-  const seen = new Set<string>();
-  const items: RepertoirePositionRow[] = [];
+  const isOwner = (p: RepertoirePositionRow) =>
+    (p.fen.split(/\s+/)[1] ?? '') === ownerLetter;
+
+  const byFen = new Map<string, RepertoirePositionRow[]>();
   for (const p of rows) {
-    if ((p.fen.split(/\s+/)[1] ?? '') !== ownerLetter) continue;
-    if (seen.has(p.id)) continue;
-    seen.add(p.id);
-    items.push(p);
+    const key = normalizeFen(p.fen);
+    const list = byFen.get(key);
+    if (list) {
+      list.push(p);
+    } else {
+      byFen.set(key, [p]);
+    }
   }
-  items.sort((a, b) =>
-    a.created_at === b.created_at
-      ? a.id.localeCompare(b.id)
-      : a.created_at.localeCompare(b.created_at)
-  );
+  for (const list of byFen.values()) list.sort(byCreatedThenId);
+
+  const items: RepertoirePositionRow[] = [];
+  const placed = new Set<string>();
+  const visited = new Set<string>();
+
+  const walk = (fen: string) => {
+    const key = normalizeFen(fen);
+    if (visited.has(key)) return;
+    visited.add(key);
+    const list = byFen.get(key);
+    if (!list) return;
+    for (const row of list) {
+      if (isOwner(row) && !placed.has(row.id)) {
+        placed.add(row.id);
+        items.push(row);
+      }
+      const child = applyUci(key, row.move);
+      if (child) walk(child);
+    }
+  };
+
+  walk(START_FEN);
+
+  rows
+    .filter((p) => isOwner(p) && !placed.has(p.id))
+    .sort(byCreatedThenId)
+    .forEach((p) => {
+      placed.add(p.id);
+      items.push(p);
+    });
+
   return items;
+}
+
+// The next item to present: the first uncompleted item at
+// `preferredFen` when one exists (branch-following), otherwise the
+// first uncompleted item in tree order (line-switch to untouched
+// material). null when every item is done - the session is complete.
+export function nextQuizItem(
+  items: RepertoirePositionRow[],
+  completedIds: ReadonlySet<string>,
+  preferredFen: string | null
+): RepertoirePositionRow | null {
+  if (preferredFen !== null) {
+    const key = normalizeFen(preferredFen);
+    const preferred = items.find(
+      (p) => !completedIds.has(p.id) && normalizeFen(p.fen) === key
+    );
+    if (preferred) return preferred;
+  }
+  return items.find((p) => !completedIds.has(p.id)) ?? null;
+}
+
+// Pick the opponent reply to auto-play after the user's move.
+// `rows` are the session rows (both colors); `afterFen` is the position
+// the played move left on the board - only opponent rows are stored
+// there. Prefer the first reply (created order) whose own child
+// position still holds uncompleted owner work, so the session follows
+// the played branch toward material the user has not answered yet.
+// Falls back to the first stored reply, or null when the line ends.
+export function chooseReplyFen(
+  rows: RepertoirePositionRow[],
+  afterFen: string,
+  uncompletedFens: ReadonlySet<string>
+): string | null {
+  const key = normalizeFen(afterFen);
+  const replies = rows
+    .filter((p) => normalizeFen(p.fen) === key)
+    .sort(byCreatedThenId);
+  if (replies.length === 0) return null;
+
+  for (const reply of replies) {
+    const child = applyUci(key, reply.move);
+    if (child && uncompletedFens.has(normalizeFen(child))) {
+      return normalizeFen(child);
+    }
+  }
+
+  const child = applyUci(key, replies[0].move);
+  return child ? normalizeFen(child) : null;
 }
