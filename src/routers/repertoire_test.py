@@ -32,6 +32,11 @@ What is verified:
      sessions that predate the column (a completed session solved every
      quiz position, so positions_correct is the best lower bound).
 
+  F. main_lines_only filters a train session to the earliest-created
+     branch at every fork (classify_repertoire_lines): side-line quiz
+     rows AND their opponent replies are dropped, positions_total
+     counts only the surviving owner rows, and the session completes.
+
 Run with: cd src && ../venv/bin/python routers/repertoire_test.py
 Requires: DATABASE_URL + INTERNAL_SECRET from the root .env.
 """
@@ -119,11 +124,14 @@ def _create_repertoire(client, headers):
     return response.json()["id"]
 
 
-def _start_session(client, headers, repertoire_id, mode="train"):
+def _start_session(client, headers, repertoire_id, mode="train", main_lines_only=False):
+    body = {"mode": mode}
+    if main_lines_only:
+        body["main_lines_only"] = True
     response = client.post(
         f"/api/repertoires/{repertoire_id}/sessions/start",
         headers=headers,
-        json={"mode": mode},
+        json=body,
     )
     assert response.status_code == 200, response.text
     return response.json()
@@ -300,12 +308,61 @@ def test_legacy_fallback_and_backfill(client, headers):
     )
 
 
+def test_main_lines_only_filter(client, headers):
+    rid = _create_repertoire(client, headers)
+
+    # Main line built FIRST: 1.e4 e5 2.Nf3 (white repertoire).
+    response = client.post(
+        f"/api/repertoires/{rid}/positions",
+        headers=headers,
+        json={"uci_moves": ["e2e4", "e7e5", "g1f3"]},
+    )
+    assert response.status_code == 200, response.text
+
+    # Side branches created AFTER: white's 1.d4 at the same start FEN,
+    # and the black alternative 1...c5 at the post-1.e4 FEN. The
+    # classifier keeps the earliest-created child at each fork.
+    for moves in (["d2d4"], ["e2e4", "c7c5"]):
+        response = client.post(
+            f"/api/repertoires/{rid}/positions",
+            headers=headers,
+            json={"uci_moves": moves},
+        )
+        assert response.status_code == 200, response.text
+
+    # Unfiltered train: 5 persisted rows, 3 white quiz items.
+    started = _start_session(client, headers, rid)
+    assert started["session"]["positions_total"] == 3, started["session"]
+    assert len(started["positions"]) == 5, started["positions"]
+
+    # Main lines only: 1.e4 e5 2.Nf3 survives; 1.d4 and 1...c5 are
+    # dropped. The surviving opponent reply rides along for the
+    # client's auto-play; positions_total counts quiz (owner) rows only.
+    main_line_only = _start_session(client, headers, rid, main_lines_only=True)
+    assert main_line_only["session"]["positions_total"] == 2, main_line_only[
+        "session"
+    ]
+    moves = sorted(p["move"] for p in main_line_only["positions"])
+    assert moves == ["e2e4", "e7e5", "g1f3"], main_line_only["positions"]
+
+    # The filtered session completes cleanly at 2/2.
+    response = _complete_session(
+        client,
+        headers,
+        main_line_only["session"]["id"],
+        {"positions_correct": 2, "attempts_total": 2},
+    )
+    assert response.status_code == 200, response.text
+    print("  main_lines_only drops side branches (5 -> 3 rows, quiz 3 -> 2)")
+
+
 def main():
     client, headers = setup()
     try:
         test_totals_and_accuracy(client, headers)
         test_attempts_validation(client, headers)
         test_legacy_fallback_and_backfill(client, headers)
+        test_main_lines_only_filter(client, headers)
     finally:
         teardown()
     print("all repertoire score checks passed (test user removed)")
