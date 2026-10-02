@@ -71,7 +71,6 @@
  */
 
 import { use, useCallback, useEffect, useMemo, useState } from 'react';
-import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { Chess, type Square } from 'chess.js';
 
@@ -260,24 +259,6 @@ function countSubtreeRows(
     }
   }
   return count;
-}
-
-function SearchBackIcon() {
-  return (
-    <svg
-      width="18"
-      height="18"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="m15 18-6-6 6-6" />
-    </svg>
-  );
 }
 
 function TrainIcon() {
@@ -835,24 +816,14 @@ export default function RepertoireDetailPage({
   const currentSide = currentFen.split(/\s+/)[1] ?? 'w';
 
   return (
-    <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-[10px] pt-6 text-white lg:overflow-hidden lg:px-10 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
+    <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-1 pt-6 text-white lg:overflow-hidden lg:px-10 xl:pt-5 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
       <ReviewShell
         importPanel={
           <aside className={`${CARD_CLASS} flex w-full flex-col p-5`}>
-            <div className="flex items-center justify-between gap-2">
-              <Link
-                href="/repertoire"
-                aria-label="Back to repertoires"
-                className="flex h-9 w-9 items-center justify-center rounded-lg border border-black/50 bg-black/40 text-[#efd9a7] transition hover:bg-black/60"
-              >
-                <SearchBackIcon />
-              </Link>
-            </div>
-
             {/* Identity row - king glyph tile in the repertoire's
                 color beside the name. Fit-content height: the card
                 ends after the hint instead of stretching the rail. */}
-            <div className="mt-4 flex items-center gap-3">
+            <div className="flex items-center gap-3">
               <span
                 aria-hidden="true"
                 className={`flex h-12 w-12 shrink-0 items-center justify-center rounded-xl border text-[26px] leading-none ${
