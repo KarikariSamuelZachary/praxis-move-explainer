@@ -822,7 +822,8 @@ export default function RepertoireDetailPage({
           <aside className={`${CARD_CLASS} flex w-full flex-col p-5`}>
             {/* Identity row - king glyph tile in the repertoire's
                 color beside the name. Fit-content height: the card
-                ends after the hint instead of stretching the rail. */}
+                ends after the Train button instead of stretching the
+                rail. */}
             <div className="flex items-center gap-3">
               <span
                 aria-hidden="true"
@@ -862,10 +863,6 @@ export default function RepertoireDetailPage({
               <TrainIcon />
               <span>Train</span>
             </button>
-
-            <p className="mt-3 text-center text-[11px] leading-4 text-[#a79b8a]/70">
-              Drag a piece or tap a suggestion to extend the line.
-            </p>
           </aside>
         }
         boardPanel={
