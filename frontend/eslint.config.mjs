@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Compiled output for the standalone train-logic tests.
+    ".test-build/**",
   ]),
 ]);
 
