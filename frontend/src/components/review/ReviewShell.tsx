@@ -33,6 +33,14 @@ export default function ReviewShell({
     return 'xl:grid-cols-[20rem_minmax(0,1fr)_22rem]';
   })();
 
+  const leftCardHeight = rightCollapsed
+    ? 'xl:h-[min(calc(100vw-500px),calc(100vh-70px))]'
+    : 'xl:h-[min(calc(100vw-800px),calc(100vh-70px))]';
+
+  const rightCardHeight = leftCollapsed
+    ? 'xl:h-[min(calc(100vw-532px),calc(100vh-70px))]'
+    : 'xl:h-[min(calc(100vw-800px),calc(100vh-70px))]';
+
   return (
     <div className="relative h-full w-full">
       <div className={`grid h-full grid-cols-1 gap-6 transition-all duration-300 ease-in-out lg:grid-cols-[18rem_minmax(0,1fr)] ${gridCols}`}>
@@ -40,6 +48,7 @@ export default function ReviewShell({
           side="left"
           collapsed={leftCollapsed}
           onToggle={() => setLeftCollapsed((value) => !value)}
+          expandedHeightClass={leftCardHeight}
         >
           {importPanel}
         </CollapseRail>
@@ -50,6 +59,7 @@ export default function ReviewShell({
           side="right"
           collapsed={rightCollapsed}
           onToggle={() => setRightCollapsed((value) => !value)}
+          expandedHeightClass={rightCardHeight}
         >
           {analysisPanel}
         </CollapseRail>
@@ -62,11 +72,13 @@ function CollapseRail({
   side,
   collapsed,
   onToggle,
+  expandedHeightClass = '',
   children,
 }: {
   side: 'left' | 'right';
   collapsed: boolean;
   onToggle: () => void;
+  expandedHeightClass?: string;
   children: ReactNode;
 }) {
   const expandLabel = side === 'left' ? 'Expand import panel' : 'Expand analysis panel';
@@ -106,7 +118,7 @@ function CollapseRail({
       : 'left-2 xl:-left-3 top-2';
 
   return (
-    <div className="h-full min-h-0 min-w-0">
+    <div className={`h-full min-h-0 min-w-0 ${expandedHeightClass}`}>
       <div className="relative h-full">
         {children}
         <button
