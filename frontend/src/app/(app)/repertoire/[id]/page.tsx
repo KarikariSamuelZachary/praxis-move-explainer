@@ -261,26 +261,6 @@ function countSubtreeRows(
   return count;
 }
 
-function TrainIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M5 12h14" />
-      <path d="m13 5 7 7-7 7" />
-      <path d="M9 5 3 12l6 7" />
-    </svg>
-  );
-}
-
 function TrashIcon() {
   return (
     <svg
@@ -818,6 +798,7 @@ export default function RepertoireDetailPage({
   return (
     <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-1 pt-6 text-white lg:overflow-hidden lg:px-10 xl:pt-5 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
       <ReviewShell
+        leftCollapsible={false}
         importPanel={
           <aside className={`${CARD_CLASS} flex w-full flex-col p-5`}>
             {/* Identity row - king glyph tile in the repertoire's
@@ -858,9 +839,8 @@ export default function RepertoireDetailPage({
             <button
               type="button"
               onClick={() => router.push(`/repertoire/${id}/train`)}
-              className="mt-4 flex h-11 w-full items-center justify-center gap-2 rounded-xl bg-[#d9b87c] text-sm font-bold uppercase tracking-wider text-[#241206] shadow-lg shadow-orange-950/40 transition hover:bg-[#efd9a7]"
+              className="mt-4 flex h-11 w-full items-center justify-center rounded-xl bg-[#d9b87c] text-sm font-bold uppercase tracking-wider text-[#241206] shadow-lg shadow-orange-950/40 transition hover:bg-[#efd9a7]"
             >
-              <TrainIcon />
               <span>Train</span>
             </button>
           </aside>
