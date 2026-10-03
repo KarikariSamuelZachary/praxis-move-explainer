@@ -282,7 +282,11 @@ app.include_router(user.router, prefix="/api/user")
 app.include_router(webhooks.router, prefix="/webhooks")
 app.include_router(woodpecker.router, prefix="/api/woodpecker")
 app.include_router(repertoire.router, prefix="/api/repertoires")
-app.include_router(maia_debug.router, prefix="/api")
+# Debug-only Maia probe. Nothing in the frontend references it, so a
+# production replica should not expose a heavy inference endpoint even to
+# holders of the internal secret. Set MAIA_DEBUG_ENABLED=1 to mount it.
+if os.getenv("MAIA_DEBUG_ENABLED", "").strip().lower() in {"1", "true", "yes"}:
+    app.include_router(maia_debug.router, prefix="/api")
 
 # --- App Running? ---
 @app.get("/praxis")
