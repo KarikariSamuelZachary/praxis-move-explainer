@@ -8,7 +8,10 @@
  * can be migrated without behavior drift.
  */
 import { GameReviewMove } from '../../../types';
+import { bestMoveSanFor, formatMoveNumber } from './review-page-logic';
 import { ReviewTree, pathMoves } from './review-tree';
+
+export { formatMoveNumber };
 
 export type ActiveNodeView = {
   nodeId: string;
@@ -20,16 +23,6 @@ export type ActiveNodeView = {
   bestMoveSan: string | null;
   showPlayedIcon: boolean;
 };
-
-export function formatMoveNumber(activePly: number): string {
-  if (activePly === 0) {
-    return 'Starting position';
-  }
-  const moveIndex = activePly - 1;
-  const fullMove = Math.floor(moveIndex / 2) + 1;
-  const suffix = moveIndex % 2 === 0 ? 'White' : 'Black';
-  return `Move ${fullMove} · ${suffix}`;
-}
 
 export function activeNodeView(
   tree: ReviewTree,
@@ -44,15 +37,7 @@ export function activeNodeView(
   const currentMove = node.move;
   const parent = node.parentId ? tree.nodes[node.parentId] : null;
   const activePly = node.ply;
-
-  const bestMoveSan =
-    currentMove &&
-    currentMove.best_move_san &&
-    currentMove.san !== 'Start' &&
-    currentMove.classification !== 'book' &&
-    currentMove.classification !== 'best'
-      ? currentMove.best_move_san
-      : null;
+  const bestMoveSan = bestMoveSanFor(currentMove);
 
   return {
     nodeId,

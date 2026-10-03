@@ -24,12 +24,33 @@ export type SuggestionLine = {
   pvSan: string[];
 };
 
+export type ReviewAnalysisStatus =
+  | 'ready'
+  | 'analyzing'
+  | 'unavailable'
+  | 'stale';
+
+export type TerminalKind =
+  | 'checkmate'
+  | 'stalemate'
+  | 'insufficient_material'
+  | 'fivefold_repetition'
+  | 'seventyfive_moves';
+
 /** Per-node eval/label data, filled by the batch response or the live path. */
 export type ReviewNodeEval = {
   evalCp?: number;
   evalMate?: number | null;
   classification?: GameReviewMove['classification'];
   bestMoveUci?: string | null;
+  /** Path-level context carried per node (not derivable from FEN alone). */
+  rawEpLoss?: number;
+  isBook?: boolean;
+  /** Mode fingerprint the data was produced under (stale-gate echo). */
+  mode?: string;
+  status?: ReviewAnalysisStatus;
+  terminal?: TerminalKind;
+  drawClaimable?: boolean;
   suggestionsBefore?: SuggestionLine[];
   suggestionsAfter?: SuggestionLine[];
 };

@@ -10,6 +10,15 @@ import ImportPanel, {
 import ReviewShell from '@/components/review/ReviewShell';
 import { GameReviewMove } from '@/types';
 
+import {
+  bestMoveSanFor,
+  currentMoveFor,
+  displayedExplanationFor,
+  formatMoveNumber,
+  lastPlyFor,
+  moveHistoryFor,
+} from './review-page-logic';
+
 // Same lazy-board pattern as the other app routes: BoardPanel statically
 // imports chess.js + react-chessboard, which the empty review page (just an
 // import textarea) should not pay for.
@@ -118,7 +127,7 @@ export default function ReviewPage() {
           fen: move.fen,
           move: move.san,
           classification: move.classification,
-          moveHistory: gameData.slice(0, activePly + 1).map((entry) => entry.san),
+          moveHistory: moveHistoryFor(gameData, activePly),
         }),
       });
 
@@ -137,17 +146,14 @@ export default function ReviewPage() {
   }
 
   const hasGame = analysisState === 'ready' && gameData !== null;
-  const currentMove = hasGame && gameData ? gameData[Math.min(activePly, gameData.length - 1)] : null;
-  const displayedExplanation = currentMove?.explanation ?? coachExplanation;
+  const currentMove =
+    hasGame && gameData ? currentMoveFor(gameData, activePly) : null;
+  const displayedExplanation = displayedExplanationFor(
+    currentMove,
+    coachExplanation,
+  );
   const moveNumberLabel = formatMoveNumber(activePly);
-  const bestMoveSan =
-    currentMove &&
-    currentMove.best_move_san &&
-    currentMove.san !== 'Start' &&
-    currentMove.classification !== 'book' &&
-    currentMove.classification !== 'best'
-      ? currentMove.best_move_san
-      : null;
+  const bestMoveSan = bestMoveSanFor(currentMove);
 
   return (
     <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-[10px] pt-6 text-white lg:overflow-hidden lg:px-10 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
@@ -183,7 +189,7 @@ export default function ReviewPage() {
             onAskCoach={handleAskCoach}
             moveNumberLabel={moveNumberLabel}
             activePly={activePly}
-            lastPly={Math.max(0, (gameData?.length ?? 0) - 1)}
+            lastPly={lastPlyFor(gameData ?? [])}
             onPlySelect={setActivePly}
             bestMoveSan={bestMoveSan}
             showBestMove={showBestMove}
@@ -193,14 +199,4 @@ export default function ReviewPage() {
       />
     </div>
   );
-}
-
-function formatMoveNumber(activePly: number): string {
-  if (activePly === 0) {
-    return 'Starting position';
-  }
-  const moveIndex = activePly - 1;
-  const fullMove = Math.floor(moveIndex / 2) + 1;
-  const suffix = moveIndex % 2 === 0 ? 'White' : 'Black';
-  return `Move ${fullMove} · ${suffix}`;
 }

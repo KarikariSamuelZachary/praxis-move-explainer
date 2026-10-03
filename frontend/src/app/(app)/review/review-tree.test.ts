@@ -15,6 +15,12 @@ import { strict as assert } from 'node:assert';
 
 import { GameReviewMove } from '../../../types';
 import {
+  bestMoveSanFor,
+  currentMoveFor,
+  formatMoveNumber,
+  moveHistoryFor,
+} from './review-page-logic';
+import {
   addVariation,
   buildMainlineTree,
   mainlinePlyToNode,
@@ -22,7 +28,7 @@ import {
   pathToNode,
   setNodeAnalysis,
 } from './review-tree';
-import { activeNodeView, formatMoveNumber } from './review-tree-view';
+import { activeNodeView } from './review-tree-view';
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
@@ -139,35 +145,49 @@ function testSetNodeAnalysisIsImmutable() {
 
   const updated = setNodeAnalysis(tree, nodeId, {
     evalCp: -0.4,
+    evalMate: null,
     classification: 'inaccuracy',
+    bestMoveUci: 'd7d6',
+    rawEpLoss: 0.07,
+    isBook: false,
+    mode: 'rev-det-v1|nodes=100000',
+    status: 'ready',
+    terminal: 'seventyfive_moves',
+    drawClaimable: true,
     suggestionsBefore: [
       { moveUci: 'd7d6', moveSan: 'd6', evalCp: -0.1, pvSan: ['d6', 'd4'] },
+    ],
+    suggestionsAfter: [
+      { moveUci: 'd2d4', moveSan: 'd4', evalCp: -0.2, pvSan: ['d4', 'd5'] },
     ],
   });
 
   assert.equal(tree.nodes[nodeId].analysis, undefined, 'input tree mutated');
-  assert.equal(updated.nodes[nodeId].analysis?.evalCp, -0.4);
-  assert.equal(updated.nodes[nodeId].analysis?.suggestionsBefore?.length, 1);
+  const analysis = updated.nodes[nodeId].analysis;
+  assert.equal(analysis?.evalCp, -0.4);
+  assert.equal(analysis?.rawEpLoss, 0.07);
+  assert.equal(analysis?.isBook, false);
+  assert.equal(analysis?.mode, 'rev-det-v1|nodes=100000');
+  assert.equal(analysis?.status, 'ready');
+  assert.equal(analysis?.terminal, 'seventyfive_moves');
+  assert.equal(analysis?.drawClaimable, true);
+  assert.equal(analysis?.suggestionsBefore?.length, 1);
+  assert.equal(analysis?.suggestionsAfter?.length, 1);
   assert.equal(updated.nodes[tree.rootId], tree.nodes[tree.rootId]);
-  console.log('  [PASS] per-node eval data attaches immutably');
+  console.log('  [PASS] per-node eval data (incl. path/mode/status) attaches immutably');
 }
 
+// Mirrors page.tsx using the SAME extracted functions the page imports.
 function flatReferenceView(moves: GameReviewMove[], activePly: number) {
-  const currentMove = moves[Math.min(activePly, moves.length - 1)];
+  const currentMove = currentMoveFor(moves, activePly)!;
   return {
     currentMove,
     position: currentMove.fen,
     fenBefore: activePly > 0 ? moves[activePly - 1].fen : null,
     moveNumberLabel: formatMoveNumber(activePly),
-    bestMoveSan:
-      currentMove &&
-      currentMove.best_move_san &&
-      currentMove.san !== 'Start' &&
-      currentMove.classification !== 'book' &&
-      currentMove.classification !== 'best'
-        ? currentMove.best_move_san
-        : null,
+    bestMoveSan: bestMoveSanFor(currentMove),
     showPlayedIcon: activePly > 0,
+    coachHistory: moveHistoryFor(moves, activePly),
   };
 }
 
@@ -194,10 +214,17 @@ function testComponentViewEquivalence() {
       reference.showPlayedIcon,
       `ply ${ply} played icon`,
     );
+    // page.tsx's moveHistoryFor includes the synthetic Start row; the tree
+    // path intentionally starts at the first played move (agreed contract).
+    assert.deepEqual(
+      view.coachHistory.map((move) => move.san),
+      reference.coachHistory.slice(1),
+      `ply ${ply} coach history`,
+    );
     assert.deepEqual(
       view.coachHistory.map((move) => move.san),
       moves.slice(1, ply + 1).map((move) => move.san),
-      `ply ${ply} coach history`,
+      `ply ${ply} coach history vs flat array`,
     );
   }
 
