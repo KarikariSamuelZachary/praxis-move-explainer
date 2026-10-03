@@ -15,15 +15,40 @@
  */
 import { GameReviewMove } from '../../../types';
 
+/** One engine suggestion line (schema step will populate these). */
+export type SuggestionLine = {
+  moveUci: string;
+  moveSan: string;
+  evalCp?: number;
+  evalMate?: number | null;
+  pvSan: string[];
+};
+
+/** Per-node eval/label data, filled by the batch response or the live path. */
+export type ReviewNodeEval = {
+  evalCp?: number;
+  evalMate?: number | null;
+  classification?: GameReviewMove['classification'];
+  bestMoveUci?: string | null;
+  suggestionsBefore?: SuggestionLine[];
+  suggestionsAfter?: SuggestionLine[];
+};
+
 export type ReviewNode = {
   id: string;
   parentId: string | null;
   /** Ply index: root is 0, a mainline row at array index i is ply i. */
   ply: number;
-  /** null only for the root (the Start row's position). */
+  /**
+   * The row this node represents. The root carries the synthetic Start row
+   * so component views match the flat array; pathMoves excludes it because
+   * it is not a played move.
+   */
   move: GameReviewMove | null;
   /** Ordered child ids; children[0] is the mainline continuation. */
   children: string[];
+  /** Eval/label payload; absent until the schema/live steps fill it. */
+  analysis?: ReviewNodeEval;
 };
 
 export type ReviewTree = {
@@ -40,7 +65,13 @@ export function buildMainlineTree(moves: GameReviewMove[]): ReviewTree {
 
   const rootId = 'n0';
   const nodes: Record<string, ReviewNode> = {
-    [rootId]: { id: rootId, parentId: null, ply: 0, move: null, children: [] },
+    [rootId]: {
+      id: rootId,
+      parentId: null,
+      ply: 0,
+      move: moves[0],
+      children: [],
+    },
   };
   const mainlineIds = [rootId];
 
@@ -76,9 +107,10 @@ export function pathToNode(tree: ReviewTree, nodeId: string): string[] {
   return path.reverse();
 }
 
-/** Played moves along the path to `nodeId` (root's null move excluded). */
+/** Played moves along the path to `nodeId` (the Start root row excluded). */
 export function pathMoves(tree: ReviewTree, nodeId: string): GameReviewMove[] {
   return pathToNode(tree, nodeId)
+    .filter((id) => tree.nodes[id].parentId !== null)
     .map((id) => tree.nodes[id].move)
     .filter((move): move is GameReviewMove => move !== null);
 }
@@ -92,21 +124,31 @@ export function mainlinePlyToNode(tree: ReviewTree, ply: number): string | null 
 }
 
 /**
- * Append a variation move under `parentId`. Returns a new tree (nodes are
- * copied shallowly) and the new node id. The mainline is untouched, so
- * existing paths and ply indices keep their meaning.
+ * Append a variation move under `parentId`, or return the existing child
+ * when one already plays that move (child reuse; this also dedupes a
+ * variation that repeats the mainline move). Variation ids derive from the
+ * parent and the SAN, so re-adding the same move is stable and idempotent.
+ * Returns a new tree; nodes are copied, never mutated.
  */
 export function addVariation(
   tree: ReviewTree,
   parentId: string,
   move: GameReviewMove,
+  analysis?: ReviewNodeEval,
 ): { tree: ReviewTree; nodeId: string } {
   const parent = tree.nodes[parentId];
   if (!parent) {
     throw new Error(`Unknown parent node: ${parentId}`);
   }
 
-  const nodeId = `v${Object.keys(tree.nodes).length}`;
+  const existing = parent.children.find(
+    (childId) => tree.nodes[childId].move?.san === move.san,
+  );
+  if (existing) {
+    return { tree, nodeId: existing };
+  }
+
+  const nodeId = `v:${parentId}:${move.san}`;
   const nodes: Record<string, ReviewNode> = {
     ...tree.nodes,
     [parentId]: { ...parent, children: [...parent.children, nodeId] },
@@ -116,8 +158,25 @@ export function addVariation(
       ply: parent.ply + 1,
       move,
       children: [],
+      analysis,
     },
   };
 
   return { tree: { ...tree, nodes }, nodeId };
+}
+
+/** Attach/replace eval data on a node without mutating the input tree. */
+export function setNodeAnalysis(
+  tree: ReviewTree,
+  nodeId: string,
+  analysis: ReviewNodeEval,
+): ReviewTree {
+  const node = tree.nodes[nodeId];
+  if (!node) {
+    throw new Error(`Unknown review node: ${nodeId}`);
+  }
+  return {
+    ...tree,
+    nodes: { ...tree.nodes, [nodeId]: { ...node, analysis } },
+  };
 }
