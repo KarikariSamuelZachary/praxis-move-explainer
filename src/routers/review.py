@@ -5,8 +5,9 @@ from typing import Any, Dict, List
 import chess.engine
 from fastapi import APIRouter, Depends, HTTPException
 
+from core.auth import require_clerk_user_id
 from core.game_analyzer import GameAnalyzer
-from core.rate_limit import limit_by_ip
+from core.rate_limit import limit_by_clerk_user_id, limit_by_ip
 from engines.stockfish_engine import get_review_stockfish, reset_review_stockfish
 from llms.gemini_explainer import GeminiExplainer
 from llms.groq_explainer import GroqExplainer
@@ -77,7 +78,12 @@ def _normalize_review_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
 @router.post("/review", response_model=List[ReviewMoveResponse])
 def review_game(
     body: ReviewRequest,
-    _: None = Depends(limit_by_ip(limit=5, window=60)),
+    # Declared first on purpose: FastAPI resolves dependencies in signature
+    # order, so a missing user is rejected before limit_by_clerk_user_id can
+    # fall back to the client IP.
+    _clerk_id: str = Depends(require_clerk_user_id),
+    _ip: None = Depends(limit_by_ip(limit=5, window=60)),
+    _user: None = Depends(limit_by_clerk_user_id(limit=5, window=60)),
 ):
     pgn = body.pgn.strip()
     if not pgn:

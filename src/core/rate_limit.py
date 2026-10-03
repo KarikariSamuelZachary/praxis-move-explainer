@@ -139,9 +139,8 @@ def limit_by_ip(limit: int = 5, window: int = 60):
     """
     FastAPI dependency factory: limit per-client-IP, default 5/minute.
 
-    Use on routes with no Clerk user id available (the backend
-    POST /api/review endpoint is reached via the Next.js proxy, which
-    does not currently forward X-Clerk-User-Id).
+    Coarse abuse guard used alongside limit_by_clerk_user_id on routes
+    reached via the Next.js proxy, which now forwards X-Clerk-User-Id.
     """
     def _check(request: Request) -> None:
         key = f"rate_limit:review:{get_client_ip(request)}"
