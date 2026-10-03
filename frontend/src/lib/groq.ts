@@ -225,91 +225,34 @@ function buildPrompt(request: ExplanationRequest): string {
   );
 }
 
-function getFallbackExplanation(request: ExplanationRequest): ExplanationResponse {
-  switch (request.classification) {
-    case 'book':
-      return {
-        explanation: 'This is a standard opening move that develops the position according to known opening principles.',
-        concept: 'Opening Theory',
-        tip: 'A practical idea to keep in mind as the position develops.',
-      };
-    case 'best':
-    case 'excellent':
-    case 'good':
-      return {
-        explanation: 'This is a strong move that improves your position and supports your overall plan.',
-        concept: 'Strong Move',
-        tip: 'A pattern or concept to remember for future games.',
-      };
-    case 'inaccuracy':
-      return {
-        explanation: 'This move is playable, but a better plan would improve your position more efficiently.',
-        concept: 'Move Order',
-        tip: 'What to look for instead.',
-      };
-    case 'mistake':
-    case 'blunder':
-      return {
-        explanation: 'This move misses an immediate danger and creates a tactical problem in the position.',
-        concept: 'Tactical Oversight',
-        tip: 'The immediate threat you missed or the tactical vulnerability created.',
-      };
-    case 'brilliant':
-      return {
-        explanation: 'A brilliant sacrifice: the material given up is repaid by a much stronger position.',
-        concept: 'Sacrifice',
-        tip: 'Look for sacrifices that win time, material, or a direct attack.',
-      };
-    case 'great':
-      return {
-        explanation: 'The only good move in the position — the alternatives would have let the opponent turn the game around.',
-        concept: 'Critical Move',
-        tip: 'In critical positions, calculate forcing moves first.',
-      };
-    case 'miss':
-      return {
-        explanation: 'A tactical opportunity was available here and this move let it slip.',
-        concept: 'Missed Tactic',
-        tip: 'After every opponent move, ask what changed and what became available.',
-      };
-    default:
-      return {
-        explanation: request.isCorrect
-          ? 'This is the strongest continuation in the position.'
-          : 'This move misses the most forcing continuation in the puzzle.',
-        concept: 'Tactics',
-        tip: 'Look for checks, captures, and threats before quieter moves.',
-      };
-  }
-}
-
 export async function getChessMoveExplanation(
   request: ExplanationRequest
 ): Promise<ExplanationResponse> {
   const prompt = buildPrompt(request);
-  const fallback = getFallbackExplanation(request);
 
-  try {
-    const completion = await groq.chat.completions.create({
-      messages: [{ role: 'user', content: prompt }],
-      model: 'llama-3.3-70b-versatile',
-      temperature: 0.3,
-      max_tokens: 400,
-      response_format: { type: 'json_object' },
-    });
+  // Provider/parse failures propagate to the route, which returns an
+  // explicit "unavailable" status. Never fabricate coaching text here: once
+  // Ask Coach is the primary path, invented explanations read as real advice.
+  const completion = await groq.chat.completions.create({
+    messages: [{ role: 'user', content: prompt }],
+    model: 'llama-3.3-70b-versatile',
+    temperature: 0.3,
+    max_tokens: 400,
+    response_format: { type: 'json_object' },
+  });
 
-    const content = completion.choices[0]?.message?.content || '{}';
-    const parsed = JSON.parse(content);
+  const content = completion.choices[0]?.message?.content || '{}';
+  const parsed = JSON.parse(content);
 
-    return {
-      explanation: parsed.explanation || fallback.explanation,
-      concept: parsed.concept || fallback.concept,
-      tip: parsed.tip || fallback.tip,
-    };
-  } catch (error) {
-    console.error('Groq API error:', error);
-    return fallback;
+  if (!parsed.explanation || !parsed.concept || !parsed.tip) {
+    throw new Error('Groq returned an incomplete explanation');
   }
+
+  return {
+    explanation: parsed.explanation,
+    concept: parsed.concept,
+    tip: parsed.tip,
+  };
 }
 
 const explanationCache = new Map<string, ExplanationResponse>();

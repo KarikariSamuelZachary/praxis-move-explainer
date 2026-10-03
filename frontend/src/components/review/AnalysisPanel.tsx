@@ -8,6 +8,7 @@ type AnalysisPanelProps = {
   currentMove: GameReviewMove | null;
   hasGame: boolean;
   explanation: ReviewExplanation | null;
+  coachError?: string | null;
   isAskingCoach: boolean;
   onAskCoach: () => void;
   moveNumberLabel: string;
@@ -49,6 +50,7 @@ export default function AnalysisPanel({
   currentMove,
   hasGame,
   explanation,
+  coachError,
   isAskingCoach,
   onAskCoach,
   moveNumberLabel,
@@ -158,6 +160,11 @@ export default function AnalysisPanel({
                 <p className="mt-2 text-xs leading-6 text-white/50">
                   Ask the coach to break down why this move was played.
                 </p>
+                {coachError && (
+                  <p className="mt-2 text-xs leading-5 text-amber-300/90">
+                    {coachError}
+                  </p>
+                )}
                 <button
                   type="button"
                   onClick={onAskCoach}

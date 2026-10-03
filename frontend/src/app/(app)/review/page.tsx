@@ -37,11 +37,13 @@ export default function ReviewPage() {
   const [gameData, setGameData] = useState<GameReviewMove[] | null>(null);
   const [activePly, setActivePly] = useState(0);
   const [coachExplanation, setCoachExplanation] = useState<ReviewExplanation | null>(null);
+  const [coachError, setCoachError] = useState<string | null>(null);
   const [isAskingCoach, setIsAskingCoach] = useState(false);
   const [showBestMove, setShowBestMove] = useState(false);
 
   useEffect(() => {
     setCoachExplanation(null);
+    setCoachError(null);
     setShowBestMove(false);
   }, [activePly]);
 
@@ -51,6 +53,7 @@ export default function ReviewPage() {
     }
     setActivePly(0);
     setCoachExplanation(null);
+    setCoachError(null);
     setShowBestMove(false);
   }, [analysisState, gameData]);
 
@@ -106,6 +109,7 @@ export default function ReviewPage() {
     }
 
     setIsAskingCoach(true);
+    setCoachError(null);
     try {
       const response = await fetch('/api/explain', {
         method: 'POST',
@@ -126,6 +130,7 @@ export default function ReviewPage() {
       setCoachExplanation(data);
     } catch (error) {
       console.error('Failed to fetch review explanation:', error);
+      setCoachError('Coach is unavailable right now. Please try again.');
     } finally {
       setIsAskingCoach(false);
     }
@@ -173,6 +178,7 @@ export default function ReviewPage() {
             currentMove={currentMove}
             hasGame={hasGame}
             explanation={displayedExplanation}
+            coachError={coachError}
             isAskingCoach={isAskingCoach}
             onAskCoach={handleAskCoach}
             moveNumberLabel={moveNumberLabel}

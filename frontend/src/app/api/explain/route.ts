@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
+import { auth } from "@clerk/nextjs/server";
+
 import { redis } from "@/lib/redis";
 import { getCachedExplanation } from "@/lib/groq";
 import { ExplanationRequest, MoveClassification } from "@/types";
@@ -16,15 +18,14 @@ function getClientIp(request: NextRequest): string {
   return "unknown";
 }
 
-async function isRateLimited(ip: string): Promise<boolean> {
-  const key = `rate_limit:explanation:${ip}`;
+async function isOverLimit(key: string, max: number): Promise<boolean> {
   const count = await redis.incr(key);
 
   if (count === 1) {
     await redis.expire(key, RATE_LIMIT_WINDOW_SECONDS);
   }
 
-  return count > MAX_REQUESTS_PER_WINDOW;
+  return count > max;
 }
 
 function isValidFen(fen: string): boolean {
@@ -95,6 +96,13 @@ function sanitizeRequest(
 }
 
 export async function POST(request: NextRequest) {
+  // Auth stays outside the try/catch below: that catch returns a fabricated
+  // 200 fallback, which must never swallow an unauthenticated request.
+  const { userId } = await auth();
+  if (!userId) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
   try {
     const contentLengthHeader = request.headers.get("content-length");
     const contentLength = contentLengthHeader ? Number(contentLengthHeader) : 0;
@@ -109,7 +117,15 @@ export async function POST(request: NextRequest) {
     }
 
     const ip = getClientIp(request);
-    if (await isRateLimited(ip)) {
+    const overUserLimit = await isOverLimit(
+      `rate_limit:explanation:user:${userId}`,
+      MAX_REQUESTS_PER_WINDOW,
+    );
+    const overIpLimit = await isOverLimit(
+      `rate_limit:explanation:ip:${ip}`,
+      MAX_REQUESTS_PER_WINDOW,
+    );
+    if (overUserLimit || overIpLimit) {
       return NextResponse.json(
         {
           detail:
@@ -136,11 +152,10 @@ export async function POST(request: NextRequest) {
     console.error("Explanation API error:", error);
     return NextResponse.json(
       {
-        explanation: "This move creates a decisive tactical advantage.",
-        concept: "Tactics",
-        tip: "Always calculate forcing moves first: checks, captures, and threats.",
+        error: "Explanation unavailable",
+        detail: "The coaching service did not respond. Please try again.",
       },
-      { status: 200 }, // Return fallback instead of error for better UX
+      { status: 503 },
     );
   }
 }
