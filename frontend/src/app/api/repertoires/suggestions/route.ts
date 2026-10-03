@@ -24,6 +24,13 @@ const { backendApiUrl: BACKEND_API_URL, internalSecret: INTERNAL_SECRET } = getB
 const SUGGESTIONS_TIMEOUT_MS = 30_000;
 
 export async function GET(request: NextRequest) {
+  // Auth before query parsing: an anonymous caller must never reach the
+  // Stockfish-backed backend, even with a malformed request.
+  const { userId } = await auth();
+  if (!userId) {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
+
   const fen = request.nextUrl.searchParams.get('fen');
 
   if (!fen) {
@@ -34,11 +41,6 @@ export async function GET(request: NextRequest) {
   backendUrl.searchParams.set('fen', fen);
 
   try {
-    const { userId } = await auth();
-    if (!userId) {
-      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
-    }
-
     const response = await fetch(backendUrl, {
       signal: AbortSignal.timeout(SUGGESTIONS_TIMEOUT_MS),
       headers: {
