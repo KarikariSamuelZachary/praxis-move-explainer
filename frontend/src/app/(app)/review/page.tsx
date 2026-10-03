@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import dynamic from 'next/dynamic';
 
 import AnalysisPanel from '@/components/review/AnalysisPanel';
@@ -10,14 +10,11 @@ import ImportPanel, {
 import ReviewShell from '@/components/review/ReviewShell';
 import { GameReviewMove } from '@/types';
 
-import {
-  bestMoveSanFor,
-  currentMoveFor,
-  displayedExplanationFor,
-  formatMoveNumber,
-  lastPlyFor,
-  moveHistoryFor,
-} from './review-page-logic';
+import { displayedExplanationFor, lastPlyFor } from './review-page-logic';
+import { buildMainlineTree, mainlinePlyToNode } from './review-tree';
+import { activeNodeView } from './review-tree-view';
+
+const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
 // Same lazy-board pattern as the other app routes: BoardPanel statically
 // imports chess.js + react-chessboard, which the empty review page (just an
@@ -44,27 +41,34 @@ export default function ReviewPage() {
   const [analysisState, setAnalysisState] = useState<AnalysisState>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [gameData, setGameData] = useState<GameReviewMove[] | null>(null);
-  const [activePly, setActivePly] = useState(0);
+  // Sandbox step 1: the active selection is a tree node id. Variations are
+  // not selectable yet, so this only ever points at mainline nodes.
+  const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
   const [coachExplanation, setCoachExplanation] = useState<ReviewExplanation | null>(null);
   const [coachError, setCoachError] = useState<string | null>(null);
   const [isAskingCoach, setIsAskingCoach] = useState(false);
   const [showBestMove, setShowBestMove] = useState(false);
 
-  useEffect(() => {
-    setCoachExplanation(null);
-    setCoachError(null);
-    setShowBestMove(false);
-  }, [activePly]);
+  const tree = useMemo(
+    () => (gameData ? buildMainlineTree(gameData) : null),
+    [gameData],
+  );
 
   useEffect(() => {
-    if (analysisState !== 'ready' || !gameData) {
-      return;
-    }
-    setActivePly(0);
     setCoachExplanation(null);
     setCoachError(null);
     setShowBestMove(false);
-  }, [analysisState, gameData]);
+  }, [activeNodeId]);
+
+  useEffect(() => {
+    if (analysisState !== 'ready' || !tree) {
+      return;
+    }
+    setActiveNodeId(tree.mainlineIds[0]);
+    setCoachExplanation(null);
+    setCoachError(null);
+    setShowBestMove(false);
+  }, [analysisState, tree]);
 
   const canAnalyze = pgnInput.trim().length > 0 && analysisState !== 'analyzing';
 
@@ -109,11 +113,7 @@ export default function ReviewPage() {
   }
 
   async function handleAskCoach() {
-    if (!gameData || analysisState !== 'ready') {
-      return;
-    }
-    const move = gameData[Math.min(activePly, gameData.length - 1)];
-    if (!move) {
+    if (!view || !currentMove || analysisState !== 'ready') {
       return;
     }
 
@@ -124,10 +124,10 @@ export default function ReviewPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          fen: move.fen,
-          move: move.san,
-          classification: move.classification,
-          moveHistory: moveHistoryFor(gameData, activePly),
+          fen: currentMove.fen,
+          move: currentMove.san,
+          classification: currentMove.classification,
+          moveHistory: view.coachHistory.map((entry) => entry.san),
         }),
       });
 
@@ -146,14 +146,28 @@ export default function ReviewPage() {
   }
 
   const hasGame = analysisState === 'ready' && gameData !== null;
-  const currentMove =
-    hasGame && gameData ? currentMoveFor(gameData, activePly) : null;
+  const view =
+    hasGame && tree && activeNodeId
+      ? activeNodeView(tree, activeNodeId, START_FEN)
+      : null;
+  const currentMove = view?.currentMove ?? null;
+  const activePly = view ? tree!.nodes[activeNodeId!].ply : 0;
   const displayedExplanation = displayedExplanationFor(
     currentMove,
     coachExplanation,
   );
-  const moveNumberLabel = formatMoveNumber(activePly);
-  const bestMoveSan = bestMoveSanFor(currentMove);
+  const moveNumberLabel = view?.moveNumberLabel ?? 'Starting position';
+  const bestMoveSan = view?.bestMoveSan ?? null;
+
+  function handlePlySelect(ply: number) {
+    if (!tree) {
+      return;
+    }
+    const nodeId = mainlinePlyToNode(tree, ply);
+    if (nodeId) {
+      setActiveNodeId(nodeId);
+    }
+  }
 
   return (
     <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-[10px] pt-6 text-white lg:overflow-hidden lg:px-10 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
@@ -190,7 +204,7 @@ export default function ReviewPage() {
             moveNumberLabel={moveNumberLabel}
             activePly={activePly}
             lastPly={lastPlyFor(gameData ?? [])}
-            onPlySelect={setActivePly}
+            onPlySelect={handlePlySelect}
             bestMoveSan={bestMoveSan}
             showBestMove={showBestMove}
             onToggleBestMove={() => setShowBestMove((value) => !value)}
