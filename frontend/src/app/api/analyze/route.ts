@@ -1,4 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
+import { auth } from '@clerk/nextjs/server';
+
 import { redis } from '@/lib/redis';
 import { getBackendConfig } from '@/lib/backend';
 
@@ -182,6 +184,11 @@ async function parseAnalyzeRequest(
 
 export async function POST(request: NextRequest) {
   try {
+    const { userId } = await auth();
+    if (!userId) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+    }
+
     const parsed = await parseAnalyzeRequest(request);
     if (parsed instanceof NextResponse) {
       return parsed;
@@ -210,6 +217,7 @@ export async function POST(request: NextRequest) {
         Accept: 'application/json',
         'Content-Type': 'application/json',
         'X-Internal-Secret': internalSecret,
+        'X-Clerk-User-Id': userId,
       },
       body: JSON.stringify({
         pgn,
