@@ -45,6 +45,12 @@ def parse_args():
     )
     parser.add_argument("--reference-nodes", type=int, default=400_000)
     parser.add_argument("--limit-positions", type=int, default=200)
+    parser.add_argument(
+        "--limit-games",
+        type=int,
+        default=10,
+        help="Games sampled evenly across the file; plies are capped per game.",
+    )
     parser.add_argument("--backstop", type=float, default=30.0)
     parser.add_argument("--noise-floor", action="store_true")
     parser.add_argument("--low-priority", action="store_true")
@@ -71,7 +77,23 @@ class TimedNodeEngine(NodeEngine):
             self.durations.append(time.monotonic() - started)
 
 
-def load_games(path, limit_positions):
+def _truncate_game(game, max_plies):
+    """Copy headers and the first max_plies moves into a new PGN game."""
+    truncated = chess.pgn.Game()
+    truncated.headers = game.headers.copy()
+    board = game.board()
+    node = truncated
+    for index, move in enumerate(game.mainline_moves()):
+        if index >= max_plies:
+            break
+        board.push(move)
+        node = node.add_main_variation(move)
+    return truncated
+
+
+def load_games(path, limit_positions, limit_games):
+    """Sample games evenly and cap plies per game, so the sample spans
+    opponents instead of exhausting the first two long games."""
     games = []
     with open(path, encoding="utf-8", errors="replace") as fh:
         while True:
@@ -79,15 +101,13 @@ def load_games(path, limit_positions):
             if game is None:
                 break
             games.append(game)
-    selected = []
-    plies = 0
-    for game in games:
-        if plies >= limit_positions:
-            break
-        game_plies = sum(1 for _ in game.mainline_moves())
-        selected.append(game)
-        plies += game_plies
-    return selected
+    if not games:
+        return []
+    if limit_games and len(games) > limit_games:
+        step = len(games) / limit_games
+        games = [games[int(i * step)] for i in range(limit_games)]
+    per_game = max(10, limit_positions // len(games))
+    return [_truncate_game(game, per_game) for game in games]
 
 
 def run_budget(games, sf_path, nodes, backstop):
@@ -238,7 +258,7 @@ def main():
         os.nice(19)
         print("  (running at nice 19)")
 
-    games = load_games(args.pgn, args.limit_positions)
+    games = load_games(args.pgn, args.limit_positions, args.limit_games)
     print(f"pgn={args.pgn} games={len(games)}")
     results = {}
     if not args.noise_floor:
