@@ -18,9 +18,9 @@ Usage:
 import argparse
 import csv
 import json
+import multiprocessing
 import os
 import random
-import statistics
 import sys
 import time
 from pathlib import Path
@@ -85,7 +85,18 @@ def parse_args():
         action="store_true",
         help="Run the mate-rich recall sample instead of the label sweep.",
     )
+    parser.add_argument(
+        "--warm-breakout",
+        action="store_true",
+        help="Report warm-TT-only mates and warm/fresh label changes per N.",
+    )
     parser.add_argument("--low-priority", action="store_true")
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="Parallel workers; shards are contiguous so order is preserved.",
+    )
     parser.add_argument("--json", default=None)
     return parser.parse_args()
 
@@ -142,16 +153,19 @@ def load_games(path, limit_positions, limit_games, plies_per_game=0):
         per_game = plies_per_game
     else:
         per_game = max(10, limit_positions // len(games))
-    return [_truncate_game(game, per_game) for game in games]
+    return [str(_truncate_game(game, per_game)) for game in games]
 
 
-def run_budget(games, sf_path, nodes, backstop):
-    engine = TimedNodeEngine(sf_path, nodes=nodes, fresh=True, backstop=backstop)
+def _budget_shard(payload):
+    pgns, sf_path, nodes, backstop, low_priority, fresh = payload
+    if low_priority:
+        os.nice(19)
+    engine = TimedNodeEngine(sf_path, nodes=nodes, fresh=fresh, backstop=backstop)
     analyzer = GameAnalyzer(engine=engine, explainer=MockExplainer(), multipv=2)
     per_game = []
     try:
-        for game in games:
-            rows = analyzer.analyze_full_game(str(game), include_explanations=False)[1:]
+        for pgn in pgns:
+            rows = analyzer.analyze_full_game(pgn, include_explanations=False)[1:]
             per_game.append(
                 [
                     {"label": row["classification"], "mate": row.get("eval_mate")}
@@ -161,6 +175,27 @@ def run_budget(games, sf_path, nodes, backstop):
     finally:
         engine.close()
     return per_game, engine.durations
+
+
+def run_budget(
+    pgns, sf_path, nodes, backstop, jobs=1, low_priority=False, fresh=True
+):
+    if jobs <= 1:
+        return _budget_shard((pgns, sf_path, nodes, backstop, low_priority, fresh))
+
+    shard_size = (len(pgns) + jobs - 1) // jobs
+    shards = [
+        pgns[index : index + shard_size] for index in range(0, len(pgns), shard_size)
+    ]
+    payloads = [
+        (shard, sf_path, nodes, backstop, low_priority, fresh) for shard in shards
+    ]
+    with multiprocessing.Pool(min(jobs, len(shards))) as pool:
+        results = pool.map(_budget_shard, payloads)
+
+    per_game = [game for result, _ in results for game in result]
+    durations = [duration for _, shard_durations in results for duration in shard_durations]
+    return per_game, durations
 
 
 def quantiles(values):
@@ -221,18 +256,35 @@ def label_diff(reference, candidate):
     }
 
 
-def run_nodes_sweep(args, games):
+def run_nodes_sweep(args, pgns):
     reference, _ = run_budget(
-        games, args.sf_path, args.reference_nodes, args.backstop
+        pgns,
+        args.sf_path,
+        args.reference_nodes,
+        args.backstop,
+        jobs=args.jobs,
+        low_priority=args.low_priority,
     )
     print(f"reference: {args.reference_nodes} nodes")
-    results = {"reference": args.reference_nodes}
+    results = {"reference": args.reference_nodes, "jobs": args.jobs}
+    mate_reference = reference
+    long_mates = []
     if args.reference_floor:
         floor_reference, _ = run_budget(
-            games, args.sf_path, args.reference_floor, args.backstop
+            pgns,
+            args.sf_path,
+            args.reference_floor,
+            args.backstop,
+            jobs=args.jobs,
+            low_priority=args.low_priority,
         )
+        mate_reference = floor_reference
         floor = label_diff(reference, floor_reference)
-        results["reference_floor"] = {"nodes": args.reference_floor, **floor}
+        results["reference_floor"] = {
+            "nodes": args.reference_floor,
+            **floor,
+            "long_mates": len(long_mates),
+        }
         print(
             f"  reference floor {args.reference_nodes} vs {args.reference_floor}: "
             f"changed={floor['changed']}/{floor['moves']} "
@@ -240,10 +292,33 @@ def run_nodes_sweep(args, games):
             f"crossings={floor['severity_crossings']} special={floor['special']}"
         )
 
+    for game_index, game_rows in enumerate(mate_reference):
+        for ply_index, row in enumerate(game_rows):
+            mate = row["mate"]
+            if mate is not None and abs(mate) >= 6:
+                long_mates.append((game_index, ply_index))
+    if long_mates:
+        print(f"  long mates (>=6) in reference: {len(long_mates)}")
+
     for budget in args.budgets:
-        candidate, durations = run_budget(games, args.sf_path, budget, args.backstop)
+        candidate, durations = run_budget(
+            pgns,
+            args.sf_path,
+            budget,
+            args.backstop,
+            jobs=args.jobs,
+            low_priority=args.low_priority,
+        )
         comparison = compare_to_reference(reference, candidate)
         severity = comparison["severity"]
+        moves = severity["moves"] or 1
+        long_mate_changes = 0
+        long_mate_kept = 0
+        for game_index, ply_index in long_mates:
+            if mate_reference[game_index][ply_index]["label"] != candidate[game_index][ply_index]["label"]:
+                long_mate_changes += 1
+            if candidate[game_index][ply_index]["mate"] is not None:
+                long_mate_kept += 1
         results[budget] = {
             "agreement": comparison["agreement"],
             "mate_recall": comparison["mate_recall"],
@@ -251,7 +326,10 @@ def run_nodes_sweep(args, games):
             "moves": comparison["moves"],
             "adjacent": severity["adjacent"],
             "severity_crossings": severity["severity_crossings"],
+            "crossing_rate": severity["severity_crossings"] / moves,
             "special": severity["special"],
+            "long_mate_label_changes": long_mate_changes,
+            "long_mate_kept": long_mate_kept,
             "wall": quantiles(durations),
         }
         recall = (
@@ -259,12 +337,19 @@ def run_nodes_sweep(args, games):
             if comparison["mate_recall"] is not None
             else "n/a"
         )
+        long_mate_note = (
+            f" long_mates={len(long_mates)}"
+            f"(label_changes={long_mate_changes},kept={long_mate_kept})"
+            if long_mates
+            else ""
+        )
         print(
             f"  {budget:>7}: agreement={comparison['agreement']:.4f} "
+            f"crossing_rate={results[budget]['crossing_rate']:.4f} "
             f"adjacent={severity['adjacent']} "
             f"crossings={severity['severity_crossings']} "
             f"special={severity['special']} "
-            f"mate_recall={recall} "
+            f"mate_recall={recall}{long_mate_note} "
             f"wall p50={results[budget]['wall'].get('p50')}s "
             f"p95={results[budget]['wall'].get('p95')}s"
         )
@@ -332,7 +417,7 @@ def run_mate_recall(args):
     return results
 
 
-def run_noise_floor(args, games):
+def run_noise_floor(args, pgns):
     def batch_run(ordered):
         engine = StockfishEngine(
             stockfish_path=args.sf_path, depth=18, analysis_time=0.5
@@ -341,9 +426,9 @@ def run_noise_floor(args, games):
         analyzer = GameAnalyzer(engine=engine, explainer=MockExplainer(), multipv=2)
         per_game = {}
         try:
-            for index, game in ordered:
+            for index, pgn in ordered:
                 rows = analyzer.analyze_full_game(
-                    str(game), include_explanations=False
+                    pgn, include_explanations=False
                 )[1:]
                 per_game[index] = [
                     {"label": row["classification"], "mate": row.get("eval_mate")}
@@ -364,8 +449,8 @@ def run_noise_floor(args, games):
 
     first = batch_run(indexed)
     second = batch_run(second_order)
-    aligned_first = [first[i] for i in range(len(games))]
-    aligned_second = [second[i] for i in range(len(games))]
+    aligned_first = [first[i] for i in range(len(pgns))]
+    aligned_second = [second[i] for i in range(len(pgns))]
     diff = label_diff(aligned_first, aligned_second)
     print(
         f"old-vs-old noise floor (depth 18, 0.5s, {args.order} order): "
@@ -374,6 +459,72 @@ def run_noise_floor(args, games):
         f"special {diff['special']})"
     )
     return diff
+
+
+def run_warm_breakout(args, pgns):
+    """Fresh vs warm-TT at each N: where does a warm table find mate the
+    fresh run misses, and do those labels change?"""
+    print(f"warm breakout: {len(pgns)} games, budgets={args.budgets}")
+    results = {}
+    for budget in args.budgets:
+        fresh, _ = run_budget(
+            pgns,
+            args.sf_path,
+            budget,
+            args.backstop,
+            jobs=args.jobs,
+            low_priority=args.low_priority,
+            fresh=True,
+        )
+        warm, _ = run_budget(
+            pgns,
+            args.sf_path,
+            budget,
+            args.backstop,
+            jobs=args.jobs,
+            low_priority=args.low_priority,
+            fresh=False,
+        )
+        warm_only = []
+        fresh_only = 0
+        label_changes = 0
+        total = 0
+        for game_index, rows in enumerate(fresh):
+            for ply_index, fresh_row in enumerate(rows):
+                total += 1
+                warm_row = warm[game_index][ply_index]
+                if fresh_row["label"] != warm_row["label"]:
+                    label_changes += 1
+                if warm_row["mate"] is not None and fresh_row["mate"] is None:
+                    warm_only.append(
+                        {
+                            "game": game_index,
+                            "ply": ply_index,
+                            "warm_mate": warm_row["mate"],
+                            "fresh_label": fresh_row["label"],
+                            "warm_label": warm_row["label"],
+                        }
+                    )
+                if fresh_row["mate"] is not None and warm_row["mate"] is None:
+                    fresh_only += 1
+        results[budget] = {
+            "moves": total,
+            "label_changes": label_changes,
+            "warm_only_mates": len(warm_only),
+            "fresh_only_mates": fresh_only,
+            "positions": warm_only,
+        }
+        print(
+            f"  {budget:>7}: label_changes={label_changes}/{total} "
+            f"warm_only_mates={len(warm_only)} fresh_only_mates={fresh_only}"
+        )
+        for item in warm_only[:8]:
+            print(
+                f"    warm-only mate: game={item['game']} ply={item['ply']} "
+                f"mate={item['warm_mate']} fresh={item['fresh_label']} "
+                f"warm={item['warm_label']}"
+            )
+    return results
 
 
 def main():
@@ -385,18 +536,27 @@ def main():
     results = {}
     if args.mate_recall:
         results["mate_recall"] = run_mate_recall(args)
-    else:
-        games = load_games(
+    elif args.warm_breakout:
+        pgns = load_games(
             args.pgn,
             args.limit_positions,
             args.limit_games,
             args.plies_per_game,
         )
-        print(f"pgn={args.pgn} games={len(games)}")
+        print(f"pgn={args.pgn} games={len(pgns)}")
+        results["warm_breakout"] = run_warm_breakout(args, pgns)
+    else:
+        pgns = load_games(
+            args.pgn,
+            args.limit_positions,
+            args.limit_games,
+            args.plies_per_game,
+        )
+        print(f"pgn={args.pgn} games={len(pgns)}")
         if not args.noise_floor:
-            results["nodes"] = run_nodes_sweep(args, games)
+            results["nodes"] = run_nodes_sweep(args, pgns)
         else:
-            results["noise_floor"] = run_noise_floor(args, games)
+            results["noise_floor"] = run_noise_floor(args, pgns)
 
     if args.json:
         Path(args.json).write_text(json.dumps(results, indent=2), encoding="utf-8")
