@@ -343,11 +343,14 @@ def review_live(
                 status_code=400, detail=f"Invalid path: {exc}"
             ) from exc
     elif body.fen:
-        try:
-            board = chess.Board(body.fen)
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid FEN: {exc}") from exc
-        in_book = True
+        # FEN-only explores have no game context (no book contiguity, no
+        # repetition history, no previous-ply EP loss) and silently produce
+        # degraded labels, so the sandbox rejects them outright.
+        raise HTTPException(
+            status_code=400,
+            detail="Sandbox needs the moves path from the game start; "
+            "FEN-only requests are rejected",
+        )
     else:
         # Empty path and no FEN: explore from the game start.
         board = chess.Board()
