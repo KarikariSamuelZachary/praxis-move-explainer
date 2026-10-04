@@ -15,6 +15,9 @@ import os
 
 DEFAULT_REVIEW_NODES = 100_000
 DEFAULT_NODES_BACKSTOP_SECONDS = 10.0
+# Longest game the review route accepts; the frontend proxy aborts at 240s
+# (REVIEW_TIMEOUT_MS), so N is chosen for this length with 2x headroom.
+REVIEW_MAX_PLIES = 300
 
 # Fixed in review and live; background jobs keep GameAnalyzer's default of 1:
 # opponent_game_analysis.py and weakness_profile.py construct GameAnalyzer
@@ -35,12 +38,25 @@ def review_deterministic_enabled() -> bool:
 
 
 def review_nodes() -> int:
-    """Nodes budget per position; REVIEW_NODES overrides the default."""
+    """Nodes budget per position.
+
+    Deterministic mode has no default: REVIEW_NODES must be set explicitly to
+    the container-measured old-mode median (the old-mode p10 is the floor).
+    Flag off keeps the historical default for callers that never read it.
+    """
     try:
         value = int(os.getenv("REVIEW_NODES", ""))
     except (TypeError, ValueError):
-        value = DEFAULT_REVIEW_NODES
-    return value if value > 0 else DEFAULT_REVIEW_NODES
+        value = 0
+    if value > 0:
+        return value
+    if review_deterministic_enabled():
+        raise RuntimeError(
+            "REVIEW_DETERMINISTIC is on but REVIEW_NODES is not a positive "
+            "integer; set it to the container-measured old-mode median "
+            "(old-mode p10 is the floor)."
+        )
+    return DEFAULT_REVIEW_NODES
 
 
 def review_nodes_backstop_seconds() -> float:

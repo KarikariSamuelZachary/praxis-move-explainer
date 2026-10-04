@@ -132,6 +132,61 @@ def test_valid_secret_and_header_pass_the_auth_gate():
     print("  [PASS] valid secret + X-Clerk-User-Id -> 200 (engine mocked)")
 
 
+def _long_pgn(plies: int) -> str:
+    import chess
+    import chess.pgn
+
+    board = chess.Board()
+    cycle = ["g1f3", "g8f6", "f3g1", "f6g8"]
+    for index in range(plies):
+        board.push(chess.Move.from_uci(cycle[index % len(cycle)]))
+    return str(chess.pgn.Game.from_board(board))
+
+
+def test_overlong_game_is_rejected_before_analysis():
+    import routers.review as review_module
+
+    called = False
+
+    class _StubAnalyzer:
+        def __init__(self, **kwargs):
+            pass
+
+        def analyze_full_game(self, pgn, target_color="both"):
+            nonlocal called
+            called = True
+            return [_STUB_ROW]
+
+    saved = (
+        review_module.GameAnalyzer,
+        review_module.get_review_stockfish,
+        review_module._build_explainer,
+    )
+    review_module.GameAnalyzer = _StubAnalyzer
+    review_module.get_review_stockfish = lambda *args, **kwargs: object()
+    review_module._build_explainer = lambda: None
+    try:
+        response = _client().post(
+            "/api/review",
+            json={"pgn": _long_pgn(301)},
+            headers={
+                "X-Internal-Secret": _secret(),
+                "X-Clerk-User-Id": TEST_CLERK_ID,
+            },
+        )
+    finally:
+        (
+            review_module.GameAnalyzer,
+            review_module.get_review_stockfish,
+            review_module._build_explainer,
+        ) = saved
+
+    assert response.status_code == 400, response.text
+    assert "too long" in response.json()["detail"], response.text
+    assert called is False, "overlong game reached the analyzer"
+    print("  [PASS] 301-ply game -> 400 before any engine work")
+
+
 def test_capabilities_reports_flag_and_mode():
     secret = _secret()
     anonymous = _client().get(
@@ -158,6 +213,7 @@ def run() -> int:
         test_missing_clerk_user_is_rejected,
         test_missing_header_rejects_before_the_user_limiter,
         test_valid_secret_and_header_pass_the_auth_gate,
+        test_overlong_game_is_rejected_before_analysis,
         test_capabilities_reports_flag_and_mode,
     ]
     failures = 0

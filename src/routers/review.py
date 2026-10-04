@@ -1,11 +1,14 @@
 import logging
 import os
+from io import StringIO
 from typing import Any, Dict, List
 
 import chess.engine
+import chess.pgn
 from fastapi import APIRouter, Depends, HTTPException
 
 from core.analysis_mode import (
+    REVIEW_MAX_PLIES,
     REVIEW_MULTIPV,
     current_mode_string,
     review_deterministic_enabled,
@@ -55,6 +58,13 @@ def _build_explainer():
     return MockExplainer()
 
 
+def _mainline_plies(pgn: str) -> int:
+    game = chess.pgn.read_game(StringIO(pgn))
+    if game is None:
+        raise HTTPException(status_code=400, detail="Invalid PGN")
+    return sum(1 for _ in game.mainline_moves())
+
+
 def _normalize_review_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     normalized_rows: List[Dict[str, Any]] = []
 
@@ -98,6 +108,16 @@ def review_game(
     pgn = body.pgn.strip()
     if not pgn:
         raise HTTPException(status_code=400, detail="Missing PGN")
+
+    plies = _mainline_plies(pgn)
+    if plies > REVIEW_MAX_PLIES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Game too long for review: {plies} plies "
+                f"(max {REVIEW_MAX_PLIES})"
+            ),
+        )
 
     # Long-lived singleton (booted at startup) instead of a fresh Stockfish
     # subprocess per review -- spawning + UCI handshake cost ~0.3-0.7s before

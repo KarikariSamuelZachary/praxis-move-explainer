@@ -86,28 +86,50 @@ def test_env_parsing():
 
     with patch.dict(os.environ, {"REVIEW_NODES": "not-a-number"}):
         assert review_nodes() == DEFAULT_REVIEW_NODES
-    print("  [PASS] env parsing (flag, nodes, backstop)")
+
+    with patch.dict(
+        os.environ, {"REVIEW_DETERMINISTIC": "1", "REVIEW_NODES": "not-a-number"}
+    ):
+        try:
+            review_nodes()
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("flag on + invalid REVIEW_NODES must raise")
+
+    with patch.dict(os.environ, {"REVIEW_DETERMINISTIC": "1"}):
+        os.environ.pop("REVIEW_NODES", None)
+        try:
+            review_nodes()
+        except RuntimeError:
+            pass
+        else:
+            raise AssertionError("flag on without REVIEW_NODES must raise")
+    print("  [PASS] env parsing; flag on requires explicit REVIEW_NODES")
 
 
 def test_deterministic_calls_use_nodes_and_fresh_token():
     engine = _RecordingEngine()
-    analyzer = GameAnalyzer(
-        engine=engine,
-        explainer=MockExplainer(),
-        multipv=2,
-        deterministic=True,
-    )
-    rows = analyzer.analyze_full_game(PGN, include_explanations=False)
+    with patch.dict(
+        os.environ, {"REVIEW_DETERMINISTIC": "1", "REVIEW_NODES": "120000"}
+    ):
+        analyzer = GameAnalyzer(
+            engine=engine,
+            explainer=MockExplainer(),
+            multipv=2,
+            deterministic=True,
+        )
+        rows = analyzer.analyze_full_game(PGN, include_explanations=False)
 
-    plies = 4
-    assert len(rows) == plies + 1
-    assert len(engine.calls) == plies + 1
-    assert all(call["nodes"] == review_nodes() for call in engine.calls)
-    assert all(call["fresh_token"] is True for call in engine.calls)
-    assert all(
-        call["time_limit"] == review_nodes_backstop_seconds()
-        for call in engine.calls
-    )
+        plies = 4
+        assert len(rows) == plies + 1
+        assert len(engine.calls) == plies + 1
+        assert all(call["nodes"] == 120_000 for call in engine.calls)
+        assert all(call["fresh_token"] is True for call in engine.calls)
+        assert all(
+            call["time_limit"] == review_nodes_backstop_seconds()
+            for call in engine.calls
+        )
     print(f"  [PASS] {len(engine.calls)} searches all nodes+fresh-token")
 
 
