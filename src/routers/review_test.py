@@ -355,6 +355,9 @@ def _stub_live(monkeypatch_calls):
                 second_best_pv_uci=["d2d4", "g8f6"],
             )
 
+        def expected_points_loss(self, before, after, turn_color, rating):
+            return 0.03
+
         def analyze_ply(self, board, move, eval_before, **kwargs):
             row = {
                 "classification": "best",
@@ -375,14 +378,14 @@ def _stub_live(monkeypatch_calls):
 def test_live_requires_login_and_flag():
     response = _client().post(
         "/api/review/live",
-        json={"fen": _LIVE_FEN, "move": "g1f3"},
+        json={"moves": ["e4"], "move": "e5"},
         headers={"X-Internal-Secret": _secret()},
     )
     assert response.status_code == 400, response.text
 
     response = _client().post(
         "/api/review/live",
-        json={"fen": _LIVE_FEN, "move": "g1f3"},
+        json={"moves": ["e4"], "move": "e5"},
         headers={
             "X-Internal-Secret": _secret(),
             "X-Clerk-User-Id": TEST_CLERK_ID,
@@ -391,6 +394,25 @@ def test_live_requires_login_and_flag():
     assert response.status_code == 403, response.text
     assert "disabled" in response.json()["detail"], response.text
     print("  [PASS] live: login required; 403 when the flag is off")
+
+
+def test_live_rejects_fen_only_requests():
+    with patch.dict(
+        os.environ,
+        {"REVIEW_DETERMINISTIC": "1", "REVIEW_NODES": "150000"},
+        clear=False,
+    ):
+        response = _client().post(
+            "/api/review/live",
+            json={"moves": [], "fen": _LIVE_FEN, "move": "g1f3"},
+            headers={
+                "X-Internal-Secret": _secret(),
+                "X-Clerk-User-Id": TEST_CLERK_ID,
+            },
+        )
+    assert response.status_code == 400, response.text
+    assert "moves path" in response.json()["detail"], response.text
+    print("  [PASS] live: FEN-only requests rejected (no game context)")
 
 
 def test_live_returns_label_lines_and_caches():
@@ -418,12 +440,12 @@ def test_live_returns_label_lines_and_caches():
             }
             first = _client().post(
                 "/api/review/live",
-                json={"fen": _LIVE_FEN, "move": "Nf3"},
+                json={"moves": ["e4", "e5"], "move": "Nf3"},
                 headers=headers,
             )
             second = _client().post(
                 "/api/review/live",
-                json={"fen": _LIVE_FEN, "move": "g1f3"},
+                json={"moves": ["e4", "e5"], "move": "g1f3"},
                 headers=headers,
             )
     finally:
@@ -440,9 +462,10 @@ def test_live_returns_label_lines_and_caches():
     assert body["second_best"]["move_san"] == "d4", body["second_best"]
     assert body["second_best"]["pv_san"] == ["d4", "Nf6"], body["second_best"]
     assert body["cached"] is False, body
+    calls_after_first = len(calls)
     assert second.status_code == 200, second.text
     assert second.json()["cached"] is True, second.text
-    assert len(calls) == 1, f"eval ran {len(calls)} times; cache missed"
+    assert len(calls) == calls_after_first, "second explore re-ran the engine"
     print("  [PASS] live: SAN/UCI accepted, label + top-2 lines, cached")
 
 
@@ -610,12 +633,14 @@ def test_live_terminal_checkmate_and_stalemate():
             )
             mate_calls = calls["n"]
             calls["n"] = 0
+            stalemate_path = [
+                "e3", "a5", "Qh5", "Ra6", "Qxa5", "h5", "Qxc7", "Rah6",
+                "h4", "f6", "Qxd7+", "Kf7", "Qxb7", "Qd3", "Qxb8", "Qh7",
+                "Qxc8", "Kg6",
+            ]
             stale = _client().post(
                 "/api/review/live",
-                json={
-                    "fen": "7k/Q7/6K1/8/8/8/8/8 w - - 0 1",
-                    "move": "Qf7",
-                },
+                json={"moves": stalemate_path, "move": "Qe6"},
                 headers=headers,
             )
             stale_calls = calls["n"]
@@ -638,8 +663,94 @@ def test_live_terminal_checkmate_and_stalemate():
     stale_body = stale.json()
     assert stale_body["eval_cp"] == 0.0, stale_body
     assert stale_body["eval_mate"] is None, stale_body
-    assert stale_calls == 1, f"stalemate after-position was engine-evaluated ({stale_calls})"
+    # Two calls: eval-before plus the previous-ply EP-loss context. A third
+    # would mean the stalemate after-position hit the engine.
+    assert stale_calls == 2, f"stalemate after-position was engine-evaluated ({stale_calls})"
     print("  [PASS] live: checkmate + stalemate synthesized, no engine after-eval")
+
+
+def test_live_nested_variation_matches_fresh_full_path():
+    import routers.review as review_module
+    from schemas.models import Evaluation
+
+    review_module._SANDBOX_EVAL_CACHE.clear()
+    review_module._SANDBOX_RESULT_CACHE.clear()
+
+    class _FakeEngine:
+        def evaluate(
+            self,
+            board,
+            depth_limit=None,
+            pov=None,
+            time_limit=None,
+            multipv=1,
+            nodes=None,
+            fresh_token=False,
+        ):
+            legal = list(board.legal_moves)
+            first = legal[0] if legal else None
+            rest = legal[1:]
+            return Evaluation(
+                score_cp=20.0,
+                best_move_uci=first.uci() if first else "",
+                best_move_san=board.san(first) if first else "(none)",
+                mate=None,
+                second_best_cp=10.0,
+                principal_variation_uci=[first.uci()] if first else [],
+                second_best_move_uci=rest[0].uci() if rest else None,
+                second_best_move_san=board.san(rest[0]) if rest else None,
+                second_best_pv_uci=[rest[0].uci()] if rest else [],
+            )
+
+    saved = (review_module.get_review_stockfish,)
+    review_module.get_review_stockfish = lambda *args, **kwargs: _FakeEngine()
+    headers = {
+        "X-Internal-Secret": _secret(),
+        "X-Clerk-User-Id": TEST_CLERK_ID,
+    }
+    try:
+        with patch.dict(
+            os.environ,
+            {"REVIEW_DETERMINISTIC": "1", "REVIEW_NODES": "150000"},
+            clear=False,
+        ):
+            first = _client().post(
+                "/api/review/live",
+                json={"moves": ["e4", "e5"], "move": "Bc4"},
+                headers=headers,
+            )
+            second = _client().post(
+                "/api/review/live",
+                json={"moves": ["e4", "e5", "Bc4"], "move": "Bc5"},
+                headers=headers,
+            )
+    finally:
+        (review_module.get_review_stockfish,) = saved
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+
+    from core.game_analyzer import GameAnalyzer
+    from llms.mock_explainer import MockExplainer
+
+    analyzer = GameAnalyzer(
+        engine=_FakeEngine(),
+        explainer=MockExplainer(),
+        multipv=2,
+        deterministic=True,
+    )
+    rows = analyzer.analyze_full_game(
+        "1. e4 e5 2. Bc4 Bc5", include_explanations=False
+    )
+    assert rows[3]["classification"] == first.json()["classification"], (
+        rows[3],
+        first.json(),
+    )
+    assert rows[4]["classification"] == second.json()["classification"], (
+        rows[4],
+        second.json(),
+    )
+    print("  [PASS] live: variation-of-variation matches fresh full-path labels")
 
 
 def test_capabilities_reports_flag_and_mode():
@@ -676,7 +787,9 @@ def run() -> int:
         test_live_returns_label_lines_and_caches,
         test_live_replays_the_move_path,
         test_live_rejects_stale_mode,
+        test_live_rejects_fen_only_requests,
         test_live_terminal_checkmate_and_stalemate,
+        test_live_nested_variation_matches_fresh_full_path,
         test_capabilities_reports_flag_and_mode,
     ]
     failures = 0
