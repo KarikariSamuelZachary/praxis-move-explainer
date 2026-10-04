@@ -100,11 +100,13 @@ def main():
         board = game.board()
         san_path = []
         rows = batch_labels(str(game), args.max_plies)
+        ratings = GameAnalyzer._ratings_from_headers(game)
         for ply_index, node in enumerate(game.mainline()):
             if args.max_plies and ply_index >= args.max_plies:
                 break
             move = node.move
             move_san = board.san(move)
+            mover_rating = ratings["white" if board.turn == chess.WHITE else "black"]
             board.push(move)
 
             review_module._SANDBOX_EVAL_CACHE.clear()
@@ -117,6 +119,7 @@ def main():
                 json={
                     "moves": san_path,
                     "move": move_san,
+                    "player_rating": mover_rating,
                     "expected_mode": mode,
                 },
                 headers=headers,
