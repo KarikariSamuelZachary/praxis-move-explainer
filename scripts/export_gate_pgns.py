@@ -38,6 +38,23 @@ from dotenv import load_dotenv
 REPO_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(REPO_ROOT / ".env")
 
+# Accounts known to belong to the same person must never be split across sets.
+OPPONENT_ALIASES = {"iaminspiredbroo": "iaminspiredbro"}
+
+
+def load_exclude_ids(path):
+    """Ids that must never enter set B (already used for tuning)."""
+    if not path:
+        return frozenset()
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if isinstance(data, list):
+        return frozenset(str(value) for value in data)
+    ids = set()
+    for key in ("set_a", "set_b"):
+        for value in (data.get(key) or {}).get("ids", []) or []:
+            ids.add(str(value))
+    return frozenset(ids)
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description=__doc__)
@@ -55,6 +72,12 @@ def parse_args():
         help="Lichess username; one authenticated export via LICHESS_TOKEN.",
     )
     parser.add_argument("--neutral-max", type=int, default=300)
+    parser.add_argument(
+        "--exclude-ids-json",
+        default=None,
+        help="Manifest or id list whose games must never enter set B "
+        "(e.g. a previous gate manifest already used for tuning).",
+    )
     return parser.parse_args()
 
 
@@ -182,16 +205,18 @@ def _take_from_pools(pools, per_set):
     return chosen[:per_set]
 
 
-def split_by_opponent(games, per_set):
+def split_by_opponent(games, per_set, exclude_b_ids=frozenset()):
     """Disjoint opponent pools: every game of an opponent goes to one set.
 
-    Opponents are dealt largest-first, alternating between the sets, until
-    both have enough available games. Each set then takes an even share from
-    each of its opponents so one opponent cannot dominate a set.
+    Opponents are dealt largest-first, alternating between the sets; aliased
+    accounts stay in one pool. Set B additionally drops every id in
+    exclude_b_ids, so a game already used for tuning can never reappear in
+    the final gate.
     """
     by_opponent = defaultdict(list)
     for game in games:
-        by_opponent[game["opponent"] or "unknown"].append(game)
+        name = game["opponent"] or "unknown"
+        by_opponent[OPPONENT_ALIASES.get(name, name)].append(game)
 
     pools = sorted(by_opponent.items(), key=lambda item: (-len(item[1]), item[0]))
     groups = ([], [])
@@ -200,7 +225,11 @@ def split_by_opponent(games, per_set):
         groups[turn].append(pool)
         turn = 1 - turn
 
-    return _take_from_pools(groups[0], per_set), _take_from_pools(groups[1], per_set)
+    b_pools = [
+        [game for game in pool if str(game["id"]) not in exclude_b_ids]
+        for pool in groups[1]
+    ]
+    return _take_from_pools(groups[0], per_set), _take_from_pools(b_pools, per_set)
 
 
 def write_set(path, games):
@@ -222,7 +251,8 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     games = fetch_games(args.min_plies)
-    set_a, set_b = split_by_opponent(games, args.per_set)
+    exclude_b_ids = load_exclude_ids(args.exclude_ids_json)
+    set_a, set_b = split_by_opponent(games, args.per_set, exclude_b_ids)
     if not set_a or not set_b:
         raise SystemExit(
             f"not enough usable games: {len(games)} total, "
@@ -251,6 +281,11 @@ def main():
         "per_set": args.per_set,
         "usable_games": len(games),
         "split": "disjoint_opponent_pools",
+        "opponent_aliases": OPPONENT_ALIASES,
+        "excluded_from_b": {
+            "count": len(exclude_b_ids),
+            "ids": sorted(exclude_b_ids),
+        },
         "set_a": {
             "file": str(path_a),
             "sha256": hash_a,
