@@ -20,6 +20,16 @@ class Evaluation:
     # Engine continuation already returned with the score; used by the
     # blunder consequence check without issuing another search.
     principal_variation_uci: List[str] = field(default_factory=list)
+    # Search telemetry. None when the engine did not report the field (e.g.
+    # terminal positions return no nodes); deterministic-mode gating reads
+    # these, and backstop detection must guard nodes is None before comparing.
+    nodes: Optional[int] = None
+    depth: Optional[int] = None
+    nps: Optional[int] = None
+    # True when a nodes limit was requested but the wall-clock backstop
+    # stopped the search early: the result is not reproducible and must not
+    # be cached or labelled.
+    backstop_fired: bool = False
 
 @dataclass
 class Mistake:

@@ -8,6 +8,7 @@ import glob
 import logging
 import os
 import shutil
+import time
 from threading import Lock
 from typing import Optional
 from schemas.models import Evaluation
@@ -239,6 +240,8 @@ class StockfishEngine:
         pov: Optional[chess.Color] = None,
         time_limit: Optional[float] = None,
         multipv: int = 1,
+        nodes: Optional[int] = None,
+        fresh_token: bool = False,
     ) -> Evaluation:
         if not self.engine:
             raise RuntimeError("Engine not started. Use context manager or call start()")
@@ -247,12 +250,29 @@ class StockfishEngine:
         effective_time = (
             time_limit if time_limit is not None else self.analysis_time
         )
+        # A nodes limit makes the search reproducible only with a cleared
+        # transposition table, so callers that pass nodes must also pass
+        # fresh_token (python-chess sends ucinewgame when the game token
+        # changes). Without nodes the historical time+depth path is kept.
+        if nodes is not None:
+            limit = chess.engine.Limit(
+                nodes=max(1, int(nodes)), time=effective_time
+            )
+        else:
+            limit = chess.engine.Limit(
+                time=effective_time, depth=effective_depth
+            )
+        token_kwargs = {"game": object()} if fresh_token else {}
+
+        started = time.monotonic()
         with self._call_lock:
             info = self.engine.analyse(
                 board,
-                chess.engine.Limit(time=effective_time, depth=effective_depth),
+                limit,
                 multipv=max(1, int(multipv)),
+                **token_kwargs,
             )
+        elapsed = time.monotonic() - started
 
         # python-chess returns a single info dict for multipv=1 and a ranked
         # list for multipv>1; normalize both shapes here.
@@ -290,6 +310,20 @@ class StockfishEngine:
             best_move_uci = ""
             best_move_san = "(none)"
 
+        nodes_reported = primary.get("nodes")
+        depth_reported = primary.get("depth")
+        nps_reported = primary.get("nps")
+        # Backstop fired means the nodes budget was requested but the
+        # wall-clock limit stopped the search early. Guard nodes is None:
+        # terminal positions report no node count at all.
+        backstop_fired = (
+            nodes is not None
+            and nodes_reported is not None
+            and nodes_reported < int(nodes)
+            and effective_time is not None
+            and elapsed >= 0.9 * float(effective_time)
+        )
+
         return Evaluation(
             score_cp=cp_score,
             best_move_uci=best_move_uci,
@@ -297,6 +331,10 @@ class StockfishEngine:
             mate=mate,
             second_best_cp=second_best_cp,
             principal_variation_uci=[move.uci() for move in (pv or [])],
+            nodes=nodes_reported,
+            depth=depth_reported,
+            nps=nps_reported,
+            backstop_fired=backstop_fired,
         )
 
     def suggest(
