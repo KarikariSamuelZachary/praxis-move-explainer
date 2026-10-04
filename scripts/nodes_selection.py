@@ -108,6 +108,11 @@ def parse_args():
         action="store_true",
         help="Also run the shipped depth+time batch config against the reference.",
     )
+    parser.add_argument(
+        "--old-mode-cache",
+        default=None,
+        help="JSON file to save/reuse the old-mode per-game rows.",
+    )
     parser.add_argument("--old-depth", type=int, default=18)
     parser.add_argument("--old-time", type=float, default=0.5)
     parser.add_argument("--json", default=None)
@@ -264,6 +269,83 @@ def quantiles(values):
         "p50": round(pick(0.50), 3),
         "p90": round(pick(0.90), 3),
         "p95": round(pick(0.95), 3),
+    }
+
+
+def _crossings_between(left_rows, right_rows):
+    crossings = moves = 0
+    for left_row, right_row in zip(left_rows, right_rows):
+        moves += 1
+        left, right = left_row["label"], right_row["label"]
+        if left == right or left in SPECIAL or right in SPECIAL:
+            continue
+        if abs(SEVERITY[left] - SEVERITY[right]) >= 2:
+            crossings += 1
+    return crossings, moves
+
+
+def paired_old_mode_stats(reference, candidate, baseline, iters=2000, seed=7):
+    """Paired-by-game comparison of a candidate against old mode.
+
+    direct: severity-crossing rate between the candidate and old-mode labels.
+    difference: candidate-vs-reference crossing rate minus old-mode-vs-
+    reference crossing rate (positive = the candidate disagrees with the
+    reference more than old mode does). Both get game-cluster bootstrap CIs.
+    """
+    per_game = []
+    for ref_game, cand_game, base_game in zip(reference, candidate, baseline):
+        cand_ref, moves = _crossings_between(ref_game, cand_game)
+        base_ref, _ = _crossings_between(ref_game, base_game)
+        cand_base, _ = _crossings_between(base_game, cand_game)
+        per_game.append((cand_ref, base_ref, cand_base, moves))
+    if not per_game:
+        return {}
+    rng = random.Random(seed)
+    direct_rates = []
+    difference_rates = []
+    for _ in range(iters):
+        cand_ref = base_ref = cand_base = total = 0
+        for _ in range(len(per_game)):
+            c_ref, b_ref, c_base, moves = per_game[rng.randrange(len(per_game))]
+            cand_ref += c_ref
+            base_ref += b_ref
+            cand_base += c_base
+            total += moves
+        if total:
+            direct_rates.append(cand_base / total)
+            difference_rates.append((cand_ref - base_ref) / total)
+    direct_rates.sort()
+    difference_rates.sort()
+
+    def ci(values):
+        return {
+            "low": values[int(0.025 * iters)],
+            "high": values[min(iters - 1, int(0.975 * iters))],
+        }
+
+    total_moves = sum(moves for *_, moves in per_game) or 1
+    return {
+        "direct_crossing_rate": sum(c for _, _, c, _ in per_game) / total_moves,
+        "direct_ci": ci(direct_rates),
+        "reference_rate_difference": sum(c - b for c, b, _, _ in per_game)
+        / total_moves,
+        "difference_ci": ci(difference_rates),
+    }
+
+
+def _explanation_counts(per_game):
+    """Real explanation load: mistake/blunder rows each trigger one serial
+    LLM call in analyze_full_game(include_explanations=True). Measured from
+    the classifier labels, not assumed -- feeds --llm-calls sizing."""
+    per_game_counts = [
+        sum(1 for row in game if row["label"] in ("mistake", "blunder"))
+        for game in per_game
+    ]
+    stats = quantiles(per_game_counts)
+    return {
+        "total": sum(per_game_counts),
+        "per_game": stats,
+        "max_per_game": max(per_game_counts) if per_game_counts else 0,
     }
 
 
@@ -427,6 +509,7 @@ def run_nodes_sweep(args, pgns):
     if long_mates:
         print(f"  long mates (>=6) in reference: {len(long_mates)}")
 
+    candidate_rows = {}
     for budget in args.budgets:
         candidate, durations, depths = run_budget(
             pgns,
@@ -436,6 +519,7 @@ def run_nodes_sweep(args, pgns):
             jobs=args.jobs,
             low_priority=args.low_priority,
         )
+        candidate_rows[budget] = candidate
         comparison = compare_to_reference(reference, candidate)
         severity = comparison["severity"]
         moves = severity["moves"] or 1
@@ -459,6 +543,7 @@ def run_nodes_sweep(args, pgns):
             "special": severity["special"],
             "long_mate_label_changes": long_mate_changes,
             "long_mate_kept": long_mate_kept,
+            "explanations": _explanation_counts(candidate),
             "wall": quantiles(durations),
             "depth": quantiles(depths),
         }
@@ -482,18 +567,48 @@ def run_nodes_sweep(args, pgns):
             f"special={severity['special']} "
             f"depth={results[budget]['depth']} "
             f"mate_recall={recall}{long_mate_note} "
+            f"explanations={results[budget]['explanations']['total']} "
+            f"(per-game {results[budget]['explanations']['per_game']}) "
             f"wall p50={results[budget]['wall'].get('p50')}s "
             f"p95={results[budget]['wall'].get('p95')}s"
         )
 
     if args.old_mode:
-        old_mode, old_durations, old_depths = run_old_mode(
-            pgns,
-            args.sf_path,
-            args.old_depth,
-            args.old_time,
-            low_priority=args.low_priority,
-        )
+        old_mode = old_durations = old_depths = None
+        if args.old_mode_cache and Path(args.old_mode_cache).exists():
+            cached = json.loads(
+                Path(args.old_mode_cache).read_text(encoding="utf-8")
+            )
+            if (
+                cached.get("depth_limit") == args.old_depth
+                and cached.get("analysis_time") == args.old_time
+            ):
+                old_mode = cached["per_game"]
+                old_durations = cached.get("durations", [])
+                old_depths = cached.get("depths", [])
+                print(f"  old mode: cache {args.old_mode_cache}")
+        if old_mode is None:
+            old_mode, old_durations, old_depths = run_old_mode(
+                pgns,
+                args.sf_path,
+                args.old_depth,
+                args.old_time,
+                low_priority=args.low_priority,
+            )
+            if args.old_mode_cache:
+                Path(args.old_mode_cache).write_text(
+                    json.dumps(
+                        {
+                            "depth_limit": args.old_depth,
+                            "analysis_time": args.old_time,
+                            "per_game": old_mode,
+                            "durations": old_durations,
+                            "depths": old_depths,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                print(f"  wrote old-mode cache {args.old_mode_cache}")
         comparison = compare_to_reference(reference, old_mode)
         severity = comparison["severity"]
         moves = severity["moves"] or 1
@@ -507,6 +622,7 @@ def run_nodes_sweep(args, pgns):
             "crossing_ci": crossing_ci,
             "adjacent": severity["adjacent"],
             "special": severity["special"],
+            "explanations": _explanation_counts(old_mode),
             "depth": quantiles(old_depths),
             "wall": quantiles(old_durations),
         }
@@ -521,6 +637,20 @@ def run_nodes_sweep(args, pgns):
             f"wall p50={results['old_mode']['wall'].get('p50')}s "
             f"p95={results['old_mode']['wall'].get('p95')}s"
         )
+        for budget in args.budgets:
+            paired = paired_old_mode_stats(
+                reference, candidate_rows[budget], old_mode, seed=args.seed
+            )
+            results[budget]["paired_vs_old_mode"] = paired
+            print(
+                f"    {budget} vs old mode: "
+                f"direct={paired['direct_crossing_rate']:.4f} "
+                f"ci=[{paired['direct_ci']['low']:.4f},"
+                f"{paired['direct_ci']['high']:.4f}] "
+                f"ref_diff={paired['reference_rate_difference']:+.4f} "
+                f"ci=[{paired['difference_ci']['low']:+.4f},"
+                f"{paired['difference_ci']['high']:+.4f}]"
+            )
     return results
 
 

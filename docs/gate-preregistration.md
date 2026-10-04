@@ -61,7 +61,13 @@ detail, e.g. "Game too long for review: 158 plies (max 157)".
 6. N fitness: engine seconds `(plies + 1) * N / nps` must fit
    `(240 - serial_LLM) / 2` at `plies = 157`. N target is the container
    old-mode median; the container old-mode p10 is the floor.
-7. Final gate (set B): run N against the 1M reference and compare with old
+7. Paired comparison vs old mode: on the same games, `direct` is the
+   severity-crossing rate between the candidate and old-mode labels;
+   `ref_diff` is the candidate-vs-reference crossing rate minus the
+   old-mode-vs-reference rate (negative = the candidate disagrees with the
+   reference less than old mode does). Both get game-cluster bootstrap 95%
+   CIs; a CI excluding 0 is the significance test.
+8. Final gate (set B): run N against the 1M reference and compare with old
    mode on the same positions. Pass if the crossing-rate point estimate is
    at most the old mode's and the bootstrap CI upper bound is not worse than
    the old mode's by more than the reference's own instability
