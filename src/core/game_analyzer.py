@@ -55,6 +55,10 @@ DEFAULT_PLAYER_RATING = 1500
 MIN_PLAYER_RATING = 100
 MAX_PLAYER_RATING = 3500
 
+# Bump when the classification algorithm changes in a way the constants hash
+# cannot see (e.g. precedence order). The mode string carries both.
+CLASSIFIER_VERSION = "v1"
+
 # Static piece values for the one-ply "did the opponent's best reply win
 # material" blunder check (see `_loses_material_after_best_reply`).
 _PIECE_VALUES = {

@@ -18,6 +18,7 @@ within `_BOOK_CACHE_TTL_SECONDS` without restarting the backend.
 Contiguity ("once a game leaves the book it never re-enters") is enforced
 by the caller (`core.game_analyzer.GameAnalyzer`), not here.
 """
+import hashlib
 import logging
 import os
 import threading
@@ -38,7 +39,10 @@ log = logging.getLogger(__name__)
 # this process's cache directly.
 _BOOK_CACHE_TTL_SECONDS = 600
 
-_book_cache: Optional[Tuple[float, Dict[str, FrozenSet[str]]]] = None
+_book_cache: Optional[Tuple[float, Dict[str, FrozenSet[str]], str]] = None
+# Content hash of the loaded book (not a load timestamp): the mode string
+# must stay stable across the 600s TTL reloads and change only when rows do.
+_book_revision: Optional[str] = None
 # Timestamp of the last empty/failed load. Empty and failed loads are never
 # cached (so a later rebuild is picked up); this only rate-limits retries to
 # avoid hammering the database on every lookup while the table is missing.
@@ -61,9 +65,20 @@ def position_key(board: chess.Board) -> str:
 # Lookup (hot path)
 # ---------------------------------------------------------------------------
 
-def _load_book_from_db() -> Dict[str, FrozenSet[str]]:
+def _book_revision_for(book: Dict[str, FrozenSet[str]]) -> str:
+    """Content hash over sorted (position_key, moves) rows."""
+    hasher = hashlib.sha256()
+    for key in sorted(book):
+        hasher.update(key.encode())
+        hasher.update(b"\0")
+        hasher.update(",".join(sorted(book[key])).encode())
+        hasher.update(b"\n")
+    return hasher.hexdigest()[:16]
+
+
+def _load_book_from_db() -> Tuple[Dict[str, FrozenSet[str]], str]:
     if database.connection_pool is None:
-        return {}
+        return {}, ""
     conn = database.connection_pool.getconn()
     try:
         with conn.cursor() as cur:
@@ -75,7 +90,13 @@ def _load_book_from_db() -> Dict[str, FrozenSet[str]]:
     book: Dict[str, set] = {}
     for key, move_uci in rows:
         book.setdefault(key, set()).add(move_uci)
-    return {key: frozenset(moves) for key, moves in book.items()}
+    frozen = {key: frozenset(moves) for key, moves in book.items()}
+    return frozen, _book_revision_for(frozen)
+
+
+def get_book_revision() -> Optional[str]:
+    """Content hash of the loaded book, or None when it has not loaded."""
+    return _book_revision
 
 
 def _get_book() -> Dict[str, FrozenSet[str]]:
@@ -85,7 +106,7 @@ def _get_book() -> Dict[str, FrozenSet[str]]:
     failed loads return {} for that call only and are retried after a short
     backoff, so a rebuilt table is picked up without waiting out the TTL.
     """
-    global _book_cache, _book_empty_since
+    global _book_cache, _book_empty_since, _book_revision
     now = time.time()
     cached = _book_cache
     if cached is not None and now - cached[0] < _BOOK_CACHE_TTL_SECONDS:
@@ -107,7 +128,7 @@ def _get_book() -> Dict[str, FrozenSet[str]]:
         ):
             return {}
         try:
-            book = _load_book_from_db()
+            book, revision = _load_book_from_db()
         except Exception:  # noqa: BLE001 — review must survive a missing table
             log.exception(
                 "Opening book load failed (0 rows loaded); "
@@ -125,7 +146,8 @@ def _get_book() -> Dict[str, FrozenSet[str]]:
             _book_empty_since = now
             return {}
         _book_empty_since = None
-        _book_cache = (now, book)
+        _book_revision = revision
+        _book_cache = (now, book, revision)
         return book
 
 
@@ -143,9 +165,10 @@ def is_book_move(board: chess.Board, move: chess.Move) -> bool:
 
 def invalidate_cache() -> None:
     """Drop the cached book and any empty-load backoff (tests / rebuilds)."""
-    global _book_cache, _book_empty_since
+    global _book_cache, _book_empty_since, _book_revision
     _book_cache = None
     _book_empty_since = None
+    _book_revision = None
 
 
 def count_book_rows() -> int:

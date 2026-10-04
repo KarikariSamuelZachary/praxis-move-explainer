@@ -548,6 +548,11 @@ def get_review_stockfish(
     return _review_stockfish
 
 
+def get_review_engine_name() -> str:
+    """Advertised review-engine name without starting the singleton."""
+    return _review_stockfish.name if _review_stockfish is not None else "unknown"
+
+
 def reset_review_stockfish() -> None:
     """Drop the long-lived review Stockfish after a failure.
 

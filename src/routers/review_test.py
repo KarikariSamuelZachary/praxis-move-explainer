@@ -132,6 +132,25 @@ def test_valid_secret_and_header_pass_the_auth_gate():
     print("  [PASS] valid secret + X-Clerk-User-Id -> 200 (engine mocked)")
 
 
+def test_capabilities_reports_flag_and_mode():
+    secret = _secret()
+    anonymous = _client().get(
+        "/api/review/capabilities", headers={"X-Internal-Secret": secret}
+    )
+    assert anonymous.status_code == 400, anonymous.text
+
+    response = _client().get(
+        "/api/review/capabilities",
+        headers={"X-Internal-Secret": secret, "X-Clerk-User-Id": TEST_CLERK_ID},
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["sandbox_enabled"] is False, body
+    mode = body["mode"]
+    assert "multipv=2" in mode and "classifier=" in mode and "engine=" in mode, mode
+    print(f"  [PASS] capabilities -> sandbox_enabled=False, mode={mode}")
+
+
 def run() -> int:
     print("=== Running review route auth tests ===")
     tests = [
@@ -139,6 +158,7 @@ def run() -> int:
         test_missing_clerk_user_is_rejected,
         test_missing_header_rejects_before_the_user_limiter,
         test_valid_secret_and_header_pass_the_auth_gate,
+        test_capabilities_reports_flag_and_mode,
     ]
     failures = 0
     for test in tests:

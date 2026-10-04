@@ -48,7 +48,7 @@ def test_position_key_transposition():
 def test_is_book_move_with_injected_cache():
     board = chess.Board()
     key = mod.position_key(board)
-    mod._book_cache = (time.time(), {key: frozenset({"e2e4"})})
+    mod._book_cache = (time.time(), {key: frozenset({"e2e4"})}, "test-rev")
     try:
         assert mod.is_book_move(board, chess.Move.from_uci("e2e4")) is True
         assert mod.is_book_move(board, chess.Move.from_uci("d2d4")) is False
@@ -124,11 +124,11 @@ def test_empty_load_not_cached_and_reload_picks_up_populated():
     real_loader, real_retry = _reset_loader_state()
     mod._BOOK_EMPTY_RETRY_SECONDS = 0
     try:
-        mod._load_book_from_db = lambda: {}
+        mod._load_book_from_db = lambda: ({}, "")
         assert mod._get_book() == {}, "empty load must fail soft to {}"
         assert mod._book_cache is None, "empty load must not populate the cache"
         populated = {"k": frozenset({"e2e4"})}
-        mod._load_book_from_db = lambda: populated
+        mod._load_book_from_db = lambda: (populated, "rev-1")
         assert mod._get_book() == populated, (
             "a later populated load must be picked up on retry"
         )
@@ -150,7 +150,7 @@ def test_db_exception_not_cached():
         assert mod._get_book() == {}, "exception must fail soft to {}"
         assert mod._book_cache is None, "exception must not populate the cache"
         populated = {"k": frozenset({"e2e4"})}
-        mod._load_book_from_db = lambda: populated
+        mod._load_book_from_db = lambda: (populated, "rev-1")
         assert mod._get_book() == populated, (
             "load after an exception must be retried, not stuck empty"
         )
@@ -168,13 +168,18 @@ def test_populated_load_cached_for_ttl():
     try:
         def counting_loader():
             calls.append(1)
-            return {"k": frozenset({"e2e4"})}
+            return {"k": frozenset({"e2e4"})}, "rev-1"
         mod._load_book_from_db = counting_loader
         first = mod._get_book()
         second = mod._get_book()
         assert first == second == {"k": frozenset({"e2e4"})}
+        assert mod.get_book_revision() == "rev-1", "revision must come from content"
         assert len(calls) == 1, f"second call within TTL must not reload, got {len(calls)}"
-        mod._book_cache = (time.time() - mod._BOOK_CACHE_TTL_SECONDS - 1, first)
+        mod._book_cache = (
+            time.time() - mod._BOOK_CACHE_TTL_SECONDS - 1,
+            first,
+            "rev-1",
+        )
         assert mod._get_book() == first
         assert len(calls) == 2, "expired TTL must reload exactly once"
     finally:

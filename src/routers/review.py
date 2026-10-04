@@ -5,11 +5,17 @@ from typing import Any, Dict, List
 import chess.engine
 from fastapi import APIRouter, Depends, HTTPException
 
-from core.analysis_mode import review_deterministic_enabled
+from core.analysis_mode import (
+    REVIEW_MULTIPV,
+    current_mode_string,
+    review_deterministic_enabled,
+    review_nodes,
+)
 from core.auth import require_clerk_user_id
 from core.game_analyzer import GameAnalyzer
 from core.rate_limit import limit_by_clerk_user_id, limit_by_ip
 from engines.stockfish_engine import (
+    get_review_engine_name,
     get_review_stockfish,
     reset_review_stockfish,
 )
@@ -127,3 +133,24 @@ def review_game(
     except Exception as exc:
         log.exception("Failed to analyze PGN")
         raise HTTPException(status_code=500, detail="Failed to analyze PGN") from exc
+
+
+@router.get("/review/capabilities")
+def review_capabilities(
+    _clerk_id: str = Depends(require_clerk_user_id),
+):
+    """Capability signal for the sandbox UI: flag state and mode fingerprint.
+
+    The frontend hides the lens when sandbox_enabled is false; the mode
+    string lets the client echo it back so a stale review (deployed under a
+    different engine/classifier/book revision) can be detected.
+    """
+    deterministic = review_deterministic_enabled()
+    return {
+        "sandbox_enabled": deterministic,
+        "mode": current_mode_string(
+            engine_name=get_review_engine_name(),
+            multipv=REVIEW_MULTIPV,
+            nodes=review_nodes(),
+        ),
+    }

@@ -11,6 +11,12 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from dotenv import load_dotenv
+from core.analysis_mode import (
+    REVIEW_MULTIPV,
+    current_mode_string,
+    review_deterministic_enabled,
+    review_nodes,
+)
 from core.database import init_db
 from core.migrations import run_migrations
 from services import endgame_seeding
@@ -23,6 +29,7 @@ from engines.stockfish_engine import (
     close_endgame_stockfish,
     close_review_stockfish,
     close_stockfish_singleton,
+    get_review_engine_name,
     resolve_stockfish_path,
     singleton_status,
     start_endgame_stockfish,
@@ -61,6 +68,17 @@ def get_stockfish_debug_info():
         # Which engine revision each long-lived process actually booted
         # ('Stockfish 19'), so a deploy is verifiable without a shell.
         "singletons": singleton_status(),
+        # Deterministic review mode + label-parity fingerprint.
+        "analysis_mode": {
+            "deterministic": review_deterministic_enabled(),
+            "nodes": review_nodes(),
+            "multipv": REVIEW_MULTIPV,
+            "mode": current_mode_string(
+                engine_name=get_review_engine_name(),
+                multipv=REVIEW_MULTIPV,
+                nodes=review_nodes(),
+            ),
+        },
     }
 
 # --- App ---
