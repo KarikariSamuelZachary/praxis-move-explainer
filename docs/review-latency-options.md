@@ -13,11 +13,10 @@
 - **Proxy timeout:** `REVIEW_TIMEOUT_MS = 240_000` in
   `frontend/src/app/api/analyze/route.ts` aborts the request at 240s.
 - **Headroom:** N must fit with 2x headroom, i.e. engine time <=
-  `(240 - serial LLM) / 2` seconds. Before the explain flip, review still
-  generates explanations serially on the request path. Real counts from the
-  tuning sample (1M reference labels, 10 games / 200 plies): mistake+blunder
-  per game **mean 0.70, p50 0, p90 3, max 3** (7 total) — not the earlier
-  5-per-game guess. Per-call latency is still assumed at 2s.
+  `(240 - serial LLM) / 2` seconds. AI explanations are disabled until the
+  fine-tuned model is ready, so serial LLM is **0s** (`REVIEW_LLM_SECONDS`
+  unset). The earlier counts (mistake+blunder per game mean 0.70, p90/max 3)
+  apply again only if serial explanations return to the request path.
 - **Determinism:** review uses `Threads=1`, `Hash=16`, a fresh `ucinewgame`
   token per position, and fixed nodes. Threads must stay 1 for
   reproducibility, so N is the only quality knob. Extra cores do not speed up
@@ -31,15 +30,14 @@ At the deterministic cap placeholder of 157 plies and 2x headroom, run
 `python scripts/n_ceiling.py --nps <container nps> --llm-seconds <S>`. At the
 local p10-derived ~220k nps:
 
-| N | engine | fits (S=0) | fits (S=1.4s, mean 0.7 calls) | fits (S=6s, worst 3 calls) |
-|---|---|---|---|---|
-| 100k | 71.8s | yes (0.60x) | yes (0.60x) | yes (0.61x) |
-| 150k | 107.7s | yes (0.90x) | yes (0.90x) | yes (0.92x) |
-| 200k | 143.6s | NO (1.20x) | NO (1.20x) | NO (1.23x) |
+| N | engine | fits |
+|---|---|---|
+| 100k | 71.8s | yes (0.60x) |
+| 150k | 107.7s | yes (0.90x) |
+| 200k | 143.6s | NO (1.20x) |
 
-Max N: **167,089 without** explanation time, **166,114** at the real mean
-(0.70 x 2s), **162,911** at the real worst case (3 x 2s). The container nps
-is still unknown; fill it in before fixing N.
+Max N is **167,089** at 0s serial LLM. The container nps is still unknown;
+fill it in before fixing N.
 
 ## N decision rule
 
