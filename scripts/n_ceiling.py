@@ -44,6 +44,18 @@ def parse_args():
         help="worst-case serial LLM time still on the request path",
     )
     parser.add_argument(
+        "--llm-per-call",
+        type=float,
+        default=0.0,
+        help="per-explanation latency (used when --llm-seconds is 0)",
+    )
+    parser.add_argument(
+        "--llm-calls",
+        type=int,
+        default=0,
+        help="serial explanations per review (mistakes/blunders)",
+    )
+    parser.add_argument(
         "--nodes",
         nargs="*",
         type=int,
@@ -54,11 +66,17 @@ def parse_args():
 
 def main():
     args = parse_args()
-    engine_budget = (args.ceiling - args.llm_seconds) / args.headroom
+    llm_seconds = args.llm_seconds
+    llm_note = "explicit"
+    if llm_seconds == 0.0 and args.llm_per_call > 0 and args.llm_calls > 0:
+        llm_seconds = args.llm_per_call * args.llm_calls
+        llm_note = f"{args.llm_calls} x {args.llm_per_call:.1f}s"
+    engine_budget = (args.ceiling - llm_seconds) / args.headroom
     print(
         f"nps={args.nps:,.0f}  plies={args.plies} (max accepted)  "
         f"ceiling={args.ceiling:.0f}s  headroom={args.headroom:.1f}x  "
-        f"llm={args.llm_seconds:.0f}s  engine budget={engine_budget:.0f}s"
+        f"llm={llm_seconds:.0f}s ({llm_note})  "
+        f"engine budget={engine_budget:.0f}s"
     )
     print(
         f"{'N':>10} {'per-eval':>10} {'engine':>9} {'x budget':>9} "
