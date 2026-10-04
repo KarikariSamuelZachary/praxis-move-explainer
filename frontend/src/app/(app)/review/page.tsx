@@ -2,13 +2,32 @@
 
 import { useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
+import { Chess } from 'chess.js';
 
 import AnalysisPanel from '@/components/review/AnalysisPanel';
 import ImportPanel, {
   ImportSource,
 } from '@/components/review/ImportPanel';
+import MoveList from '@/components/review/MoveList';
 import ReviewShell from '@/components/review/ReviewShell';
-import { GameReviewMove } from '@/types';
+import {
+  GameReviewMove,
+  ReviewCapabilities,
+  SandboxLine,
+  SandboxMoveResponse,
+} from '@/types';
+
+import { displayedExplanationFor, lastPlyFor } from './review-page-logic';
+import {
+  ReviewTree,
+  SuggestionLine,
+  addVariation,
+  buildMainlineTree,
+  mainlinePlyToNode,
+} from './review-tree';
+import { activeNodeView } from './review-tree-view';
+
+const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
 
 // Same lazy-board pattern as the other app routes: BoardPanel statically
 // imports chess.js + react-chessboard, which the empty review page (just an
@@ -29,29 +48,84 @@ type AnalyzeErrorResponse = {
   error?: string;
 };
 
+/** Legal UCI for a drag on `fen`, defaulting promotions to a queen. */
+function exploreMoveUci(fen: string, from: string, to: string): string | null {
+  try {
+    const chess = new Chess(fen);
+    const candidates = chess
+      .moves({ verbose: true })
+      .filter((move) => move.from === from && move.to === to);
+    if (candidates.length === 0) {
+      return null;
+    }
+    const promotion = candidates[0].promotion ? 'q' : '';
+    return `${from}${to}${promotion}`;
+  } catch {
+    return null;
+  }
+}
+
+function toSuggestionLine(line: SandboxLine): SuggestionLine {
+  return {
+    moveUci: line.move_uci ?? '',
+    moveSan: line.move_san ?? '',
+    evalCp: line.eval_cp ?? undefined,
+    evalMate: line.eval_mate ?? undefined,
+    pvSan: line.pv_san,
+  };
+}
+
 export default function ReviewPage() {
   const [pgnInput, setPgnInput] = useState('');
   const [importSource, setImportSource] = useState<ImportSource>('paste');
   const [analysisState, setAnalysisState] = useState<AnalysisState>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [gameData, setGameData] = useState<GameReviewMove[] | null>(null);
-  const [activePly, setActivePly] = useState(0);
+  const [tree, setTree] = useState<ReviewTree | null>(null);
+  const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
   const [coachExplanation, setCoachExplanation] = useState<ReviewExplanation | null>(null);
   const [coachError, setCoachError] = useState<string | null>(null);
   const [isAskingCoach, setIsAskingCoach] = useState(false);
   const [showBestMove, setShowBestMove] = useState(false);
+  const [sandboxEnabled, setSandboxEnabled] = useState(false);
+  const [exploreMode, setExploreMode] = useState(false);
+  const [suggestionsEnabled, setSuggestionsEnabled] = useState(false);
+  const [explorePending, setExplorePending] = useState(false);
+  const [exploreError, setExploreError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/review/capabilities')
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data: ReviewCapabilities | null) => {
+        if (!cancelled && data) {
+          setSandboxEnabled(Boolean(data.sandbox_enabled));
+        }
+      })
+      .catch(() => {
+        // Sandbox stays hidden when capabilities are unavailable.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     setCoachExplanation(null);
     setCoachError(null);
     setShowBestMove(false);
-  }, [activePly]);
+  }, [activeNodeId]);
 
   useEffect(() => {
     if (analysisState !== 'ready' || !gameData) {
       return;
     }
-    setActivePly(0);
+    const built = buildMainlineTree(gameData);
+    setTree(built);
+    setActiveNodeId(built.mainlineIds[0]);
+    setExploreMode(false);
+    setSuggestionsEnabled(false);
+    setExploreError(null);
     setCoachExplanation(null);
     setCoachError(null);
     setShowBestMove(false);
@@ -100,11 +174,7 @@ export default function ReviewPage() {
   }
 
   async function handleAskCoach() {
-    if (!gameData || analysisState !== 'ready') {
-      return;
-    }
-    const move = gameData[Math.min(activePly, gameData.length - 1)];
-    if (!move) {
+    if (!view || !currentMove || analysisState !== 'ready') {
       return;
     }
 
@@ -115,10 +185,10 @@ export default function ReviewPage() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          fen: move.fen,
-          move: move.san,
-          classification: move.classification,
-          moveHistory: gameData.slice(0, activePly + 1).map((entry) => entry.san),
+          fen: currentMove.fen,
+          move: currentMove.san,
+          classification: currentMove.classification,
+          moveHistory: view.coachHistory.map((entry) => entry.san),
         }),
       });
 
@@ -136,18 +206,113 @@ export default function ReviewPage() {
     }
   }
 
+  async function handleExploreMove(from: string, to: string) {
+    if (!exploreMode || !tree || !activeNodeId || !view) {
+      return;
+    }
+    const uci = exploreMoveUci(view.position, from, to);
+    if (!uci) {
+      return;
+    }
+
+    setExplorePending(true);
+    setExploreError(null);
+    try {
+      const response = await fetch('/api/review/live', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fen: view.position,
+          move: uci,
+          player_rating: null,
+        }),
+      });
+
+      if (!response.ok) {
+        let detail = `Live analysis returned ${response.status}`;
+        try {
+          const errorBody = (await response.json()) as AnalyzeErrorResponse;
+          detail = errorBody.detail ?? errorBody.error ?? detail;
+        } catch {
+          // Keep the status-based message.
+        }
+        throw new Error(detail);
+      }
+
+      const data = (await response.json()) as SandboxMoveResponse;
+      const row: GameReviewMove = {
+        fen: data.fen,
+        san: data.move_san,
+        color: data.color,
+        classification: data.classification,
+        cp_loss: data.cp_loss,
+        ep_loss: data.ep_loss,
+        eval_cp: data.eval_cp,
+        eval_mate: data.eval_mate ?? null,
+        best_move_san: data.best?.move_san ?? null,
+        best_move_uci: data.best?.move_uci ?? null,
+        fen_before: data.fen_before,
+        raw_ep_loss: data.ep_loss,
+        second_best_cp: data.second_best?.eval_cp ?? null,
+        second_best_move_san: data.second_best?.move_san ?? null,
+        second_best_move_uci: data.second_best?.move_uci ?? null,
+        second_best_pv_uci: data.second_best?.pv_uci ?? [],
+      };
+      const lines = [data.best, data.second_best]
+        .filter((line): line is SandboxLine => Boolean(line))
+        .map(toSuggestionLine);
+      const { tree: branched, nodeId } = addVariation(
+        tree,
+        activeNodeId,
+        row,
+        {
+          suggestionsBefore: lines,
+          status: 'ready',
+          mode: data.mode,
+          evalCp: data.eval_cp,
+          evalMate: data.eval_mate ?? null,
+          classification: data.classification,
+          bestMoveUci: data.best?.move_uci ?? null,
+        },
+      );
+      setTree(branched);
+      setActiveNodeId(nodeId);
+    } catch (error) {
+      const detail =
+        error instanceof Error ? error.message : 'Could not analyze that move.';
+      setExploreError(detail);
+    } finally {
+      setExplorePending(false);
+    }
+  }
+
   const hasGame = analysisState === 'ready' && gameData !== null;
-  const currentMove = hasGame && gameData ? gameData[Math.min(activePly, gameData.length - 1)] : null;
-  const displayedExplanation = currentMove?.explanation ?? coachExplanation;
-  const moveNumberLabel = formatMoveNumber(activePly);
-  const bestMoveSan =
-    currentMove &&
-    currentMove.best_move_san &&
-    currentMove.san !== 'Start' &&
-    currentMove.classification !== 'book' &&
-    currentMove.classification !== 'best'
-      ? currentMove.best_move_san
+  const view =
+    hasGame && tree && activeNodeId
+      ? activeNodeView(tree, activeNodeId, START_FEN)
       : null;
+  const currentMove = view?.currentMove ?? null;
+  const activePly = view && tree && activeNodeId ? tree.nodes[activeNodeId].ply : 0;
+  const displayedExplanation = displayedExplanationFor(
+    currentMove,
+    coachExplanation,
+  );
+  const moveNumberLabel = view?.moveNumberLabel ?? 'Starting position';
+  const bestMoveSan = view?.bestMoveSan ?? null;
+  const activeNode =
+    tree && activeNodeId ? tree.nodes[activeNodeId] : null;
+  const suggestions: SuggestionLine[] =
+    activeNode?.analysis?.suggestionsBefore ?? [];
+
+  function handlePlySelect(ply: number) {
+    if (!tree) {
+      return;
+    }
+    const nodeId = mainlinePlyToNode(tree, ply);
+    if (nodeId) {
+      setActiveNodeId(nodeId);
+    }
+  }
 
   return (
     <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-[10px] pt-6 text-white lg:overflow-hidden lg:px-10 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
@@ -166,11 +331,14 @@ export default function ReviewPage() {
         }
         boardPanel={
           <BoardPanel
-            moves={gameData ?? []}
-            activePly={activePly}
+            position={view?.position ?? START_FEN}
+            fenBefore={view?.fenBefore ?? null}
+            currentMove={currentMove}
             isAnalyzing={analysisState === 'analyzing'}
             hasGame={hasGame}
             showBestMove={showBestMove}
+            allowDragging={sandboxEnabled && exploreMode}
+            onExploreMove={handleExploreMove}
           />
         }
         analysisPanel={
@@ -183,24 +351,31 @@ export default function ReviewPage() {
             onAskCoach={handleAskCoach}
             moveNumberLabel={moveNumberLabel}
             activePly={activePly}
-            lastPly={Math.max(0, (gameData?.length ?? 0) - 1)}
-            onPlySelect={setActivePly}
+            lastPly={lastPlyFor(gameData ?? [])}
+            onPlySelect={handlePlySelect}
             bestMoveSan={bestMoveSan}
             showBestMove={showBestMove}
             onToggleBestMove={() => setShowBestMove((value) => !value)}
+            moveList={
+              tree && activeNodeId ? (
+                <MoveList
+                  tree={tree}
+                  activeNodeId={activeNodeId}
+                  onNodeSelect={setActiveNodeId}
+                />
+              ) : undefined
+            }
+            sandboxEnabled={sandboxEnabled}
+            exploreMode={exploreMode}
+            onToggleExplore={() => setExploreMode((value) => !value)}
+            suggestionsEnabled={suggestionsEnabled}
+            onToggleSuggestions={() => setSuggestionsEnabled((value) => !value)}
+            suggestions={suggestions}
+            explorePending={explorePending}
+            exploreError={exploreError}
           />
         }
       />
     </div>
   );
-}
-
-function formatMoveNumber(activePly: number): string {
-  if (activePly === 0) {
-    return 'Starting position';
-  }
-  const moveIndex = activePly - 1;
-  const fullMove = Math.floor(moveIndex / 2) + 1;
-  const suffix = moveIndex % 2 === 0 ? 'White' : 'Black';
-  return `Move ${fullMove} · ${suffix}`;
 }

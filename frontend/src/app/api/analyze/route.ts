@@ -231,8 +231,22 @@ export async function POST(request: NextRequest) {
         status: response.status,
         body: errorText,
       });
+      // 4xx details (e.g. "Game too long for review: 158 plies (max 157)")
+      // are actionable for the player, so surface them instead of a generic
+      // failure message. 5xx stays generic.
+      let detail = 'The analysis service could not process this game.';
+      if (response.status < 500) {
+        try {
+          const parsed = JSON.parse(errorText) as { detail?: unknown };
+          if (typeof parsed.detail === 'string' && parsed.detail.trim()) {
+            detail = parsed.detail;
+          }
+        } catch {
+          // Not JSON; keep the generic message.
+        }
+      }
       return NextResponse.json(
-        { error: 'Failed to analyze PGN', detail: 'The analysis service could not process this game.' },
+        { error: detail, detail },
         { status: response.status }
       );
     }
