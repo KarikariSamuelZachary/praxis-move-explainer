@@ -2,23 +2,33 @@
 """Export frozen gate PGN sets A and B from opponent_games.
 
 Set A is for choosing the nodes budget (N); set B is the untouched final
-gate. Games are split deterministically and balanced by opponent (alternate
-within each opponent, ordered by opponent/end_time/id) so one scouted
-opponent cannot dominate either set. Every game must have at least
---min-plies mainline plies.
+gate. Opponent pools are disjoint: every game of an opponent lands in exactly
+one set, so a scouted opponent cannot leak across both. Neutral games (Lichess
+export/dump) go entirely into set B as a separate file. Every game must have
+at least --min-plies mainline plies.
 
-Writes data/gate_set_A.pgn, data/gate_set_B.pgn and a manifest with SHA-256
-hashes plus the exact row ids, so the gate can be reproduced even after the
-import pipeline trims old games.
+Writes data/gate_set_A.pgn, data/gate_set_B.pgn (plus
+data/gate_set_B.neutral.pgn when neutral games exist) and a manifest with
+per-file SHA-256 hashes plus the exact row ids, so the gate can be reproduced
+even after the import pipeline trims old games.
+
+Neutral games come from a local dump (--neutral-pgn) or one authenticated
+Lichess export (--neutral-user, LICHESS_TOKEN). Rate-limit responses fail
+immediately instead of being retried.
 
 Usage:
   python scripts/export_gate_pgns.py --per-set 120 --min-plies 20
+  python scripts/export_gate_pgns.py --neutral-pgn dump.pgn
+  LICHESS_TOKEN=... python scripts/export_gate_pgns.py --neutral-user someone
 """
 import argparse
 import hashlib
 import io
 import json
 import os
+import urllib.error
+import urllib.parse
+import urllib.request
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -37,9 +47,14 @@ def parse_args():
     parser.add_argument(
         "--neutral-pgn",
         default=None,
-        help="Optional neutral games (e.g. Lichess export) split into both "
-        "sets as separate files with their own hashes.",
+        help="Local neutral PGN dump; its games go into set B.",
     )
+    parser.add_argument(
+        "--neutral-user",
+        default=None,
+        help="Lichess username; one authenticated export via LICHESS_TOKEN.",
+    )
+    parser.add_argument("--neutral-max", type=int, default=300)
     return parser.parse_args()
 
 
@@ -55,8 +70,46 @@ def read_pgn_games(path, min_plies):
     return games
 
 
-def split_neutral(games):
-    return games[::2], games[1::2]
+def fetch_lichess_dump(user, max_games, out_dir):
+    """One authenticated Lichess export; never retries on 429."""
+    token = os.environ.get("LICHESS_TOKEN")
+    if not token:
+        raise SystemExit(
+            "LICHESS_TOKEN is not set; use --neutral-pgn with a downloaded "
+            "dump instead of retrying the anonymous API"
+        )
+    query = urllib.parse.urlencode(
+        {"max": max_games, "clocks": "false", "evals": "false", "opening": "true"}
+    )
+    url = f"https://lichess.org/api/games/user/{user}?{query}"
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/x-chess-pgn",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=120) as response:
+            data = response.read().decode("utf-8", errors="replace")
+    except urllib.error.HTTPError as exc:
+        if exc.code == 429:
+            raise SystemExit(
+                "Lichess rate limit (429); wait or use a dump. Not retrying."
+            ) from exc
+        raise
+    dump_path = out_dir / "lichess_neutral_dump.pgn"
+    dump_path.write_text(data, encoding="utf-8")
+    return dump_path
+
+
+def read_neutral_games(args, out_dir):
+    path = args.neutral_pgn
+    if not path and args.neutral_user:
+        path = str(fetch_lichess_dump(args.neutral_user, args.neutral_max, out_dir))
+    if not path:
+        return []
+    return read_pgn_games(path, args.min_plies)
 
 
 def write_pgn_file(path, pgns):
@@ -112,35 +165,42 @@ def fetch_games(min_plies):
     return usable
 
 
-def split_balanced(games, per_set):
-    """Round-robin across opponents so no scouted opponent dominates a set."""
+def _take_from_pools(pools, per_set):
+    """Share per_set evenly across whole-opponent pools, then fill the rest."""
+    if not pools:
+        return []
+    share = max(1, per_set // len(pools))
+    chosen = []
+    for pool in pools:
+        chosen.extend(pool[:share])
+    if len(chosen) < per_set:
+        for pool in pools:
+            for game in pool[share:]:
+                if len(chosen) >= per_set:
+                    break
+                chosen.append(game)
+    return chosen[:per_set]
+
+
+def split_by_opponent(games, per_set):
+    """Disjoint opponent pools: every game of an opponent goes to one set.
+
+    Opponents are dealt largest-first, alternating between the sets, until
+    both have enough available games. Each set then takes an even share from
+    each of its opponents so one opponent cannot dominate a set.
+    """
     by_opponent = defaultdict(list)
     for game in games:
         by_opponent[game["opponent"] or "unknown"].append(game)
 
-    opponents = sorted(by_opponent)
-    indices = {opponent: 0 for opponent in opponents}
-    set_a, set_b = [], []
+    pools = sorted(by_opponent.items(), key=lambda item: (-len(item[1]), item[0]))
+    groups = ([], [])
+    turn = 0
+    for _, pool in pools:
+        groups[turn].append(pool)
+        turn = 1 - turn
 
-    while len(set_a) < per_set or len(set_b) < per_set:
-        progressed = False
-        for opponent in opponents:
-            index = indices[opponent]
-            pool = by_opponent[opponent]
-            if index >= len(pool):
-                continue
-            game = pool[index]
-            indices[opponent] = index + 1
-            target = set_a if index % 2 == 0 else set_b
-            if len(target) < per_set:
-                target.append(game)
-            progressed = True
-            if len(set_a) >= per_set and len(set_b) >= per_set:
-                break
-        if not progressed:
-            break
-
-    return set_a, set_b
+    return _take_from_pools(groups[0], per_set), _take_from_pools(groups[1], per_set)
 
 
 def write_set(path, games):
@@ -162,7 +222,7 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     games = fetch_games(args.min_plies)
-    set_a, set_b = split_balanced(games, args.per_set)
+    set_a, set_b = split_by_opponent(games, args.per_set)
     if not set_a or not set_b:
         raise SystemExit(
             f"not enough usable games: {len(games)} total, "
@@ -174,17 +234,15 @@ def main():
     hash_a = write_set(path_a, set_a)
     hash_b = write_set(path_b, set_b)
 
-    neutral_files = {}
-    if args.neutral_pgn:
-        neutral = read_pgn_games(args.neutral_pgn, args.min_plies)
-        neutral_a, neutral_b = split_neutral(neutral)
-        path_na = out_dir / "gate_set_A.neutral.pgn"
+    neutral = read_neutral_games(args, out_dir)
+    neutral_manifest = {}
+    if neutral:
         path_nb = out_dir / "gate_set_B.neutral.pgn"
-        hash_na = write_pgn_file(path_na, neutral_a)
-        hash_nb = write_pgn_file(path_nb, neutral_b)
-        neutral_files = {
-            "set_a_neutral": {"file": str(path_na), "sha256": hash_na, "games": len(neutral_a)},
-            "set_b_neutral": {"file": str(path_nb), "sha256": hash_nb, "games": len(neutral_b)},
+        hash_nb = write_pgn_file(path_nb, neutral)
+        neutral_manifest = {
+            "file": str(path_nb),
+            "sha256": hash_nb,
+            "games": len(neutral),
         }
 
     manifest = {
@@ -192,6 +250,7 @@ def main():
         "min_plies": args.min_plies,
         "per_set": args.per_set,
         "usable_games": len(games),
+        "split": "disjoint_opponent_pools",
         "set_a": {
             "file": str(path_a),
             "sha256": hash_a,
@@ -205,8 +264,8 @@ def main():
             "games": len(set_b),
             "opponents": distribution(set_b),
             "ids": [g["id"] for g in set_b],
+            "neutral": neutral_manifest,
         },
-        "neutral": neutral_files,
     }
     manifest_path = out_dir / "gate_sets.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
