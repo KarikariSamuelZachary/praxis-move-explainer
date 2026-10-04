@@ -5,10 +5,14 @@ from typing import Any, Dict, List
 import chess.engine
 from fastapi import APIRouter, Depends, HTTPException
 
+from core.analysis_mode import review_deterministic_enabled
 from core.auth import require_clerk_user_id
 from core.game_analyzer import GameAnalyzer
 from core.rate_limit import limit_by_clerk_user_id, limit_by_ip
-from engines.stockfish_engine import get_review_stockfish, reset_review_stockfish
+from engines.stockfish_engine import (
+    get_review_stockfish,
+    reset_review_stockfish,
+)
 from llms.gemini_explainer import GeminiExplainer
 from llms.groq_explainer import GroqExplainer
 from llms.mock_explainer import MockExplainer
@@ -97,6 +101,8 @@ def review_game(
 
     try:
         engine = get_review_stockfish(depth=int(os.getenv("REVIEW_DEPTH", "18")))
+        deterministic = review_deterministic_enabled()
+        log.info("Review deterministic mode: %s", deterministic)
         analyzer = GameAnalyzer(
             engine=engine,
             explainer=explainer,
@@ -104,6 +110,7 @@ def review_game(
             # MultiPV=2 gives the Great-move check the second-best line
             # ("only good move") without a second search per position.
             multipv=2,
+            deterministic=deterministic,
         )
         review_rows = analyzer.analyze_full_game(pgn, target_color=body.target_color)
         return _normalize_review_rows(review_rows)

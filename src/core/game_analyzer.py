@@ -9,6 +9,10 @@ from io import StringIO
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from schemas.models import Position, Evaluation, Mistake, AnalyzedMistake
+from core.analysis_mode import (
+    review_nodes,
+    review_nodes_backstop_seconds,
+)
 from engines.stockfish_engine import StockfishEngine
 from llms.base import LLMExplainer
 
@@ -348,6 +352,7 @@ class GameAnalyzer:
         blunder_threshold: float = 100,
         book_lookup: Optional[Callable[[chess.Board, chess.Move], bool]] = None,
         multipv: int = 1,
+        deterministic: bool = False,
     ):
         """
         Initialize game analyzer.
@@ -366,12 +371,29 @@ class GameAnalyzer:
                 the second-best line ("only good move"). Callers that only
                 consume mistake/blunder (opponent analysis) keep 1 to avoid
                 doubling their Stockfish bill; the review path uses 2.
+            deterministic: When True (review/live only), searches use a fixed
+                nodes budget and a fresh game token per position so labels are
+                reproducible. Background jobs leave this False and keep the
+                historical time+depth behavior.
         """
         self.engine = engine
         self.explainer = explainer
         self.blunder_threshold = blunder_threshold
         self.book_lookup = book_lookup
         self.multipv = max(1, int(multipv))
+        self.deterministic = deterministic
+
+    def _evaluate(self, board: chess.Board) -> Evaluation:
+        """Evaluate a position under the configured mode."""
+        if self.deterministic:
+            return self.engine.evaluate(
+                board,
+                multipv=self.multipv,
+                nodes=review_nodes(),
+                time_limit=review_nodes_backstop_seconds(),
+                fresh_token=True,
+            )
+        return self.engine.evaluate(board, multipv=self.multipv)
 
     def _parse_game(self, pgn_string: str) -> chess.pgn.Game:
         """Parse and validate a PGN string."""
@@ -704,13 +726,13 @@ class GameAnalyzer:
             eval_before = (
                 previous_eval
                 if previous_eval is not None
-                else self.engine.evaluate(board, multipv=self.multipv)
+                else self._evaluate(board)
             )
 
             board.push(move)
             fen_after = board.fen()
             delivers_mate = board.is_checkmate()
-            eval_after = self.engine.evaluate(board, multipv=self.multipv)
+            eval_after = self._evaluate(board)
             previous_eval = eval_after
 
             # Raw EP impact is tracked even for book moves: Chess.com does
