@@ -15,11 +15,13 @@ import os
 
 DEFAULT_REVIEW_NODES = 100_000
 DEFAULT_NODES_BACKSTOP_SECONDS = 10.0
-# Longest game the review route accepts. p99 of the frozen gate sets
-# (data/gate_sets.json: A 05538f9d..., B 8394f937...), so ~1% of gate games
-# are rejected. The frontend proxy aborts at 240s (REVIEW_TIMEOUT_MS), so N
-# is chosen for this length with 2x headroom.
-REVIEW_MAX_PLIES = 157
+# Frontend proxy abort (REVIEW_TIMEOUT_MS in the analyze route).
+REVIEW_TIMEOUT_SECONDS = 240.0
+# Engine time must fit in half the remaining budget (variance/overhead).
+REVIEW_HEADROOM = 2.0
+# Placeholder until the container nps is measured: p99 of the frozen gate
+# sets (data/gate_sets.json: A 05538f9d..., B 8394f937...).
+GATE_P99_PLIES = 157
 
 # Fixed in review and live; background jobs keep GameAnalyzer's default of 1:
 # opponent_game_analysis.py and weakness_profile.py construct GameAnalyzer
@@ -59,6 +61,31 @@ def review_nodes() -> int:
             "(old-mode p10 is the floor)."
         )
     return DEFAULT_REVIEW_NODES
+
+
+def review_max_plies() -> int | None:
+    """Longest game the deterministic review accepts.
+
+    None when the flag is off (old behavior: no ply cap). When the flag is on
+    the cap comes from the container speed and the chosen N:
+        max_plies = (REVIEW_TIMEOUT - REVIEW_LLM_SECONDS) / REVIEW_HEADROOM
+                    * REVIEW_CONTAINER_NPS / REVIEW_NODES - 1
+    Until REVIEW_CONTAINER_NPS is measured it falls back to GATE_P99_PLIES.
+    """
+    if not review_deterministic_enabled():
+        return None
+    try:
+        nps = float(os.getenv("REVIEW_CONTAINER_NPS", ""))
+    except (TypeError, ValueError):
+        nps = 0.0
+    if nps <= 0:
+        return GATE_P99_PLIES
+    try:
+        llm_seconds = float(os.getenv("REVIEW_LLM_SECONDS", ""))
+    except (TypeError, ValueError):
+        llm_seconds = 0.0
+    budget = max(0.0, (REVIEW_TIMEOUT_SECONDS - llm_seconds) / REVIEW_HEADROOM)
+    return max(1, int(budget * nps / review_nodes()) - 1)
 
 
 def review_nodes_backstop_seconds() -> float:

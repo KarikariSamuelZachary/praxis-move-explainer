@@ -186,10 +186,18 @@ class NodeEngine:
             else:
                 cp = normalized.score() or 0
         second_cp = None
+        second_move_uci = None
+        second_move_san = None
+        second_pv_uci = []
         if isinstance(info, list) and len(info) > 1 and info[1].get("score"):
             second_cp = (
                 info[1]["score"].pov(view).score(mate_score=10000)
             )
+            second_pv = info[1].get("pv") or []
+            if second_pv:
+                second_move_uci = second_pv[0].uci()
+                second_move_san = board.san(second_pv[0])
+                second_pv_uci = [m.uci() for m in second_pv]
         pv = primary.get("pv", [])
         return Evaluation(
             score_cp=cp,
@@ -198,6 +206,9 @@ class NodeEngine:
             mate=mate,
             second_best_cp=second_cp,
             principal_variation_uci=[m.uci() for m in pv],
+            second_best_move_uci=second_move_uci,
+            second_best_move_san=second_move_san,
+            second_best_pv_uci=second_pv_uci,
             depth=primary.get("depth"),
             nodes=primary.get("nodes"),
             nps=primary.get("nps"),

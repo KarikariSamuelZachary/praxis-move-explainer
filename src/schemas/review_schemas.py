@@ -1,4 +1,4 @@
-from typing import Literal, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel
 
@@ -42,4 +42,12 @@ class ReviewMoveResponse(BaseModel):
     eval_mate: Optional[int] = None
     best_move_san: Optional[str] = None
     best_move_uci: Optional[str] = None
+    # Sandbox extras (only when the analyzer is asked for them).
+    fen_before: Optional[str] = None
+    player_rating: Optional[int] = None
+    raw_ep_loss: Optional[float] = None
+    second_best_cp: Optional[float] = None
+    second_best_move_uci: Optional[str] = None
+    second_best_move_san: Optional[str] = None
+    second_best_pv_uci: Optional[List[str]] = None
     explanation: Optional[ReviewExplanation] = None

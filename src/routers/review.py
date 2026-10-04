@@ -8,10 +8,10 @@ import chess.pgn
 from fastapi import APIRouter, Depends, HTTPException
 
 from core.analysis_mode import (
-    REVIEW_MAX_PLIES,
     REVIEW_MULTIPV,
     current_mode_string,
     review_deterministic_enabled,
+    review_max_plies,
     review_nodes,
 )
 from core.auth import require_clerk_user_id
@@ -82,6 +82,19 @@ def _normalize_review_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "best_move_uci": row.get("best_move_uci"),
         }
 
+        # Sandbox extras: pass through when the analyzer produced them.
+        for key in (
+            "fen_before",
+            "player_rating",
+            "raw_ep_loss",
+            "second_best_cp",
+            "second_best_move_uci",
+            "second_best_move_san",
+            "second_best_pv_uci",
+        ):
+            if key in row:
+                normalized_row[key] = row[key]
+
         explanation = row.get("explanation")
         if explanation:
             normalized_row["explanation"] = {
@@ -109,15 +122,20 @@ def review_game(
     if not pgn:
         raise HTTPException(status_code=400, detail="Missing PGN")
 
-    plies = _mainline_plies(pgn)
-    if plies > REVIEW_MAX_PLIES:
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                f"Game too long for review: {plies} plies "
-                f"(max {REVIEW_MAX_PLIES})"
-            ),
-        )
+    # Deterministic mode is bounded by the 240s proxy ceiling; the old
+    # behavior (flag off) has no ply cap, matching the pre-cap route.
+    deterministic = review_deterministic_enabled()
+    max_plies = review_max_plies()
+    if max_plies is not None:
+        plies = _mainline_plies(pgn)
+        if plies > max_plies:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Game too long for review: {plies} plies "
+                    f"(max {max_plies})"
+                ),
+            )
 
     # Long-lived singleton (booted at startup) instead of a fresh Stockfish
     # subprocess per review -- spawning + UCI handshake cost ~0.3-0.7s before
@@ -127,7 +145,6 @@ def review_game(
 
     try:
         engine = get_review_stockfish(depth=int(os.getenv("REVIEW_DEPTH", "18")))
-        deterministic = review_deterministic_enabled()
         log.info("Review deterministic mode: %s", deterministic)
         analyzer = GameAnalyzer(
             engine=engine,
@@ -138,7 +155,9 @@ def review_game(
             multipv=REVIEW_MULTIPV,
             deterministic=deterministic,
         )
-        review_rows = analyzer.analyze_full_game(pgn, target_color=body.target_color)
+        review_rows = analyzer.analyze_full_game(
+            pgn, target_color=body.target_color, include_extras=deterministic
+        )
         return _normalize_review_rows(review_rows)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc

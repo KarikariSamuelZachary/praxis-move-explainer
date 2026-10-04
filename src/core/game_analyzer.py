@@ -678,6 +678,7 @@ class GameAnalyzer:
         pgn_string: str,
         target_color: str = "both",
         include_explanations: bool = True,
+        include_extras: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Analyze every move in a PGN and return a JSON-ready review list.
@@ -872,6 +873,14 @@ class GameAnalyzer:
                     else None
                 ),
             }
+
+            # Sandbox/API extras: the review route opts in; default callers
+            # (background jobs, tests) keep the historical row shape.
+            if include_extras:
+                turn_entry["raw_ep_loss"] = round(raw_ep_loss, 4)
+                turn_entry["second_best_move_uci"] = eval_before.second_best_move_uci
+                turn_entry["second_best_move_san"] = eval_before.second_best_move_san
+                turn_entry["second_best_pv_uci"] = list(eval_before.second_best_pv_uci)
 
             if include_explanations and classification in {"mistake", "blunder"}:
                 mistake = self._build_mistake(

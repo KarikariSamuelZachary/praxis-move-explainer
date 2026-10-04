@@ -19,6 +19,7 @@ Requires: INTERNAL_SECRET from root .env.
 """
 import os
 import sys
+from unittest.mock import patch
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -98,7 +99,7 @@ def test_valid_secret_and_header_pass_the_auth_gate():
         def __init__(self, **kwargs):
             pass
 
-        def analyze_full_game(self, pgn, target_color="both"):
+        def analyze_full_game(self, pgn, target_color="both", **kwargs):
             return [_STUB_ROW]
 
     saved = (
@@ -143,18 +144,17 @@ def _long_pgn(plies: int) -> str:
     return str(chess.pgn.Game.from_board(board))
 
 
-def test_overlong_game_is_rejected_before_analysis():
+def _post_with_stub(pgn: str, clerk_id: str = TEST_CLERK_ID):
     import routers.review as review_module
 
-    called = False
+    state = {"called": False}
 
     class _StubAnalyzer:
         def __init__(self, **kwargs):
             pass
 
-        def analyze_full_game(self, pgn, target_color="both"):
-            nonlocal called
-            called = True
+        def analyze_full_game(self, pgn, target_color="both", **kwargs):
+            state["called"] = True
             return [_STUB_ROW]
 
     saved = (
@@ -168,10 +168,10 @@ def test_overlong_game_is_rejected_before_analysis():
     try:
         response = _client().post(
             "/api/review",
-            json={"pgn": _long_pgn(158)},
+            json={"pgn": pgn},
             headers={
                 "X-Internal-Secret": _secret(),
-                "X-Clerk-User-Id": TEST_CLERK_ID,
+                "X-Clerk-User-Id": clerk_id,
             },
         )
     finally:
@@ -180,11 +180,134 @@ def test_overlong_game_is_rejected_before_analysis():
             review_module.get_review_stockfish,
             review_module._build_explainer,
         ) = saved
+    return response, state
 
+
+def test_flag_off_has_no_ply_cap():
+    response, state = _post_with_stub(_long_pgn(158))
+    assert response.status_code == 200, response.text
+    assert state["called"] is True
+    print("  [PASS] flag off: 158-ply game accepted (old behavior, no cap)")
+
+
+def test_deterministic_cap_placeholder_without_container_nps():
+    with patch.dict(
+        os.environ,
+        {"REVIEW_DETERMINISTIC": "1", "REVIEW_NODES": "100000"},
+        clear=False,
+    ):
+        os.environ.pop("REVIEW_CONTAINER_NPS", None)
+        response, state = _post_with_stub(_long_pgn(158))
     assert response.status_code == 400, response.text
     assert "too long" in response.json()["detail"], response.text
-    assert called is False, "overlong game reached the analyzer"
-    print("  [PASS] 158-ply game -> 400 before any engine work (cap 157)")
+    assert state["called"] is False
+    print("  [PASS] flag on, no nps: 158 > gate p99 157 -> 400")
+
+
+def test_deterministic_cap_comes_from_container_nps():
+    with patch.dict(
+        os.environ,
+        {
+            "REVIEW_DETERMINISTIC": "1",
+            "REVIEW_NODES": "100000",
+            "REVIEW_CONTAINER_NPS": "220000",
+        },
+        clear=False,
+    ):
+        response, state = _post_with_stub(_long_pgn(158))
+    assert response.status_code == 200, response.text
+    assert state["called"] is True
+
+    with patch.dict(
+        os.environ,
+        {
+            "REVIEW_DETERMINISTIC": "1",
+            "REVIEW_NODES": "100000",
+            "REVIEW_CONTAINER_NPS": "100000",
+        },
+        clear=False,
+    ):
+        response, state = _post_with_stub(_long_pgn(158))
+    assert response.status_code == 400, response.text
+    assert "max 119" in response.json()["detail"], response.text
+    print("  [PASS] flag on: cap = budget * nps / N - 1 (263 -> 200, 119 -> 400)")
+
+
+def test_extras_are_flag_gated():
+    # Calls the route function directly: the HTTP suite shares one TestClient
+    # IP with a 5/min limiter, so two more POSTs would 429 for reasons
+    # unrelated to this test.
+    import routers.review as review_module
+    from schemas.review_schemas import ReviewRequest
+
+    row_with_extras = dict(
+        _STUB_ROW,
+        fen_before="rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+        player_rating=1500,
+        raw_ep_loss=0.0123,
+        second_best_cp=10.0,
+        second_best_move_uci="g1f3",
+        second_best_move_san="Nf3",
+        second_best_pv_uci=["g1f3"],
+    )
+    state = {}
+
+    class _StubAnalyzer:
+        def __init__(self, **kwargs):
+            pass
+
+        def analyze_full_game(self, pgn, target_color="both", **kwargs):
+            state["include_extras"] = kwargs.get("include_extras", False)
+            row = dict(row_with_extras)
+            if not kwargs.get("include_extras", False):
+                for key in (
+                    "fen_before",
+                    "player_rating",
+                    "raw_ep_loss",
+                    "second_best_cp",
+                    "second_best_move_uci",
+                    "second_best_move_san",
+                    "second_best_pv_uci",
+                ):
+                    row.pop(key, None)
+            return [row]
+
+    saved = (
+        review_module.GameAnalyzer,
+        review_module.get_review_stockfish,
+        review_module._build_explainer,
+    )
+    review_module.GameAnalyzer = _StubAnalyzer
+    review_module.get_review_stockfish = lambda *args, **kwargs: object()
+    review_module._build_explainer = lambda: None
+    try:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("REVIEW_DETERMINISTIC", None)
+            rows = review_module.review_game(
+                ReviewRequest(pgn=PGN),
+                _clerk_id="extras-off-user",
+                _ip=None,
+                _user=None,
+            )
+        assert state["include_extras"] is False, state
+        assert "second_best_move_uci" not in rows[0], rows[0]
+
+        with patch.dict(os.environ, {"REVIEW_DETERMINISTIC": "1"}, clear=False):
+            rows = review_module.review_game(
+                ReviewRequest(pgn=PGN),
+                _clerk_id="extras-on-user",
+                _ip=None,
+                _user=None,
+            )
+        assert state["include_extras"] is True, state
+        assert rows[0]["second_best_move_uci"] == "g1f3", rows[0]
+    finally:
+        (
+            review_module.GameAnalyzer,
+            review_module.get_review_stockfish,
+            review_module._build_explainer,
+        ) = saved
+    print("  [PASS] extras/suggestion fields only flow when the flag is on")
 
 
 def test_capabilities_reports_flag_and_mode():
@@ -213,7 +336,10 @@ def run() -> int:
         test_missing_clerk_user_is_rejected,
         test_missing_header_rejects_before_the_user_limiter,
         test_valid_secret_and_header_pass_the_auth_gate,
-        test_overlong_game_is_rejected_before_analysis,
+        test_flag_off_has_no_ply_cap,
+        test_deterministic_cap_placeholder_without_container_nps,
+        test_deterministic_cap_comes_from_container_nps,
+        test_extras_are_flag_gated,
         test_capabilities_reports_flag_and_mode,
     ]
     failures = 0

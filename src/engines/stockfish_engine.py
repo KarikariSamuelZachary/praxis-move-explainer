@@ -301,6 +301,15 @@ class StockfishEngine:
             score_pov = pov if pov is not None else board.turn
             second_best_cp = self._score_to_centipawns(second["score"], score_pov)
 
+        second_best_move_uci = None
+        second_best_move_san = None
+        second_best_pv_uci: list = []
+        if second is not None and second.get("pv"):
+            second_pv = second["pv"]
+            second_best_move_uci = second_pv[0].uci()
+            second_best_move_san = board.san(second_pv[0])
+            second_best_pv_uci = [move.uci() for move in second_pv]
+
         # Extract best move and convert to UCI/SAN
         if pv:
             best_move = pv[0]
@@ -331,6 +340,9 @@ class StockfishEngine:
             mate=mate,
             second_best_cp=second_best_cp,
             principal_variation_uci=[move.uci() for move in (pv or [])],
+            second_best_move_uci=second_best_move_uci,
+            second_best_move_san=second_best_move_san,
+            second_best_pv_uci=second_best_pv_uci,
             nodes=nodes_reported,
             depth=depth_reported,
             nps=nps_reported,

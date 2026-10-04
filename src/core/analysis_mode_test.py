@@ -145,6 +145,47 @@ def test_non_deterministic_call_shape_unchanged():
     print("  [PASS] flag off keeps the historical evaluate() call shape")
 
 
+def test_review_max_plies_gating_and_formula():
+    from core.analysis_mode import GATE_P99_PLIES, review_max_plies
+
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("REVIEW_DETERMINISTIC", None)
+        os.environ.pop("REVIEW_CONTAINER_NPS", None)
+        assert review_max_plies() is None, "flag off must have no cap"
+
+    with patch.dict(
+        os.environ,
+        {"REVIEW_DETERMINISTIC": "1", "REVIEW_NODES": "100000"},
+        clear=False,
+    ):
+        os.environ.pop("REVIEW_CONTAINER_NPS", None)
+        assert review_max_plies() == GATE_P99_PLIES
+
+    with patch.dict(
+        os.environ,
+        {
+            "REVIEW_DETERMINISTIC": "1",
+            "REVIEW_NODES": "100000",
+            "REVIEW_CONTAINER_NPS": "220000",
+        },
+        clear=False,
+    ):
+        assert review_max_plies() == int(120.0 * 220000 / 100000) - 1
+
+    with patch.dict(
+        os.environ,
+        {
+            "REVIEW_DETERMINISTIC": "1",
+            "REVIEW_NODES": "100000",
+            "REVIEW_CONTAINER_NPS": "220000",
+            "REVIEW_LLM_SECONDS": "6",
+        },
+        clear=False,
+    ):
+        assert review_max_plies() == int(117.0 * 220000 / 100000) - 1
+    print("  [PASS] review_max_plies: none when off; formula when on")
+
+
 def test_multipv_pinned_only_for_deterministic():
     engine = _RecordingEngine()
     try:
@@ -172,6 +213,7 @@ def run() -> int:
         test_env_parsing,
         test_deterministic_calls_use_nodes_and_fresh_token,
         test_non_deterministic_call_shape_unchanged,
+        test_review_max_plies_gating_and_formula,
         test_multipv_pinned_only_for_deterministic,
     ]
     failures = 0

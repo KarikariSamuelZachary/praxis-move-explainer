@@ -20,6 +20,10 @@ class Evaluation:
     # Engine continuation already returned with the score; used by the
     # blunder consequence check without issuing another search.
     principal_variation_uci: List[str] = field(default_factory=list)
+    # Second MultiPV line (the "suggestion" when the played move is not best).
+    second_best_move_uci: Optional[str] = None
+    second_best_move_san: Optional[str] = None
+    second_best_pv_uci: List[str] = field(default_factory=list)
     # Search telemetry. None when the engine did not report the field (e.g.
     # terminal positions return no nodes); deterministic-mode gating reads
     # these, and backstop detection must guard nodes is None before comparing.
