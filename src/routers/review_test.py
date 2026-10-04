@@ -324,6 +324,124 @@ def test_extras_are_flag_gated():
     print("  [PASS] extras/suggestion fields only flow when the flag is on")
 
 
+_LIVE_FEN = "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2"
+
+
+def _stub_live(monkeypatch_calls):
+    import chess
+
+    from schemas.models import Evaluation
+
+    class _StubAnalyzer:
+        def __init__(self, **kwargs):
+            self.calls = 0
+
+        def evaluate_position(self, board):
+            self.calls += 1
+            monkeypatch_calls.append(self.calls)
+            return Evaluation(
+                score_cp=20.0,
+                best_move_uci="g1f3",
+                best_move_san="Nf3",
+                mate=None,
+                second_best_cp=10.0,
+                principal_variation_uci=["g1f3", "g8f6"],
+                second_best_move_uci="d2d4",
+                second_best_move_san="d4",
+                second_best_pv_uci=["d2d4", "g8f6"],
+            )
+
+        def analyze_ply(self, board, move, eval_before, **kwargs):
+            row = {
+                "classification": "best",
+                "cp_loss": 0,
+                "ep_loss": 0.01,
+                "eval_cp": 12.0,
+                "eval_mate": None,
+                "color": "white",
+                "fen_before": board.fen(),
+                "fen": "after",
+                "san": board.san(move),
+            }
+            return row, eval_before, 0.01
+
+    return _StubAnalyzer
+
+
+def test_live_requires_login_and_flag():
+    response = _client().post(
+        "/api/review/live",
+        json={"fen": _LIVE_FEN, "move": "g1f3"},
+        headers={"X-Internal-Secret": _secret()},
+    )
+    assert response.status_code == 400, response.text
+
+    response = _client().post(
+        "/api/review/live",
+        json={"fen": _LIVE_FEN, "move": "g1f3"},
+        headers={
+            "X-Internal-Secret": _secret(),
+            "X-Clerk-User-Id": TEST_CLERK_ID,
+        },
+    )
+    assert response.status_code == 403, response.text
+    assert "disabled" in response.json()["detail"], response.text
+    print("  [PASS] live: login required; 403 when the flag is off")
+
+
+def test_live_returns_label_lines_and_caches():
+    import routers.review as review_module
+
+    review_module._SANDBOX_EVAL_CACHE.clear()
+    review_module._SANDBOX_RESULT_CACHE.clear()
+    calls: list = []
+    stub = _stub_live(calls)
+    saved = (
+        review_module.GameAnalyzer,
+        review_module.get_review_stockfish,
+    )
+    review_module.GameAnalyzer = stub
+    review_module.get_review_stockfish = lambda *args, **kwargs: object()
+    try:
+        with patch.dict(
+            os.environ,
+            {"REVIEW_DETERMINISTIC": "1", "REVIEW_NODES": "150000"},
+            clear=False,
+        ):
+            headers = {
+                "X-Internal-Secret": _secret(),
+                "X-Clerk-User-Id": TEST_CLERK_ID,
+            }
+            first = _client().post(
+                "/api/review/live",
+                json={"fen": _LIVE_FEN, "move": "Nf3"},
+                headers=headers,
+            )
+            second = _client().post(
+                "/api/review/live",
+                json={"fen": _LIVE_FEN, "move": "g1f3"},
+                headers=headers,
+            )
+    finally:
+        (
+            review_module.GameAnalyzer,
+            review_module.get_review_stockfish,
+        ) = saved
+
+    assert first.status_code == 200, first.text
+    body = first.json()
+    assert body["classification"] == "best", body
+    assert body["move_san"] == "Nf3" and body["move_uci"] == "g1f3", body
+    assert body["best"]["pv_san"] == ["Nf3", "Nf6"], body["best"]
+    assert body["second_best"]["move_san"] == "d4", body["second_best"]
+    assert body["second_best"]["pv_san"] == ["d4", "Nf6"], body["second_best"]
+    assert body["cached"] is False, body
+    assert second.status_code == 200, second.text
+    assert second.json()["cached"] is True, second.text
+    assert len(calls) == 1, f"eval ran {len(calls)} times; cache missed"
+    print("  [PASS] live: SAN/UCI accepted, label + top-2 lines, cached")
+
+
 def test_capabilities_reports_flag_and_mode():
     secret = _secret()
     anonymous = _client().get(
@@ -354,6 +472,8 @@ def run() -> int:
         test_deterministic_cap_placeholder_without_container_nps,
         test_deterministic_cap_comes_from_container_nps,
         test_extras_are_flag_gated,
+        test_live_requires_login_and_flag,
+        test_live_returns_label_lines_and_caches,
         test_capabilities_reports_flag_and_mode,
     ]
     failures = 0

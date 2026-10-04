@@ -23,6 +23,38 @@ class ReviewRequest(BaseModel):
     target_color: TargetColor = "both"
 
 
+class SandboxMoveRequest(BaseModel):
+    fen: str
+    move: str
+    player_rating: Optional[int] = None
+
+
+class SandboxLine(BaseModel):
+    move_uci: Optional[str] = None
+    move_san: Optional[str] = None
+    eval_cp: Optional[float] = None
+    eval_mate: Optional[int] = None
+    pv_uci: List[str] = []
+    pv_san: List[str] = []
+
+
+class SandboxMoveResponse(BaseModel):
+    classification: MoveClassification
+    cp_loss: int
+    ep_loss: float
+    eval_cp: float
+    eval_mate: Optional[int] = None
+    color: Literal["white", "black"]
+    fen_before: str
+    fen: str
+    move_san: str
+    move_uci: str
+    best: SandboxLine
+    second_best: Optional[SandboxLine] = None
+    mode: str
+    cached: bool = False
+
+
 class ReviewExplanation(BaseModel):
     explanation: str
     concept: Optional[str] = None

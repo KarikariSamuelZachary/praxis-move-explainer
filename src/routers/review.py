@@ -1,7 +1,9 @@
 import logging
 import os
+import threading
+from collections import OrderedDict
 from io import StringIO
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 import chess.engine
 import chess.pgn
@@ -15,7 +17,7 @@ from core.analysis_mode import (
     review_nodes,
 )
 from core.auth import require_clerk_user_id
-from core.game_analyzer import GameAnalyzer
+from core.game_analyzer import GameAnalyzer, pv_to_san
 from core.rate_limit import limit_by_clerk_user_id, limit_by_ip
 from engines.stockfish_engine import (
     get_review_engine_name,
@@ -26,11 +28,103 @@ from llms.gemini_explainer import GeminiExplainer
 from llms.groq_explainer import GroqExplainer
 from llms.mock_explainer import MockExplainer
 from llms.openai_explainer import OpenAIExplainer
-from schemas.review_schemas import ReviewMoveResponse, ReviewRequest
+from schemas.models import Evaluation
+from schemas.review_schemas import (
+    ReviewMoveResponse,
+    ReviewRequest,
+    SandboxLine,
+    SandboxMoveRequest,
+    SandboxMoveResponse,
+)
 from services.opening_book import is_book_move
 
 router = APIRouter()
 log = logging.getLogger(__name__)
+
+# Interactive sandbox caching: deterministic fixed-N results are pure
+# functions of (position, move, rating, mode string), so repeat explores are
+# served without touching the engine. Bounded LRU, process-local.
+SANDBOX_CACHE_MAX = 2048
+_SANDBOX_LOCK = threading.Lock()
+_SANDBOX_EVAL_CACHE: "OrderedDict[str, Evaluation]" = OrderedDict()
+_SANDBOX_RESULT_CACHE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
+
+
+def _cache_get(cache: "OrderedDict[str, Any]", key: str) -> Optional[Any]:
+    with _SANDBOX_LOCK:
+        value = cache.get(key)
+        if value is not None:
+            cache.move_to_end(key)
+        return value
+
+
+def _cache_put(cache: "OrderedDict[str, Any]", key: str, value: Any) -> None:
+    with _SANDBOX_LOCK:
+        cache[key] = value
+        cache.move_to_end(key)
+        while len(cache) > SANDBOX_CACHE_MAX:
+            cache.popitem(last=False)
+
+
+def _resolve_sandbox_move(board: chess.Board, raw: str) -> chess.Move:
+    """Accept UCI or SAN and return the legal move, or raise ValueError."""
+    candidate = raw.strip()
+    if not candidate:
+        raise ValueError("Missing move")
+    try:
+        move = chess.Move.from_uci(candidate)
+        if move in board.legal_moves:
+            return move
+    except ValueError:
+        pass
+    try:
+        return board.parse_san(candidate)
+    except ValueError as exc:
+        raise ValueError(f"Illegal move: {raw}") from exc
+
+
+def _line_from_eval(
+    board: chess.Board, evaluation: Evaluation
+) -> SandboxLine:
+    """One suggestion line, evaluations from White's point of view."""
+    white_sign = 1 if board.turn == chess.WHITE else -1
+    pv_uci = list(evaluation.principal_variation_uci)
+    return SandboxLine(
+        move_uci=evaluation.best_move_uci or None,
+        move_san=(
+            evaluation.best_move_san
+            if evaluation.best_move_san and evaluation.best_move_san != "(none)"
+            else None
+        ),
+        eval_cp=round(white_sign * evaluation.score_cp, 1),
+        eval_mate=(
+            white_sign * evaluation.mate
+            if evaluation.mate is not None
+            else None
+        ),
+        pv_uci=pv_uci,
+        pv_san=pv_to_san(board, pv_uci),
+    )
+
+
+def _second_line_from_eval(
+    board: chess.Board, evaluation: Evaluation
+) -> Optional[SandboxLine]:
+    if not evaluation.second_best_move_uci and not evaluation.second_best_pv_uci:
+        return None
+    white_sign = 1 if board.turn == chess.WHITE else -1
+    pv_uci = list(evaluation.second_best_pv_uci)
+    return SandboxLine(
+        move_uci=evaluation.second_best_move_uci,
+        move_san=evaluation.second_best_move_san,
+        eval_cp=(
+            round(white_sign * evaluation.second_best_cp, 1)
+            if evaluation.second_best_cp is not None
+            else None
+        ),
+        pv_uci=pv_uci,
+        pv_san=pv_to_san(board, pv_uci),
+    )
 
 
 def _build_explainer():
@@ -177,6 +271,96 @@ def review_game(
     except Exception as exc:
         log.exception("Failed to analyze PGN")
         raise HTTPException(status_code=500, detail="Failed to analyze PGN") from exc
+
+
+@router.post("/review/live", response_model=SandboxMoveResponse)
+def review_live(
+    body: SandboxMoveRequest,
+    _clerk_id: str = Depends(require_clerk_user_id),
+    _ip: None = Depends(limit_by_ip(limit=30, window=60)),
+    _user: None = Depends(limit_by_clerk_user_id(limit=60, window=60)),
+):
+    """Label one explored move with the batch review's exact settings.
+
+    Deterministic fixed-N search, same classifier, same mode string. Results
+    are cached per (mode, fen, move, rating), so re-exploring a line is free.
+    Disabled (403) unless REVIEW_DETERMINISTIC is on.
+    """
+    if not review_deterministic_enabled():
+        raise HTTPException(status_code=403, detail="Sandbox is disabled")
+
+    try:
+        board = chess.Board(body.fen)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid FEN: {exc}") from exc
+    try:
+        move = _resolve_sandbox_move(board, body.move)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    mode = current_mode_string(
+        engine_name=get_review_engine_name(),
+        multipv=REVIEW_MULTIPV,
+        nodes=review_nodes(),
+    )
+    result_key = f"{mode}|{body.player_rating}|{body.fen}|{move.uci()}"
+    cached = _cache_get(_SANDBOX_RESULT_CACHE, result_key)
+    if cached is not None:
+        response = dict(cached)
+        response["cached"] = True
+        return SandboxMoveResponse(**response)
+
+    try:
+        engine = get_review_stockfish(depth=int(os.getenv("REVIEW_DEPTH", "18")))
+        analyzer = GameAnalyzer(
+            engine=engine,
+            explainer=MockExplainer(),
+            book_lookup=is_book_move,
+            multipv=REVIEW_MULTIPV,
+            deterministic=True,
+        )
+        eval_key = f"{mode}|{body.fen}"
+        eval_before = _cache_get(_SANDBOX_EVAL_CACHE, eval_key)
+        if eval_before is None:
+            eval_before = analyzer.evaluate_position(board)
+            _cache_put(_SANDBOX_EVAL_CACHE, eval_key, eval_before)
+        row, _, _ = analyzer.analyze_ply(
+            chess.Board(body.fen),
+            move,
+            eval_before,
+            is_book_move=is_book_move(board, move),
+            player_rating=body.player_rating,
+            include_extras=True,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except (chess.engine.EngineError, RuntimeError) as exc:
+        reset_review_stockfish()
+        log.exception("Sandbox live engine failed")
+        raise HTTPException(status_code=500, detail="Failed to analyze move") from exc
+
+    before = chess.Board(body.fen)
+    response = SandboxMoveResponse(
+        classification=row["classification"],
+        cp_loss=row["cp_loss"],
+        ep_loss=row["ep_loss"],
+        eval_cp=row["eval_cp"],
+        eval_mate=row["eval_mate"],
+        color=row["color"],
+        fen_before=row["fen_before"],
+        fen=row["fen"],
+        move_san=row["san"],
+        move_uci=move.uci(),
+        best=_line_from_eval(before, eval_before),
+        second_best=_second_line_from_eval(before, eval_before),
+        mode=mode,
+    )
+    _cache_put(
+        _SANDBOX_RESULT_CACHE,
+        result_key,
+        response.model_dump(exclude={"cached"}),
+    )
+    return response
 
 
 @router.get("/review/capabilities")
