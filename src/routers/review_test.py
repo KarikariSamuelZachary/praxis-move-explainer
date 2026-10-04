@@ -146,8 +146,13 @@ def _long_pgn(plies: int) -> str:
 
 def _post_with_stub(pgn: str, clerk_id: str = TEST_CLERK_ID):
     import routers.review as review_module
+    from core import rate_limit
 
-    state = {"called": False}
+    # The suite shares one in-process limiter; reset it so each stubbed POST
+    # measures routing, not throttling.
+    rate_limit._memory_counters.clear()
+
+    state = {"called": False, "include_explanations": None, "include_extras": None}
 
     class _StubAnalyzer:
         def __init__(self, **kwargs):
@@ -155,6 +160,8 @@ def _post_with_stub(pgn: str, clerk_id: str = TEST_CLERK_ID):
 
         def analyze_full_game(self, pgn, target_color="both", **kwargs):
             state["called"] = True
+            state["include_explanations"] = kwargs.get("include_explanations", True)
+            state["include_extras"] = kwargs.get("include_extras", False)
             return [_STUB_ROW]
 
     saved = (
@@ -188,6 +195,73 @@ def test_flag_off_has_no_ply_cap():
     assert response.status_code == 200, response.text
     assert state["called"] is True
     print("  [PASS] flag off: 158-ply game accepted (old behavior, no cap)")
+
+
+def test_review_never_generates_explanations():
+    response, state = _post_with_stub(PGN)
+    assert response.status_code == 200, response.text
+    assert state["include_explanations"] is False, state
+    print("  [PASS] review route passes include_explanations=False (AI off)")
+
+
+def test_live_prewarm_warms_the_position():
+    import routers.review as review_module
+
+    review_module._SANDBOX_EVAL_CACHE.clear()
+    review_module._SANDBOX_RESULT_CACHE.clear()
+    calls = {"n": 0}
+
+    class _StubAnalyzer:
+        def __init__(self, **kwargs):
+            pass
+
+        def evaluate_position(self, board):
+            calls["n"] += 1
+            from schemas.models import Evaluation
+
+            return Evaluation(
+                score_cp=0.0, best_move_uci="", best_move_san="(none)"
+            )
+
+    saved = (review_module.GameAnalyzer, review_module.get_review_stockfish)
+    review_module.GameAnalyzer = _StubAnalyzer
+    review_module.get_review_stockfish = lambda *args, **kwargs: object()
+    headers = {
+        "X-Internal-Secret": _secret(),
+        "X-Clerk-User-Id": TEST_CLERK_ID,
+    }
+    try:
+        with patch.dict(
+            os.environ,
+            {"REVIEW_DETERMINISTIC": "1", "REVIEW_NODES": "150000"},
+            clear=False,
+        ):
+            denied = _client().post(
+                "/api/review/live/prewarm",
+                json={"moves": ["e4"]},
+                headers={"X-Internal-Secret": _secret()},
+            )
+            assert denied.status_code == 400, denied.text
+
+            first = _client().post(
+                "/api/review/live/prewarm",
+                json={"moves": ["e4", "e5"]},
+                headers=headers,
+            )
+            second = _client().post(
+                "/api/review/live/prewarm",
+                json={"moves": ["e4", "e5"]},
+                headers=headers,
+            )
+    finally:
+        (review_module.GameAnalyzer, review_module.get_review_stockfish) = saved
+
+    assert first.status_code == 200, first.text
+    assert first.json()["cached"] is False, first.text
+    assert second.status_code == 200, second.text
+    assert second.json()["cached"] is True, second.text
+    assert calls["n"] == 1, f"prewarm evaluated {calls['n']} times"
+    print("  [PASS] live prewarm caches the position (login required too)")
 
 
 def test_deterministic_cap_placeholder_without_container_nps():
@@ -786,10 +860,13 @@ def run() -> int:
         test_live_requires_login_and_flag,
         test_live_returns_label_lines_and_caches,
         test_live_replays_the_move_path,
+        test_live_replays_the_move_path,
         test_live_rejects_stale_mode,
         test_live_rejects_fen_only_requests,
+        test_live_prewarm_warms_the_position,
         test_live_terminal_checkmate_and_stalemate,
         test_live_nested_variation_matches_fresh_full_path,
+        test_review_never_generates_explanations,
         test_capabilities_reports_flag_and_mode,
     ]
     failures = 0

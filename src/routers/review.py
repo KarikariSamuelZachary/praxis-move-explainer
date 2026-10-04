@@ -35,6 +35,8 @@ from schemas.review_schemas import (
     SandboxLine,
     SandboxMoveRequest,
     SandboxMoveResponse,
+    SandboxPrewarmRequest,
+    SandboxPrewarmResponse,
 )
 from services.opening_book import is_book_move
 
@@ -267,8 +269,13 @@ def review_game(
             multipv=REVIEW_MULTIPV,
             deterministic=deterministic,
         )
+        # AI explanations are disabled until the fine-tuned model is ready;
+        # the route never asks the analyzer for them.
         review_rows = analyzer.analyze_full_game(
-            pgn, target_color=body.target_color, include_extras=extras
+            pgn,
+            target_color=body.target_color,
+            include_explanations=False,
+            include_extras=extras,
         )
         return _normalize_review_rows(
             review_rows, include_extras=extras, mode=mode
@@ -286,6 +293,74 @@ def review_game(
     except Exception as exc:
         log.exception("Failed to analyze PGN")
         raise HTTPException(status_code=500, detail="Failed to analyze PGN") from exc
+
+
+@router.post("/review/live/prewarm", response_model=SandboxPrewarmResponse)
+def review_live_prewarm(
+    body: SandboxPrewarmRequest,
+    _clerk_id: str = Depends(require_clerk_user_id),
+    _ip: None = Depends(limit_by_ip(limit=30, window=60)),
+    _user: None = Depends(limit_by_clerk_user_id(limit=60, window=60)),
+):
+    """Warm the live eval cache for a path-end position, in the background.
+
+    The first touch of a fresh position otherwise pays three engine searches
+    (before, previous-ply context, after). Prewarming when explore mode
+    starts leaves two. Returns whether the position was already cached.
+    """
+    if not review_deterministic_enabled():
+        raise HTTPException(status_code=403, detail="Sandbox is disabled")
+
+    try:
+        engine = get_review_stockfish(depth=int(os.getenv("REVIEW_DEPTH", "18")))
+    except (chess.engine.EngineError, RuntimeError) as exc:
+        reset_review_stockfish()
+        log.exception("Sandbox prewarm engine failed to start")
+        raise HTTPException(status_code=500, detail="Failed to analyze move") from exc
+
+    mode = current_mode_string(
+        engine_name=get_review_engine_name(),
+        multipv=REVIEW_MULTIPV,
+        nodes=review_nodes(),
+    )
+    if body.expected_mode and body.expected_mode != mode:
+        raise HTTPException(
+            status_code=409,
+            detail="Stale review: the analysis mode changed; re-run the review",
+        )
+
+    board = chess.Board()
+    try:
+        for raw in body.moves:
+            board.push(_resolve_sandbox_move(board, raw))
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Invalid path: {exc}"
+        ) from exc
+
+    try:
+        eval_key = f"{mode}|{board.fen()}"
+        if _cache_get(_SANDBOX_EVAL_CACHE, eval_key) is not None:
+            return SandboxPrewarmResponse(
+                fen=board.fen(), mode=mode, cached=True
+            )
+        analyzer = GameAnalyzer(
+            engine=engine,
+            explainer=MockExplainer(),
+            book_lookup=is_book_move,
+            multipv=REVIEW_MULTIPV,
+            deterministic=True,
+        )
+        _cache_put(
+            _SANDBOX_EVAL_CACHE,
+            eval_key,
+            analyzer.evaluate_position(board),
+        )
+    except (chess.engine.EngineError, RuntimeError) as exc:
+        reset_review_stockfish()
+        log.exception("Sandbox prewarm engine failed")
+        raise HTTPException(status_code=500, detail="Failed to analyze move") from exc
+    return SandboxPrewarmResponse(fen=board.fen(), mode=mode, cached=False)
 
 
 @router.post("/review/live", response_model=SandboxMoveResponse)
