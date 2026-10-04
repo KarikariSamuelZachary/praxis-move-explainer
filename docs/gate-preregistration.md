@@ -10,7 +10,7 @@ commit instead.
 |---|---|
 | `data/gate_set_A.pgn` (tuning) | `05538f9dda21b50ca6956ebf789ec8f99cf23660573849c8ec346d50360ada5f` |
 | `data/gate_set_B.pgn` (final gate) | `8394f93779132c0fc94d6f5c26022de563fc0b90724c3d6e00219836a8dac8fb` |
-| `data/gate_set_B.neutral.pgn` | pending (Lichess token or dump; hash added when frozen) |
+| `data/gate_set_B.neutral.pgn` | `265985acdc5b1e0215f6bcaec0d1fcc1f721b8cbc3f8d59a7d5bb4209a362606` |
 | `data/gate_sets.json` (manifest) | committed; contains ids, aliases, exclusions |
 | `data/gate_used_ids.json` (exclusions) | committed; 240 ids, verified `B ∩ used = 0` |
 
@@ -22,15 +22,22 @@ commit instead.
   sample, and the exact 15-game 300-ply subsample of the intermediate
   `54468c1b` A set.
 - Neutral games (when present) go entirely into B as a separate file.
+  Neutral source: one authenticated Lichess export of `maia1`
+  (`--neutral-user maia1 --neutral-max 300`), 274 games at `--min-plies 20`.
+  Verified: exact-PGN overlap neutral∩A = 0, neutral∩B = 0, 0 of the 240
+  used-ids substrings appear in the neutral file, and none of the A/B
+  opponent names appear among the neutral White/Black headers.
 
 ## Game-length cap
 
-`REVIEW_MAX_PLIES = 157` = p99 of the mainline-ply distribution of A ∪ B
-(240 games: p50 61, p90 114, p95 134, p99 157, max 177). The cap is enforced
-in `POST /api/review` before the deterministic flag is read, so it applies
-with the flag off too. Previous limit: none (only the proxy's 2 MiB PGN size
-bound). The frontend surfaces the backend 4xx detail, e.g. "Game too long for
-review: 158 plies (max 157)".
+Cap applies in deterministic mode only; flag off keeps the old behavior
+(no ply cap, only the proxy's 2 MiB PGN size bound). When the flag is on,
+`review_max_plies()` computes the cap from the container speed:
+`max_plies = (240 - serial_LLM) / 2 * NPS / N - 1`. Until
+`REVIEW_CONTAINER_NPS` is measured it falls back to `GATE_P99_PLIES = 157`
+= p99 of the mainline-ply distribution of A ∪ B (240 games: p50 61, p90
+114, p95 134, p99 157, max 177). The frontend surfaces the backend 4xx
+detail, e.g. "Game too long for review: 158 plies (max 157)".
 
 ## Reference and candidates
 

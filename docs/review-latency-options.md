@@ -2,18 +2,22 @@
 
 ## Constraints
 
-- **Game length cap:** `REVIEW_MAX_PLIES = 157` in
-  `src/core/analysis_mode.py` — the p99 of the frozen gate sets
-  (`data/gate_sets.json`: A `05538f9d…`, B `8394f937…`). About 1% of gate
-  games are rejected. The cap is enforced in `POST /api/review` **before the
-  deterministic flag is read, so it applies with the flag off too**. The
+- **Game length cap (deterministic mode only):** `review_max_plies()` in
+  `src/core/analysis_mode.py` — `(240 - serial_LLM) / 2 * NPS / N - 1`,
+  falling back to `GATE_P99_PLIES = 157`, the p99 of the frozen gate sets
+  (`data/gate_sets.json`: A `05538f9d…`, B `8394f937…`), until
+  `REVIEW_CONTAINER_NPS` is measured. About 1% of gate
+  games are rejected at the fallback. Flag off keeps the old behavior: no
+  ply cap; the
   previous limit was none: only the proxy's 2 MiB PGN size bound existed.
 - **Proxy timeout:** `REVIEW_TIMEOUT_MS = 240_000` in
   `frontend/src/app/api/analyze/route.ts` aborts the request at 240s.
 - **Headroom:** N must fit with 2x headroom, i.e. engine time <=
   `(240 - serial LLM) / 2` seconds. Before the explain flip, review still
-  generates explanations serially on the request path; assume 5 mistake/
-  blunder explanations x 2s = 10s, so the engine budget is 115s.
+  generates explanations serially on the request path. Real counts from the
+  tuning sample (1M reference labels, 10 games / 200 plies): mistake+blunder
+  per game **mean 0.70, p50 0, p90 3, max 3** (7 total) — not the earlier
+  5-per-game guess. Per-call latency is still assumed at 2s.
 - **Determinism:** review uses `Threads=1`, `Hash=16`, a fresh `ucinewgame`
   token per position, and fixed nodes. Threads must stay 1 for
   reproducibility, so N is the only quality knob. Extra cores do not speed up
@@ -23,18 +27,19 @@
 
 `engine_seconds(N, plies) = (plies + 1) * N / nps`
 
-At the route cap of 157 plies and 2x headroom, `N_max = 115 * nps / 158`.
-Run `python scripts/n_ceiling.py --nps <container nps> --llm-per-call 2
---llm-calls 5` for the table. At the local p10-derived ~220k nps:
+At the deterministic cap placeholder of 157 plies and 2x headroom, run
+`python scripts/n_ceiling.py --nps <container nps> --llm-seconds <S>`. At the
+local p10-derived ~220k nps:
 
-| N | per-eval | engine | x budget | fits |
+| N | engine | fits (S=0) | fits (S=1.4s, mean 0.7 calls) | fits (S=6s, worst 3 calls) |
 |---|---|---|---|---|
-| 60k | 0.27s | 43.1s | 0.37x | yes |
-| 100k | 0.45s | 71.8s | 0.62x | yes |
-| 150k | 0.68s | 107.7s | 0.94x | yes |
-| 200k | 0.91s | 143.6s | 1.25x | NO |
+| 100k | 71.8s | yes (0.60x) | yes (0.60x) | yes (0.61x) |
+| 150k | 107.7s | yes (0.90x) | yes (0.90x) | yes (0.92x) |
+| 200k | 143.6s | NO (1.20x) | NO (1.20x) | NO (1.23x) |
 
-Max N is ~160k. The container nps is still unknown; fill it in before fixing N.
+Max N: **167,089 without** explanation time, **166,114** at the real mean
+(0.70 x 2s), **162,911** at the real worst case (3 x 2s). The container nps
+is still unknown; fill it in before fixing N.
 
 ## N decision rule
 

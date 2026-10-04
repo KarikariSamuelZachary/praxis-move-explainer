@@ -1,10 +1,13 @@
 #!/usr/bin/env python
-"""N-vs-latency table at the route's maximum accepted game length.
+"""N-vs-latency table at the deterministic review's maximum game length.
 
-Inputs: the container nps (the only unknown). The route accepts at most
-REVIEW_MAX_PLIES (300) plies and the frontend proxy aborts at 240s
+Inputs: the container nps (the only unknown). The deterministic review
+accepts at most review_max_plies() plies (GATE_P99_PLIES until
+REVIEW_CONTAINER_NPS is measured) and the frontend proxy aborts at 240s
 (REVIEW_TIMEOUT_MS). We size N so that 2x the engine time still fits in the
 240s ceiling, leaving the other half for UART/HTTP/LLM overhead and variance.
+Flag off means no ply cap (old behavior), so this table only applies to the
+new deterministic mode.
 
 Usage:
   python scripts/n_ceiling.py --nps 250000
@@ -18,7 +21,11 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from core.analysis_mode import REVIEW_MAX_PLIES  # noqa: E402
+from core.analysis_mode import (  # noqa: E402
+    GATE_P99_PLIES,
+    REVIEW_HEADROOM,
+    REVIEW_TIMEOUT_SECONDS,
+)
 
 
 def parse_args():
@@ -27,14 +34,14 @@ def parse_args():
     parser.add_argument(
         "--plies",
         type=int,
-        default=REVIEW_MAX_PLIES,
-        help="game length; defaults to the route's maximum accepted length",
+        default=GATE_P99_PLIES,
+        help="game length; defaults to the deterministic cap placeholder",
     )
-    parser.add_argument("--ceiling", type=float, default=240.0, help="proxy abort (s)")
+    parser.add_argument("--ceiling", type=float, default=REVIEW_TIMEOUT_SECONDS, help="proxy abort (s)")
     parser.add_argument(
         "--headroom",
         type=float,
-        default=2.0,
+        default=REVIEW_HEADROOM,
         help="required headroom (2 = engine time must be <= ceiling/2)",
     )
     parser.add_argument(
@@ -73,7 +80,7 @@ def main():
         llm_note = f"{args.llm_calls} x {args.llm_per_call:.1f}s"
     engine_budget = (args.ceiling - llm_seconds) / args.headroom
     print(
-        f"nps={args.nps:,.0f}  plies={args.plies} (max accepted)  "
+        f"nps={args.nps:,.0f}  plies={args.plies} (deterministic cap)  "
         f"ceiling={args.ceiling:.0f}s  headroom={args.headroom:.1f}x  "
         f"llm={llm_seconds:.0f}s ({llm_note})  "
         f"engine budget={engine_budget:.0f}s"
