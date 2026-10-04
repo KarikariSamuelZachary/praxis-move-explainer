@@ -16,8 +16,10 @@ Usage:
       --limit-positions 200 --low-priority
 """
 import argparse
+import csv
 import json
 import os
+import random
 import statistics
 import sys
 import time
@@ -44,15 +46,45 @@ def parse_args():
         "--budgets", nargs="*", type=int, default=[60_000, 100_000, 150_000, 300_000]
     )
     parser.add_argument("--reference-nodes", type=int, default=400_000)
+    parser.add_argument(
+        "--reference-floor",
+        type=int,
+        default=0,
+        help="Second reference (e.g. 1000000) to measure reference stability.",
+    )
     parser.add_argument("--limit-positions", type=int, default=200)
     parser.add_argument(
         "--limit-games",
         type=int,
         default=10,
-        help="Games sampled evenly across the file; plies are capped per game.",
+        help="Games sampled evenly across the file; 0 = full set.",
+    )
+    parser.add_argument(
+        "--plies-per-game",
+        type=int,
+        default=0,
+        help="Cap plies per game; 0 = derive from limit-positions.",
     )
     parser.add_argument("--backstop", type=float, default=30.0)
     parser.add_argument("--noise-floor", action="store_true")
+    parser.add_argument(
+        "--order",
+        choices=["normal", "reversed", "random"],
+        default="reversed",
+        help="Second-run order for the noise floor.",
+    )
+    parser.add_argument("--seed", type=int, default=7)
+    parser.add_argument(
+        "--mate-csv",
+        default=str(REPO_ROOT / "praxis_subset.csv"),
+        help="Puzzle CSV used for the mate-rich recall sample.",
+    )
+    parser.add_argument("--mate-limit", type=int, default=100)
+    parser.add_argument(
+        "--mate-recall",
+        action="store_true",
+        help="Run the mate-rich recall sample instead of the label sweep.",
+    )
     parser.add_argument("--low-priority", action="store_true")
     parser.add_argument("--json", default=None)
     return parser.parse_args()
@@ -91,7 +123,7 @@ def _truncate_game(game, max_plies):
     return truncated
 
 
-def load_games(path, limit_positions, limit_games):
+def load_games(path, limit_positions, limit_games, plies_per_game=0):
     """Sample games evenly and cap plies per game, so the sample spans
     opponents instead of exhausting the first two long games."""
     games = []
@@ -106,7 +138,10 @@ def load_games(path, limit_positions, limit_games):
     if limit_games and len(games) > limit_games:
         step = len(games) / limit_games
         games = [games[int(i * step)] for i in range(limit_games)]
-    per_game = max(10, limit_positions // len(games))
+    if plies_per_game > 0:
+        per_game = plies_per_game
+    else:
+        per_game = max(10, limit_positions // len(games))
     return [_truncate_game(game, per_game) for game in games]
 
 
@@ -155,6 +190,7 @@ def compare_to_reference(reference, candidate):
         "agreement": matched / total if total else 0.0,
         "mate_recall": mates_found / mates_total if mates_total else None,
         "mate_positions": mates_total,
+        "severity": label_diff(reference, candidate),
     }
 
 
@@ -190,15 +226,32 @@ def run_nodes_sweep(args, games):
         games, args.sf_path, args.reference_nodes, args.backstop
     )
     print(f"reference: {args.reference_nodes} nodes")
-    results = {}
+    results = {"reference": args.reference_nodes}
+    if args.reference_floor:
+        floor_reference, _ = run_budget(
+            games, args.sf_path, args.reference_floor, args.backstop
+        )
+        floor = label_diff(reference, floor_reference)
+        results["reference_floor"] = {"nodes": args.reference_floor, **floor}
+        print(
+            f"  reference floor {args.reference_nodes} vs {args.reference_floor}: "
+            f"changed={floor['changed']}/{floor['moves']} "
+            f"adjacent={floor['adjacent']} "
+            f"crossings={floor['severity_crossings']} special={floor['special']}"
+        )
+
     for budget in args.budgets:
         candidate, durations = run_budget(games, args.sf_path, budget, args.backstop)
         comparison = compare_to_reference(reference, candidate)
+        severity = comparison["severity"]
         results[budget] = {
             "agreement": comparison["agreement"],
             "mate_recall": comparison["mate_recall"],
             "mate_positions": comparison["mate_positions"],
             "moves": comparison["moves"],
+            "adjacent": severity["adjacent"],
+            "severity_crossings": severity["severity_crossings"],
+            "special": severity["special"],
             "wall": quantiles(durations),
         }
         recall = (
@@ -208,9 +261,73 @@ def run_nodes_sweep(args, games):
         )
         print(
             f"  {budget:>7}: agreement={comparison['agreement']:.4f} "
+            f"adjacent={severity['adjacent']} "
+            f"crossings={severity['severity_crossings']} "
+            f"special={severity['special']} "
             f"mate_recall={recall} "
             f"wall p50={results[budget]['wall'].get('p50')}s "
             f"p95={results[budget]['wall'].get('p95')}s"
+        )
+    return results
+
+
+def load_mate_positions(csv_path, limit):
+    """Lichess puzzle FENs are the position BEFORE the opponent's blunder and
+    `moves[0]` is that blunder, so replay it to get the solver's position."""
+    positions = []
+    with open(csv_path, encoding="utf-8", errors="replace") as fh:
+        reader = csv.DictReader(fh)
+        for row in reader:
+            themes = row.get("themes", "")
+            mate_in = None
+            for candidate in ("mateIn2", "mateIn3", "mateIn4"):
+                if candidate in themes:
+                    mate_in = int(candidate[-1])
+                    break
+            if mate_in is None:
+                continue
+            moves = row.get("moves", "").split()
+            if not moves:
+                continue
+            try:
+                board = chess.Board(row.get("fen", ""))
+                board.push_uci(moves[0])
+            except ValueError:
+                continue
+            positions.append((row.get("id"), board.fen(), mate_in))
+    if limit and len(positions) > limit:
+        step = len(positions) / limit
+        positions = [positions[int(i * step)] for i in range(limit)]
+    return positions
+
+
+def run_mate_recall(args):
+    positions = load_mate_positions(args.mate_csv, args.mate_limit)
+    if not positions:
+        raise SystemExit(f"no mateIn2/3/4 positions found in {args.mate_csv}")
+    print(f"mate-rich sample: {len(positions)} positions from {args.mate_csv}")
+    results = {}
+    for budget in list(args.budgets) + [args.reference_nodes]:
+        engine = NodeEngine(
+            args.sf_path, nodes=budget, fresh=True, backstop=args.backstop
+        )
+        found = 0
+        exact = 0
+        try:
+            for _, fen, expected in positions:
+                board = chess.Board(fen)
+                evaluation = engine.evaluate(board, multipv=2)
+                if evaluation.mate is not None:
+                    found += 1
+                    if evaluation.mate > 0 and evaluation.mate <= expected:
+                        exact += 1
+        finally:
+            engine.close()
+        recall = found / len(positions)
+        results[budget] = {"recall": recall, "exact_or_faster": exact}
+        print(
+            f"  {budget:>7}: mate recall {found}/{len(positions)} = {recall:.3f} "
+            f"(distance <= expected: {exact})"
         )
     return results
 
@@ -237,14 +354,21 @@ def run_noise_floor(args, games):
         return per_game
 
     indexed = list(enumerate(games))
-    normal = batch_run(indexed)
-    reversed_run = batch_run(list(reversed(indexed)))
+    if args.order == "reversed":
+        second_order = list(reversed(indexed))
+    elif args.order == "random":
+        second_order = indexed[:]
+        random.Random(args.seed).shuffle(second_order)
+    else:
+        second_order = indexed[:]
 
-    aligned_reference = [normal[i] for i in range(len(games))]
-    aligned_candidate = [reversed_run[i] for i in range(len(games))]
-    diff = label_diff(aligned_reference, aligned_candidate)
+    first = batch_run(indexed)
+    second = batch_run(second_order)
+    aligned_first = [first[i] for i in range(len(games))]
+    aligned_second = [second[i] for i in range(len(games))]
+    diff = label_diff(aligned_first, aligned_second)
     print(
-        "old-vs-old noise floor (depth 18, 0.5s, reversed order): "
+        f"old-vs-old noise floor (depth 18, 0.5s, {args.order} order): "
         f"{diff['changed']}/{diff['moves']} changed "
         f"(adjacent {diff['adjacent']}, crossings {diff['severity_crossings']}, "
         f"special {diff['special']})"
@@ -258,13 +382,21 @@ def main():
         os.nice(19)
         print("  (running at nice 19)")
 
-    games = load_games(args.pgn, args.limit_positions, args.limit_games)
-    print(f"pgn={args.pgn} games={len(games)}")
     results = {}
-    if not args.noise_floor:
-        results["nodes"] = run_nodes_sweep(args, games)
+    if args.mate_recall:
+        results["mate_recall"] = run_mate_recall(args)
     else:
-        results["noise_floor"] = run_noise_floor(args, games)
+        games = load_games(
+            args.pgn,
+            args.limit_positions,
+            args.limit_games,
+            args.plies_per_game,
+        )
+        print(f"pgn={args.pgn} games={len(games)}")
+        if not args.noise_floor:
+            results["nodes"] = run_nodes_sweep(args, games)
+        else:
+            results["noise_floor"] = run_noise_floor(args, games)
 
     if args.json:
         Path(args.json).write_text(json.dumps(results, indent=2), encoding="utf-8")

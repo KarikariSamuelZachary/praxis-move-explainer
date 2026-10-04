@@ -34,7 +34,37 @@ def parse_args():
     parser.add_argument("--per-set", type=int, default=120)
     parser.add_argument("--min-plies", type=int, default=20)
     parser.add_argument("--out-dir", default=str(REPO_ROOT / "data"))
+    parser.add_argument(
+        "--neutral-pgn",
+        default=None,
+        help="Optional neutral games (e.g. Lichess export) split into both "
+        "sets as separate files with their own hashes.",
+    )
     return parser.parse_args()
+
+
+def read_pgn_games(path, min_plies):
+    games = []
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        while True:
+            game = chess.pgn.read_game(fh)
+            if game is None:
+                break
+            if sum(1 for _ in game.mainline_moves()) >= min_plies:
+                games.append(str(game))
+    return games
+
+
+def split_neutral(games):
+    return games[::2], games[1::2]
+
+
+def write_pgn_file(path, pgns):
+    with open(path, "w", encoding="utf-8") as fh:
+        for pgn in pgns:
+            fh.write(pgn.strip())
+            fh.write("\n\n")
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
 def fetch_games(min_plies):
@@ -144,6 +174,19 @@ def main():
     hash_a = write_set(path_a, set_a)
     hash_b = write_set(path_b, set_b)
 
+    neutral_files = {}
+    if args.neutral_pgn:
+        neutral = read_pgn_games(args.neutral_pgn, args.min_plies)
+        neutral_a, neutral_b = split_neutral(neutral)
+        path_na = out_dir / "gate_set_A.neutral.pgn"
+        path_nb = out_dir / "gate_set_B.neutral.pgn"
+        hash_na = write_pgn_file(path_na, neutral_a)
+        hash_nb = write_pgn_file(path_nb, neutral_b)
+        neutral_files = {
+            "set_a_neutral": {"file": str(path_na), "sha256": hash_na, "games": len(neutral_a)},
+            "set_b_neutral": {"file": str(path_nb), "sha256": hash_nb, "games": len(neutral_b)},
+        }
+
     manifest = {
         "source": "opponent_games",
         "min_plies": args.min_plies,
@@ -163,6 +206,7 @@ def main():
             "opponents": distribution(set_b),
             "ids": [g["id"] for g in set_b],
         },
+        "neutral": neutral_files,
     }
     manifest_path = out_dir / "gate_sets.json"
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
