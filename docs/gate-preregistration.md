@@ -6,13 +6,15 @@ commit instead.
 
 ## Frozen artifacts (SHA-256)
 
-| file | sha256 |
-|---|---|
-| `data/gate_set_A.pgn` (tuning) | `05538f9dda21b50ca6956ebf789ec8f99cf23660573849c8ec346d50360ada5f` |
-| `data/gate_set_B.pgn` (final gate) | `8394f93779132c0fc94d6f5c26022de563fc0b90724c3d6e00219836a8dac8fb` |
-| `data/gate_set_B.neutral.pgn` | `265985acdc5b1e0215f6bcaec0d1fcc1f721b8cbc3f8d59a7d5bb4209a362606` |
-| `data/gate_sets.json` (manifest) | committed; contains ids, aliases, exclusions |
-| `data/gate_used_ids.json` (exclusions) | committed; 240 ids, verified `B ∩ used = 0` |
+| file | role | sha256 |
+|---|---|---|
+| `data/gate_set_A.pgn` (tuning) | tuning | `05538f9dda21b50ca6956ebf789ec8f99cf23660573849c8ec346d50360ada5f` |
+| `data/gate_set_B.pgn` (final gate) | base gate | `8394f93779132c0fc94d6f5c26022de563fc0b90724c3d6e00219836a8dac8fb` |
+| `data/gate_set_B.neutral.thibault.pgn` | primary human (~1750) | `d473e4cb30932d7b81900e8c761171fae57c4e110b93b5192c4958a907a51533` |
+| `data/gate_set_B.neutral.chessweeb.pgn` | primary human (~2700) | `8c199af89cb5aea901cb37c0ce142098db30147e3083b2f717999b042ed4e1e1` |
+| `data/gate_set_B.neutral.maia1.pgn` | secondary bot-style | `232d1137930590f62a96512ca843fa031105bf448820e7c171152da982ac10ad` |
+| `data/gate_sets.json` (manifest) | record | ids, aliases, exclusions, per-file neutral entries |
+| `data/gate_used_ids.json` (exclusions) | record | 240 ids, verified `B ∩ used = 0` |
 
 - Split: disjoint opponent pools, even share per opponent; the accounts
   `iaminspiredbro` and `iaminspiredbroo` are aliased to one pool and stay in
@@ -21,12 +23,36 @@ commit instead.
   200-ply N sweep and noise floors sampled from, the exact 10-game 200-ply
   sample, and the exact 15-game 300-ply subsample of the intermediate
   `54468c1b` A set.
-- Neutral games (when present) go entirely into B as a separate file.
-  Neutral source: one authenticated Lichess export of `maia1`
-  (`--neutral-user maia1 --neutral-max 300`), 274 games at `--min-plies 20`.
-  Verified: exact-PGN overlap neutral∩A = 0, neutral∩B = 0, 0 of the 240
-  used-ids substrings appear in the neutral file, and none of the A/B
-  opponent names appear among the neutral White/Black headers.
+- Neutral games go entirely into set B as one capped file per source (cap
+  120 each = `--per-set`, so no file outnumbers the base B set).
+  Human primary set: one authenticated Lichess export per user
+  (`--neutral-user thibault ChessWeeb --neutral-max 300`), 300 fetched each:
+  `thibault` (human, ~1750 blitz, active; 1 BOT-opponent game and 11 short
+  games dropped, 288 kept) and `ChessWeeb` (human streamer GM account,
+  ~2700 blitz, archive games; 0 BOT games, 1 short game dropped, 299 kept),
+  each truncated to the first 120. `maia1` stays as the secondary bot-style
+  reference (BOT account, single style): the legacy 274-game file truncated
+  to its first 120 (all 120 involve the BOT side, by design).
+  Verified per file: exact-PGN overlap with A = 0, with B = 0, with the other
+  neutral files = 0 (by GameId); 0 of the 240 used-id substrings; no A/B
+  opponent names among White/Black headers; 0 BOT-title games in the human
+  files. `ChessWeeb`'s account is inactive (games are 2024 archive), recorded
+  here so staleness cannot be mistaken for fresh sampling.
+
+## Per-file gate (registered before anything runs on B)
+
+- The final-gate formula (8) is evaluated on the base B file **and** on each
+  neutral file independently, with the same reference, candidates, seed, and
+  CIs. Result is recorded per file: PASS if the file meets (8), FAIL
+  otherwise.
+- Overall gate verdict = PASS only if base B **and every neutral file**
+  PASS. Any single file FAIL fails the gate; no post-hoc pooling or
+  file-dropping is allowed (a new pre-registration is required instead).
+- Frozen file minima (checked at export, enforced by the script): each
+  neutral file holds >= 50 games after filtering (`--neutral-min-games`),
+  <= 120 games (`--neutral-file-cap`), and human files hold 0 BOT-title
+  games. A source violating any minimum fails at export time and never
+  reaches the gate.
 
 ## Game-length cap
 

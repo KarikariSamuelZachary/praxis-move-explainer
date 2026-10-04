@@ -209,6 +209,14 @@ __marimo__/
 src/blunder_game.pgn
 src/test_game.pgn
 
+# Gate experiment artifacts: frozen by SHA-256 in
+# docs/gate-preregistration.md, regenerated with scripts/export_gate_pgns.py
+# and scripts/nodes_selection.py. Kept local, not part of the repo.
+data/gate_set_*.pgn
+data/gate_sets.json
+data/gate_used_ids.json
+data/measurements/*.json
+
 #agents
 .codex
 .claude
