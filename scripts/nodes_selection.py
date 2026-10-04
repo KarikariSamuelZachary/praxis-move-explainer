@@ -17,6 +17,7 @@ Usage:
 """
 import argparse
 import csv
+import io
 import json
 import multiprocessing
 import os
@@ -112,6 +113,27 @@ def parse_args():
         "--old-mode-cache",
         default=None,
         help="JSON file to save/reuse the old-mode per-game rows.",
+    )
+    parser.add_argument(
+        "--old-mode-min-depth-p50",
+        type=float,
+        default=15.0,
+        help="Reject (do not cache) an old-mode pass whose depth p50 is "
+        "below this uncontended production value.",
+    )
+    parser.add_argument(
+        "--require-valid-old-mode",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Exit nonzero after writing results when the old-mode pass is "
+        "invalid (run it serial and idle, or defer it to the container).",
+    )
+    parser.add_argument(
+        "--paired",
+        default=None,
+        help="Sweep JSON with stored candidate rows; recompute only the "
+        "paired candidate-vs-old-mode stats from the reference and "
+        "old-mode caches (no engines).",
     )
     parser.add_argument("--old-depth", type=int, default=18)
     parser.add_argument("--old-time", type=float, default=0.5)
@@ -546,6 +568,7 @@ def run_nodes_sweep(args, pgns):
             "explanations": _explanation_counts(candidate),
             "wall": quantiles(durations),
             "depth": quantiles(depths),
+            "rows": candidate,
         }
         recall = (
             f"{comparison['mate_recall']:.3f}"
@@ -595,20 +618,6 @@ def run_nodes_sweep(args, pgns):
                 args.old_time,
                 low_priority=args.low_priority,
             )
-            if args.old_mode_cache:
-                Path(args.old_mode_cache).write_text(
-                    json.dumps(
-                        {
-                            "depth_limit": args.old_depth,
-                            "analysis_time": args.old_time,
-                            "per_game": old_mode,
-                            "durations": old_durations,
-                            "depths": old_depths,
-                        }
-                    ),
-                    encoding="utf-8",
-                )
-                print(f"  wrote old-mode cache {args.old_mode_cache}")
         comparison = compare_to_reference(reference, old_mode)
         severity = comparison["severity"]
         moves = severity["moves"] or 1
@@ -625,7 +634,34 @@ def run_nodes_sweep(args, pgns):
             "explanations": _explanation_counts(old_mode),
             "depth": quantiles(old_depths),
             "wall": quantiles(old_durations),
+            "valid": (
+                (quantiles(old_depths).get("p50") or 0)
+                >= args.old_mode_min_depth_p50
+            ),
+            "min_depth_p50": args.old_mode_min_depth_p50,
         }
+        if results["old_mode"]["valid"]:
+            if args.old_mode_cache:
+                Path(args.old_mode_cache).write_text(
+                    json.dumps(
+                        {
+                            "depth_limit": args.old_depth,
+                            "analysis_time": args.old_time,
+                            "per_game": old_mode,
+                            "durations": old_durations,
+                            "depths": old_depths,
+                        }
+                    ),
+                    encoding="utf-8",
+                )
+                print(f"  wrote old-mode cache {args.old_mode_cache}")
+        else:
+            results["old_mode_rejected"] = True
+            print(
+                f"  old mode INVALID: depth p50 {results['old_mode']['depth'].get('p50')} "
+                f"< {args.old_mode_min_depth_p50} (CPU-starved; run it serial and "
+                "idle, or defer it to the container). Not cached."
+            )
         print(
             f"  old mode (depth {args.old_depth}, {args.old_time}s): "
             f"agreement={comparison['agreement']:.4f} "
@@ -634,6 +670,7 @@ def run_nodes_sweep(args, pgns):
             f"crossings={severity['severity_crossings']} "
             f"adjacent={severity['adjacent']} special={severity['special']} "
             f"depth={results['old_mode']['depth']} "
+            f"valid={results['old_mode']['valid']} "
             f"wall p50={results['old_mode']['wall'].get('p50')}s "
             f"p95={results['old_mode']['wall'].get('p95')}s"
         )
@@ -825,6 +862,48 @@ def run_warm_breakout(args, pgns):
     return results
 
 
+def run_paired_only(args):
+    """Recompute paired candidate-vs-old-mode stats from a sweep JSON and
+    the reference/old-mode caches (no engines)."""
+    if args.reference_cache is None or args.old_mode_cache is None:
+        raise SystemExit("--paired needs --reference-cache and --old-mode-cache")
+    sweep = json.loads(Path(args.paired).read_text(encoding="utf-8"))
+    nodes = sweep["nodes"]
+    reference = json.loads(
+        Path(args.reference_cache).read_text(encoding="utf-8")
+    )["per_game"]
+    old = json.loads(Path(args.old_mode_cache).read_text(encoding="utf-8"))[
+        "per_game"
+    ]
+    results = {"nodes": {"reference": nodes.get("reference")}}
+    for key, budget_results in nodes.items():
+        if key in ("reference", "jobs", "reference_floor") or "rows" not in budget_results:
+            continue
+        paired = paired_old_mode_stats(
+            reference, budget_results["rows"], old, seed=args.seed
+        )
+        results["nodes"][key] = paired
+        print(
+            f"    {key} vs old mode: "
+            f"direct={paired['direct_crossing_rate']:.4f} "
+            f"ci=[{paired['direct_ci']['low']:.4f},"
+            f"{paired['direct_ci']['high']:.4f}] "
+            f"ref_diff={paired['reference_rate_difference']:+.4f} "
+            f"ci=[{paired['difference_ci']['low']:+.4f},"
+            f"{paired['difference_ci']['high']:+.4f}]"
+        )
+    return results
+
+
+def sample_plies(pgns):
+    counts = []
+    for pgn in pgns:
+        game = chess.pgn.read_game(io.StringIO(pgn))
+        if game is not None:
+            counts.append(sum(1 for _ in game.mainline_moves()))
+    return counts
+
+
 def main():
     args = parse_args()
     if args.low_priority:
@@ -834,15 +913,8 @@ def main():
     results = {}
     if args.mate_recall:
         results["mate_recall"] = run_mate_recall(args)
-    elif args.warm_breakout:
-        pgns = load_games(
-            args.pgn,
-            args.limit_positions,
-            args.limit_games,
-            args.plies_per_game,
-        )
-        print(f"pgn={args.pgn} games={len(pgns)}")
-        results["warm_breakout"] = run_warm_breakout(args, pgns)
+    elif args.paired:
+        results["paired"] = run_paired_only(args)
     else:
         pgns = load_games(
             args.pgn,
@@ -851,7 +923,15 @@ def main():
             args.plies_per_game,
         )
         print(f"pgn={args.pgn} games={len(pgns)}")
-        if not args.noise_floor:
+        counts = sample_plies(pgns)
+        results["sample"] = {
+            "games": len(pgns),
+            "total_plies": sum(counts),
+            "max_plies": max(counts) if counts else 0,
+        }
+        if args.warm_breakout:
+            results["warm_breakout"] = run_warm_breakout(args, pgns)
+        elif not args.noise_floor:
             results["nodes"] = run_nodes_sweep(args, pgns)
         else:
             results["noise_floor"] = run_noise_floor(args, pgns)
@@ -859,6 +939,16 @@ def main():
     if args.json:
         Path(args.json).write_text(json.dumps(results, indent=2), encoding="utf-8")
         print(f"wrote {args.json}")
+
+    nodes = results.get("nodes")
+    if (
+        args.require_valid_old_mode
+        and isinstance(nodes, dict)
+        and "old_mode" in nodes
+        and nodes["old_mode"].get("valid") is False
+    ):
+        print("old-mode baseline rejected; rerun it serial and idle (or defer it).")
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":

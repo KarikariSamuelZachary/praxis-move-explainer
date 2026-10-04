@@ -71,6 +71,13 @@ detail, e.g. "Game too long for review: 158 plies (max 157)".
   `MultiPV=2`, Stockfish 19 (`STOCKFISH_PATH`).
 - Candidates: N in {60k, 100k, 150k, 300k} plus the shipped old mode
   (`depth=18`, `analysis_time=0.5s`, no fresh token, `MultiPV=2`).
+- Old-mode validity: the old-mode pass runs **serial and idle** (single
+  engine, quiet machine) and is rejected unless engine-reported depth p50
+  reaches the uncontended production value (15 at 0.5s). A CPU-starved pass
+  (e.g. depth p50 11) is not cached and fails the run loudly; if the local
+  machine cannot be made idle, the old-mode pass is deferred to the
+  container. The sweep script enforces this
+  (`--old-mode-min-depth-p50`, `--require-valid-old-mode`).
 
 ## Formulas
 
@@ -98,6 +105,17 @@ detail, e.g. "Game too long for review: 158 plies (max 157)".
    at most the old mode's and the bootstrap CI upper bound is not worse than
    the old mode's by more than the reference's own instability
    (400k-vs-1M crossing rate measured on a 300-ply subsample).
+9. Tuning result vs the valid baseline (200-ply sample, 1M reference; old
+   mode valid at depth p50 15, rate 5.0% [2.5%, 8.5%]): paired ref_diff is
+   +4.5% [-1.0%, +10.0%] at 60k, +1.0% [-2.5%, +4.0%] at 100k, +0.5%
+   [-3.0%, +4.5%] at 150k, +0.5% [-2.0%, +3.5%] at 300k. 100k/150k/300k are
+   statistically indistinguishable from old mode; 60k is borderline. An
+   earlier CPU-starved old-mode run (12.0%, depth p50 11) made N look
+   superior and is withdrawn as invalid.
+10. Set B is untouched by measurement: no sweep, noise floor, recall sample
+    or verification run has ever consumed a B file (opponents or neutral).
+    Only read-only overlap/hash checks have touched B. No analyzer output on
+    B exists anywhere in `data/measurements/`.
 
 ## Evidence files
 
