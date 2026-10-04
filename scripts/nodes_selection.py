@@ -97,6 +97,13 @@ def parse_args():
         default=1,
         help="Parallel workers; shards are contiguous so order is preserved.",
     )
+    parser.add_argument(
+        "--old-mode",
+        action="store_true",
+        help="Also run the shipped depth+time batch config against the reference.",
+    )
+    parser.add_argument("--old-depth", type=int, default=18)
+    parser.add_argument("--old-time", type=float, default=0.5)
     parser.add_argument("--json", default=None)
     return parser.parse_args()
 
@@ -105,11 +112,12 @@ class TimedNodeEngine(NodeEngine):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.durations = []
+        self.depths = []
 
     def evaluate(self, board, depth_limit=None, pov=None, time_limit=None, multipv=1):
         started = time.monotonic()
         try:
-            return super().evaluate(
+            evaluation = super().evaluate(
                 board,
                 depth_limit=depth_limit,
                 pov=pov,
@@ -118,6 +126,43 @@ class TimedNodeEngine(NodeEngine):
             )
         finally:
             self.durations.append(time.monotonic() - started)
+        self.depths.append(getattr(evaluation, "depth", None))
+        return evaluation
+
+
+class TimedStockfishEngine(StockfishEngine):
+    """Old batch config (depth 18 + 0.5s) with per-eval time/depth capture."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.durations = []
+        self.depths = []
+
+    def evaluate(
+        self,
+        board,
+        depth_limit=None,
+        pov=None,
+        time_limit=None,
+        multipv=1,
+        nodes=None,
+        fresh_token=False,
+    ):
+        started = time.monotonic()
+        try:
+            evaluation = super().evaluate(
+                board,
+                depth_limit=depth_limit,
+                pov=pov,
+                time_limit=time_limit,
+                multipv=multipv,
+                nodes=nodes,
+                fresh_token=fresh_token,
+            )
+        finally:
+            self.durations.append(time.monotonic() - started)
+        self.depths.append(getattr(evaluation, "depth", None))
+        return evaluation
 
 
 def _truncate_game(game, max_plies):
@@ -174,7 +219,7 @@ def _budget_shard(payload):
             )
     finally:
         engine.close()
-    return per_game, engine.durations
+    return per_game, engine.durations, engine.depths
 
 
 def run_budget(
@@ -193,20 +238,58 @@ def run_budget(
     with multiprocessing.Pool(min(jobs, len(shards))) as pool:
         results = pool.map(_budget_shard, payloads)
 
-    per_game = [game for result, _ in results for game in result]
-    durations = [duration for _, shard_durations in results for duration in shard_durations]
-    return per_game, durations
+    per_game = [game for result, _, _ in results for game in result]
+    durations = [
+        duration for _, shard_durations, _ in results for duration in shard_durations
+    ]
+    depths = [depth for _, _, shard_depths in results for depth in shard_depths]
+    return per_game, durations, depths
 
 
 def quantiles(values):
-    if not values:
+    ordered = sorted(value for value in values if value is not None)
+    if not ordered:
         return {}
-    ordered = sorted(values)
 
     def pick(q):
         return ordered[min(len(ordered) - 1, int(q * len(ordered)))]
 
-    return {"p50": round(pick(0.50), 3), "p95": round(pick(0.95), 3)}
+    return {
+        "p50": round(pick(0.50), 3),
+        "p90": round(pick(0.90), 3),
+        "p95": round(pick(0.95), 3),
+    }
+
+
+def cluster_bootstrap_ci(reference, candidate, iters=2000, seed=7):
+    """Game-level bootstrap 95% CI for the severity-crossing rate."""
+    per_game = []
+    for ref_game, cand_game in zip(reference, candidate):
+        crossings = moves = 0
+        for ref_row, cand_row in zip(ref_game, cand_game):
+            moves += 1
+            left, right = ref_row["label"], cand_row["label"]
+            if left == right or left in SPECIAL or right in SPECIAL:
+                continue
+            if abs(SEVERITY[left] - SEVERITY[right]) >= 2:
+                crossings += 1
+        per_game.append((crossings, moves))
+    if not per_game:
+        return {"low": 0.0, "high": 0.0}
+    rng = random.Random(seed)
+    rates = []
+    for _ in range(iters):
+        crossings = total = 0
+        for _ in range(len(per_game)):
+            game_crossings, game_moves = per_game[rng.randrange(len(per_game))]
+            crossings += game_crossings
+            total += game_moves
+        rates.append(crossings / total if total else 0.0)
+    rates.sort()
+    return {
+        "low": rates[int(0.025 * iters)],
+        "high": rates[min(iters - 1, int(0.975 * iters))],
+    }
 
 
 def compare_to_reference(reference, candidate):
@@ -256,8 +339,32 @@ def label_diff(reference, candidate):
     }
 
 
+def run_old_mode(pgns, sf_path, depth, analysis_time, low_priority=False):
+    """The shipped batch config: depth 18 + 0.5s, no fresh token."""
+    if low_priority:
+        os.nice(19)
+    engine = TimedStockfishEngine(
+        stockfish_path=sf_path, depth=depth, analysis_time=analysis_time
+    )
+    engine.start()
+    analyzer = GameAnalyzer(engine=engine, explainer=MockExplainer(), multipv=2)
+    per_game = []
+    try:
+        for pgn in pgns:
+            rows = analyzer.analyze_full_game(pgn, include_explanations=False)[1:]
+            per_game.append(
+                [
+                    {"label": row["classification"], "mate": row.get("eval_mate")}
+                    for row in rows
+                ]
+            )
+    finally:
+        engine.close()
+    return per_game, engine.durations, engine.depths
+
+
 def run_nodes_sweep(args, pgns):
-    reference, _ = run_budget(
+    reference, _, _ = run_budget(
         pgns,
         args.sf_path,
         args.reference_nodes,
@@ -270,7 +377,7 @@ def run_nodes_sweep(args, pgns):
     mate_reference = reference
     long_mates = []
     if args.reference_floor:
-        floor_reference, _ = run_budget(
+        floor_reference, _, _ = run_budget(
             pgns,
             args.sf_path,
             args.reference_floor,
@@ -301,7 +408,7 @@ def run_nodes_sweep(args, pgns):
         print(f"  long mates (>=6) in reference: {len(long_mates)}")
 
     for budget in args.budgets:
-        candidate, durations = run_budget(
+        candidate, durations, depths = run_budget(
             pgns,
             args.sf_path,
             budget,
@@ -312,6 +419,7 @@ def run_nodes_sweep(args, pgns):
         comparison = compare_to_reference(reference, candidate)
         severity = comparison["severity"]
         moves = severity["moves"] or 1
+        crossing_ci = cluster_bootstrap_ci(reference, candidate, seed=args.seed)
         long_mate_changes = 0
         long_mate_kept = 0
         for game_index, ply_index in long_mates:
@@ -327,10 +435,12 @@ def run_nodes_sweep(args, pgns):
             "adjacent": severity["adjacent"],
             "severity_crossings": severity["severity_crossings"],
             "crossing_rate": severity["severity_crossings"] / moves,
+            "crossing_ci": crossing_ci,
             "special": severity["special"],
             "long_mate_label_changes": long_mate_changes,
             "long_mate_kept": long_mate_kept,
             "wall": quantiles(durations),
+            "depth": quantiles(depths),
         }
         recall = (
             f"{comparison['mate_recall']:.3f}"
@@ -346,12 +456,50 @@ def run_nodes_sweep(args, pgns):
         print(
             f"  {budget:>7}: agreement={comparison['agreement']:.4f} "
             f"crossing_rate={results[budget]['crossing_rate']:.4f} "
+            f"ci=[{crossing_ci['low']:.4f},{crossing_ci['high']:.4f}] "
             f"adjacent={severity['adjacent']} "
             f"crossings={severity['severity_crossings']} "
             f"special={severity['special']} "
+            f"depth={results[budget]['depth']} "
             f"mate_recall={recall}{long_mate_note} "
             f"wall p50={results[budget]['wall'].get('p50')}s "
             f"p95={results[budget]['wall'].get('p95')}s"
+        )
+
+    if args.old_mode:
+        old_mode, old_durations, old_depths = run_old_mode(
+            pgns,
+            args.sf_path,
+            args.old_depth,
+            args.old_time,
+            low_priority=args.low_priority,
+        )
+        comparison = compare_to_reference(reference, old_mode)
+        severity = comparison["severity"]
+        moves = severity["moves"] or 1
+        crossing_ci = cluster_bootstrap_ci(reference, old_mode, seed=args.seed)
+        results["old_mode"] = {
+            "depth_limit": args.old_depth,
+            "analysis_time": args.old_time,
+            "agreement": comparison["agreement"],
+            "severity_crossings": severity["severity_crossings"],
+            "crossing_rate": severity["severity_crossings"] / moves,
+            "crossing_ci": crossing_ci,
+            "adjacent": severity["adjacent"],
+            "special": severity["special"],
+            "depth": quantiles(old_depths),
+            "wall": quantiles(old_durations),
+        }
+        print(
+            f"  old mode (depth {args.old_depth}, {args.old_time}s): "
+            f"agreement={comparison['agreement']:.4f} "
+            f"crossing_rate={results['old_mode']['crossing_rate']:.4f} "
+            f"ci=[{crossing_ci['low']:.4f},{crossing_ci['high']:.4f}] "
+            f"crossings={severity['severity_crossings']} "
+            f"adjacent={severity['adjacent']} special={severity['special']} "
+            f"depth={results['old_mode']['depth']} "
+            f"wall p50={results['old_mode']['wall'].get('p50')}s "
+            f"p95={results['old_mode']['wall'].get('p95')}s"
         )
     return results
 
@@ -467,7 +615,7 @@ def run_warm_breakout(args, pgns):
     print(f"warm breakout: {len(pgns)} games, budgets={args.budgets}")
     results = {}
     for budget in args.budgets:
-        fresh, _ = run_budget(
+        fresh, _, _ = run_budget(
             pgns,
             args.sf_path,
             budget,
@@ -476,7 +624,7 @@ def run_warm_breakout(args, pgns):
             low_priority=args.low_priority,
             fresh=True,
         )
-        warm, _ = run_budget(
+        warm, _, _ = run_budget(
             pgns,
             args.sf_path,
             budget,

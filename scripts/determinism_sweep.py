@@ -198,6 +198,9 @@ class NodeEngine:
             mate=mate,
             second_best_cp=second_cp,
             principal_variation_uci=[m.uci() for m in pv],
+            depth=primary.get("depth"),
+            nodes=primary.get("nodes"),
+            nps=primary.get("nps"),
         )
 
     def close(self):
