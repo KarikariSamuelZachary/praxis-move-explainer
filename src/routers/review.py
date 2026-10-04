@@ -298,6 +298,15 @@ def review_live(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+    try:
+        engine = get_review_stockfish(depth=int(os.getenv("REVIEW_DEPTH", "18")))
+    except (chess.engine.EngineError, RuntimeError) as exc:
+        reset_review_stockfish()
+        log.exception("Sandbox live engine failed to start")
+        raise HTTPException(status_code=500, detail="Failed to analyze move") from exc
+
+    # The mode string is computed after the engine is up, so the first
+    # request caches under the real engine name instead of "unknown".
     mode = current_mode_string(
         engine_name=get_review_engine_name(),
         multipv=REVIEW_MULTIPV,
@@ -311,7 +320,6 @@ def review_live(
         return SandboxMoveResponse(**response)
 
     try:
-        engine = get_review_stockfish(depth=int(os.getenv("REVIEW_DEPTH", "18")))
         analyzer = GameAnalyzer(
             engine=engine,
             explainer=MockExplainer(),
