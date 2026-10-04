@@ -24,9 +24,16 @@ class ReviewRequest(BaseModel):
 
 
 class SandboxMoveRequest(BaseModel):
-    fen: str
     move: str
+    # Path from the game start (UCI or SAN). Preferred: replaying the path
+    # restores book contiguity, repetition history and the previous ply's EP
+    # loss, so the sandbox label matches batch review exactly.
+    moves: List[str] = []
+    # Fallback when no path is available (no history-dependent context).
+    fen: Optional[str] = None
     player_rating: Optional[int] = None
+    # Echo of the batch review's mode string; a mismatch is a stale review.
+    expected_mode: Optional[str] = None
 
 
 class SandboxLine(BaseModel):
@@ -42,6 +49,7 @@ class SandboxMoveResponse(BaseModel):
     classification: MoveClassification
     cp_loss: int
     ep_loss: float
+    raw_ep_loss: float
     eval_cp: float
     eval_mate: Optional[int] = None
     color: Literal["white", "black"]
@@ -49,6 +57,7 @@ class SandboxMoveResponse(BaseModel):
     fen: str
     move_san: str
     move_uci: str
+    is_book: bool = False
     best: SandboxLine
     second_best: Optional[SandboxLine] = None
     mode: str
@@ -82,4 +91,6 @@ class ReviewMoveResponse(BaseModel):
     second_best_move_uci: Optional[str] = None
     second_best_move_san: Optional[str] = None
     second_best_pv_uci: Optional[List[str]] = None
+    # Mode fingerprint this row was produced under (stale-gate echo).
+    mode: Optional[str] = None
     explanation: Optional[ReviewExplanation] = None

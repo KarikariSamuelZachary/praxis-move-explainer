@@ -304,7 +304,11 @@ def test_extras_are_flag_gated():
         absent = [key for key in _EXTRAS_KEYS if key in rows[0]]
         assert not absent, f"flag off leaked extras: {absent} in {rows[0]}"
 
-        with patch.dict(os.environ, {"REVIEW_DETERMINISTIC": "1"}, clear=False):
+        with patch.dict(
+            os.environ,
+            {"REVIEW_DETERMINISTIC": "1", "REVIEW_NODES": "150000"},
+            clear=False,
+        ):
             rows = review_module.review_game(
                 ReviewRequest(pgn=PGN),
                 _clerk_id="extras-on-user",
@@ -442,6 +446,202 @@ def test_live_returns_label_lines_and_caches():
     print("  [PASS] live: SAN/UCI accepted, label + top-2 lines, cached")
 
 
+def test_live_replays_the_move_path():
+    import routers.review as review_module
+
+    review_module._SANDBOX_EVAL_CACHE.clear()
+    review_module._SANDBOX_RESULT_CACHE.clear()
+    seen: dict = {}
+
+    from schemas.models import Evaluation
+
+    class _StubAnalyzer:
+        def __init__(self, **kwargs):
+            pass
+
+        def evaluate_position(self, board):
+            return Evaluation(
+                score_cp=15.0,
+                best_move_uci="g1f3",
+                best_move_san="Nf3",
+                mate=None,
+                second_best_cp=5.0,
+                principal_variation_uci=["g1f3", "b8c6"],
+            )
+
+        def expected_points_loss(self, before, after, turn_color, rating):
+            seen["prev_loss_called"] = True
+            return 0.03
+
+        def analyze_ply(self, board, move, eval_before, **kwargs):
+            seen.update(kwargs)
+            seen["fen"] = board.fen()
+            row = {
+                "classification": "best",
+                "cp_loss": 0,
+                "ep_loss": 0.01,
+                "raw_ep_loss": 0.02,
+                "eval_cp": 15.0,
+                "eval_mate": None,
+                "color": "white",
+                "fen_before": board.fen(),
+                "fen": "after",
+                "san": board.san(move),
+            }
+            return row, eval_before, 0.02
+
+    saved = (review_module.GameAnalyzer, review_module.get_review_stockfish)
+    review_module.GameAnalyzer = _StubAnalyzer
+    review_module.get_review_stockfish = lambda *args, **kwargs: object()
+    try:
+        with patch.dict(
+            os.environ,
+            {"REVIEW_DETERMINISTIC": "1", "REVIEW_NODES": "150000"},
+            clear=False,
+        ):
+            response = _client().post(
+                "/api/review/live",
+                json={
+                    "moves": ["e4", "e5"],
+                    "move": "Nf3",
+                    "expected_mode": None,
+                },
+                headers={
+                    "X-Internal-Secret": _secret(),
+                    "X-Clerk-User-Id": TEST_CLERK_ID,
+                },
+            )
+    finally:
+        (review_module.GameAnalyzer, review_module.get_review_stockfish) = saved
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["move_san"] == "Nf3", body
+    assert body["raw_ep_loss"] == 0.02, body
+    assert body["is_book"] is False, body
+    assert seen.get("prev_loss_called") is True, seen
+    assert seen.get("opponent_prev_ep_loss") == 0.03, seen
+    assert seen.get("is_book_move") is False, seen
+    print("  [PASS] live: path replayed, prev EP loss + book flag carried")
+
+
+def test_live_rejects_stale_mode():
+    with patch.dict(
+        os.environ,
+        {"REVIEW_DETERMINISTIC": "1", "REVIEW_NODES": "150000"},
+        clear=False,
+    ):
+        response = _client().post(
+            "/api/review/live",
+            json={
+                "moves": [],
+                "fen": _LIVE_FEN,
+                "move": "g1f3",
+                "expected_mode": "rev-det-v1|nodes=1|stale",
+            },
+            headers={
+                "X-Internal-Secret": _secret(),
+                "X-Clerk-User-Id": TEST_CLERK_ID,
+            },
+        )
+    assert response.status_code == 409, response.text
+    assert "Stale review" in response.json()["detail"], response.text
+    print("  [PASS] live: mismatched mode -> 409 stale review")
+
+
+def test_live_terminal_checkmate_and_stalemate():
+    import chess
+
+    import routers.review as review_module
+    from schemas.models import Evaluation
+
+    review_module._SANDBOX_EVAL_CACHE.clear()
+    review_module._SANDBOX_RESULT_CACHE.clear()
+    calls = {"n": 0}
+
+    class _FakeEngine:
+        def evaluate(
+            self,
+            board,
+            depth_limit=None,
+            pov=None,
+            time_limit=None,
+            multipv=1,
+            nodes=None,
+            fresh_token=False,
+        ):
+            calls["n"] += 1
+            legal = list(board.legal_moves)
+            first = legal[0] if legal else None
+            return Evaluation(
+                score_cp=0.0,
+                best_move_uci=first.uci() if first else "",
+                best_move_san=board.san(first) if first else "(none)",
+                mate=None,
+                second_best_cp=None,
+                principal_variation_uci=[first.uci()] if first else [],
+            )
+
+    fake_engine = _FakeEngine()
+    saved = (
+        review_module.GameAnalyzer,
+        review_module.get_review_stockfish,
+        review_module.get_review_engine_name,
+    )
+    # Real GameAnalyzer, fake engine: terminal synthesis must skip the
+    # after-move evaluation for checkmate and stalemate.
+    review_module.get_review_stockfish = lambda *args, **kwargs: fake_engine
+    review_module.get_review_engine_name = lambda: "fake"
+    headers = {
+        "X-Internal-Secret": _secret(),
+        "X-Clerk-User-Id": TEST_CLERK_ID,
+    }
+    try:
+        with patch.dict(
+            os.environ,
+            {"REVIEW_DETERMINISTIC": "1", "REVIEW_NODES": "150000"},
+            clear=False,
+        ):
+            calls["n"] = 0
+            mate = _client().post(
+                "/api/review/live",
+                json={"moves": ["f3", "e5", "g4"], "move": "Qh4#"},
+                headers=headers,
+            )
+            mate_calls = calls["n"]
+            calls["n"] = 0
+            stale = _client().post(
+                "/api/review/live",
+                json={
+                    "fen": "7k/Q7/6K1/8/8/8/8/8 w - - 0 1",
+                    "move": "Qf7",
+                },
+                headers=headers,
+            )
+            stale_calls = calls["n"]
+    finally:
+        (
+            review_module.GameAnalyzer,
+            review_module.get_review_stockfish,
+            review_module.get_review_engine_name,
+        ) = saved
+
+    assert mate.status_code == 200, mate.text
+    mate_body = mate.json()
+    assert mate_body["classification"] == "best", mate_body
+    assert mate_body["eval_mate"] is not None, mate_body
+    # Two calls: eval-before plus the previous-ply EP-loss context. A third
+    # would mean the checkmate after-position hit the engine.
+    assert mate_calls == 2, f"unexpected engine calls for checkmate ({mate_calls})"
+
+    assert stale.status_code == 200, stale.text
+    stale_body = stale.json()
+    assert stale_body["eval_cp"] == 0.0, stale_body
+    assert stale_body["eval_mate"] is None, stale_body
+    assert stale_calls == 1, f"stalemate after-position was engine-evaluated ({stale_calls})"
+    print("  [PASS] live: checkmate + stalemate synthesized, no engine after-eval")
+
+
 def test_capabilities_reports_flag_and_mode():
     secret = _secret()
     anonymous = _client().get(
@@ -474,6 +674,9 @@ def run() -> int:
         test_extras_are_flag_gated,
         test_live_requires_login_and_flag,
         test_live_returns_label_lines_and_caches,
+        test_live_replays_the_move_path,
+        test_live_rejects_stale_mode,
+        test_live_terminal_checkmate_and_stalemate,
         test_capabilities_reports_flag_and_mode,
     ]
     failures = 0

@@ -160,7 +160,9 @@ def _mainline_plies(pgn: str) -> int:
 
 
 def _normalize_review_rows(
-    rows: List[Dict[str, Any]], include_extras: bool = False
+    rows: List[Dict[str, Any]],
+    include_extras: bool = False,
+    mode: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     normalized_rows: List[Dict[str, Any]] = []
 
@@ -177,6 +179,9 @@ def _normalize_review_rows(
             "best_move_san": row.get("best_move_san"),
             "best_move_uci": row.get("best_move_uci"),
         }
+
+        if mode is not None:
+            normalized_row["mode"] = mode
 
         # Sandbox extras: forwarded only when the route asked for them, so
         # the flag-off response keeps the historical field set exactly.
@@ -254,10 +259,17 @@ def review_game(
             deterministic=deterministic,
         )
         extras = deterministic
+        mode = current_mode_string(
+            engine_name=get_review_engine_name(),
+            multipv=REVIEW_MULTIPV,
+            nodes=review_nodes(),
+        )
         review_rows = analyzer.analyze_full_game(
             pgn, target_color=body.target_color, include_extras=extras
         )
-        return _normalize_review_rows(review_rows, include_extras=extras)
+        return _normalize_review_rows(
+            review_rows, include_extras=extras, mode=mode
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (chess.engine.EngineError, RuntimeError) as exc:
@@ -282,21 +294,16 @@ def review_live(
 ):
     """Label one explored move with the batch review's exact settings.
 
+    Takes the move path from the game start (preferred) and replays it, so
+    book contiguity, repetition history and the previous ply's EP loss all
+    match the batch review; a bare FEN is a fallback without that context.
     Deterministic fixed-N search, same classifier, same mode string. Results
-    are cached per (mode, fen, move, rating), so re-exploring a line is free.
-    Disabled (403) unless REVIEW_DETERMINISTIC is on.
+    are cached per (mode, path, move, rating, book flag). Disabled (403)
+    unless REVIEW_DETERMINISTIC is on; a mismatched expected_mode is a stale
+    review (409).
     """
     if not review_deterministic_enabled():
         raise HTTPException(status_code=403, detail="Sandbox is disabled")
-
-    try:
-        board = chess.Board(body.fen)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=f"Invalid FEN: {exc}") from exc
-    try:
-        move = _resolve_sandbox_move(board, body.move)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     try:
         engine = get_review_stockfish(depth=int(os.getenv("REVIEW_DEPTH", "18")))
@@ -312,7 +319,48 @@ def review_live(
         multipv=REVIEW_MULTIPV,
         nodes=review_nodes(),
     )
-    result_key = f"{mode}|{body.player_rating}|{body.fen}|{move.uci()}"
+    if body.expected_mode and body.expected_mode != mode:
+        raise HTTPException(
+            status_code=409,
+            detail="Stale review: the analysis mode changed; re-run the review",
+        )
+
+    path_context = bool(body.moves)
+    if path_context:
+        board = chess.Board()
+        in_book = True
+        try:
+            for raw in body.moves:
+                path_move = _resolve_sandbox_move(board, raw)
+                if in_book:
+                    in_book = is_book_move(board, path_move)
+                board.push(path_move)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid path: {exc}"
+            ) from exc
+    elif body.fen:
+        try:
+            board = chess.Board(body.fen)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid FEN: {exc}") from exc
+        in_book = True
+    else:
+        raise HTTPException(
+            status_code=400, detail="Missing moves path or fen"
+        )
+
+    try:
+        move = _resolve_sandbox_move(board, body.move)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    is_book = in_book and is_book_move(board, move)
+
+    path_key = "|".join(body.moves) if path_context else (body.fen or "")
+    result_key = (
+        f"{mode}|{body.player_rating}|{path_key}|{board.fen()}|"
+        f"{move.uci()}|{is_book}"
+    )
     cached = _cache_get(_SANDBOX_RESULT_CACHE, result_key)
     if cached is not None:
         response = dict(cached)
@@ -327,17 +375,35 @@ def review_live(
             multipv=REVIEW_MULTIPV,
             deterministic=True,
         )
-        eval_key = f"{mode}|{body.fen}"
+        eval_key = f"{mode}|{board.fen()}"
         eval_before = _cache_get(_SANDBOX_EVAL_CACHE, eval_key)
         if eval_before is None:
             eval_before = analyzer.evaluate_position(board)
             _cache_put(_SANDBOX_EVAL_CACHE, eval_key, eval_before)
+
+        opponent_prev_ep_loss: Optional[float] = None
+        if path_context and body.moves:
+            previous = chess.Board()
+            for raw in body.moves[:-1]:
+                previous.push(_resolve_sandbox_move(previous, raw))
+            last_move = _resolve_sandbox_move(previous, body.moves[-1])
+            last_mover = "white" if previous.turn == chess.WHITE else "black"
+            previous_eval_key = f"{mode}|{previous.fen()}"
+            eval_previous = _cache_get(_SANDBOX_EVAL_CACHE, previous_eval_key)
+            if eval_previous is None:
+                eval_previous = analyzer.evaluate_position(previous)
+                _cache_put(_SANDBOX_EVAL_CACHE, previous_eval_key, eval_previous)
+            opponent_prev_ep_loss = analyzer.expected_points_loss(
+                eval_previous, eval_before, last_mover, body.player_rating
+            )
+
         row, _, _ = analyzer.analyze_ply(
-            chess.Board(body.fen),
+            board.copy(),
             move,
             eval_before,
-            is_book_move=is_book_move(board, move),
+            is_book_move=is_book,
             player_rating=body.player_rating,
+            opponent_prev_ep_loss=opponent_prev_ep_loss,
             include_extras=True,
         )
     except ValueError as exc:
@@ -347,11 +413,12 @@ def review_live(
         log.exception("Sandbox live engine failed")
         raise HTTPException(status_code=500, detail="Failed to analyze move") from exc
 
-    before = chess.Board(body.fen)
+    before = chess.Board(board.fen())
     response = SandboxMoveResponse(
         classification=row["classification"],
         cp_loss=row["cp_loss"],
         ep_loss=row["ep_loss"],
+        raw_ep_loss=row.get("raw_ep_loss", row["ep_loss"]),
         eval_cp=row["eval_cp"],
         eval_mate=row["eval_mate"],
         color=row["color"],
@@ -359,6 +426,7 @@ def review_live(
         fen=row["fen"],
         move_san=row["san"],
         move_uci=move.uci(),
+        is_book=is_book,
         best=_line_from_eval(before, eval_before),
         second_best=_second_line_from_eval(before, eval_before),
         mode=mode,
