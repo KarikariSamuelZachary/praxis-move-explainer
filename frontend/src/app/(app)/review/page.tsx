@@ -1,17 +1,30 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useState } from 'react';
 import dynamic from 'next/dynamic';
+import { Chess } from 'chess.js';
 
 import AnalysisPanel from '@/components/review/AnalysisPanel';
 import ImportPanel, {
   ImportSource,
 } from '@/components/review/ImportPanel';
+import MoveList from '@/components/review/MoveList';
 import ReviewShell from '@/components/review/ReviewShell';
-import { GameReviewMove } from '@/types';
+import {
+  GameReviewMove,
+  ReviewCapabilities,
+  SandboxLine,
+  SandboxMoveResponse,
+} from '@/types';
 
 import { displayedExplanationFor, lastPlyFor } from './review-page-logic';
-import { buildMainlineTree, mainlinePlyToNode } from './review-tree';
+import {
+  ReviewTree,
+  SuggestionLine,
+  addVariation,
+  buildMainlineTree,
+  mainlinePlyToNode,
+} from './review-tree';
 import { activeNodeView } from './review-tree-view';
 
 const START_FEN = 'rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1';
@@ -35,24 +48,67 @@ type AnalyzeErrorResponse = {
   error?: string;
 };
 
+/** Legal UCI for a drag on `fen`, defaulting promotions to a queen. */
+function exploreMoveUci(fen: string, from: string, to: string): string | null {
+  try {
+    const chess = new Chess(fen);
+    const candidates = chess
+      .moves({ verbose: true })
+      .filter((move) => move.from === from && move.to === to);
+    if (candidates.length === 0) {
+      return null;
+    }
+    const promotion = candidates[0].promotion ? 'q' : '';
+    return `${from}${to}${promotion}`;
+  } catch {
+    return null;
+  }
+}
+
+function toSuggestionLine(line: SandboxLine): SuggestionLine {
+  return {
+    moveUci: line.move_uci ?? '',
+    moveSan: line.move_san ?? '',
+    evalCp: line.eval_cp ?? undefined,
+    evalMate: line.eval_mate ?? undefined,
+    pvSan: line.pv_san,
+  };
+}
+
 export default function ReviewPage() {
   const [pgnInput, setPgnInput] = useState('');
   const [importSource, setImportSource] = useState<ImportSource>('paste');
   const [analysisState, setAnalysisState] = useState<AnalysisState>('idle');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [gameData, setGameData] = useState<GameReviewMove[] | null>(null);
-  // Sandbox step 1: the active selection is a tree node id. Variations are
-  // not selectable yet, so this only ever points at mainline nodes.
+  const [tree, setTree] = useState<ReviewTree | null>(null);
   const [activeNodeId, setActiveNodeId] = useState<string | null>(null);
   const [coachExplanation, setCoachExplanation] = useState<ReviewExplanation | null>(null);
   const [coachError, setCoachError] = useState<string | null>(null);
   const [isAskingCoach, setIsAskingCoach] = useState(false);
   const [showBestMove, setShowBestMove] = useState(false);
+  const [sandboxEnabled, setSandboxEnabled] = useState(false);
+  const [exploreMode, setExploreMode] = useState(false);
+  const [suggestionsEnabled, setSuggestionsEnabled] = useState(false);
+  const [explorePending, setExplorePending] = useState(false);
+  const [exploreError, setExploreError] = useState<string | null>(null);
 
-  const tree = useMemo(
-    () => (gameData ? buildMainlineTree(gameData) : null),
-    [gameData],
-  );
+  useEffect(() => {
+    let cancelled = false;
+    fetch('/api/review/capabilities')
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data: ReviewCapabilities | null) => {
+        if (!cancelled && data) {
+          setSandboxEnabled(Boolean(data.sandbox_enabled));
+        }
+      })
+      .catch(() => {
+        // Sandbox stays hidden when capabilities are unavailable.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   useEffect(() => {
     setCoachExplanation(null);
@@ -61,14 +117,19 @@ export default function ReviewPage() {
   }, [activeNodeId]);
 
   useEffect(() => {
-    if (analysisState !== 'ready' || !tree) {
+    if (analysisState !== 'ready' || !gameData) {
       return;
     }
-    setActiveNodeId(tree.mainlineIds[0]);
+    const built = buildMainlineTree(gameData);
+    setTree(built);
+    setActiveNodeId(built.mainlineIds[0]);
+    setExploreMode(false);
+    setSuggestionsEnabled(false);
+    setExploreError(null);
     setCoachExplanation(null);
     setCoachError(null);
     setShowBestMove(false);
-  }, [analysisState, tree]);
+  }, [analysisState, gameData]);
 
   const canAnalyze = pgnInput.trim().length > 0 && analysisState !== 'analyzing';
 
@@ -145,19 +206,103 @@ export default function ReviewPage() {
     }
   }
 
+  async function handleExploreMove(from: string, to: string) {
+    if (!exploreMode || !tree || !activeNodeId || !view) {
+      return;
+    }
+    const uci = exploreMoveUci(view.position, from, to);
+    if (!uci) {
+      return;
+    }
+
+    setExplorePending(true);
+    setExploreError(null);
+    try {
+      const response = await fetch('/api/review/live', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fen: view.position,
+          move: uci,
+          player_rating: null,
+        }),
+      });
+
+      if (!response.ok) {
+        let detail = `Live analysis returned ${response.status}`;
+        try {
+          const errorBody = (await response.json()) as AnalyzeErrorResponse;
+          detail = errorBody.detail ?? errorBody.error ?? detail;
+        } catch {
+          // Keep the status-based message.
+        }
+        throw new Error(detail);
+      }
+
+      const data = (await response.json()) as SandboxMoveResponse;
+      const row: GameReviewMove = {
+        fen: data.fen,
+        san: data.move_san,
+        color: data.color,
+        classification: data.classification,
+        cp_loss: data.cp_loss,
+        ep_loss: data.ep_loss,
+        eval_cp: data.eval_cp,
+        eval_mate: data.eval_mate ?? null,
+        best_move_san: data.best?.move_san ?? null,
+        best_move_uci: data.best?.move_uci ?? null,
+        fen_before: data.fen_before,
+        raw_ep_loss: data.ep_loss,
+        second_best_cp: data.second_best?.eval_cp ?? null,
+        second_best_move_san: data.second_best?.move_san ?? null,
+        second_best_move_uci: data.second_best?.move_uci ?? null,
+        second_best_pv_uci: data.second_best?.pv_uci ?? [],
+      };
+      const lines = [data.best, data.second_best]
+        .filter((line): line is SandboxLine => Boolean(line))
+        .map(toSuggestionLine);
+      const { tree: branched, nodeId } = addVariation(
+        tree,
+        activeNodeId,
+        row,
+        {
+          suggestionsBefore: lines,
+          status: 'ready',
+          mode: data.mode,
+          evalCp: data.eval_cp,
+          evalMate: data.eval_mate ?? null,
+          classification: data.classification,
+          bestMoveUci: data.best?.move_uci ?? null,
+        },
+      );
+      setTree(branched);
+      setActiveNodeId(nodeId);
+    } catch (error) {
+      const detail =
+        error instanceof Error ? error.message : 'Could not analyze that move.';
+      setExploreError(detail);
+    } finally {
+      setExplorePending(false);
+    }
+  }
+
   const hasGame = analysisState === 'ready' && gameData !== null;
   const view =
     hasGame && tree && activeNodeId
       ? activeNodeView(tree, activeNodeId, START_FEN)
       : null;
   const currentMove = view?.currentMove ?? null;
-  const activePly = view ? tree!.nodes[activeNodeId!].ply : 0;
+  const activePly = view && tree && activeNodeId ? tree.nodes[activeNodeId].ply : 0;
   const displayedExplanation = displayedExplanationFor(
     currentMove,
     coachExplanation,
   );
   const moveNumberLabel = view?.moveNumberLabel ?? 'Starting position';
   const bestMoveSan = view?.bestMoveSan ?? null;
+  const activeNode =
+    tree && activeNodeId ? tree.nodes[activeNodeId] : null;
+  const suggestions: SuggestionLine[] =
+    activeNode?.analysis?.suggestionsBefore ?? [];
 
   function handlePlySelect(ply: number) {
     if (!tree) {
@@ -186,11 +331,14 @@ export default function ReviewPage() {
         }
         boardPanel={
           <BoardPanel
-            moves={gameData ?? []}
-            activePly={activePly}
+            position={view?.position ?? START_FEN}
+            fenBefore={view?.fenBefore ?? null}
+            currentMove={currentMove}
             isAnalyzing={analysisState === 'analyzing'}
             hasGame={hasGame}
             showBestMove={showBestMove}
+            allowDragging={sandboxEnabled && exploreMode}
+            onExploreMove={handleExploreMove}
           />
         }
         analysisPanel={
@@ -208,6 +356,23 @@ export default function ReviewPage() {
             bestMoveSan={bestMoveSan}
             showBestMove={showBestMove}
             onToggleBestMove={() => setShowBestMove((value) => !value)}
+            moveList={
+              tree && activeNodeId ? (
+                <MoveList
+                  tree={tree}
+                  activeNodeId={activeNodeId}
+                  onNodeSelect={setActiveNodeId}
+                />
+              ) : undefined
+            }
+            sandboxEnabled={sandboxEnabled}
+            exploreMode={exploreMode}
+            onToggleExplore={() => setExploreMode((value) => !value)}
+            suggestionsEnabled={suggestionsEnabled}
+            onToggleSuggestions={() => setSuggestionsEnabled((value) => !value)}
+            suggestions={suggestions}
+            explorePending={explorePending}
+            exploreError={exploreError}
           />
         }
       />

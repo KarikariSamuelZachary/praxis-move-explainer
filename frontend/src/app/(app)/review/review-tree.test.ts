@@ -177,6 +177,50 @@ function testSetNodeAnalysisIsImmutable() {
   console.log('  [PASS] per-node eval data (incl. path/mode/status) attaches immutably');
 }
 
+function testSandboxVariationFromLiveResponse() {
+  const moves = fixture();
+  const tree = buildMainlineTree(moves);
+  const parentId = mainlinePlyToNode(tree, 2)!;
+  // Shape returned by POST /api/review/live (label + top-2 SAN lines).
+  const sandboxMove = row({
+    fen: 'fen-after-d4',
+    san: 'd4',
+    color: 'white',
+    classification: 'inaccuracy',
+    best_move_san: 'c3',
+  });
+  const { tree: branched, nodeId } = addVariation(tree, parentId, sandboxMove, {
+    suggestionsBefore: [
+      { moveUci: 'c2c3', moveSan: 'c3', evalCp: -20, pvSan: ['c3', 'd5'] },
+      { moveUci: 'g1f3', moveSan: 'Nf3', evalCp: -35, pvSan: ['Nf3', 'Nc6'] },
+    ],
+    status: 'ready',
+    mode: 'rev-det-v1|nodes=150000',
+    classification: 'inaccuracy',
+  });
+
+  assert.deepEqual(
+    branched.mainlineIds,
+    tree.mainlineIds,
+    'a sandbox variation changed the mainline',
+  );
+  assert.deepEqual(pathMoves(branched, nodeId).map((m) => m.san), [
+    'e4',
+    'e5',
+    'd4',
+  ]);
+  const view = activeNodeView(branched, nodeId, START_FEN);
+  assert.equal(view.position, 'fen-after-d4');
+  assert.equal(view.fenBefore, 'fen-after-e5');
+  assert.equal(view.bestMoveSan, 'c3');
+  assert.deepEqual(
+    branched.nodes[nodeId].analysis?.suggestionsBefore?.map((l) => l.moveSan),
+    ['c3', 'Nf3'],
+  );
+  assert.equal(branched.nodes[nodeId].analysis?.mode, 'rev-det-v1|nodes=150000');
+  console.log('  [PASS] sandbox variation attaches with suggestions, mainline intact');
+}
+
 // Mirrors page.tsx using the SAME extracted functions the page imports.
 function flatReferenceView(moves: GameReviewMove[], activePly: number) {
   const currentMove = currentMoveFor(moves, activePly)!;
@@ -243,6 +287,7 @@ function run() {
     testVariationDoesNotPerturbMainline,
     testVariationIdsAreStableAndReused,
     testSetNodeAnalysisIsImmutable,
+    testSandboxVariationFromLiveResponse,
     testComponentViewEquivalence,
   ];
   let failures = 0;

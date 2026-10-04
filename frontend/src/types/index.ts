@@ -328,7 +328,46 @@ export interface GameReviewMove {
     concept?: string;
     tip?: string;
   };
+  // Sandbox extras (flag-on review responses and explored variations).
+  fen_before?: string;
+  raw_ep_loss?: number;
+  player_rating?: number;
+  second_best_cp?: number | null;
+  second_best_move_san?: string | null;
+  second_best_move_uci?: string | null;
+  second_best_pv_uci?: string[];
 }
+
+export type SandboxLine = {
+  move_uci?: string | null;
+  move_san?: string | null;
+  eval_cp?: number | null;
+  eval_mate?: number | null;
+  pv_uci: string[];
+  pv_san: string[];
+};
+
+export type SandboxMoveResponse = {
+  classification: MoveClassification;
+  cp_loss: number;
+  ep_loss: number;
+  eval_cp: number;
+  eval_mate?: number | null;
+  color: 'white' | 'black';
+  fen_before: string;
+  fen: string;
+  move_san: string;
+  move_uci: string;
+  best: SandboxLine;
+  second_best?: SandboxLine | null;
+  mode: string;
+  cached: boolean;
+};
+
+export type ReviewCapabilities = {
+  sandbox_enabled: boolean;
+  mode: string;
+};
 
 export interface UserSettings {
   elo: number;

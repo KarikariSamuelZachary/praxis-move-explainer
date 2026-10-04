@@ -9,11 +9,14 @@ import { GameReviewMove } from '@/types';
 import { ClassificationIcon } from './icons/ClassificationIcon';
 
 type BoardPanelProps = {
-  moves: GameReviewMove[];
-  activePly: number;
+  position: string;
+  fenBefore: string | null;
+  currentMove: GameReviewMove | null;
   isAnalyzing: boolean;
   hasGame: boolean;
   showBestMove: boolean;
+  allowDragging?: boolean;
+  onExploreMove?: (from: string, to: string, promotion?: string) => void;
 };
 
 const woodBoxStyle: React.CSSProperties = {
@@ -101,22 +104,20 @@ function applyUciMove(fen: string, uci: string): string | null {
 }
 
 export default function BoardPanel({
-  moves,
-  activePly,
+  position,
+  fenBefore,
+  currentMove,
   isAnalyzing,
   hasGame,
   showBestMove,
+  allowDragging = false,
+  onExploreMove,
 }: BoardPanelProps) {
   const [orientation, setOrientation] = useState<'white' | 'black'>('white');
   const [bestStep, setBestStep] = useState<'off' | 'undo' | 'best'>('off');
 
-  const clampedPly = hasGame ? Math.min(activePly, moves.length - 1) : 0;
-  const currentMove = hasGame ? moves[clampedPly] : null;
-  const position = currentMove?.fen ?? START_FEN;
-
+  const boardPosition = position || START_FEN;
   const bestMoveUci = currentMove?.best_move_uci ?? null;
-  const fenBefore =
-    hasGame && activePly > 0 ? (moves[activePly - 1]?.fen ?? null) : null;
   const bestMoveResultFen =
     fenBefore && bestMoveUci ? applyUciMove(fenBefore, bestMoveUci) : null;
 
@@ -137,12 +138,13 @@ export default function BoardPanel({
 
   const boardFen =
     bestStep === 'undo'
-      ? (fenBefore ?? position)
+      ? (fenBefore ?? boardPosition)
       : bestStep === 'best'
-        ? (bestMoveResultFen ?? position)
-        : position;
+        ? (bestMoveResultFen ?? boardPosition)
+        : boardPosition;
 
-  const showPlayedIcon = hasGame && activePly > 0 && currentMove && !showBestMove;
+  const showPlayedIcon =
+    hasGame && currentMove !== null && currentMove.san !== 'Start' && !showBestMove;
   const iconCoords = showPlayedIcon
     ? squareToPercent(
         getDestinationSquare(currentMove!.san, currentMove!.color),
@@ -219,7 +221,16 @@ export default function BoardPanel({
               options={{
                 position: boardFen,
                 boardOrientation: orientation,
-                allowDragging: false,
+                allowDragging,
+                onPieceDrop: allowDragging && onExploreMove
+                  ? ({ sourceSquare, targetSquare }) => {
+                      if (!targetSquare) {
+                        return false;
+                      }
+                      onExploreMove(sourceSquare, targetSquare);
+                      return true;
+                    }
+                  : undefined,
                 boardStyle: {
                   width: '100%',
                   height: '100%',
