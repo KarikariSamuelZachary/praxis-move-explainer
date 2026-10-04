@@ -71,6 +71,22 @@ _PIECE_VALUES = {
 }
 
 
+def pv_to_san(board: chess.Board, pv_uci: List[str]) -> List[str]:
+    """Convert a UCI principal variation to SAN for the given position."""
+    probe = board.copy()
+    sans: List[str] = []
+    for uci in pv_uci:
+        try:
+            move = chess.Move.from_uci(uci)
+        except ValueError:
+            break
+        if move not in probe.legal_moves:
+            break
+        sans.append(probe.san(move))
+        probe.push(move)
+    return sans
+
+
 def _clamp_rating(player_rating: Optional[int]) -> int:
     """Coerce a PGN Elo / profile rating into the supported range."""
     try:
@@ -673,6 +689,201 @@ class GameAnalyzer:
             classification=classification,
         )
 
+    def analyze_ply(
+        self,
+        board: chess.Board,
+        move: chess.Move,
+        eval_before: Evaluation,
+        *,
+        is_book_move: bool = False,
+        player_rating: Optional[int] = None,
+        opponent_prev_ep_loss: Optional[float] = None,
+        include_extras: bool = False,
+    ) -> Tuple[Dict[str, Any], Evaluation, float]:
+        """Analyze one played move; shared by batch review and the sandbox.
+
+        `board` must be the position BEFORE `move`. The caller supplies the
+        pre-move evaluation (the batch loop reuses the previous ply's
+        after-evaluation; the sandbox evaluates the position once). Returns
+        the JSON-ready row, the post-move evaluation, and the raw EP loss.
+        """
+        move_color = "white" if board.turn == chess.WHITE else "black"
+        fen_before = board.fen()
+        move_number = board.fullmove_number
+        move_san = board.san(move)
+        move_is_capture = board.is_capture(move)
+
+        board.push(move)
+        fen_after = board.fen()
+        delivers_mate = board.is_checkmate()
+        # Deterministic mode synthesizes terminal positions instead of asking
+        # the engine (which searches insufficient-material boards and cannot
+        # see claimable draws). Flag off keeps engine behavior.
+        terminal = terminal_state(board) if self.deterministic else None
+        if terminal is not None:
+            eval_after = terminal.evaluation
+        else:
+            eval_after = self._evaluate(board)
+
+        # Raw EP impact is tracked even for book moves: Chess.com does not
+        # share our opening book, so a book move can still be the opponent
+        # error the next move fails to punish. Displayed ep_loss/cp_loss stay
+        # 0 for book moves.
+        raw_ep_loss = self.expected_points_loss(
+            eval_before, eval_after, move_color, player_rating
+        )
+        if is_book_move:
+            cp_loss = 0
+            ep_loss = 0.0
+            ep_best = 0.0
+            blunder_consequence = False
+            sacrifice_cp = 0
+            played_line_loss = 0
+            missed_tactic = False
+        else:
+            cp_loss = self._compute_cp_loss(eval_before, eval_after, move_color)
+            ep_loss = self.expected_points_loss(
+                eval_before, eval_after, move_color, player_rating
+            )
+            ep_best = expected_points(
+                self._score_for_mover(eval_before, move_color), player_rating
+            )
+            allows_mate = eval_after.mate is not None and eval_after.mate > 0
+            blunder_consequence = (
+                allows_mate
+                or self._loses_material_after_best_reply(
+                    board, eval_after, move_color
+                )
+            )
+            sacrifice_cp = (
+                0
+                if delivers_mate
+                else _sacrifice_material(chess.Board(fen_before), move, board)
+            )
+            played_line_loss = _min_balance_swing(
+                chess.Board(fen_before),
+                [move.uci()] + eval_after.principal_variation_uci,
+                move_color == "white",
+                MISS_LINE_PLIES,
+            )
+            missed_tactic = _missed_tactic(
+                chess.Board(fen_before),
+                eval_before,
+                eval_after,
+                move.uci(),
+                move_color == "white",
+            )
+
+        classification = self.classify_move(
+            eval_before,
+            eval_after,
+            move_color,
+            is_book_move=is_book_move,
+            player_rating=player_rating,
+            move_uci=move.uci(),
+            blunder_consequence=blunder_consequence,
+            delivers_mate=delivers_mate,
+            sacrifice_cp=sacrifice_cp,
+            opponent_prev_ep_loss=opponent_prev_ep_loss,
+            move_is_capture=move_is_capture,
+            played_line_loss=played_line_loss,
+            missed_tactic=missed_tactic,
+        )
+
+        turn_entry: Dict[str, Any] = {
+            "fen": fen_after,
+            "fen_before": fen_before,
+            "move_number": move_number,
+            "san": move_san,
+            "color": move_color,
+            "classification": classification,
+            "cp_loss": cp_loss,
+            "ep_loss": round(ep_loss, 4),
+            # Calibration/debug fields. Not part of the review API response
+            # (the router forwards a fixed field set), but the calibration
+            # harness reads them from the raw rows.
+            "ep_best": round(ep_best, 4) if not is_book_move else 0.0,
+            "second_best_cp": eval_before.second_best_cp,
+            "player_rating": player_rating,
+            "sacrifice_cp": sacrifice_cp,
+            "played_line_loss": played_line_loss,
+            "missed_tactic": missed_tactic,
+            # Claimable draws (threefold / 50-move) are not terminal; the UI
+            # shows "draw claimable" without blocking moves.
+            "draw_claimable": (
+                draw_claimable(board) if self.deterministic else False
+            ),
+            # Position evaluation from White's perspective (positive = White
+            # better). `eval_after` is scored from the side to move after the
+            # move, which is the opponent of `move_color`.
+            "eval_cp": round(
+                eval_after.score_cp if move_color == "black" else -eval_after.score_cp,
+                1,
+            ),
+            "eval_mate": (
+                eval_after.mate if move_color == "black" else -eval_after.mate
+            ) if eval_after.mate is not None else None,
+            "best_move_san": (
+                eval_before.best_move_san
+                if eval_before.best_move_san and eval_before.best_move_san != "(none)"
+                else None
+            ),
+            "best_move_uci": (
+                eval_before.best_move_uci
+                if eval_before.best_move_uci and eval_before.best_move_uci != "(none)"
+                else None
+            ),
+        }
+
+        # Sandbox/API extras: the review route opts in; default callers
+        # (background jobs, tests) keep the historical row shape.
+        if include_extras:
+            turn_entry["raw_ep_loss"] = round(raw_ep_loss, 4)
+            turn_entry["second_best_move_uci"] = eval_before.second_best_move_uci
+            turn_entry["second_best_move_san"] = eval_before.second_best_move_san
+            turn_entry["second_best_pv_uci"] = list(eval_before.second_best_pv_uci)
+
+        return turn_entry, eval_after, raw_ep_loss
+
+    def evaluate_position(self, board: chess.Board) -> Evaluation:
+        """Public wrapper over the configured evaluation mode."""
+        return self._evaluate(board)
+
+    def analyze_sandbox_move(
+        self,
+        fen: str,
+        move_uci: str,
+        *,
+        player_rating: Optional[int] = None,
+    ) -> Tuple[Dict[str, Any], Evaluation]:
+        """Analyze one explored move (sandbox) through the shared path.
+
+        Returns the same row batch review produces plus the pre-move
+        evaluation, whose best/second-best PVs are the suggestion lines.
+        """
+        try:
+            board = chess.Board(fen)
+        except ValueError as exc:
+            raise ValueError(f"Invalid FEN: {exc}") from exc
+        try:
+            move = chess.Move.from_uci(move_uci)
+        except ValueError as exc:
+            raise ValueError(f"Invalid move: {move_uci}") from exc
+        if move not in board.legal_moves:
+            raise ValueError(f"Illegal move {move_uci} in position")
+
+        is_book_move = bool(self.book_lookup(board, move)) if self.book_lookup else False
+        eval_before = self._evaluate(board)
+        row, _, _ = self.analyze_ply(
+            board,
+            move,
+            eval_before,
+            is_book_move=is_book_move,
+            player_rating=player_rating,
+            include_extras=True,
+        )
+        return row, eval_before
+
     def analyze_full_game(
         self,
         pgn_string: str,
@@ -724,11 +935,6 @@ class GameAnalyzer:
             move_color = "white" if board.turn == chess.WHITE else "black"
             player_rating = ratings[move_color]
 
-            fen_before = board.fen()
-            move_number = board.fullmove_number
-            move_san = board.san(move)
-            move_is_capture = board.is_capture(move)
-
             if in_book and self.book_lookup is not None:
                 is_book_move = bool(self.book_lookup(board, move))
             else:
@@ -742,156 +948,37 @@ class GameAnalyzer:
                 else self._evaluate(board)
             )
 
-            board.push(move)
-            fen_after = board.fen()
-            delivers_mate = board.is_checkmate()
-            # Deterministic mode synthesizes terminal positions instead of
-            # asking the engine (which searches insufficient-material boards
-            # and cannot see claimable draws). Flag off keeps engine behavior.
-            terminal = terminal_state(board) if self.deterministic else None
-            if terminal is not None:
-                eval_after = terminal.evaluation
-            else:
-                eval_after = self._evaluate(board)
-            previous_eval = eval_after
-
-            # Raw EP impact is tracked even for book moves: Chess.com does
-            # not share our opening book, so a book move can still be the
-            # opponent error the next move fails to punish (e.g. Game 2's
-            # 2...d5, book for us but a mistake for them). Displayed
-            # ep_loss/cp_loss stay 0 for book moves.
-            raw_ep_loss = self.expected_points_loss(
-                eval_before, eval_after, move_color, player_rating
-            )
-            if is_book_move:
-                cp_loss = 0
-                ep_loss = 0.0
-                ep_best = 0.0
-                blunder_consequence = False
-                sacrifice_cp = 0
-                played_line_loss = 0
-                missed_tactic = False
-            else:
-                cp_loss = self._compute_cp_loss(eval_before, eval_after, move_color)
-                ep_loss = self.expected_points_loss(
-                    eval_before, eval_after, move_color, player_rating
-                )
-                ep_best = expected_points(
-                    self._score_for_mover(eval_before, move_color), player_rating
-                )
-                allows_mate = eval_after.mate is not None and eval_after.mate > 0
-                blunder_consequence = (
-                    allows_mate
-                    or self._loses_material_after_best_reply(
-                        board, eval_after, move_color
-                    )
-                )
-                sacrifice_cp = (
-                    0
-                    if delivers_mate
-                    else _sacrifice_material(chess.Board(fen_before), move, board)
-                )
-                played_line_loss = _min_balance_swing(
-                    chess.Board(fen_before),
-                    [move.uci()] + eval_after.principal_variation_uci,
-                    move_color == "white",
-                    MISS_LINE_PLIES,
-                )
-                missed_tactic = _missed_tactic(
-                    chess.Board(fen_before),
-                    eval_before,
-                    eval_after,
-                    move.uci(),
-                    move_color == "white",
-                )
-
             # The next ply's Miss check needs THIS ply's EP loss, including
             # for plies filtered out of the response by target_color.
             opponent_prev_ep_loss = previous_ep_loss
+            turn_entry, eval_after, raw_ep_loss = self.analyze_ply(
+                board,
+                move,
+                eval_before,
+                is_book_move=is_book_move,
+                player_rating=player_rating,
+                opponent_prev_ep_loss=opponent_prev_ep_loss,
+                include_extras=include_extras,
+            )
+            previous_eval = eval_after
             previous_ep_loss = raw_ep_loss
 
             if target_color != "both" and target_color != move_color:
                 continue
 
-            classification = self.classify_move(
-                eval_before,
-                eval_after,
-                move_color,
-                is_book_move=is_book_move,
-                player_rating=player_rating,
-                move_uci=move.uci(),
-                blunder_consequence=blunder_consequence,
-                delivers_mate=delivers_mate,
-                sacrifice_cp=sacrifice_cp,
-                opponent_prev_ep_loss=opponent_prev_ep_loss,
-                move_is_capture=move_is_capture,
-                played_line_loss=played_line_loss,
-                missed_tactic=missed_tactic,
-            )
-
-            turn_entry: Dict[str, Any] = {
-                "fen": fen_after,
-                "fen_before": fen_before,
-                "move_number": move_number,
-                "san": move_san,
-                "color": move_color,
-                "classification": classification,
-                "cp_loss": cp_loss,
-                "ep_loss": round(ep_loss, 4),
-                # Calibration/debug fields. Not part of the review API
-                # response (the router forwards a fixed field set), but the
-                # calibration harness reads them from the raw rows.
-                "ep_best": round(ep_best, 4) if not is_book_move else 0.0,
-                "second_best_cp": eval_before.second_best_cp,
-                "player_rating": player_rating,
-                "sacrifice_cp": sacrifice_cp,
-                "played_line_loss": played_line_loss,
-                "missed_tactic": missed_tactic,
-                # Claimable draws (threefold / 50-move) are not terminal;
-                # the UI shows "draw claimable" without blocking moves.
-                "draw_claimable": (
-                    draw_claimable(board) if self.deterministic else False
-                ),
-                # Position evaluation from White's perspective (positive =
-                # White better). `eval_after` is scored from the side to move
-                # after the move, which is the opponent of `move_color`.
-                "eval_cp": round(
-                    eval_after.score_cp if move_color == "black" else -eval_after.score_cp,
-                    1,
-                ),
-                "eval_mate": (
-                    eval_after.mate if move_color == "black" else -eval_after.mate
-                ) if eval_after.mate is not None else None,
-                "best_move_san": (
-                    eval_before.best_move_san
-                    if eval_before.best_move_san and eval_before.best_move_san != "(none)"
-                    else None
-                ),
-                "best_move_uci": (
-                    eval_before.best_move_uci
-                    if eval_before.best_move_uci and eval_before.best_move_uci != "(none)"
-                    else None
-                ),
-            }
-
-            # Sandbox/API extras: the review route opts in; default callers
-            # (background jobs, tests) keep the historical row shape.
-            if include_extras:
-                turn_entry["raw_ep_loss"] = round(raw_ep_loss, 4)
-                turn_entry["second_best_move_uci"] = eval_before.second_best_move_uci
-                turn_entry["second_best_move_san"] = eval_before.second_best_move_san
-                turn_entry["second_best_pv_uci"] = list(eval_before.second_best_pv_uci)
-
-            if include_explanations and classification in {"mistake", "blunder"}:
+            if include_explanations and turn_entry["classification"] in {
+                "mistake",
+                "blunder",
+            }:
                 mistake = self._build_mistake(
-                    fen_before=fen_before,
-                    fen_after=fen_after,
-                    move_number=move_number,
+                    fen_before=turn_entry["fen_before"],
+                    fen_after=turn_entry["fen"],
+                    move_number=turn_entry["move_number"],
                     move_color=move_color,
-                    move_san=move_san,
+                    move_san=turn_entry["san"],
                     eval_before=eval_before,
                     eval_after=eval_after,
-                    classification=classification,
+                    classification=turn_entry["classification"],
                 )
                 explanation = self.explainer.explain_mistake(mistake)
                 turn_entry["explanation"] = asdict(explanation)
