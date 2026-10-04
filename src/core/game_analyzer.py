@@ -13,6 +13,7 @@ from core.analysis_mode import (
     review_nodes,
     review_nodes_backstop_seconds,
 )
+from core.terminal import draw_claimable, terminal_state
 from engines.stockfish_engine import StockfishEngine
 from llms.base import LLMExplainer
 
@@ -732,7 +733,14 @@ class GameAnalyzer:
             board.push(move)
             fen_after = board.fen()
             delivers_mate = board.is_checkmate()
-            eval_after = self._evaluate(board)
+            # Deterministic mode synthesizes terminal positions instead of
+            # asking the engine (which searches insufficient-material boards
+            # and cannot see claimable draws). Flag off keeps engine behavior.
+            terminal = terminal_state(board) if self.deterministic else None
+            if terminal is not None:
+                eval_after = terminal.evaluation
+            else:
+                eval_after = self._evaluate(board)
             previous_eval = eval_after
 
             # Raw EP impact is tracked even for book moves: Chess.com does
@@ -827,6 +835,11 @@ class GameAnalyzer:
                 "sacrifice_cp": sacrifice_cp,
                 "played_line_loss": played_line_loss,
                 "missed_tactic": missed_tactic,
+                # Claimable draws (threefold / 50-move) are not terminal;
+                # the UI shows "draw claimable" without blocking moves.
+                "draw_claimable": (
+                    draw_claimable(board) if self.deterministic else False
+                ),
                 # Position evaluation from White's perspective (positive =
                 # White better). `eval_after` is scored from the side to move
                 # after the move, which is the opponent of `move_color`.
