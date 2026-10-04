@@ -233,6 +233,17 @@ def test_deterministic_cap_comes_from_container_nps():
     print("  [PASS] flag on: cap = budget * nps / N - 1 (263 -> 200, 119 -> 400)")
 
 
+_EXTRAS_KEYS = (
+    "fen_before",
+    "player_rating",
+    "raw_ep_loss",
+    "second_best_cp",
+    "second_best_move_uci",
+    "second_best_move_san",
+    "second_best_pv_uci",
+)
+
+
 def test_extras_are_flag_gated():
     # Calls the route function directly: the HTTP suite shares one TestClient
     # IP with a 5/min limiter, so two more POSTs would 429 for reasons
@@ -290,7 +301,8 @@ def test_extras_are_flag_gated():
                 _user=None,
             )
         assert state["include_extras"] is False, state
-        assert "second_best_move_uci" not in rows[0], rows[0]
+        absent = [key for key in _EXTRAS_KEYS if key in rows[0]]
+        assert not absent, f"flag off leaked extras: {absent} in {rows[0]}"
 
         with patch.dict(os.environ, {"REVIEW_DETERMINISTIC": "1"}, clear=False):
             rows = review_module.review_game(
@@ -301,6 +313,8 @@ def test_extras_are_flag_gated():
             )
         assert state["include_extras"] is True, state
         assert rows[0]["second_best_move_uci"] == "g1f3", rows[0]
+        missing = [key for key in _EXTRAS_KEYS if key not in rows[0]]
+        assert not missing, f"flag on dropped extras: {missing} in {rows[0]}"
     finally:
         (
             review_module.GameAnalyzer,

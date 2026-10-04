@@ -65,7 +65,9 @@ def _mainline_plies(pgn: str) -> int:
     return sum(1 for _ in game.mainline_moves())
 
 
-def _normalize_review_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _normalize_review_rows(
+    rows: List[Dict[str, Any]], include_extras: bool = False
+) -> List[Dict[str, Any]]:
     normalized_rows: List[Dict[str, Any]] = []
 
     for row in rows:
@@ -82,18 +84,20 @@ def _normalize_review_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             "best_move_uci": row.get("best_move_uci"),
         }
 
-        # Sandbox extras: pass through when the analyzer produced them.
-        for key in (
-            "fen_before",
-            "player_rating",
-            "raw_ep_loss",
-            "second_best_cp",
-            "second_best_move_uci",
-            "second_best_move_san",
-            "second_best_pv_uci",
-        ):
-            if key in row:
-                normalized_row[key] = row[key]
+        # Sandbox extras: forwarded only when the route asked for them, so
+        # the flag-off response keeps the historical field set exactly.
+        if include_extras:
+            for key in (
+                "fen_before",
+                "player_rating",
+                "raw_ep_loss",
+                "second_best_cp",
+                "second_best_move_uci",
+                "second_best_move_san",
+                "second_best_pv_uci",
+            ):
+                if key in row:
+                    normalized_row[key] = row[key]
 
         explanation = row.get("explanation")
         if explanation:
@@ -155,10 +159,11 @@ def review_game(
             multipv=REVIEW_MULTIPV,
             deterministic=deterministic,
         )
+        extras = deterministic
         review_rows = analyzer.analyze_full_game(
-            pgn, target_color=body.target_color, include_extras=deterministic
+            pgn, target_color=body.target_color, include_extras=extras
         )
-        return _normalize_review_rows(review_rows)
+        return _normalize_review_rows(review_rows, include_extras=extras)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (chess.engine.EngineError, RuntimeError) as exc:
