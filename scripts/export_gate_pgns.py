@@ -4,28 +4,34 @@
 Set A is for choosing the nodes budget (N); set B is the untouched final
 gate. Opponent pools are disjoint: every game of an opponent lands in exactly
 one set, so a scouted opponent cannot leak across both. Neutral games (Lichess
-export/dump) go entirely into set B as a separate file. Every game must have
+exports/dumps) go entirely into set B as one separately hashed file per
+source, each capped so no single file dominates set B. Every game must have
 at least --min-plies mainline plies.
 
-Writes data/gate_set_A.pgn, data/gate_set_B.pgn (plus
-data/gate_set_B.neutral.pgn when neutral games exist) and a manifest with
+Writes data/gate_set_A.pgn, data/gate_set_B.pgn (plus one
+data/gate_set_B.neutral.<source>.pgn per neutral source) and a manifest with
 per-file SHA-256 hashes plus the exact row ids, so the gate can be reproduced
 even after the import pipeline trims old games.
 
-Neutral games come from a local dump (--neutral-pgn) or one authenticated
-Lichess export (--neutral-user, LICHESS_TOKEN). Rate-limit responses fail
-immediately instead of being retried.
+Neutral games come from a local dump (--neutral-pgn) or authenticated
+Lichess exports (--neutral-user, one or more usernames, LICHESS_TOKEN).
+Bot-involved games (either side titled BOT) are dropped unless
+--neutral-include-bot-games is passed. A Lichess 429 waits a full minute and
+is retried once, then fails.
 
 Usage:
   python scripts/export_gate_pgns.py --per-set 120 --min-plies 20
   python scripts/export_gate_pgns.py --neutral-pgn dump.pgn
   LICHESS_TOKEN=... python scripts/export_gate_pgns.py --neutral-user someone
+  LICHESS_TOKEN=... python scripts/export_gate_pgns.py --neutral-user alice bob
 """
 import argparse
 import hashlib
 import io
 import json
 import os
+import re
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -43,17 +49,82 @@ OPPONENT_ALIASES = {"iaminspiredbroo": "iaminspiredbro"}
 
 
 def load_exclude_ids(path):
-    """Ids that must never enter set B (already used for tuning)."""
+    """Ids that must never enter set B (already used for tuning).
+
+    Fails loudly instead of silently excluding nothing: a missing file, bad
+    JSON, an unrecognized shape, non-id entries, or a set that resolves to
+    empty all raise SystemExit. Omit the flag entirely to opt out of
+    exclusions on purpose.
+    """
     if not path:
         return frozenset()
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    source = Path(path)
+    if not source.exists():
+        raise SystemExit(f"exclude-ids file not found: {path}")
+    try:
+        data = json.loads(source.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise SystemExit(f"exclude-ids file is not valid JSON: {path}: {exc}") from exc
+    ids: list = []
     if isinstance(data, list):
-        return frozenset(str(value) for value in data)
-    ids = set()
-    for key in ("set_a", "set_b"):
-        for value in (data.get(key) or {}).get("ids", []) or []:
-            ids.add(str(value))
-    return frozenset(ids)
+        ids = list(data)
+    elif isinstance(data, dict):
+        if "excluded_from_b_union" in data:
+            union = data["excluded_from_b_union"]
+            if not isinstance(union, list):
+                raise SystemExit(
+                    f"exclude-ids file {path}: 'excluded_from_b_union' "
+                    f"must be a list, got {type(union).__name__}"
+                )
+            ids = list(union)
+        elif "excluded_from_b" in data:
+            block = data["excluded_from_b"]
+            if not isinstance(block, dict) or not isinstance(block.get("ids"), list):
+                raise SystemExit(
+                    f"exclude-ids file {path}: 'excluded_from_b' must be "
+                    "an object with an 'ids' list"
+                )
+            ids = list(block["ids"])
+        elif "set_a" in data or "set_b" in data:
+            for key in ("set_a", "set_b"):
+                block = data.get(key) or {}
+                if not isinstance(block, dict) or not isinstance(
+                    block.get("ids"), list
+                ):
+                    raise SystemExit(
+                        f"exclude-ids file {path}: '{key}' must be an "
+                        "object with an 'ids' list"
+                    )
+                ids.extend(block["ids"])
+        else:
+            raise SystemExit(
+                f"exclude-ids file {path} has an unrecognized shape: "
+                f"expected a JSON list of ids or an object with "
+                f"'excluded_from_b_union', 'excluded_from_b.ids', or "
+                f"'set_a'/'set_b' blocks with 'ids' lists; "
+                f"got keys {sorted(data)}"
+            )
+    else:
+        raise SystemExit(
+            f"exclude-ids file {path} has an unrecognized shape: expected a "
+            f"JSON list or object, got {type(data).__name__}"
+        )
+    offenders = [
+        value for value in ids if not isinstance(value, (str, int)) or str(value) == ""
+    ]
+    if offenders:
+        preview = ", ".join(repr(value) for value in offenders[:5])
+        raise SystemExit(
+            f"exclude-ids file {path} contains {len(offenders)} non-id "
+            f"entries (empty or non-string, e.g. {preview}); refusing to run"
+        )
+    resolved = frozenset(str(value) for value in ids)
+    if not resolved:
+        raise SystemExit(
+            f"exclude-ids file {path} resolved to an empty id set; refusing "
+            "to run with no exclusions (omit the flag to opt out explicitly)"
+        )
+    return resolved
 
 
 def parse_args():
@@ -68,10 +139,33 @@ def parse_args():
     )
     parser.add_argument(
         "--neutral-user",
+        nargs="*",
         default=None,
-        help="Lichess username; one authenticated export via LICHESS_TOKEN.",
+        help="Lichess usernames; one authenticated export per name via "
+        "LICHESS_TOKEN, each written to its own neutral file.",
     )
-    parser.add_argument("--neutral-max", type=int, default=300)
+    parser.add_argument(
+        "--neutral-max", type=int, default=300, help="Games fetched per user."
+    )
+    parser.add_argument(
+        "--neutral-file-cap",
+        type=int,
+        default=None,
+        help="Max games kept per neutral file so none dominates set B "
+        "(default: --per-set).",
+    )
+    parser.add_argument(
+        "--neutral-min-games",
+        type=int,
+        default=50,
+        help="Minimum games per neutral file after filtering; a source "
+        "below this fails loudly instead of freezing a thin file.",
+    )
+    parser.add_argument(
+        "--neutral-include-bot-games",
+        action="store_true",
+        help="Keep games where either side is titled BOT (default: dropped).",
+    )
     parser.add_argument(
         "--exclude-ids-json",
         default=None,
@@ -81,20 +175,46 @@ def parse_args():
     return parser.parse_args()
 
 
-def read_pgn_games(path, min_plies):
-    games = []
+def _involves_bot(game) -> bool:
+    """True when either side carries the Lichess BOT title."""
+    for side in ("White", "Black"):
+        if (game.headers.get(f"{side}Title") or "").strip().lower() == "bot":
+            return True
+    return False
+
+
+def parse_pgn_text(text, min_plies, exclude_bots=False):
+    """Parse PGN text into (kept, stats): min-plies and bot filtering."""
+    kept = []
+    fetched = short = bots = 0
+    stream = io.StringIO(text)
+    while True:
+        game = chess.pgn.read_game(stream)
+        if game is None:
+            break
+        fetched += 1
+        if exclude_bots and _involves_bot(game):
+            bots += 1
+            continue
+        if sum(1 for _ in game.mainline_moves()) < min_plies:
+            short += 1
+            continue
+        kept.append(str(game))
+    return kept, {"fetched": fetched, "bot_dropped": bots, "short_dropped": short}
+
+
+def read_pgn_games(path, min_plies, exclude_bots=False):
     with open(path, encoding="utf-8", errors="replace") as fh:
-        while True:
-            game = chess.pgn.read_game(fh)
-            if game is None:
-                break
-            if sum(1 for _ in game.mainline_moves()) >= min_plies:
-                games.append(str(game))
-    return games
+        kept, _ = parse_pgn_text(fh.read(), min_plies, exclude_bots)
+    return kept
 
 
-def fetch_lichess_dump(user, max_games, out_dir):
-    """One authenticated Lichess export; never retries on 429."""
+def sanitize_username(user: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", user.lower()).strip("-") or "neutral"
+
+
+def fetch_lichess_text(user, max_games):
+    """One authenticated Lichess export; a 429 waits 60s and retries once."""
     token = os.environ.get("LICHESS_TOKEN")
     if not token:
         raise SystemExit(
@@ -105,34 +225,81 @@ def fetch_lichess_dump(user, max_games, out_dir):
         {"max": max_games, "clocks": "false", "evals": "false", "opening": "true"}
     )
     url = f"https://lichess.org/api/games/user/{user}?{query}"
-    request = urllib.request.Request(
-        url,
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Accept": "application/x-chess-pgn",
-        },
-    )
-    try:
+
+    def _get():
+        request = urllib.request.Request(
+            url,
+            headers={
+                "Authorization": f"Bearer {token}",
+                "Accept": "application/x-chess-pgn",
+            },
+        )
         with urllib.request.urlopen(request, timeout=120) as response:
-            data = response.read().decode("utf-8", errors="replace")
+            return response.read().decode("utf-8", errors="replace")
+
+    try:
+        return _get()
     except urllib.error.HTTPError as exc:
-        if exc.code == 429:
+        if exc.code != 429:
+            raise
+        print(f"Lichess rate limit (429) for {user}; waiting 60s, one retry...")
+        time.sleep(60)
+        try:
+            return _get()
+        except urllib.error.HTTPError as retry_exc:
             raise SystemExit(
-                "Lichess rate limit (429); wait or use a dump. Not retrying."
-            ) from exc
-        raise
-    dump_path = out_dir / "lichess_neutral_dump.pgn"
-    dump_path.write_text(data, encoding="utf-8")
-    return dump_path
+                f"Lichess still rate-limited (429) for {user} after the "
+                "60s wait; aborting instead of hammering the API."
+            ) from retry_exc
 
 
-def read_neutral_games(args, out_dir):
-    path = args.neutral_pgn
-    if not path and args.neutral_user:
-        path = str(fetch_lichess_dump(args.neutral_user, args.neutral_max, out_dir))
-    if not path:
-        return []
-    return read_pgn_games(path, args.min_plies)
+def build_neutral_set(key, text, args, file_cap, source):
+    """Filter, cap, and validate one neutral source. Fails loudly on thin."""
+    exclude_bots = not args.neutral_include_bot_games
+    kept, stats = parse_pgn_text(text, args.min_plies, exclude_bots)
+    if len(kept) < args.neutral_min_games:
+        raise SystemExit(
+            f"neutral source '{key}' kept only {len(kept)} games "
+            f"(fetched={stats['fetched']} bot_dropped={stats['bot_dropped']} "
+            f"short_dropped={stats['short_dropped']}, "
+            f"min={args.neutral_min_games}); refusing to freeze a thin file"
+        )
+    capped_from = len(kept)
+    if len(kept) > file_cap:
+        kept = kept[:file_cap]
+    return {
+        "key": key,
+        "source": source,
+        "pgns": kept,
+        "fetched": stats["fetched"],
+        "bot_dropped": stats["bot_dropped"],
+        "short_dropped": stats["short_dropped"],
+        "capped_from": capped_from,
+        "cap": file_cap,
+        "bot_games_excluded": exclude_bots,
+    }
+
+
+def read_neutral_sets(args):
+    """One filtered, capped, validated game list per neutral source."""
+    file_cap = args.neutral_file_cap or args.per_set
+    sources = []
+    for user in args.neutral_user or []:
+        text = fetch_lichess_text(user, args.neutral_max)
+        sources.append(
+            build_neutral_set(
+                sanitize_username(user), text, args, file_cap,
+                source=f"lichess-user:{user}",
+            )
+        )
+    if args.neutral_pgn:
+        with open(args.neutral_pgn, encoding="utf-8", errors="replace") as fh:
+            text = fh.read()
+        sources.append(
+            build_neutral_set("dump", text, args, file_cap,
+                              source=f"local-dump:{args.neutral_pgn}")
+        )
+    return sources
 
 
 def write_pgn_file(path, pgns):
@@ -264,16 +431,31 @@ def main():
     hash_a = write_set(path_a, set_a)
     hash_b = write_set(path_b, set_b)
 
-    neutral = read_neutral_games(args, out_dir)
-    neutral_manifest = {}
-    if neutral:
-        path_nb = out_dir / "gate_set_B.neutral.pgn"
-        hash_nb = write_pgn_file(path_nb, neutral)
-        neutral_manifest = {
-            "file": str(path_nb),
-            "sha256": hash_nb,
-            "games": len(neutral),
-        }
+    neutral_sets = read_neutral_sets(args)
+    neutral_files = []
+    for entry in neutral_sets:
+        path_nb = out_dir / f"gate_set_B.neutral.{entry['key']}.pgn"
+        hash_nb = write_pgn_file(path_nb, entry["pgns"])
+        neutral_files.append(
+            {
+                "key": entry["key"],
+                "source": entry["source"],
+                "file": str(path_nb),
+                "sha256": hash_nb,
+                "games": len(entry["pgns"]),
+                "fetched": entry["fetched"],
+                "bot_dropped": entry["bot_dropped"],
+                "short_dropped": entry["short_dropped"],
+                "capped_from": entry["capped_from"],
+                "cap": entry["cap"],
+                "bot_games_excluded": entry["bot_games_excluded"],
+            }
+        )
+    neutral_manifest = {
+        "files": neutral_files,
+        "total_games": sum(item["games"] for item in neutral_files),
+        "file_cap": args.neutral_file_cap or args.per_set,
+    }
 
     manifest = {
         "source": "opponent_games",
@@ -308,6 +490,13 @@ def main():
     print(f"usable games: {len(games)}")
     print(f"set A: {len(set_a)} games  sha256={hash_a}")
     print(f"set B: {len(set_b)} games  sha256={hash_b}")
+    for item in neutral_files:
+        print(
+            f"neutral {item['key']}: {item['games']} games "
+            f"(fetched={item['fetched']} bot_dropped={item['bot_dropped']} "
+            f"short_dropped={item['short_dropped']} "
+            f"capped_from={item['capped_from']}) sha256={item['sha256']}"
+        )
     print(f"opponents A: {distribution(set_a)}")
     print(f"opponents B: {distribution(set_b)}")
     print(f"manifest: {manifest_path}")
