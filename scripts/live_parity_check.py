@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import main as app_module  # noqa: E402
 import routers.review as review_module  # noqa: E402
+from core import rate_limit  # noqa: E402
 from core.analysis_mode import (  # noqa: E402
     REVIEW_MULTIPV,
     current_mode_string,
@@ -80,6 +81,9 @@ def main():
             games.append(game)
     print(f"parity check: {len(games)} games from {args.pgn}")
 
+    # Start the singleton first: the engine name is part of the mode, and a
+    # pre-start "unknown" would make every explore look stale.
+    get_review_stockfish(depth=int(os.getenv("REVIEW_DEPTH", "18")))
     mode = current_mode_string(
         engine_name=get_review_engine_name(),
         multipv=REVIEW_MULTIPV,
@@ -105,6 +109,9 @@ def main():
 
             review_module._SANDBOX_EVAL_CACHE.clear()
             review_module._SANDBOX_RESULT_CACHE.clear()
+            # The check itself fires hundreds of requests; clear the
+            # in-process limiter so it measures parity, not throttling.
+            rate_limit._memory_counters.clear()
             response = client.post(
                 "/api/review/live",
                 json={

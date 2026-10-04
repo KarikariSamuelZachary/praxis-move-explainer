@@ -349,9 +349,9 @@ def review_live(
             raise HTTPException(status_code=400, detail=f"Invalid FEN: {exc}") from exc
         in_book = True
     else:
-        raise HTTPException(
-            status_code=400, detail="Missing moves path or fen"
-        )
+        # Empty path and no FEN: explore from the game start.
+        board = chess.Board()
+        in_book = True
 
     try:
         move = _resolve_sandbox_move(board, body.move)
