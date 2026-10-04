@@ -168,7 +168,7 @@ def test_overlong_game_is_rejected_before_analysis():
     try:
         response = _client().post(
             "/api/review",
-            json={"pgn": _long_pgn(301)},
+            json={"pgn": _long_pgn(158)},
             headers={
                 "X-Internal-Secret": _secret(),
                 "X-Clerk-User-Id": TEST_CLERK_ID,
@@ -184,7 +184,7 @@ def test_overlong_game_is_rejected_before_analysis():
     assert response.status_code == 400, response.text
     assert "too long" in response.json()["detail"], response.text
     assert called is False, "overlong game reached the analyzer"
-    print("  [PASS] 301-ply game -> 400 before any engine work")
+    print("  [PASS] 158-ply game -> 400 before any engine work (cap 157)")
 
 
 def test_capabilities_reports_flag_and_mode():

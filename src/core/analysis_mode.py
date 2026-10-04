@@ -15,9 +15,11 @@ import os
 
 DEFAULT_REVIEW_NODES = 100_000
 DEFAULT_NODES_BACKSTOP_SECONDS = 10.0
-# Longest game the review route accepts; the frontend proxy aborts at 240s
-# (REVIEW_TIMEOUT_MS), so N is chosen for this length with 2x headroom.
-REVIEW_MAX_PLIES = 300
+# Longest game the review route accepts. p99 of the frozen gate sets
+# (data/gate_sets.json: A 05538f9d..., B 8394f937...), so ~1% of gate games
+# are rejected. The frontend proxy aborts at 240s (REVIEW_TIMEOUT_MS), so N
+# is chosen for this length with 2x headroom.
+REVIEW_MAX_PLIES = 157
 
 # Fixed in review and live; background jobs keep GameAnalyzer's default of 1:
 # opponent_game_analysis.py and weakness_profile.py construct GameAnalyzer
