@@ -98,6 +98,12 @@ def parse_args():
         help="Parallel workers; shards are contiguous so order is preserved.",
     )
     parser.add_argument(
+        "--reference-cache",
+        default=None,
+        help="JSON file to save/reuse the reference per-game rows, so a long "
+        "1M reference can be computed once and candidates run separately.",
+    )
+    parser.add_argument(
         "--old-mode",
         action="store_true",
         help="Also run the shipped depth+time batch config against the reference.",
@@ -364,15 +370,29 @@ def run_old_mode(pgns, sf_path, depth, analysis_time, low_priority=False):
 
 
 def run_nodes_sweep(args, pgns):
-    reference, _, _ = run_budget(
-        pgns,
-        args.sf_path,
-        args.reference_nodes,
-        args.backstop,
-        jobs=args.jobs,
-        low_priority=args.low_priority,
-    )
-    print(f"reference: {args.reference_nodes} nodes")
+    reference = None
+    if args.reference_cache and Path(args.reference_cache).exists():
+        cached = json.loads(Path(args.reference_cache).read_text(encoding="utf-8"))
+        if cached.get("nodes") == args.reference_nodes:
+            reference = cached["per_game"]
+    if reference is not None:
+        print(f"reference: {args.reference_nodes} nodes (cache {args.reference_cache})")
+    else:
+        reference, _, _ = run_budget(
+            pgns,
+            args.sf_path,
+            args.reference_nodes,
+            args.backstop,
+            jobs=args.jobs,
+            low_priority=args.low_priority,
+        )
+        if args.reference_cache:
+            Path(args.reference_cache).write_text(
+                json.dumps({"nodes": args.reference_nodes, "per_game": reference}),
+                encoding="utf-8",
+            )
+            print(f"wrote reference cache {args.reference_cache}")
+        print(f"reference: {args.reference_nodes} nodes")
     results = {"reference": args.reference_nodes, "jobs": args.jobs}
     mate_reference = reference
     long_mates = []
