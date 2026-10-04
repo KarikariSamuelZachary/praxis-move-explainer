@@ -172,6 +172,12 @@ def parse_args():
         help="Manifest or id list whose games must never enter set B "
         "(e.g. a previous gate manifest already used for tuning).",
     )
+    parser.add_argument(
+        "--exclude-opponents",
+        default="",
+        help="Comma-separated opponent names dropped from both sets "
+        "(bot accounts; matched case-insensitively after alias resolution).",
+    )
     return parser.parse_args()
 
 
@@ -372,18 +378,31 @@ def _take_from_pools(pools, per_set):
     return chosen[:per_set]
 
 
-def split_by_opponent(games, per_set, exclude_b_ids=frozenset()):
+def excluded_opponent_groups(raw):
+    """Lowercased alias groups to drop from both sets (bots, test accounts)."""
+    return frozenset(
+        name.strip().lower() for name in (raw or "").split(",") if name.strip()
+    )
+
+
+def split_by_opponent(
+    games, per_set, exclude_b_ids=frozenset(), exclude_opponents=frozenset()
+):
     """Disjoint opponent pools: every game of an opponent goes to one set.
 
     Opponents are dealt largest-first, alternating between the sets; aliased
-    accounts stay in one pool. Set B additionally drops every id in
-    exclude_b_ids, so a game already used for tuning can never reappear in
-    the final gate.
+    accounts stay in one pool. Games whose alias group is in
+    exclude_opponents never enter either set (bot accounts on either side).
+    Set B additionally drops every id in exclude_b_ids, so a game already
+    used for tuning can never reappear in the final gate.
     """
     by_opponent = defaultdict(list)
     for game in games:
         name = game["opponent"] or "unknown"
-        by_opponent[OPPONENT_ALIASES.get(name, name)].append(game)
+        group = OPPONENT_ALIASES.get(name, name)
+        if group.lower() in exclude_opponents:
+            continue
+        by_opponent[group].append(game)
 
     pools = sorted(by_opponent.items(), key=lambda item: (-len(item[1]), item[0]))
     groups = ([], [])
@@ -419,7 +438,24 @@ def main():
 
     games = fetch_games(args.min_plies)
     exclude_b_ids = load_exclude_ids(args.exclude_ids_json)
-    set_a, set_b = split_by_opponent(games, args.per_set, exclude_b_ids)
+    exclude_opponents = excluded_opponent_groups(args.exclude_opponents)
+    set_a, set_b = split_by_opponent(
+        games,
+        args.per_set,
+        exclude_b_ids,
+        exclude_opponents,
+    )
+    if exclude_opponents:
+        dropped = sum(
+            1
+            for game in games
+            if (
+                OPPONENT_ALIASES.get(game["opponent"] or "unknown", game["opponent"] or "unknown")
+                .lower()
+                in exclude_opponents
+            )
+        )
+        print(f"excluded opponents {sorted(exclude_opponents)}: {dropped} games dropped")
     if not set_a or not set_b:
         raise SystemExit(
             f"not enough usable games: {len(games)} total, "
@@ -468,6 +504,7 @@ def main():
             "count": len(exclude_b_ids),
             "ids": sorted(exclude_b_ids),
         },
+        "excluded_opponents": sorted(exclude_opponents),
         "set_a": {
             "file": str(path_a),
             "sha256": hash_a,

@@ -17,8 +17,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from export_gate_pgns import (  # noqa: E402
     _involves_bot,
+    excluded_opponent_groups,
     load_exclude_ids,
     parse_pgn_text,
+    split_by_opponent,
 )
 
 import chess.pgn  # noqa: E402
@@ -134,6 +136,36 @@ def test_bot_filter():
     print("  [PASS] BOT-title games dropped only when asked")
 
 
+def _fake_game(game_id, opponent):
+    return {"id": game_id, "pgn": "1. e4 e5", "opponent": opponent}
+
+
+def test_exclude_opponents_drops_from_both_sets():
+    games = [
+        _fake_game(f"h{i}", "Hikaru") for i in range(6)
+    ] + [
+        _fake_game(f"e{i}", "erik") for i in range(6)
+    ]
+    excluded = excluded_opponent_groups("hikaru")
+    set_a, set_b = split_by_opponent(games, 6, exclude_opponents=excluded)
+    pooled = [game["opponent"] for game in set_a + set_b]
+    assert "Hikaru" not in pooled, pooled
+    assert pooled, "exclusion removed everything"
+    # Alias resolution: excluding the canonical name catches the alias.
+    aliased = [
+        _fake_game("a1", "iaminspiredbro"),
+        _fake_game("a2", "iaminspiredbroo"),
+        _fake_game("b1", "erik"),
+    ]
+    set_a, set_b = split_by_opponent(
+        aliased, 2, exclude_opponents=excluded_opponent_groups("IAmInspireDbro")
+    )
+    pooled = [game["opponent"] for game in set_a + set_b]
+    assert "iaminspiredbro" not in pooled and "iaminspiredbroo" not in pooled, pooled
+    assert [game["id"] for game in set_a + set_b] == ["b1"], pooled
+    print("  [PASS] excluded opponents (alias-resolved) enter neither set")
+
+
 def run() -> int:
     print("=== Running gate export loader tests ===")
     tests = [
@@ -146,6 +178,7 @@ def run() -> int:
         test_missing_and_broken_files_fail,
         test_non_id_entries_fail,
         test_bot_filter,
+        test_exclude_opponents_drops_from_both_sets,
     ]
     failures = 0
     for test in tests:
