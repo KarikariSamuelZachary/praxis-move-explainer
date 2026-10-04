@@ -16,8 +16,11 @@ import os
 DEFAULT_REVIEW_NODES = 100_000
 DEFAULT_NODES_BACKSTOP_SECONDS = 10.0
 
-# Fixed in review and live; background jobs keep GameAnalyzer's default of 1.
+# Fixed in review and live; background jobs keep GameAnalyzer's default of 1:
+# opponent_game_analysis.py and weakness_profile.py construct GameAnalyzer
+# without multipv, and analyze_game.py (CLI) does too.
 REVIEW_MULTIPV = 2
+assert REVIEW_MULTIPV == 2, "review/live analysis requires MultiPV=2"
 # Bump when the analysis algorithm changes without its constants changing.
 MODE_VERSION = "rev-det-v1"
 

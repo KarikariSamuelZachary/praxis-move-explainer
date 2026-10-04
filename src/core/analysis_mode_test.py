@@ -123,12 +123,34 @@ def test_non_deterministic_call_shape_unchanged():
     print("  [PASS] flag off keeps the historical evaluate() call shape")
 
 
+def test_multipv_pinned_only_for_deterministic():
+    engine = _RecordingEngine()
+    try:
+        GameAnalyzer(
+            engine=engine,
+            explainer=MockExplainer(),
+            multipv=1,
+            deterministic=True,
+        )
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("deterministic with MultiPV=1 must raise")
+
+    background = GameAnalyzer(
+        engine=engine, explainer=MockExplainer(), multipv=1, deterministic=False
+    )
+    assert background.multipv == 1, "background jobs keep their own width"
+    print("  [PASS] deterministic requires MultiPV=2; background keeps 1")
+
+
 def run() -> int:
     print("=== Running analysis-mode tests ===")
     tests = [
         test_env_parsing,
         test_deterministic_calls_use_nodes_and_fresh_token,
         test_non_deterministic_call_shape_unchanged,
+        test_multipv_pinned_only_for_deterministic,
     ]
     failures = 0
     for test in tests:

@@ -387,6 +387,13 @@ class GameAnalyzer:
         self.book_lookup = book_lookup
         self.multipv = max(1, int(multipv))
         self.deterministic = deterministic
+        # The deterministic review/live classifier's Great check and the
+        # suggestions payload both assume two lines. Background jobs are not
+        # deterministic and keep their historical width (default 1).
+        if deterministic and self.multipv != 2:
+            raise ValueError(
+                "deterministic review/live analysis requires MultiPV=2"
+            )
 
     def _evaluate(self, board: chess.Board) -> Evaluation:
         """Evaluate a position under the configured mode."""

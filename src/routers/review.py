@@ -115,7 +115,7 @@ def review_game(
             book_lookup=is_book_move,
             # MultiPV=2 gives the Great-move check the second-best line
             # ("only good move") without a second search per position.
-            multipv=2,
+            multipv=REVIEW_MULTIPV,
             deterministic=deterministic,
         )
         review_rows = analyzer.analyze_full_game(pgn, target_color=body.target_color)
