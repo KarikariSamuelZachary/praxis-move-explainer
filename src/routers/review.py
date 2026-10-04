@@ -249,6 +249,15 @@ def review_game(
     try:
         engine = get_review_stockfish(depth=int(os.getenv("REVIEW_DEPTH", "18")))
         log.info("Review deterministic mode: %s", deterministic)
+        # The mode string is computed after the engine is up, so the first
+        # review carries the real engine name instead of "unknown" -- the
+        # sandbox compares this mode and would reject explores as stale.
+        mode = current_mode_string(
+            engine_name=get_review_engine_name(),
+            multipv=REVIEW_MULTIPV,
+            nodes=review_nodes(),
+        )
+        extras = deterministic
         analyzer = GameAnalyzer(
             engine=engine,
             explainer=explainer,
@@ -257,12 +266,6 @@ def review_game(
             # ("only good move") without a second search per position.
             multipv=REVIEW_MULTIPV,
             deterministic=deterministic,
-        )
-        extras = deterministic
-        mode = current_mode_string(
-            engine_name=get_review_engine_name(),
-            multipv=REVIEW_MULTIPV,
-            nodes=review_nodes(),
         )
         review_rows = analyzer.analyze_full_game(
             pgn, target_color=body.target_color, include_extras=extras
