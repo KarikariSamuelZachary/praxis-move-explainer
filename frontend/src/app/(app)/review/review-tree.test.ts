@@ -26,7 +26,9 @@ import {
   mainlinePlyToNode,
   pathMoves,
   pathToNode,
+  removeLeafNode,
   setNodeAnalysis,
+  setNodeMove,
 } from './review-tree';
 import { activeNodeView } from './review-tree-view';
 
@@ -221,6 +223,59 @@ function testSandboxVariationFromLiveResponse() {
   console.log('  [PASS] sandbox variation attaches with suggestions, mainline intact');
 }
 
+function testOptimisticSwapAndRollback() {
+  const moves = fixture();
+  const tree = buildMainlineTree(moves);
+  const parentId = mainlinePlyToNode(tree, 2)!;
+  const optimistic = row({
+    fen: 'fen-after-d4',
+    san: 'd4',
+    color: 'white',
+    classification: 'good',
+  });
+  const { tree: branched, nodeId } = addVariation(tree, parentId, optimistic, {
+    status: 'analyzing',
+  });
+
+  // The engine result replaces the optimistic row in place; the node keeps
+  // its identity so any continuation already branched from it stays put.
+  const labelled = row({
+    fen: 'fen-after-d4',
+    san: 'd4',
+    color: 'white',
+    classification: 'inaccuracy',
+    best_move_san: 'c3',
+  });
+  const withMove = setNodeMove(branched, nodeId, labelled);
+  assert.equal(branched.nodes[nodeId].move, optimistic, 'input tree mutated');
+  assert.equal(withMove.nodes[nodeId].move, labelled);
+  assert.deepEqual(
+    withMove.nodes[parentId].children,
+    branched.nodes[parentId].children,
+  );
+  assert.deepEqual(pathMoves(withMove, nodeId).map((m) => m.san), [
+    'e4',
+    'e5',
+    'd4',
+  ]);
+
+  // A failed live request rolls the childless leaf back to the parent...
+  const rolledBack = removeLeafNode(withMove, nodeId);
+  assert.equal(rolledBack.nodes[nodeId], undefined);
+  assert.deepEqual(rolledBack.nodes[parentId].children, tree.nodes[parentId].children);
+
+  // ...but never orphans an explored continuation.
+  const child = addVariation(
+    withMove,
+    nodeId,
+    row({ fen: 'fen-after-nc3', san: 'Nc3', color: 'white' }),
+  );
+  const kept = removeLeafNode(child.tree, nodeId);
+  assert.ok(kept.nodes[nodeId], 'node with children must be kept');
+  assert.equal(kept.nodes[nodeId].move, labelled);
+  console.log('  [PASS] optimistic row swap and failed-move rollback');
+}
+
 // Mirrors page.tsx using the SAME extracted functions the page imports.
 function flatReferenceView(moves: GameReviewMove[], activePly: number) {
   const currentMove = currentMoveFor(moves, activePly)!;
@@ -288,6 +343,7 @@ function run() {
     testVariationIdsAreStableAndReused,
     testSetNodeAnalysisIsImmutable,
     testSandboxVariationFromLiveResponse,
+    testOptimisticSwapAndRollback,
     testComponentViewEquivalence,
   ];
   let failures = 0;

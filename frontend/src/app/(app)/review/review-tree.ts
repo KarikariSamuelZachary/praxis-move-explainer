@@ -201,3 +201,47 @@ export function setNodeAnalysis(
     nodes: { ...tree.nodes, [nodeId]: { ...node, analysis } },
   };
 }
+
+/**
+ * Replace a node's row without mutating the input tree. Used to swap the
+ * optimistic row created the instant a move is played for the engine-labelled
+ * row once `/api/review/live` responds.
+ */
+export function setNodeMove(
+  tree: ReviewTree,
+  nodeId: string,
+  move: GameReviewMove,
+): ReviewTree {
+  const node = tree.nodes[nodeId];
+  if (!node) {
+    throw new Error(`Unknown review node: ${nodeId}`);
+  }
+  return {
+    ...tree,
+    nodes: { ...tree.nodes, [nodeId]: { ...node, move } },
+  };
+}
+
+/**
+ * Remove a leaf node (rollback for a failed optimistic explore move). No-op
+ * when the node is unknown or already has children, so an in-flight branch
+ * is never orphaned.
+ */
+export function removeLeafNode(tree: ReviewTree, nodeId: string): ReviewTree {
+  const node = tree.nodes[nodeId];
+  if (!node || node.children.length > 0) {
+    return tree;
+  }
+  const nodes = { ...tree.nodes };
+  delete nodes[nodeId];
+  if (node.parentId) {
+    const parent = nodes[node.parentId];
+    if (parent) {
+      nodes[parent.id] = {
+        ...parent,
+        children: parent.children.filter((id) => id !== nodeId),
+      };
+    }
+  }
+  return { ...tree, nodes };
+}

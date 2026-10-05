@@ -1,9 +1,18 @@
 'use client';
 
-import { useEffect, useState } from 'react';
-import { Chess } from 'chess.js';
+import { useCallback, useEffect, useMemo, useState } from 'react';
+import { Chess, type Square } from 'chess.js';
 import { Chessboard as BaseChessboard } from 'react-chessboard';
+import type {
+  PieceDropHandlerArgs,
+  PieceHandlerArgs,
+  SquareHandlerArgs,
+  SquareRenderer as SquareRendererType,
+} from 'react-chessboard';
 
+import PromotionPicker, {
+  type PromotionPiece,
+} from '@/components/board/PromotionPicker';
 import { GameReviewMove } from '@/types';
 
 import { ClassificationIcon } from './icons/ClassificationIcon';
@@ -17,6 +26,8 @@ type BoardPanelProps = {
   showBestMove: boolean;
   allowDragging?: boolean;
   onExploreMove?: (from: string, to: string, promotion?: string) => void;
+  exploreMode?: boolean;
+  onToggleExplore?: () => void;
 };
 
 const woodBoxStyle: React.CSSProperties = {
@@ -103,6 +114,8 @@ function applyUciMove(fen: string, uci: string): string | null {
   }
 }
 
+type PendingPromotion = { source: string; target: string };
+
 export default function BoardPanel({
   position,
   fenBefore,
@@ -112,9 +125,13 @@ export default function BoardPanel({
   showBestMove,
   allowDragging = false,
   onExploreMove,
+  exploreMode = false,
+  onToggleExplore,
 }: BoardPanelProps) {
   const [orientation, setOrientation] = useState<'white' | 'black'>('white');
   const [bestStep, setBestStep] = useState<'off' | 'undo' | 'best'>('off');
+  const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
+  const [moveToPromote, setMoveToPromote] = useState<PendingPromotion | null>(null);
 
   const boardPosition = position || START_FEN;
   const bestMoveUci = currentMove?.best_move_uci ?? null;
@@ -142,6 +159,218 @@ export default function BoardPanel({
       : bestStep === 'best'
         ? (bestMoveResultFen ?? boardPosition)
         : boardPosition;
+
+  const game = useMemo(() => {
+    try {
+      return new Chess(boardFen);
+    } catch {
+      return null;
+    }
+  }, [boardFen]);
+
+  // Clear any selection/pending promotion whenever the displayed position
+  // changes (navigation, best-move animation, an accepted explore move), so
+  // the orange tint and hint dots cannot leak onto a board whose pieces have
+  // already moved.
+  const [prevBoardFen, setPrevBoardFen] = useState(boardFen);
+  if (prevBoardFen !== boardFen) {
+    setPrevBoardFen(boardFen);
+    setSelectedSquare(null);
+    setMoveToPromote(null);
+  }
+
+  // Dragging/clicking is meaningless while the board is showing the
+  // best-move animation (a different position than the review node), so
+  // interactions are suspended for the duration of that animation.
+  const canInteract = allowDragging && bestStep === 'off';
+
+  const hintSquares = useMemo<Record<string, 'dot' | 'ring'>>(() => {
+    if (!canInteract || !selectedSquare || !game) return {};
+    try {
+      const legalMoves = game.moves({
+        square: selectedSquare as Square,
+        verbose: true,
+      });
+      const hints: Record<string, 'dot' | 'ring'> = {};
+      for (const move of legalMoves) {
+        hints[move.to] = game.get(move.to as Square) ? 'ring' : 'dot';
+      }
+      return hints;
+    } catch {
+      return {};
+    }
+  }, [canInteract, game, selectedSquare]);
+
+  const lastMoveSquares = useMemo(() => {
+    if (bestStep !== 'off' || !currentMove || !fenBefore) return null;
+    const san = currentMove.san;
+    if (!san || san === 'Start') return null;
+    try {
+      const board = new Chess(fenBefore);
+      const played = board.move(san);
+      return { from: played.from as string, to: played.to as string };
+    } catch {
+      return null;
+    }
+  }, [bestStep, currentMove, fenBefore]);
+
+  const checkSquare = useMemo(() => {
+    if (!game || !game.isCheck()) return null;
+    const turn = game.turn();
+    for (const row of game.board()) {
+      for (const cell of row) {
+        if (cell && cell.type === 'k' && cell.color === turn) {
+          return cell.square as string;
+        }
+      }
+    }
+    return null;
+  }, [game]);
+
+  const displaySquareStyles = useMemo<Record<string, React.CSSProperties>>(
+    () => {
+      const styles: Record<string, React.CSSProperties> = {};
+      if (lastMoveSquares) {
+        styles[lastMoveSquares.from] = {
+          backgroundColor: 'rgba(255, 213, 105, 0.32)',
+        };
+        styles[lastMoveSquares.to] = {
+          backgroundColor: 'rgba(255, 213, 105, 0.42)',
+        };
+      }
+      if (checkSquare) {
+        styles[checkSquare] = {
+          background:
+            'radial-gradient(circle, rgba(239,68,68,0.85) 0%, rgba(239,68,68,0.45) 45%, rgba(239,68,68,0) 75%)',
+        };
+      }
+      if (selectedSquare) {
+        styles[selectedSquare] = {
+          backgroundColor: 'rgba(255, 170, 0, 0.35)',
+        };
+      }
+      return styles;
+    },
+    [lastMoveSquares, checkSquare, selectedSquare],
+  );
+
+  const squareRenderer = useCallback<SquareRendererType>(
+    ({ square, children }) => {
+      const hint = hintSquares[square];
+      const squareStyle = displaySquareStyles[square];
+      return (
+        <div className="relative h-full w-full" style={squareStyle}>
+          {hint === 'dot' && (
+            <div className="pointer-events-none absolute left-1/2 top-1/2 h-[30%] w-[30%] -translate-x-1/2 -translate-y-1/2 rounded-full bg-black/25" />
+          )}
+          {hint === 'ring' && (
+            <div className="pointer-events-none absolute left-1/2 top-1/2 h-[88%] w-[88%] -translate-x-1/2 -translate-y-1/2 rounded-full border-[6px] border-black/25" />
+          )}
+          {children}
+        </div>
+      );
+    },
+    [hintSquares, displaySquareStyles],
+  );
+
+  const isPromotionMove = useCallback(
+    (source: string, target: string): boolean => {
+      if (!game) return false;
+      try {
+        const piece = game.get(source as Square);
+        if (!piece || piece.type !== 'p') return false;
+        const rank = target.charAt(1);
+        return piece.color === 'w' ? rank === '8' : rank === '1';
+      } catch {
+        return false;
+      }
+    },
+    [game],
+  );
+
+  const canDragPiece = useCallback(
+    ({ piece }: PieceHandlerArgs) => {
+      if (!game) return false;
+      return piece.pieceType[0] === game.turn();
+    },
+    [game],
+  );
+
+  const handleSquareClick = useCallback(
+    ({ square }: SquareHandlerArgs) => {
+      setMoveToPromote(null);
+
+      if (!canInteract || !onExploreMove || !game) {
+        setSelectedSquare(null);
+        return;
+      }
+
+      const clickedPiece = (() => {
+        try {
+          return game.get(square as Square);
+        } catch {
+          return null;
+        }
+      })();
+      const isOwnPiece = clickedPiece?.color === game.turn();
+
+      if (!selectedSquare) {
+        setSelectedSquare(isOwnPiece && clickedPiece ? square : null);
+        return;
+      }
+
+      if (selectedSquare === square) {
+        setSelectedSquare(null);
+        return;
+      }
+
+      let isLegal = false;
+      try {
+        isLegal = game
+          .moves({ square: selectedSquare as Square, verbose: true })
+          .some((move) => move.to === square);
+      } catch {
+        isLegal = false;
+      }
+
+      if (isLegal) {
+        if (isPromotionMove(selectedSquare, square)) {
+          setMoveToPromote({ source: selectedSquare, target: square });
+        } else {
+          onExploreMove(selectedSquare, square);
+          setSelectedSquare(null);
+        }
+        return;
+      }
+
+      setSelectedSquare(isOwnPiece && clickedPiece ? square : null);
+    },
+    [canInteract, game, isPromotionMove, onExploreMove, selectedSquare],
+  );
+
+  const handlePieceDrop = useCallback(
+    ({ sourceSquare, targetSquare }: PieceDropHandlerArgs) => {
+      if (!targetSquare || !canInteract || !onExploreMove) return false;
+      if (isPromotionMove(sourceSquare, targetSquare)) {
+        setMoveToPromote({ source: sourceSquare, target: targetSquare });
+        return false;
+      }
+      onExploreMove(sourceSquare, targetSquare);
+      return true;
+    },
+    [canInteract, isPromotionMove, onExploreMove],
+  );
+
+  const handlePromotionSelect = useCallback(
+    (piece: PromotionPiece) => {
+      if (moveToPromote && onExploreMove) {
+        onExploreMove(moveToPromote.source, moveToPromote.target, piece);
+      }
+      setMoveToPromote(null);
+      setSelectedSquare(null);
+    },
+    [moveToPromote, onExploreMove],
+  );
 
   const showPlayedIcon =
     hasGame && currentMove !== null && currentMove.san !== 'Start' && !showBestMove;
@@ -221,16 +450,13 @@ export default function BoardPanel({
               options={{
                 position: boardFen,
                 boardOrientation: orientation,
-                allowDragging,
-                onPieceDrop: allowDragging && onExploreMove
-                  ? ({ sourceSquare, targetSquare }) => {
-                      if (!targetSquare) {
-                        return false;
-                      }
-                      onExploreMove(sourceSquare, targetSquare);
-                      return true;
-                    }
-                  : undefined,
+                allowDragging: canInteract,
+                canDragPiece: canInteract ? canDragPiece : undefined,
+                onSquareClick: canInteract ? handleSquareClick : undefined,
+                onPieceDrop:
+                  canInteract && onExploreMove ? handlePieceDrop : undefined,
+                squareRenderer,
+                squareStyles: displaySquareStyles,
                 boardStyle: {
                   width: '100%',
                   height: '100%',
@@ -293,6 +519,16 @@ export default function BoardPanel({
                 </div>
               </div>
             )}
+            {moveToPromote && (
+              <PromotionPicker
+                turn={game?.turn() ?? 'w'}
+                onSelect={handlePromotionSelect}
+                onCancel={() => {
+                  setMoveToPromote(null);
+                  setSelectedSquare(null);
+                }}
+              />
+            )}
           </div>
         </div>
 
@@ -327,6 +563,43 @@ export default function BoardPanel({
             <path d="M7 12 L4 15 L7 18" />
           </svg>
         </button>
+
+        {hasGame && onToggleExplore && (
+          <button
+            type="button"
+            onClick={onToggleExplore}
+            aria-label={exploreMode ? 'Stop exploring' : 'Start exploring'}
+            aria-pressed={exploreMode}
+            title={exploreMode ? 'Stop exploring' : 'Start exploring'}
+            className="absolute z-20 flex items-center justify-center transition-transform hover:scale-105 active:scale-95"
+            style={{
+              left: '100%',
+              top: '34px',
+              marginLeft: '2px',
+              width: '28px',
+              height: '28px',
+              ...woodBoxStyle,
+              cursor: 'pointer',
+              ...(exploreMode
+                ? {
+                    boxShadow:
+                      '0 0 0 2px #1a0a02, 0 0 0 1px rgba(16,185,129,0.7), 0 0 12px rgba(16,185,129,0.45), inset 0 2px 0 rgba(255,200,100,0.12), inset 0 -2px 0 rgba(0,0,0,0.5)',
+                  }
+                : {}),
+            }}
+          >
+            {exploreMode ? (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="#f0e0c0">
+                <rect x="6" y="5" width="4" height="14" rx="1" />
+                <rect x="14" y="5" width="4" height="14" rx="1" />
+              </svg>
+            ) : (
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="#f0e0c0">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            )}
+          </button>
+        )}
       </div>
     </div>
   );

@@ -8,7 +8,6 @@ import AnalysisPanel from '@/components/review/AnalysisPanel';
 import ImportPanel, {
   ImportSource,
 } from '@/components/review/ImportPanel';
-import MoveList from '@/components/review/MoveList';
 import ReviewShell from '@/components/review/ReviewShell';
 import {
   GameReviewMove,
@@ -24,6 +23,9 @@ import {
   addVariation,
   buildMainlineTree,
   mainlinePlyToNode,
+  removeLeafNode,
+  setNodeAnalysis,
+  setNodeMove,
 } from './review-tree';
 import { activeNodeView } from './review-tree-view';
 
@@ -48,8 +50,28 @@ type AnalyzeErrorResponse = {
   error?: string;
 };
 
-/** Legal UCI for a drag on `fen`, defaulting promotions to a queen. */
-function exploreMoveUci(fen: string, from: string, to: string): string | null {
+type AnalysisProgress = { done: number; total: number | null };
+
+type ReviewStreamMessage =
+  | { type: 'meta'; mode: string; total: number }
+  | { type: 'row'; row: GameReviewMove }
+  | { type: 'done' }
+  | { type: 'error'; detail?: string };
+
+type ResolvedExploreMove = {
+  uci: string;
+  san: string;
+  fen: string;
+  color: 'white' | 'black';
+};
+
+/** Legal move for a drag/click on `fen`; promotions default to a queen. */
+function resolveExploreMove(
+  fen: string,
+  from: string,
+  to: string,
+  promotion?: string,
+): ResolvedExploreMove | null {
   try {
     const chess = new Chess(fen);
     const candidates = chess
@@ -58,8 +80,19 @@ function exploreMoveUci(fen: string, from: string, to: string): string | null {
     if (candidates.length === 0) {
       return null;
     }
-    const promotion = candidates[0].promotion ? 'q' : '';
-    return `${from}${to}${promotion}`;
+    const chosen = promotion
+      ? candidates.find((move) => move.promotion === promotion)
+      : candidates[0];
+    if (!chosen) {
+      return null;
+    }
+    const played = chess.move({ from, to, promotion: chosen.promotion });
+    return {
+      uci: `${from}${to}${chosen.promotion ?? ''}`,
+      san: played.san,
+      fen: chess.fen(),
+      color: played.color === 'w' ? 'white' : 'black',
+    };
   } catch {
     return null;
   }
@@ -90,8 +123,9 @@ export default function ReviewPage() {
   const [sandboxEnabled, setSandboxEnabled] = useState(false);
   const [exploreMode, setExploreMode] = useState(false);
   const [suggestionsEnabled, setSuggestionsEnabled] = useState(false);
-  const [explorePending, setExplorePending] = useState(false);
   const [exploreError, setExploreError] = useState<string | null>(null);
+  const [analysisProgress, setAnalysisProgress] =
+    useState<AnalysisProgress | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -140,11 +174,15 @@ export default function ReviewPage() {
 
     setErrorMessage(null);
     setAnalysisState('analyzing');
+    setAnalysisProgress({ done: 0, total: null });
 
     try {
       const response = await fetch('/api/analyze', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/x-ndjson',
+        },
         body: JSON.stringify({ pgn: pgnInput.trim() }),
       });
 
@@ -158,18 +196,66 @@ export default function ReviewPage() {
         }
         throw new Error(detail);
       }
+      if (!response.body) {
+        throw new Error('Analyze API returned no review stream');
+      }
 
-      const data = (await response.json()) as GameReviewMove[];
-      if (!Array.isArray(data) || data.length === 0) {
+      // The backend streams one NDJSON line per completed ply; parse complete
+      // lines as they arrive so the progress count moves during the review.
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      const rows: GameReviewMove[] = [];
+      let buffer = '';
+
+      const handleLine = (line: string) => {
+        const trimmed = line.trim();
+        if (!trimmed) {
+          return;
+        }
+        const message = JSON.parse(trimmed) as ReviewStreamMessage;
+        if (message.type === 'meta') {
+          setAnalysisProgress({ done: 0, total: message.total });
+        } else if (message.type === 'row') {
+          rows.push(message.row);
+          setAnalysisProgress((current) => ({
+            done: rows.length,
+            total: current?.total ?? null,
+          }));
+        } else if (message.type === 'error') {
+          throw new Error(
+            message.detail ?? 'The analysis service could not process this game.',
+          );
+        }
+      };
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        let newline = buffer.indexOf('\n');
+        while (newline >= 0) {
+          handleLine(buffer.slice(0, newline));
+          buffer = buffer.slice(newline + 1);
+          newline = buffer.indexOf('\n');
+        }
+      }
+      buffer += decoder.decode();
+      handleLine(buffer);
+
+      if (rows.length === 0) {
         throw new Error('Analyze API returned no review data');
       }
 
-      setGameData(data);
+      setGameData(rows);
       setAnalysisState('ready');
     } catch (error) {
       const detail = error instanceof Error ? error.message : 'Please check the format and try again.';
       setErrorMessage(`Failed to analyze PGN. ${detail}`);
       setAnalysisState('error');
+    } finally {
+      setAnalysisProgress(null);
     }
   }
 
@@ -206,24 +292,59 @@ export default function ReviewPage() {
     }
   }
 
-  async function handleExploreMove(from: string, to: string) {
+  async function handleExploreMove(
+    from: string,
+    to: string,
+    promotion?: string,
+  ) {
     if (!exploreMode || !tree || !activeNodeId || !view) {
       return;
     }
-    const uci = exploreMoveUci(view.position, from, to);
-    if (!uci) {
+    const resolved = resolveExploreMove(view.position, from, to, promotion);
+    if (!resolved) {
       return;
     }
 
-    setExplorePending(true);
+    // Optimistic, chess.com-style feedback: append the move immediately with
+    // a provisional "Good" label so the piece and its badge land in the same
+    // frame; the engine's real label replaces it when the live result
+    // arrives (which is why the badge can visibly change afterwards).
+    const parentId = activeNodeId;
+    const optimisticRow: GameReviewMove = {
+      fen: resolved.fen,
+      san: resolved.san,
+      color: resolved.color,
+      classification: 'good',
+      cp_loss: 0,
+      ep_loss: 0,
+      eval_cp: view.currentMove?.eval_cp ?? 0,
+      eval_mate: null,
+      fen_before: view.position,
+      raw_ep_loss: 0,
+      second_best_cp: null,
+      second_best_move_san: null,
+      second_best_move_uci: null,
+      second_best_pv_uci: [],
+    };
+    const { tree: optimisticTree, nodeId } = addVariation(
+      tree,
+      parentId,
+      optimisticRow,
+      { status: 'analyzing' },
+    );
+    const createdOptimisticNode =
+      optimisticTree.nodes[nodeId]?.move === optimisticRow;
+    setTree(optimisticTree);
+    setActiveNodeId(nodeId);
     setExploreError(null);
+
     try {
       const response = await fetch('/api/review/live', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           fen: view.position,
-          move: uci,
+          move: resolved.uci,
           player_rating: null,
         }),
       });
@@ -261,11 +382,12 @@ export default function ReviewPage() {
       const lines = [data.best, data.second_best]
         .filter((line): line is SandboxLine => Boolean(line))
         .map(toSuggestionLine);
-      const { tree: branched, nodeId } = addVariation(
-        tree,
-        activeNodeId,
-        row,
-        {
+      setTree((current) => {
+        if (!current) {
+          return current;
+        }
+        const withMove = setNodeMove(current, nodeId, row);
+        return setNodeAnalysis(withMove, nodeId, {
           suggestionsBefore: lines,
           status: 'ready',
           mode: data.mode,
@@ -273,16 +395,20 @@ export default function ReviewPage() {
           evalMate: data.eval_mate ?? null,
           classification: data.classification,
           bestMoveUci: data.best?.move_uci ?? null,
-        },
-      );
-      setTree(branched);
-      setActiveNodeId(nodeId);
+        });
+      });
     } catch (error) {
       const detail =
         error instanceof Error ? error.message : 'Could not analyze that move.';
       setExploreError(detail);
-    } finally {
-      setExplorePending(false);
+      // Roll the optimistic node back when nothing branched from it yet;
+      // a re-played existing variation keeps its last good label instead.
+      if (createdOptimisticNode) {
+        setTree((current) =>
+          current ? removeLeafNode(current, nodeId) : current,
+        );
+        setActiveNodeId((current) => (current === nodeId ? parentId : current));
+      }
     }
   }
 
@@ -327,6 +453,7 @@ export default function ReviewPage() {
             isAnalyzing={analysisState === 'analyzing'}
             errorMessage={analysisState === 'error' ? errorMessage : null}
             disabled={!hasGame && analysisState === 'analyzing'}
+            progress={analysisProgress}
           />
         }
         boardPanel={
@@ -337,8 +464,10 @@ export default function ReviewPage() {
             isAnalyzing={analysisState === 'analyzing'}
             hasGame={hasGame}
             showBestMove={showBestMove}
-            allowDragging={sandboxEnabled && exploreMode}
+            allowDragging={exploreMode}
             onExploreMove={handleExploreMove}
+            exploreMode={exploreMode}
+            onToggleExplore={() => setExploreMode((value) => !value)}
           />
         }
         analysisPanel={
@@ -356,22 +485,12 @@ export default function ReviewPage() {
             bestMoveSan={bestMoveSan}
             showBestMove={showBestMove}
             onToggleBestMove={() => setShowBestMove((value) => !value)}
-            moveList={
-              tree && activeNodeId ? (
-                <MoveList
-                  tree={tree}
-                  activeNodeId={activeNodeId}
-                  onNodeSelect={setActiveNodeId}
-                />
-              ) : undefined
-            }
             sandboxEnabled={sandboxEnabled}
             exploreMode={exploreMode}
             onToggleExplore={() => setExploreMode((value) => !value)}
             suggestionsEnabled={suggestionsEnabled}
             onToggleSuggestions={() => setSuggestionsEnabled((value) => !value)}
             suggestions={suggestions}
-            explorePending={explorePending}
             exploreError={exploreError}
           />
         }

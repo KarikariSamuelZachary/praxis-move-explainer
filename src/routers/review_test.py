@@ -17,6 +17,7 @@ No database and no engines are touched.
 Run with: cd src && ../venv/bin/python routers/review_test.py
 Requires: INTERNAL_SECRET from root .env.
 """
+import json
 import os
 import sys
 from unittest.mock import patch
@@ -95,6 +96,8 @@ def test_missing_header_rejects_before_the_user_limiter():
 def test_valid_secret_and_header_pass_the_auth_gate():
     import routers.review as review_module
 
+    review_module._REVIEW_CACHE.clear()
+
     class _StubAnalyzer:
         def __init__(self, **kwargs):
             pass
@@ -149,8 +152,10 @@ def _post_with_stub(pgn: str, clerk_id: str = TEST_CLERK_ID):
     from core import rate_limit
 
     # The suite shares one in-process limiter; reset it so each stubbed POST
-    # measures routing, not throttling.
+    # measures routing, not throttling. The review cache is process-local
+    # too, so clear it or a previous stub's rows would be replayed.
     rate_limit._memory_counters.clear()
+    review_module._REVIEW_CACHE.clear()
 
     state = {"called": False, "include_explanations": None, "include_extras": None}
 
@@ -223,9 +228,12 @@ def test_live_prewarm_warms_the_position():
                 score_cp=0.0, best_move_uci="", best_move_san="(none)"
             )
 
-    saved = (review_module.GameAnalyzer, review_module.get_review_stockfish)
+    saved = (
+        review_module.GameAnalyzer,
+        review_module.get_review_live_stockfish,
+    )
     review_module.GameAnalyzer = _StubAnalyzer
-    review_module.get_review_stockfish = lambda *args, **kwargs: object()
+    review_module.get_review_live_stockfish = lambda *args, **kwargs: object()
     headers = {
         "X-Internal-Secret": _secret(),
         "X-Clerk-User-Id": TEST_CLERK_ID,
@@ -254,7 +262,10 @@ def test_live_prewarm_warms_the_position():
                 headers=headers,
             )
     finally:
-        (review_module.GameAnalyzer, review_module.get_review_stockfish) = saved
+        (
+            review_module.GameAnalyzer,
+            review_module.get_review_live_stockfish,
+        ) = saved
 
     assert first.status_code == 200, first.text
     assert first.json()["cached"] is False, first.text
@@ -289,10 +300,10 @@ def test_prewarm_bursts_cannot_429_live_labels():
     stub = _stub_live([])
     saved = (
         review_module.GameAnalyzer,
-        review_module.get_review_stockfish,
+        review_module.get_review_live_stockfish,
     )
     review_module.GameAnalyzer = stub
-    review_module.get_review_stockfish = lambda *args, **kwargs: object()
+    review_module.get_review_live_stockfish = lambda *args, **kwargs: object()
     user = "review-prewarm-isolation-user"
     try:
         with patch.dict(
@@ -321,7 +332,7 @@ def test_prewarm_bursts_cannot_429_live_labels():
     finally:
         (
             review_module.GameAnalyzer,
-            review_module.get_review_stockfish,
+            review_module.get_review_live_stockfish,
         ) = saved
         rate_limit._memory_counters.clear()
 
@@ -392,6 +403,8 @@ def test_extras_are_flag_gated():
     # unrelated to this test.
     import routers.review as review_module
     from schemas.review_schemas import ReviewRequest
+
+    review_module._REVIEW_CACHE.clear()
 
     row_with_extras = dict(
         _STUB_ROW,
@@ -566,10 +579,10 @@ def test_live_returns_label_lines_and_caches():
     stub = _stub_live(calls)
     saved = (
         review_module.GameAnalyzer,
-        review_module.get_review_stockfish,
+        review_module.get_review_live_stockfish,
     )
     review_module.GameAnalyzer = stub
-    review_module.get_review_stockfish = lambda *args, **kwargs: object()
+    review_module.get_review_live_stockfish = lambda *args, **kwargs: object()
     try:
         with patch.dict(
             os.environ,
@@ -593,7 +606,7 @@ def test_live_returns_label_lines_and_caches():
     finally:
         (
             review_module.GameAnalyzer,
-            review_module.get_review_stockfish,
+            review_module.get_review_live_stockfish,
         ) = saved
 
     assert first.status_code == 200, first.text
@@ -655,9 +668,12 @@ def test_live_replays_the_move_path():
             }
             return row, eval_before, 0.02
 
-    saved = (review_module.GameAnalyzer, review_module.get_review_stockfish)
+    saved = (
+        review_module.GameAnalyzer,
+        review_module.get_review_live_stockfish,
+    )
     review_module.GameAnalyzer = _StubAnalyzer
-    review_module.get_review_stockfish = lambda *args, **kwargs: object()
+    review_module.get_review_live_stockfish = lambda *args, **kwargs: object()
     try:
         with patch.dict(
             os.environ,
@@ -677,7 +693,10 @@ def test_live_replays_the_move_path():
                 },
             )
     finally:
-        (review_module.GameAnalyzer, review_module.get_review_stockfish) = saved
+        (
+            review_module.GameAnalyzer,
+            review_module.get_review_live_stockfish,
+        ) = saved
 
     assert response.status_code == 200, response.text
     body = response.json()
@@ -750,13 +769,13 @@ def test_live_terminal_checkmate_and_stalemate():
     fake_engine = _FakeEngine()
     saved = (
         review_module.GameAnalyzer,
-        review_module.get_review_stockfish,
-        review_module.get_review_engine_name,
+        review_module.get_review_live_stockfish,
+        review_module.get_review_live_engine_name,
     )
     # Real GameAnalyzer, fake engine: terminal synthesis must skip the
     # after-move evaluation for checkmate and stalemate.
-    review_module.get_review_stockfish = lambda *args, **kwargs: fake_engine
-    review_module.get_review_engine_name = lambda: "fake"
+    review_module.get_review_live_stockfish = lambda *args, **kwargs: fake_engine
+    review_module.get_review_live_engine_name = lambda: "fake"
     headers = {
         "X-Internal-Secret": _secret(),
         "X-Clerk-User-Id": TEST_CLERK_ID,
@@ -789,8 +808,8 @@ def test_live_terminal_checkmate_and_stalemate():
     finally:
         (
             review_module.GameAnalyzer,
-            review_module.get_review_stockfish,
-            review_module.get_review_engine_name,
+            review_module.get_review_live_stockfish,
+            review_module.get_review_live_engine_name,
         ) = saved
 
     assert mate.status_code == 200, mate.text
@@ -844,8 +863,8 @@ def test_live_nested_variation_matches_fresh_full_path():
                 second_best_pv_uci=[rest[0].uci()] if rest else [],
             )
 
-    saved = (review_module.get_review_stockfish,)
-    review_module.get_review_stockfish = lambda *args, **kwargs: _FakeEngine()
+    saved = (review_module.get_review_live_stockfish,)
+    review_module.get_review_live_stockfish = lambda *args, **kwargs: _FakeEngine()
     headers = {
         "X-Internal-Secret": _secret(),
         "X-Clerk-User-Id": TEST_CLERK_ID,
@@ -867,7 +886,7 @@ def test_live_nested_variation_matches_fresh_full_path():
                 headers=headers,
             )
     finally:
-        (review_module.get_review_stockfish,) = saved
+        (review_module.get_review_live_stockfish,) = saved
 
     assert first.status_code == 200, first.text
     assert second.status_code == 200, second.text
@@ -914,6 +933,213 @@ def test_capabilities_reports_flag_and_mode():
     print(f"  [PASS] capabilities -> sandbox_enabled=False, mode={mode}")
 
 
+def test_review_stream_emits_ndjson_rows():
+    import routers.review as review_module
+
+    review_module._REVIEW_CACHE.clear()
+
+    move_row = {
+        "fen": "after-e4",
+        "san": "e4",
+        "color": "white",
+        "classification": "best",
+        "cp_loss": 0,
+        "ep_loss": 0.0,
+        "eval_cp": 12.0,
+        "eval_mate": None,
+        "best_move_san": "e4",
+        "best_move_uci": "e2e4",
+    }
+
+    class _StreamAnalyzer:
+        def __init__(self, **kwargs):
+            pass
+
+        def iter_full_game(
+            self,
+            pgn,
+            target_color="both",
+            include_explanations=True,
+            include_extras=False,
+        ):
+            assert include_explanations is False
+            yield dict(_STUB_ROW)
+            yield dict(move_row)
+
+    saved = (
+        review_module.GameAnalyzer,
+        review_module.get_review_stockfish,
+        review_module._build_explainer,
+    )
+    review_module.GameAnalyzer = _StreamAnalyzer
+    review_module.get_review_stockfish = lambda *args, **kwargs: object()
+    review_module._build_explainer = lambda: None
+    try:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("REVIEW_DETERMINISTIC", None)
+            response = _client().post(
+                "/api/review/stream",
+                json={"pgn": PGN},
+                headers={
+                    "X-Internal-Secret": _secret(),
+                    "X-Clerk-User-Id": TEST_CLERK_ID,
+                },
+            )
+    finally:
+        (
+            review_module.GameAnalyzer,
+            review_module.get_review_stockfish,
+            review_module._build_explainer,
+        ) = saved
+
+    assert response.status_code == 200, response.text
+    assert response.headers["content-type"].startswith("application/x-ndjson"), (
+        response.headers
+    )
+    lines = [json.loads(line) for line in response.text.strip().splitlines()]
+    assert lines[0]["type"] == "meta", lines[0]
+    assert lines[0]["total"] == 5, lines[0]
+    rows = [line["row"] for line in lines if line["type"] == "row"]
+    assert [row["san"] for row in rows] == ["Start", "e4"], rows
+    assert lines[-1]["type"] == "done", lines[-1]
+    print("  [PASS] stream: meta + rows + done over NDJSON")
+
+
+def test_review_stream_reports_mid_stream_error():
+    import routers.review as review_module
+
+    review_module._REVIEW_CACHE.clear()
+
+    class _FailingAnalyzer:
+        def __init__(self, **kwargs):
+            pass
+
+        def iter_full_game(self, *args, **kwargs):
+            yield dict(_STUB_ROW)
+            raise RuntimeError("engine died")
+
+    saved = (
+        review_module.GameAnalyzer,
+        review_module.get_review_stockfish,
+        review_module._build_explainer,
+        review_module.reset_review_stockfish,
+    )
+    resets = {"n": 0}
+    review_module.GameAnalyzer = _FailingAnalyzer
+    review_module.get_review_stockfish = lambda *args, **kwargs: object()
+    review_module._build_explainer = lambda: None
+    review_module.reset_review_stockfish = lambda: resets.__setitem__(
+        "n", resets["n"] + 1
+    )
+    try:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("REVIEW_DETERMINISTIC", None)
+            response = _client().post(
+                "/api/review/stream",
+                json={"pgn": PGN},
+                headers={
+                    "X-Internal-Secret": _secret(),
+                    "X-Clerk-User-Id": TEST_CLERK_ID,
+                },
+            )
+    finally:
+        (
+            review_module.GameAnalyzer,
+            review_module.get_review_stockfish,
+            review_module._build_explainer,
+            review_module.reset_review_stockfish,
+        ) = saved
+
+    assert response.status_code == 200, response.text
+    lines = [json.loads(line) for line in response.text.strip().splitlines()]
+    assert [line["type"] for line in lines] == ["meta", "row", "error"], lines
+    assert "Failed to analyze PGN" in lines[-1]["detail"], lines[-1]
+    assert resets["n"] == 1, resets
+    print("  [PASS] stream: engine failure after 200 -> error line + engine reset")
+
+
+def test_review_cache_reuses_rows_and_stream():
+    import routers.review as review_module
+    from core import rate_limit
+
+    review_module._REVIEW_CACHE.clear()
+    rate_limit._memory_counters.clear()
+    calls = {"n": 0}
+
+    move_row = {
+        "fen": "after-e4",
+        "san": "e4",
+        "color": "white",
+        "classification": "best",
+        "cp_loss": 0,
+        "ep_loss": 0.0,
+        "eval_cp": 12.0,
+        "eval_mate": None,
+        "best_move_san": "e4",
+        "best_move_uci": "e2e4",
+    }
+
+    class _CountingAnalyzer:
+        def __init__(self, **kwargs):
+            pass
+
+        def analyze_full_game(self, pgn, target_color="both", **kwargs):
+            calls["n"] += 1
+            return [dict(_STUB_ROW), dict(move_row)]
+
+        def iter_full_game(self, *args, **kwargs):
+            raise AssertionError("stream must serve the cache, not the engine")
+
+    saved = (
+        review_module.GameAnalyzer,
+        review_module.get_review_stockfish,
+        review_module._build_explainer,
+    )
+    review_module.GameAnalyzer = _CountingAnalyzer
+    review_module.get_review_stockfish = lambda *args, **kwargs: object()
+    review_module._build_explainer = lambda: None
+    headers = {
+        "X-Internal-Secret": _secret(),
+        "X-Clerk-User-Id": TEST_CLERK_ID,
+    }
+    try:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("REVIEW_DETERMINISTIC", None)
+            first = _client().post(
+                "/api/review", json={"pgn": PGN}, headers=headers
+            )
+            second = _client().post(
+                "/api/review", json={"pgn": PGN}, headers=headers
+            )
+            stream = _client().post(
+                "/api/review/stream", json={"pgn": PGN}, headers=headers
+            )
+    finally:
+        (
+            review_module.GameAnalyzer,
+            review_module.get_review_stockfish,
+            review_module._build_explainer,
+        ) = saved
+        rate_limit._memory_counters.clear()
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert first.json() == second.json(), (first.json(), second.json())
+    assert calls["n"] == 1, f"cache miss re-ran the engine ({calls['n']} calls)"
+
+    lines = [json.loads(line) for line in stream.text.strip().splitlines()]
+    assert [line["type"] for line in lines] == ["meta", "row", "row", "done"], (
+        lines
+    )
+    assert lines[0]["total"] == 2, lines[0]
+    assert [line["row"]["san"] for line in lines if line["type"] == "row"] == [
+        "Start",
+        "e4",
+    ]
+    assert calls["n"] == 1, "stream re-ran the engine instead of the cache"
+    print("  [PASS] review cache: repeat batch + stream served without the engine")
+
+
 def run() -> int:
     print("=== Running review route auth tests ===")
     tests = [
@@ -937,6 +1163,9 @@ def run() -> int:
         test_live_terminal_checkmate_and_stalemate,
         test_live_nested_variation_matches_fresh_full_path,
         test_review_never_generates_explanations,
+        test_review_stream_emits_ndjson_rows,
+        test_review_stream_reports_mid_stream_error,
+        test_review_cache_reuses_rows_and_stream,
         test_capabilities_reports_flag_and_mode,
     ]
     failures = 0

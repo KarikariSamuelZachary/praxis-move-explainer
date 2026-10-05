@@ -27,7 +27,7 @@ from fastapi.testclient import TestClient  # noqa: E402
 
 import main as app_module  # noqa: E402
 import routers.review as review_module  # noqa: E402
-from core import rate_limit  # noqa: E402
+from core import database, rate_limit  # noqa: E402
 from core.analysis_mode import (  # noqa: E402
     REVIEW_MULTIPV,
     current_mode_string,
@@ -71,6 +71,14 @@ def main():
     args = parse_args()
     if not review_module.review_deterministic_enabled():
         raise SystemExit("REVIEW_DETERMINISTIC must be on for this check")
+    # TestClient does not run the app's startup event, so the pool must be
+    # initialized here or every book lookup silently fails soft to non-book
+    # and the parity check stops exercising Book labels.
+    database.init_db()
+    # Force the book load BEFORE the mode string is computed: the mode carries
+    # the book revision, and a first lookup mid-run would flip it from
+    # "unloaded" to the real hash and make every expected_mode stale (409).
+    is_book_move(chess.Board(), chess.Move.from_uci("e2e4"))
 
     games = []
     with open(args.pgn, encoding="utf-8", errors="replace") as fh:

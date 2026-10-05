@@ -27,6 +27,7 @@ from engines.maia_engine import close_maia3, start_maia3, verify_maia3_patch
 from engines.stockfish_engine import (
     STOCKFISH_CANDIDATE_PATHS,
     close_endgame_stockfish,
+    close_review_live_stockfish,
     close_review_stockfish,
     close_stockfish_singleton,
     get_review_engine_name,
@@ -182,6 +183,12 @@ def _warm_engines() -> None:
     except Exception as exc:  # noqa: BLE001
         log.exception("Review Stockfish singleton failed to start at boot: %s", exc)
 
+    # The sandbox /review/live engine is intentionally NOT started here: it
+    # is only needed after a batch review has completed (explore mode) and
+    # starting a fourth Stockfish process would slow every cold boot
+    # (minReplicas=0). get_review_live_stockfish starts it lazily on the
+    # first explore; see the singleton block in engines/stockfish_engine.py.
+
     # Separate full-strength Stockfish singleton for Endgame Trainer opponent
     # replies (tablebase-miss fallback). Own process for failure-domain and
     # latency isolation from review. Non-fatal: get_endgame_stockfish starts
@@ -275,6 +282,7 @@ def shutdown():
     close_maia3()
     close_stockfish_singleton()
     close_review_stockfish()
+    close_review_live_stockfish()
     close_endgame_stockfish()
 
 # --- Routers ---

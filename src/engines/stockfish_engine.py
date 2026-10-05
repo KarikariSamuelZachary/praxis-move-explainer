@@ -592,7 +592,99 @@ def close_review_stockfish() -> None:
     if instance is not None:
         try:
             instance.close()
-        except Exception:  # noqa: BLE001 -- shutdown must never raise
+        except Exception:  # noqa: BLE001 -- shutdown path must never raise
+            pass
+
+
+# --- Long-lived singleton (used by the sandbox /review/live path) -----------
+#
+# The sandbox explores one move at a time and must feel interactive. Sharing
+# the batch review singleton would serialize it behind the review's remaining
+# searches: StockfishEngine._call_lock is taken per analyse() call, so a live
+# request interleaves between positions of a running batch review -- but
+# threading.Lock is not FIFO, and a batch loop that releases and immediately
+# reacquires can starve a waiting live request, and cross-user reviews queue
+# behind each other for the whole game (up to ~40s). A dedicated process with
+# its own lock gives live labels bounded latency regardless of batch load.
+# The trade-off is CPU contention on small replicas (two engines share the
+# vCPU), which is strictly better than a 40s queue. The engine is started
+# lazily on the first explore, after the batch review that precedes any
+# explore session has already paid its own startup.
+#
+# Review and live must run the SAME settings (depth, nodes, MultiPV, fresh
+# token) so labels match, so this singleton reuses review_nodes() and
+# REVIEW_DEPTH exactly like the batch path.
+
+_review_live_stockfish: Optional[StockfishEngine] = None
+_review_live_stockfish_lifecycle_lock = Lock()
+
+
+def start_review_live_stockfish(
+    depth: int = 12, analysis_time: Optional[float] = None
+) -> StockfishEngine:
+    """Start the long-lived Stockfish used by the sandbox live path.
+
+    Mirrors start_review_stockfish (see its docstring); `depth` and
+    `analysis_time` only apply when the subprocess is first created.
+    """
+    global _review_live_stockfish
+    with _review_live_stockfish_lifecycle_lock:
+        if (
+            _review_live_stockfish is not None
+            and _review_live_stockfish.engine is not None
+        ):
+            return _review_live_stockfish
+        if analysis_time is None:
+            analysis_time = _review_time_seconds()
+        instance = StockfishEngine(depth=depth, analysis_time=analysis_time)
+        instance.start()  # raises on failure BEFORE we publish the global
+        _review_live_stockfish = instance
+        return _review_live_stockfish
+
+
+def get_review_live_stockfish(
+    depth: int = 12, analysis_time: Optional[float] = None
+) -> StockfishEngine:
+    """Return the long-lived live/sandbox Stockfish, starting it on first use."""
+    global _review_live_stockfish
+    if _review_live_stockfish is None:
+        return start_review_live_stockfish(depth, analysis_time)
+    return _review_live_stockfish
+
+
+def get_review_live_engine_name() -> str:
+    """Advertised sandbox-engine name without starting the singleton."""
+    return (
+        _review_live_stockfish.name
+        if _review_live_stockfish is not None
+        else "unknown"
+    )
+
+
+def reset_review_live_stockfish() -> None:
+    """Drop the live Stockfish after a failure. Best-effort `quit()`; the next
+    explore request starts a fresh subprocess."""
+    global _review_live_stockfish
+    with _review_live_stockfish_lifecycle_lock:
+        instance = _review_live_stockfish
+        _review_live_stockfish = None
+    if instance is not None:
+        try:
+            instance.close()
+        except Exception:  # noqa: BLE001 -- reset path must never raise
+            pass
+
+
+def close_review_live_stockfish() -> None:
+    """Quit the long-lived live Stockfish (app shutdown). Best-effort."""
+    global _review_live_stockfish
+    with _review_live_stockfish_lifecycle_lock:
+        instance = _review_live_stockfish
+        _review_live_stockfish = None
+    if instance is not None:
+        try:
+            instance.close()
+        except Exception:  # noqa: BLE001 -- shutdown path must never raise
             pass
 
 
@@ -685,5 +777,10 @@ def singleton_status() -> dict:
     return {
         "sparring": _stockfish.name if _stockfish is not None else None,
         "review": _review_stockfish.name if _review_stockfish is not None else None,
+        "review_live": (
+            _review_live_stockfish.name
+            if _review_live_stockfish is not None
+            else None
+        ),
         "endgame": _endgame_stockfish.name if _endgame_stockfish is not None else None,
     }

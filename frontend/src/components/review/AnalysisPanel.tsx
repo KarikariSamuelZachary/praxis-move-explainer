@@ -1,7 +1,5 @@
 'use client';
 
-import { ReactNode } from 'react';
-
 import { SuggestionLine } from '@/app/(app)/review/review-tree';
 import { GameReviewMove } from '@/types';
 
@@ -21,14 +19,12 @@ type AnalysisPanelProps = {
   bestMoveSan: string | null;
   showBestMove: boolean;
   onToggleBestMove: () => void;
-  moveList?: ReactNode;
   sandboxEnabled?: boolean;
   exploreMode?: boolean;
   onToggleExplore?: () => void;
   suggestionsEnabled?: boolean;
   onToggleSuggestions?: () => void;
   suggestions?: SuggestionLine[];
-  explorePending?: boolean;
   exploreError?: string | null;
 };
 
@@ -72,14 +68,12 @@ export default function AnalysisPanel({
   bestMoveSan,
   showBestMove,
   onToggleBestMove,
-  moveList,
   sandboxEnabled = false,
   exploreMode = false,
   onToggleExplore,
   suggestionsEnabled = false,
   onToggleSuggestions,
   suggestions = [],
-  explorePending = false,
   exploreError = null,
 }: AnalysisPanelProps) {
   const classificationStyle = currentMove
@@ -95,8 +89,6 @@ export default function AnalysisPanel({
       <div
         className="wooden-scroll flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto rounded-t-[24px] border border-b-0 border-black/50 p-4 [background-image:linear-gradient(rgba(0,0,0,0.55),rgba(0,0,0,0.55)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]"
       >
-        {moveList}
-
         {sandboxEnabled && (
           <div className="flex items-center gap-2">
             <button
@@ -180,54 +172,46 @@ export default function AnalysisPanel({
             </section>
 
             {exploreMode ? (
-              <section className="rounded-2xl border border-[#10b981]/25 bg-black/30 p-4">
-                <h3 className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#10b981]">
-                  Explore mode
-                </h3>
-                <p className="mt-2 text-xs leading-6 text-white/70">
-                  Drag a piece to try a different move. Variations are labelled
-                  with the same engine settings as the review.
-                </p>
-                {explorePending && (
-                  <p className="mt-2 flex items-center gap-2 text-xs text-white/60">
-                    <span className="h-3 w-3 rounded-full border-2 border-white/30 border-t-white animate-spin" />
-                    Analysing move...
-                  </p>
-                )}
-                {exploreError && (
-                  <p className="mt-2 text-xs leading-5 text-amber-300/90">
-                    {exploreError}
-                  </p>
-                )}
-                {suggestionsEnabled && suggestions.length > 0 && (
-                  <ul className="mt-3 space-y-2">
-                    {suggestions.map((line) => (
-                      <li
-                        key={`${line.moveUci}-${line.pvSan.join('')}`}
-                        className="rounded-xl border border-white/10 bg-black/30 px-3 py-2"
-                      >
-                        <div className="flex items-center justify-between gap-2">
-                          <span className="font-mono text-xs font-semibold text-white">
-                            {line.moveSan ?? line.moveUci}
-                          </span>
-                          <span className="font-mono text-[11px] text-white/60">
-                            {typeof line.evalMate === 'number'
-                              ? `M${Math.abs(line.evalMate)}`
-                              : typeof line.evalCp === 'number'
-                                ? `${line.evalCp >= 0 ? '+' : ''}${(line.evalCp / 100).toFixed(2)}`
-                                : ''}
-                          </span>
-                        </div>
-                        {line.pvSan.length > 1 && (
-                          <p className="mt-1 font-mono text-[11px] leading-5 text-white/60">
-                            {line.pvSan.join(' ')}
-                          </p>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                )}
-              </section>
+              (exploreError ||
+                (suggestionsEnabled && suggestions.length > 0)) && (
+                <section className="rounded-2xl border border-[#10b981]/25 bg-black/30 p-4">
+                  <div className="flex flex-col gap-3">
+                    {exploreError && (
+                      <p className="text-xs leading-5 text-amber-300/90">
+                        {exploreError}
+                      </p>
+                    )}
+                    {suggestionsEnabled && suggestions.length > 0 && (
+                      <ul className="space-y-2">
+                        {suggestions.map((line) => (
+                          <li
+                            key={`${line.moveUci}-${line.pvSan.join('')}`}
+                            className="rounded-xl border border-white/10 bg-black/30 px-3 py-2"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-mono text-xs font-semibold text-white">
+                                {line.moveSan ?? line.moveUci}
+                              </span>
+                              <span className="font-mono text-[11px] text-white/60">
+                                {typeof line.evalMate === 'number'
+                                  ? `M${Math.abs(line.evalMate)}`
+                                  : typeof line.evalCp === 'number'
+                                    ? `${line.evalCp >= 0 ? '+' : ''}${(line.evalCp / 100).toFixed(2)}`
+                                    : ''}
+                              </span>
+                            </div>
+                            {line.pvSan.length > 1 && (
+                              <p className="mt-1 font-mono text-[11px] leading-5 text-white/60">
+                                {line.pvSan.join(' ')}
+                              </p>
+                            )}
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </section>
+              )
             ) : explanation ? (
               <section className="rounded-2xl border border-[#f7e5c6]/20 bg-black/30 p-4">
                 <div className="flex items-center gap-2 text-[#f7e5c6]">

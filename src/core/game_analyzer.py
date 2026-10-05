@@ -718,7 +718,10 @@ class GameAnalyzer:
         delivers_mate = board.is_checkmate()
         # Deterministic mode synthesizes terminal positions instead of asking
         # the engine (which searches insufficient-material boards and cannot
-        # see claimable draws). Flag off keeps engine behavior.
+        # see claimable draws). Flag off keeps engine behavior: the flag-off
+        # equivalence gate pins these rows byte-for-byte, and SF's non-zero
+        # eval on dead-drawn boards (e.g. -1cp in K vs K) is part of that
+        # frozen contract, so terminal synthesis cannot be made unconditional.
         terminal = terminal_state(board) if self.deterministic else None
         if terminal is not None:
             eval_after = terminal.evaluation
@@ -884,39 +887,36 @@ class GameAnalyzer:
         )
         return row, eval_before
 
-    def analyze_full_game(
+    def iter_full_game(
         self,
         pgn_string: str,
         target_color: str = "both",
         include_explanations: bool = True,
         include_extras: bool = False,
-    ) -> List[Dict[str, Any]]:
+    ):
         """
-        Analyze every move in a PGN and return a JSON-ready review list.
+        Analyze every move in a PGN, yielding JSON-ready rows as each engine
+        evaluation completes. The first row is always the synthetic Start row.
 
-        Each entry includes the position, SAN, mover color, classification,
-        cp loss and EP (expected points) loss. Mistakes and blunders include
-        an explanation payload only when `include_explanations` is True.
-        Classification follows Chess.com's Expected Points model (see the
-        module constants) with the mover's PGN Elo header as the rating.
+        The streaming review route consumes this generator so rows reach the
+        client while later plies are still searching; `analyze_full_game` is
+        the list-collecting wrapper for callers that want one response.
         """
         game = self._parse_game(pgn_string)
         board = game.board()
         ratings = self._ratings_from_headers(game)
-        results: List[Dict[str, Any]] = [
-            {
-                "fen": chess.STARTING_FEN,
-                "san": "Start",
-                "color": "white",
-                "classification": "book",
-                "cp_loss": 0,
-                "ep_loss": 0.0,
-                "eval_cp": 0.0,
-                "eval_mate": None,
-                "best_move_san": None,
-                "best_move_uci": None,
-            }
-        ]
+        yield {
+            "fen": chess.STARTING_FEN,
+            "san": "Start",
+            "color": "white",
+            "classification": "book",
+            "cp_loss": 0,
+            "ep_loss": 0.0,
+            "eval_cp": 0.0,
+            "eval_mate": None,
+            "best_move_san": None,
+            "best_move_uci": None,
+        }
 
         # The position after move N is exactly the position before move N+1.
         # Reusing the previous ply's "after" evaluation as this ply's "before"
@@ -983,9 +983,32 @@ class GameAnalyzer:
                 explanation = self.explainer.explain_mistake(mistake)
                 turn_entry["explanation"] = asdict(explanation)
 
-            results.append(turn_entry)
+            yield turn_entry
 
-        return results
+    def analyze_full_game(
+        self,
+        pgn_string: str,
+        target_color: str = "both",
+        include_explanations: bool = True,
+        include_extras: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """
+        Analyze every move in a PGN and return a JSON-ready review list.
+
+        Each entry includes the position, SAN, mover color, classification,
+        cp loss and EP (expected points) loss. Mistakes and blunders include
+        an explanation payload only when `include_explanations` is True.
+        Classification follows Chess.com's Expected Points model (see the
+        module constants) with the mover's PGN Elo header as the rating.
+        """
+        return list(
+            self.iter_full_game(
+                pgn_string,
+                target_color=target_color,
+                include_explanations=include_explanations,
+                include_extras=include_extras,
+            )
+        )
 
     def analyze_pgn(self, pgn_string: str, target_color: str = "both") -> List[AnalyzedMistake]:
         """

@@ -1,3 +1,5 @@
+import hashlib
+import json
 import logging
 import os
 import threading
@@ -8,6 +10,7 @@ from typing import Any, Dict, List, Optional
 import chess.engine
 import chess.pgn
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import StreamingResponse
 
 from core.analysis_mode import (
     REVIEW_MULTIPV,
@@ -21,7 +24,10 @@ from core.game_analyzer import GameAnalyzer, pv_to_san
 from core.rate_limit import limit_by_clerk_user_id, limit_by_ip
 from engines.stockfish_engine import (
     get_review_engine_name,
+    get_review_live_engine_name,
+    get_review_live_stockfish,
     get_review_stockfish,
+    reset_review_live_stockfish,
     reset_review_stockfish,
 )
 from llms.gemini_explainer import GeminiExplainer
@@ -51,6 +57,14 @@ _SANDBOX_LOCK = threading.Lock()
 _SANDBOX_EVAL_CACHE: "OrderedDict[str, Evaluation]" = OrderedDict()
 _SANDBOX_RESULT_CACHE: "OrderedDict[str, Dict[str, Any]]" = OrderedDict()
 
+# Whole-game review cache. Keyed by the mode fingerprint (engine, nodes,
+# MultiPV, classifier, book) plus a content hash of the PGN and the target
+# color, so a repeat import of the same game is instant and a settings change
+# invalidates the entry automatically. Bounded because a review is a few
+# hundred rows; 64 games is ~a few MB. Process-local, like the sandbox caches.
+REVIEW_CACHE_MAX = 64
+_REVIEW_CACHE: "OrderedDict[str, List[Dict[str, Any]]]" = OrderedDict()
+
 
 def _cache_get(cache: "OrderedDict[str, Any]", key: str) -> Optional[Any]:
     with _SANDBOX_LOCK:
@@ -60,12 +74,22 @@ def _cache_get(cache: "OrderedDict[str, Any]", key: str) -> Optional[Any]:
         return value
 
 
-def _cache_put(cache: "OrderedDict[str, Any]", key: str, value: Any) -> None:
+def _cache_put(
+    cache: "OrderedDict[str, Any]",
+    key: str,
+    value: Any,
+    max_size: int = SANDBOX_CACHE_MAX,
+) -> None:
     with _SANDBOX_LOCK:
         cache[key] = value
         cache.move_to_end(key)
-        while len(cache) > SANDBOX_CACHE_MAX:
+        while len(cache) > max_size:
             cache.popitem(last=False)
+
+
+def _review_cache_key(pgn: str, target_color: str, mode: str) -> str:
+    digest = hashlib.sha256(pgn.encode("utf-8")).hexdigest()
+    return f"{mode}|{target_color}|{digest}"
 
 
 def _resolve_sandbox_move(board: chess.Board, raw: str) -> chess.Move:
@@ -161,6 +185,26 @@ def _mainline_plies(pgn: str) -> int:
     return sum(1 for _ in game.mainline_moves())
 
 
+def _enforce_ply_cap(pgn: str) -> None:
+    """Raise the deterministic mode 400 when the game exceeds the ply cap.
+
+    Flag off has no cap (review_max_plies returns None), matching the
+    pre-cap route.
+    """
+    max_plies = review_max_plies()
+    if max_plies is None:
+        return
+    plies = _mainline_plies(pgn)
+    if plies > max_plies:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Game too long for review: {plies} plies "
+                f"(max {max_plies})"
+            ),
+        )
+
+
 def _normalize_review_rows(
     rows: List[Dict[str, Any]],
     include_extras: bool = False,
@@ -230,17 +274,7 @@ def review_game(
     # Deterministic mode is bounded by the 240s proxy ceiling; the old
     # behavior (flag off) has no ply cap, matching the pre-cap route.
     deterministic = review_deterministic_enabled()
-    max_plies = review_max_plies()
-    if max_plies is not None:
-        plies = _mainline_plies(pgn)
-        if plies > max_plies:
-            raise HTTPException(
-                status_code=400,
-                detail=(
-                    f"Game too long for review: {plies} plies "
-                    f"(max {max_plies})"
-                ),
-            )
+    _enforce_ply_cap(pgn)
 
     # Long-lived singleton (booted at startup) instead of a fresh Stockfish
     # subprocess per review -- spawning + UCI handshake cost ~0.3-0.7s before
@@ -259,6 +293,11 @@ def review_game(
             multipv=REVIEW_MULTIPV,
             nodes=review_nodes(),
         )
+        cache_key = _review_cache_key(pgn, body.target_color, mode)
+        cached = _cache_get(_REVIEW_CACHE, cache_key)
+        if cached is not None:
+            return [dict(row) for row in cached]
+
         extras = deterministic
         analyzer = GameAnalyzer(
             engine=engine,
@@ -277,9 +316,11 @@ def review_game(
             include_explanations=False,
             include_extras=extras,
         )
-        return _normalize_review_rows(
+        normalized = _normalize_review_rows(
             review_rows, include_extras=extras, mode=mode
         )
+        _cache_put(_REVIEW_CACHE, cache_key, normalized, REVIEW_CACHE_MAX)
+        return normalized
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (chess.engine.EngineError, RuntimeError) as exc:
@@ -293,6 +334,126 @@ def review_game(
     except Exception as exc:
         log.exception("Failed to analyze PGN")
         raise HTTPException(status_code=500, detail="Failed to analyze PGN") from exc
+
+
+@router.post("/review/stream")
+def review_game_stream(
+    body: ReviewRequest,
+    _clerk_id: str = Depends(require_clerk_user_id),
+    _ip: None = Depends(limit_by_ip(limit=5, window=60)),
+    _user: None = Depends(limit_by_clerk_user_id(limit=5, window=60)),
+):
+    """NDJSON stream of `review_game` rows, one line per completed ply.
+
+    Line shapes:
+      {"type": "meta", "mode": <mode string>, "total": <expected rows>}
+      {"type": "row", "row": <normalized ReviewMoveResponse>}
+      {"type": "done"}
+      {"type": "error", "detail": <message>}   # terminal, after 200
+
+    Engine failures can only occur after the first byte (the status is
+    already committed), so they are reported as an error line and the engine
+    is reset exactly like the batch route. Same auth, rate limits and ply cap
+    as `review_game`; labels are identical because both consume the same
+    GameAnalyzer path.
+    """
+    pgn = body.pgn.strip()
+    if not pgn:
+        raise HTTPException(status_code=400, detail="Missing PGN")
+
+    deterministic = review_deterministic_enabled()
+    _enforce_ply_cap(pgn)
+
+    explainer = _build_explainer()
+    log.info("Selected review explainer: %s", explainer.__class__.__name__)
+
+    try:
+        engine = get_review_stockfish(depth=int(os.getenv("REVIEW_DEPTH", "18")))
+        mode = current_mode_string(
+            engine_name=get_review_engine_name(),
+            multipv=REVIEW_MULTIPV,
+            nodes=review_nodes(),
+        )
+    except (chess.engine.EngineError, RuntimeError) as exc:
+        reset_review_stockfish()
+        log.exception("Game review engine failed")
+        raise HTTPException(status_code=500, detail="Failed to analyze PGN") from exc
+
+    cache_key = _review_cache_key(pgn, body.target_color, mode)
+    cached = _cache_get(_REVIEW_CACHE, cache_key)
+    if cached is not None:
+        rows = [dict(row) for row in cached]
+
+        def generate_cached():
+            yield json.dumps(
+                {"type": "meta", "mode": mode, "total": len(rows)}
+            ) + "\n"
+            for row in rows:
+                yield json.dumps({"type": "row", "row": row}) + "\n"
+            yield json.dumps({"type": "done"}) + "\n"
+
+        return StreamingResponse(
+            generate_cached(), media_type="application/x-ndjson"
+        )
+
+    extras = deterministic
+    analyzer = GameAnalyzer(
+        engine=engine,
+        explainer=explainer,
+        book_lookup=is_book_move,
+        multipv=REVIEW_MULTIPV,
+        deterministic=deterministic,
+    )
+    plies = _mainline_plies(pgn)
+    if body.target_color == "both":
+        total = plies + 1
+    elif body.target_color == "white":
+        total = (plies + 1) // 2 + 1
+    else:
+        total = plies // 2 + 1
+
+    def generate():
+        yield json.dumps({"type": "meta", "mode": mode, "total": total}) + "\n"
+        collected: List[Dict[str, Any]] = []
+        try:
+            for row in analyzer.iter_full_game(
+                pgn,
+                target_color=body.target_color,
+                include_explanations=False,
+                include_extras=extras,
+            ):
+                normalized = _normalize_review_rows(
+                    [row], include_extras=extras, mode=mode
+                )[0]
+                collected.append(normalized)
+                yield json.dumps({"type": "row", "row": normalized}) + "\n"
+        except ValueError as exc:
+            yield json.dumps({"type": "error", "detail": str(exc)}) + "\n"
+            return
+        except (chess.engine.EngineError, RuntimeError) as exc:
+            reset_review_stockfish()
+            log.exception("Game review stream engine failed")
+            yield (
+                json.dumps(
+                    {"type": "error", "detail": "Failed to analyze PGN"}
+                )
+                + "\n"
+            )
+            return
+        except Exception:  # noqa: BLE001 -- stream already committed a 200
+            reset_review_stockfish()
+            log.exception("Failed to analyze PGN (stream)")
+            yield (
+                json.dumps(
+                    {"type": "error", "detail": "Failed to analyze PGN"}
+                )
+                + "\n"
+            )
+            return
+        _cache_put(_REVIEW_CACHE, cache_key, collected, REVIEW_CACHE_MAX)
+        yield json.dumps({"type": "done"}) + "\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
 
 
 @router.post("/review/live/prewarm", response_model=SandboxPrewarmResponse)
@@ -312,14 +473,16 @@ def review_live_prewarm(
         raise HTTPException(status_code=403, detail="Sandbox is disabled")
 
     try:
-        engine = get_review_stockfish(depth=int(os.getenv("REVIEW_DEPTH", "18")))
+        engine = get_review_live_stockfish(
+            depth=int(os.getenv("REVIEW_DEPTH", "18"))
+        )
     except (chess.engine.EngineError, RuntimeError) as exc:
-        reset_review_stockfish()
+        reset_review_live_stockfish()
         log.exception("Sandbox prewarm engine failed to start")
         raise HTTPException(status_code=500, detail="Failed to analyze move") from exc
 
     mode = current_mode_string(
-        engine_name=get_review_engine_name(),
+        engine_name=get_review_live_engine_name(),
         multipv=REVIEW_MULTIPV,
         nodes=review_nodes(),
     )
@@ -357,7 +520,7 @@ def review_live_prewarm(
             analyzer.evaluate_position(board),
         )
     except (chess.engine.EngineError, RuntimeError) as exc:
-        reset_review_stockfish()
+        reset_review_live_stockfish()
         log.exception("Sandbox prewarm engine failed")
         raise HTTPException(status_code=500, detail="Failed to analyze move") from exc
     return SandboxPrewarmResponse(fen=board.fen(), mode=mode, cached=False)
@@ -384,16 +547,18 @@ def review_live(
         raise HTTPException(status_code=403, detail="Sandbox is disabled")
 
     try:
-        engine = get_review_stockfish(depth=int(os.getenv("REVIEW_DEPTH", "18")))
+        engine = get_review_live_stockfish(
+            depth=int(os.getenv("REVIEW_DEPTH", "18"))
+        )
     except (chess.engine.EngineError, RuntimeError) as exc:
-        reset_review_stockfish()
+        reset_review_live_stockfish()
         log.exception("Sandbox live engine failed to start")
         raise HTTPException(status_code=500, detail="Failed to analyze move") from exc
 
     # The mode string is computed after the engine is up, so the first
     # request caches under the real engine name instead of "unknown".
     mode = current_mode_string(
-        engine_name=get_review_engine_name(),
+        engine_name=get_review_live_engine_name(),
         multipv=REVIEW_MULTIPV,
         nodes=review_nodes(),
     )
@@ -490,7 +655,7 @@ def review_live(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except (chess.engine.EngineError, RuntimeError) as exc:
-        reset_review_stockfish()
+        reset_review_live_stockfish()
         log.exception("Sandbox live engine failed")
         raise HTTPException(status_code=500, detail="Failed to analyze move") from exc
 

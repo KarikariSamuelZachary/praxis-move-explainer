@@ -30,6 +30,7 @@ type ImportPanelProps = {
   isAnalyzing: boolean;
   errorMessage: string | null;
   disabled?: boolean;
+  progress?: { done: number; total: number | null } | null;
 };
 
 const SOURCE_TABS: { key: ImportSource; label: string }[] = [
@@ -59,6 +60,7 @@ export default function ImportPanel({
   isAnalyzing,
   errorMessage,
   disabled,
+  progress,
 }: ImportPanelProps) {
   const inputId = useId();
   const [fileName, setFileName] = useState<string | null>(null);
@@ -191,7 +193,13 @@ export default function ImportPanel({
           {isAnalyzing ? (
             <>
               <span className="h-4 w-4 rounded-full border-2 border-[#f0e0c0]/40 border-t-[#f0e0c0] animate-spin" />
-              <span>Analyzing...</span>
+              <span>
+                {progress
+                  ? progress.total
+                    ? `Analyzing ${progress.done}/${progress.total}...`
+                    : `Analyzing ${progress.done}...`
+                  : 'Analyzing...'}
+              </span>
             </>
           ) : (
             <>

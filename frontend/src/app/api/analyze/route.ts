@@ -208,7 +208,16 @@ export async function POST(request: NextRequest) {
     }
 
     const { backendApiUrl, internalSecret } = getBackendConfig();
-    const backendUrl = new URL('/api/review', backendApiUrl);
+    // NDJSON consumers get the streaming backend route; both return the same
+    // rows with the same labels, only the delivery differs. The response body
+    // is piped through untouched below, so streaming survives the proxy when
+    // neither Next nor the ingress buffers the response.
+    const wantsStream =
+      request.headers.get('accept')?.includes('application/x-ndjson') ?? false;
+    const backendUrl = new URL(
+      wantsStream ? '/api/review/stream' : '/api/review',
+      backendApiUrl
+    );
 
     const response = await fetch(backendUrl, {
       method: 'POST',
