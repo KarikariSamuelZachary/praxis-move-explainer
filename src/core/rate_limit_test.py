@@ -12,9 +12,13 @@ Covers:
      unset/unknown values use the in-process backend and never touch
      get_redis.
 
-  C. DEPENDENCY KEYS: limit_by_clerk_user_id builds the documented
-     "rate_limit:import:<route>:<user>" key and raises 429 through
-     HTTPException; limit_by_ip keys on the forwarded client IP.
+C. DEPENDENCY KEYS: limit_by_clerk_user_id builds the documented
+   "rate_limit:import:<route>:<user>" key and raises 429 through
+   HTTPException; limit_by_ip keys on the forwarded client IP scoped per
+   route, so one route's budget cannot block another's.
+
+D. ROUTE ISOLATION: exhausting the IP budget on one path leaves a
+   different path from the same IP untouched.
 
 Run with: cd src && ../venv/bin/python core/rate_limit_test.py
 """
@@ -184,7 +188,10 @@ def test_dependency_keys():
             raise AssertionError("second IP call must raise")
         except HTTPException as exc:
             assert exc.status_code == 429, exc
-        assert "rate_limit:review:198.51.100.9" in rate_limit._memory_counters
+        expected_ip = "rate_limit:review:/api/endgames/move:198.51.100.9"
+        assert expected_ip in rate_limit._memory_counters, (
+            rate_limit._memory_counters
+        )
     finally:
         rate_limit.get_redis = original_get_redis
         rate_limit._memory_counters.clear()
@@ -192,11 +199,47 @@ def test_dependency_keys():
     print("  dependencies: key shape and 429 behavior match the old limiter")
 
 
+def test_ip_limiter_is_scoped_per_route():
+    previous = _with_backend(None)
+    rate_limit._memory_counters.clear()
+    try:
+        check = rate_limit.limit_by_ip(limit=1, window=60)
+        prewarm = _request(
+            {"X-Forwarded-For": "198.51.100.9"},
+            path="/api/review/live/prewarm",
+        )
+        live = _request(
+            {"X-Forwarded-For": "198.51.100.9"},
+            path="/api/review/live",
+        )
+        check(prewarm)
+        try:
+            check(prewarm)
+            raise AssertionError("second prewarm call must raise")
+        except HTTPException as exc:
+            assert exc.status_code == 429, exc
+        # Same IP, different route: the live label budget is untouched.
+        check(live)
+        assert (
+            "rate_limit:review:/api/review/live/prewarm:198.51.100.9"
+            in rate_limit._memory_counters
+        )
+        assert (
+            "rate_limit:review:/api/review/live:198.51.100.9"
+            in rate_limit._memory_counters
+        )
+    finally:
+        rate_limit._memory_counters.clear()
+        _restore_backend(previous)
+    print("  isolation: one route's IP budget cannot block another route")
+
+
 def main():
     test_memory_window()
     test_memory_rollover_and_sweep()
     test_backend_dispatch()
     test_dependency_keys()
+    test_ip_limiter_is_scoped_per_route()
     print("all rate limiter checks passed")
 
 

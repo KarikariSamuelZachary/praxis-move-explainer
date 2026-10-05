@@ -264,6 +264,74 @@ def test_live_prewarm_warms_the_position():
     print("  [PASS] live prewarm caches the position (login required too)")
 
 
+def test_prewarm_flag_off_is_403_with_login():
+    response = _client().post(
+        "/api/review/live/prewarm",
+        json={"moves": ["e4"]},
+        headers={
+            "X-Internal-Secret": _secret(),
+            "X-Clerk-User-Id": TEST_CLERK_ID,
+        },
+    )
+    assert response.status_code == 403, response.text
+    assert "disabled" in response.json()["detail"], response.text
+    print("  [PASS] prewarm: login required; 403 when the flag is off")
+
+
+def test_prewarm_bursts_cannot_429_live_labels():
+    import routers.review as review_module
+
+    from core import rate_limit
+
+    # The shared TestClient presents one IP for every test, so start from a
+    # clean budget; the finally block restores that for later tests too.
+    rate_limit._memory_counters.clear()
+    stub = _stub_live([])
+    saved = (
+        review_module.GameAnalyzer,
+        review_module.get_review_stockfish,
+    )
+    review_module.GameAnalyzer = stub
+    review_module.get_review_stockfish = lambda *args, **kwargs: object()
+    user = "review-prewarm-isolation-user"
+    try:
+        with patch.dict(
+            os.environ,
+            {"REVIEW_DETERMINISTIC": "1", "REVIEW_NODES": "150000"},
+            clear=False,
+        ):
+            client = _client()
+            headers = {
+                "X-Internal-Secret": _secret(),
+                "X-Clerk-User-Id": user,
+            }
+            statuses = [
+                client.post(
+                    "/api/review/live/prewarm",
+                    json={"moves": ["e4", "e5"]},
+                    headers=headers,
+                ).status_code
+                for _ in range(31)
+            ]
+            live = client.post(
+                "/api/review/live",
+                json={"moves": ["e4", "e5"], "move": "Nf3"},
+                headers=headers,
+            )
+    finally:
+        (
+            review_module.GameAnalyzer,
+            review_module.get_review_stockfish,
+        ) = saved
+        rate_limit._memory_counters.clear()
+
+    assert statuses[:30] == [200] * 30, statuses
+    assert statuses[30] == 429, statuses
+    assert live.status_code == 200, live.text
+    assert live.json()["classification"] == "best", live.text
+    print("  [PASS] 31 prewarms: own IP budget 429s, live labels unaffected")
+
+
 def test_deterministic_cap_placeholder_without_container_nps():
     with patch.dict(
         os.environ,
@@ -864,6 +932,8 @@ def run() -> int:
         test_live_rejects_stale_mode,
         test_live_rejects_fen_only_requests,
         test_live_prewarm_warms_the_position,
+        test_prewarm_flag_off_is_403_with_login,
+        test_prewarm_bursts_cannot_429_live_labels,
         test_live_terminal_checkmate_and_stalemate,
         test_live_nested_variation_matches_fresh_full_path,
         test_review_never_generates_explanations,

@@ -141,9 +141,16 @@ def limit_by_ip(limit: int = 5, window: int = 60):
 
     Coarse abuse guard used alongside limit_by_clerk_user_id on routes
     reached via the Next.js proxy, which now forwards X-Clerk-User-Id.
+
+    The counter is scoped per route (route template, not raw path), like
+    limit_by_clerk_user_id: /api/review/live/prewarm fires on every explore
+    selection change, and a shared IP key would let those background calls
+    burn the budget that real /api/review/live label requests draw from.
     """
     def _check(request: Request) -> None:
-        key = f"rate_limit:review:{get_client_ip(request)}"
+        route = request.scope.get("route")
+        scope = getattr(route, "path", None) or request.url.path
+        key = f"rate_limit:review:{scope}:{get_client_ip(request)}"
         if is_over_limit(key, limit, window):
             raise HTTPException(
                 status_code=429,
