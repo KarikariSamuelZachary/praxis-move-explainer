@@ -23,6 +23,17 @@ class ReviewRequest(BaseModel):
     target_color: TargetColor = "both"
 
 
+class SandboxPrewarmRequest(BaseModel):
+    moves: List[str] = []
+    expected_mode: Optional[str] = None
+
+
+class SandboxPrewarmResponse(BaseModel):
+    fen: str
+    mode: str
+    cached: bool = False
+
+
 class SandboxMoveRequest(BaseModel):
     move: str
     # Path from the game start (UCI or SAN). Preferred: replaying the path
