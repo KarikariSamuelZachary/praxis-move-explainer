@@ -25,6 +25,7 @@ import {
   buildMainlineTree,
   mainlinePlyToNode,
   pathMoves,
+  pathSans,
   pathToNode,
   removeLeafNode,
   setNodeAnalysis,
@@ -335,6 +336,25 @@ function testComponentViewEquivalence() {
   console.log('  [PASS] component view equals the flat-array derivations');
 }
 
+function testLiveRequestPath() {
+  const moves = fixture();
+  const tree = buildMainlineTree(moves);
+
+  // Game start: empty path; the sandbox explores from the initial position.
+  assert.deepEqual(pathSans(tree, mainlinePlyToNode(tree, 0)!), []);
+  assert.deepEqual(pathSans(tree, mainlinePlyToNode(tree, 2)!), ['e4', 'e5']);
+
+  // Variations extend the path they branch from, so the sandbox replays the
+  // exact line the board shows (never a bare FEN, which it rejects).
+  const { tree: branched, nodeId } = addVariation(
+    tree,
+    mainlinePlyToNode(tree, 2)!,
+    row({ fen: 'fen-after-d4', san: 'd4', color: 'white' }),
+  );
+  assert.deepEqual(pathSans(branched, nodeId), ['e4', 'e5', 'd4']);
+  console.log('  [PASS] live requests carry the SAN path from the game start');
+}
+
 function run() {
   console.log('=== Running review tree tests ===');
   const tests = [
@@ -345,6 +365,7 @@ function run() {
     testSandboxVariationFromLiveResponse,
     testOptimisticSwapAndRollback,
     testComponentViewEquivalence,
+    testLiveRequestPath,
   ];
   let failures = 0;
   for (const test of tests) {
