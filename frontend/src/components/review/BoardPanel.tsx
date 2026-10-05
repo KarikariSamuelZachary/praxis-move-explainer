@@ -28,6 +28,8 @@ type BoardPanelProps = {
   onExploreMove?: (from: string, to: string, promotion?: string) => void;
   exploreMode?: boolean;
   onToggleExplore?: () => void;
+  // Capability signal: the toggle stays hidden unless the sandbox is on.
+  sandboxEnabled?: boolean;
 };
 
 const woodBoxStyle: React.CSSProperties = {
@@ -127,6 +129,7 @@ export default function BoardPanel({
   onExploreMove,
   exploreMode = false,
   onToggleExplore,
+  sandboxEnabled = false,
 }: BoardPanelProps) {
   const [orientation, setOrientation] = useState<'white' | 'black'>('white');
   const [bestStep, setBestStep] = useState<'off' | 'undo' | 'best'>('off');
@@ -564,7 +567,7 @@ export default function BoardPanel({
           </svg>
         </button>
 
-        {hasGame && onToggleExplore && (
+        {hasGame && sandboxEnabled && onToggleExplore && (
           <button
             type="button"
             onClick={onToggleExplore}
