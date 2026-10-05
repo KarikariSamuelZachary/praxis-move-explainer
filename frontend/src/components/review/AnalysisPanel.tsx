@@ -19,11 +19,7 @@ type AnalysisPanelProps = {
   bestMoveSan: string | null;
   showBestMove: boolean;
   onToggleBestMove: () => void;
-  sandboxEnabled?: boolean;
   exploreMode?: boolean;
-  onToggleExplore?: () => void;
-  suggestionsEnabled?: boolean;
-  onToggleSuggestions?: () => void;
   suggestions?: SuggestionLine[];
   exploreError?: string | null;
 };
@@ -68,11 +64,7 @@ export default function AnalysisPanel({
   bestMoveSan,
   showBestMove,
   onToggleBestMove,
-  sandboxEnabled = false,
   exploreMode = false,
-  onToggleExplore,
-  suggestionsEnabled = false,
-  onToggleSuggestions,
   suggestions = [],
   exploreError = null,
 }: AnalysisPanelProps) {
@@ -89,50 +81,6 @@ export default function AnalysisPanel({
       <div
         className="wooden-scroll flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto rounded-t-[24px] border border-b-0 border-black/50 p-4 [background-image:linear-gradient(rgba(0,0,0,0.55),rgba(0,0,0,0.55)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]"
       >
-        {sandboxEnabled && (
-          <div className="flex items-center gap-2">
-            <button
-              type="button"
-              onClick={onToggleExplore}
-              className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-semibold ring-1 transition ${
-                exploreMode
-                  ? 'bg-[#10b981]/25 text-[#10b981] ring-[#10b981]/50'
-                  : 'bg-black/40 text-white/80 ring-white/15 hover:bg-white/10'
-              }`}
-              title="Explore variations (drag pieces on the board)"
-            >
-              <svg
-                className="h-3.5 w-3.5"
-                fill="none"
-                stroke="currentColor"
-                strokeLinecap="round"
-                strokeLinejoin="round"
-                strokeWidth="2"
-                viewBox="0 0 24 24"
-                aria-hidden
-              >
-                <circle cx="11" cy="11" r="7" />
-                <path d="m21 21-4.3-4.3" />
-              </svg>
-              {exploreMode ? 'Exploring' : 'Explore'}
-            </button>
-            {exploreMode && (
-              <button
-                type="button"
-                onClick={onToggleSuggestions}
-                className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-[11px] font-semibold ring-1 transition ${
-                  suggestionsEnabled
-                    ? 'bg-[#10b981]/25 text-[#10b981] ring-[#10b981]/50'
-                    : 'bg-black/40 text-white/80 ring-white/15 hover:bg-white/10'
-                }`}
-                title="Show engine suggestions"
-              >
-                Suggestions {suggestionsEnabled ? 'on' : 'off'}
-              </button>
-            )}
-          </div>
-        )}
-
         {hasGame && currentMove ? (
           <>
             <section className="rounded-2xl border border-black/40 bg-black/40 p-4 [box-shadow:inset_0_1px_0_rgba(255,255,255,0.05)]">
@@ -172,8 +120,7 @@ export default function AnalysisPanel({
             </section>
 
             {exploreMode ? (
-              (exploreError ||
-                (suggestionsEnabled && suggestions.length > 0)) && (
+              (exploreError || suggestions.length > 0) && (
                 <section className="rounded-2xl border border-[#10b981]/25 bg-black/30 p-4">
                   <div className="flex flex-col gap-3">
                     {exploreError && (
@@ -181,7 +128,7 @@ export default function AnalysisPanel({
                         {exploreError}
                       </p>
                     )}
-                    {suggestionsEnabled && suggestions.length > 0 && (
+                    {suggestions.length > 0 && (
                       <ul className="space-y-2">
                         {suggestions.map((line) => (
                           <li
