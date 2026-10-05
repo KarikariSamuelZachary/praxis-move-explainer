@@ -23,6 +23,7 @@ import {
   addVariation,
   buildMainlineTree,
   mainlinePlyToNode,
+  pathSans,
   removeLeafNode,
   setNodeAnalysis,
   setNodeMove,
@@ -122,10 +123,12 @@ export default function ReviewPage() {
   const [showBestMove, setShowBestMove] = useState(false);
   const [sandboxEnabled, setSandboxEnabled] = useState(false);
   const [exploreMode, setExploreMode] = useState(false);
-  const [suggestionsEnabled, setSuggestionsEnabled] = useState(false);
   const [exploreError, setExploreError] = useState<string | null>(null);
   const [analysisProgress, setAnalysisProgress] =
     useState<AnalysisProgress | null>(null);
+  // Mode fingerprint of the finished review (stream meta line). Echoed back
+  // as expected_mode so the sandbox rejects explores against a stale review.
+  const [reviewMode, setReviewMode] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -158,7 +161,6 @@ export default function ReviewPage() {
     setTree(built);
     setActiveNodeId(built.mainlineIds[0]);
     setExploreMode(false);
-    setSuggestionsEnabled(false);
     setExploreError(null);
     setCoachExplanation(null);
     setCoachError(null);
@@ -175,6 +177,7 @@ export default function ReviewPage() {
     setErrorMessage(null);
     setAnalysisState('analyzing');
     setAnalysisProgress({ done: 0, total: null });
+    setReviewMode(null);
 
     try {
       const response = await fetch('/api/analyze', {
@@ -215,6 +218,7 @@ export default function ReviewPage() {
         const message = JSON.parse(trimmed) as ReviewStreamMessage;
         if (message.type === 'meta') {
           setAnalysisProgress({ done: 0, total: message.total });
+          setReviewMode(message.mode);
         } else if (message.type === 'row') {
           rows.push(message.row);
           setAnalysisProgress((current) => ({
@@ -339,13 +343,17 @@ export default function ReviewPage() {
     setExploreError(null);
 
     try {
+      // The sandbox replays the move path from the game start (book
+      // contiguity, repetition history, previous-ply context); a bare FEN
+      // carries none of that and is rejected, so always send the path.
       const response = await fetch('/api/review/live', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          fen: view.position,
+          moves: pathSans(tree, parentId),
           move: resolved.uci,
           player_rating: null,
+          expected_mode: reviewMode,
         }),
       });
 
@@ -468,6 +476,7 @@ export default function ReviewPage() {
             onExploreMove={handleExploreMove}
             exploreMode={exploreMode}
             onToggleExplore={() => setExploreMode((value) => !value)}
+            sandboxEnabled={sandboxEnabled}
           />
         }
         analysisPanel={
@@ -485,11 +494,7 @@ export default function ReviewPage() {
             bestMoveSan={bestMoveSan}
             showBestMove={showBestMove}
             onToggleBestMove={() => setShowBestMove((value) => !value)}
-            sandboxEnabled={sandboxEnabled}
             exploreMode={exploreMode}
-            onToggleExplore={() => setExploreMode((value) => !value)}
-            suggestionsEnabled={suggestionsEnabled}
-            onToggleSuggestions={() => setSuggestionsEnabled((value) => !value)}
             suggestions={suggestions}
             exploreError={exploreError}
           />
