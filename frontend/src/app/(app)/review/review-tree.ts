@@ -136,6 +136,16 @@ export function pathMoves(tree: ReviewTree, nodeId: string): GameReviewMove[] {
     .filter((move): move is GameReviewMove => move !== null);
 }
 
+/**
+ * SAN path from the game start to `nodeId` for `SandboxMoveRequest.moves`.
+ * The sandbox replays this path (UCI or SAN accepted) to restore book
+ * contiguity, repetition history and previous-ply context; a bare FEN cannot
+ * carry that context and is rejected, so explore requests must send this.
+ */
+export function pathSans(tree: ReviewTree, nodeId: string): string[] {
+  return pathMoves(tree, nodeId).map((move) => move.san);
+}
+
 /** Mainline node for a ply, or null when out of range. */
 export function mainlinePlyToNode(tree: ReviewTree, ply: number): string | null {
   if (ply < 0 || ply >= tree.mainlineIds.length) {
