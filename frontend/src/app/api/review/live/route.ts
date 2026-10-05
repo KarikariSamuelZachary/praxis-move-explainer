@@ -6,9 +6,10 @@ import { getBackendConfig } from '@/lib/backend';
 const LIVE_TIMEOUT_MS = 30_000;
 
 type LiveRequestBody = {
-  fen?: string;
+  moves?: string[];
   move?: string;
   player_rating?: number | null;
+  expected_mode?: string | null;
 };
 
 export async function POST(request: NextRequest) {
@@ -23,9 +24,9 @@ export async function POST(request: NextRequest) {
   } catch {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
   }
-  if (!body.fen || !body.move) {
+  if (!body.move || (body.moves !== undefined && !Array.isArray(body.moves))) {
     return NextResponse.json(
-      { error: 'Missing required fields: fen, move' },
+      { error: 'Missing required fields: move, moves' },
       { status: 400 },
     );
   }
@@ -41,9 +42,10 @@ export async function POST(request: NextRequest) {
       'X-Clerk-User-Id': userId,
     },
     body: JSON.stringify({
-      fen: body.fen,
+      moves: body.moves ?? [],
       move: body.move,
       player_rating: body.player_rating ?? null,
+      expected_mode: body.expected_mode ?? null,
     }),
   });
 
