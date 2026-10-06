@@ -31,22 +31,6 @@ const CARD_CLASS =
 const LABEL_CLASS =
   'text-[11px] font-bold uppercase tracking-[0.25em] text-white/40';
 
-function ChevronRightIcon({ className = '' }: { className?: string }) {
-  return (
-    <svg
-      className={className}
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth="2"
-      viewBox="0 0 24 24"
-    >
-      <path d="m9 6 6 6-6 6" />
-    </svg>
-  );
-}
-
 export interface PracticeCategoriesCardProps {
   /** The category whose session is on the board, or null (rated loop). */
   activeCategory: string | null;
@@ -181,13 +165,6 @@ export default function PracticeCategoriesCard({
                     {blurb}
                   </span>
                 </span>
-                <ChevronRightIcon
-                  className={`h-5 w-5 shrink-0 transition group-hover:translate-x-0.5 ${
-                    active
-                      ? 'text-[#efd9a7]'
-                      : 'text-[#d9b87c]/60 group-hover:text-[#efd9a7]'
-                  }`}
-                />
               </button>
             );
           })
