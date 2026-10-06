@@ -13,6 +13,7 @@ commit instead.
 | `data/gate_set_B.neutral.thibault.pgn` | primary human (~1750) | `d473e4cb30932d7b81900e8c761171fae57c4e110b93b5192c4958a907a51533` |
 | `data/gate_set_B.neutral.chessweeb.pgn` | primary human (~2700) | `8c199af89cb5aea901cb37c0ce142098db30147e3083b2f717999b042ed4e1e1` |
 | `data/gate_set_B.neutral.maia1.pgn` | secondary bot-style | `232d1137930590f62a96512ca843fa031105bf448820e7c171152da982ac10ad` |
+| `data/gate_set_B.neutral.bands.pgn` | primary banded human (40/band) | `30f44e8fe8503d1a61cb668d2d548fd92e18353afc4e413cb2ec2645672045dd` |
 | `data/gate_sets.json` (manifest) | record | ids, aliases, exclusions, per-file neutral entries |
 | `data/gate_used_ids.json` (exclusions) | record | 240 ids, verified `B ∩ used = 0` |
 
@@ -45,14 +46,43 @@ commit instead.
   neutral file independently, with the same reference, candidates, seed, and
   CIs. Result is recorded per file: PASS if the file meets (8), FAIL
   otherwise.
-- Overall gate verdict = PASS only if base B **and every neutral file**
-  PASS. Any single file FAIL fails the gate; no post-hoc pooling or
-  file-dropping is allowed (a new pre-registration is required instead).
+- Overall gate verdict = PASS only if base B **and every neutral file
+  except `maia1`** PASS. `maia1` is reported with the same formula but never
+  blocks the verdict: it is a BOT account with a single engine style, kept
+  only as a secondary reference. Any other single file FAIL fails the gate;
+  no post-hoc pooling or file-dropping is allowed (a new pre-registration
+  is required instead).
 - Frozen file minima (checked at export, enforced by the script): each
   neutral file holds >= 50 games after filtering (`--neutral-min-games`),
   <= 120 games (`--neutral-file-cap`), and human files hold 0 BOT-title
   games. A source violating any minimum fails at export time and never
   reaches the gate.
+
+## Rating-banded human set (from the Lichess database dump)
+
+- Source: monthly `standard_rated` dump (`2026-08`), stream order,
+  deterministic first-N per band. Bands by **both** players' ratings:
+  800–1200, 1200–1600, 1600–2000, **40 games each** (120 total = file cap).
+  Frozen: 40/40/40 from 965,237 scanned prefix games (428,251 fast-dropped
+  as bullet/faster or out-of-band, 21 short, 1 invalid on re-parse, 0 BOT,
+  0 unverifiable). SHA-256
+  `30f44e8fe8503d1a61cb668d2d548fd92e18353afc4e413cb2ec2645672045dd`.
+  Overlap: 0 with A, B, and every other neutral file (by GameId); 0/240
+  used-id substrings; no A/B opponent names.
+- Filters: rated standard games, TimeControl base >= 180s (rapid or longer
+  blitz; bullet and faster excluded), >= 20 mainline plies. Database dumps
+  carry no title headers, so BOT exclusion is verified by bulk
+  `POST /api/users` title lookup over every player in the buffered
+  candidates: games involving BOT-titled or API-absent accounts are dropped
+  and backfilled from the stream (builder fails loudly on lookup failure or
+  unfilled bands).
+- Sampling for gate runs: **20 plies per game** (2400 positions per file),
+  same shape as the tuning sweeps, frozen here before anything runs on B.
+- Estimated run time per file at `--jobs 2` (SF19 per-eval p50 measured on
+  this box: 100k 1.0s, old mode 0.5s, 1M reference ~6s extrapolated):
+  reference ~2.0h + candidate ~20min + old mode ~20min ≈ **2.5–3h wall**,
+  plus serial-LLM explanation time on top. Extra candidate budgets cost
+  ~20min each.
 
 ## Game-length cap
 
