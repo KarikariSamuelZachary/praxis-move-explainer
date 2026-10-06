@@ -818,6 +818,22 @@ def test_live_stream_emits_info_then_final():
                     "X-Clerk-User-Id": TEST_CLERK_ID,
                 },
             )
+            # Opt-out gate: min-depth 1 restores every snapshot. The result
+            # cache would replay the first response, so clear it first.
+            review_module._SANDBOX_RESULT_CACHE.clear()
+            with patch.dict(
+                os.environ,
+                {"REVIEW_LIVE_INFO_MIN_DEPTH": "1"},
+                clear=False,
+            ):
+                response_all = _client().post(
+                    "/api/review/live/stream",
+                    json={"moves": ["e4", "e5"], "move": "Nf3"},
+                    headers={
+                        "X-Internal-Secret": _secret(),
+                        "X-Clerk-User-Id": TEST_CLERK_ID,
+                    },
+                )
     finally:
         (
             review_module.GameAnalyzer,
@@ -831,7 +847,8 @@ def test_live_stream_emits_info_then_final():
     ]
     assert lines[0]["type"] == "meta" and lines[0]["depth"] == 20, lines[0]
     infos = [line for line in lines if line["type"] == "info"]
-    assert [info["depth"] for info in infos] == [5, 12, 20], infos
+    # Default gate drops the flickery depth-5 snapshot; 12 and 20 stream.
+    assert [info["depth"] for info in infos] == [12, 20], infos
     assert infos[0]["classification"] == "best", infos[0]
     assert infos[0]["best_after"]["move_san"] == "Nf6", infos[0]
     final = lines[-1]
@@ -841,7 +858,15 @@ def test_live_stream_emits_info_then_final():
     assert body["best_after"]["move_san"] == "Nf6", body["best_after"]
     assert body["cached"] is False, body
     assert body["mode"].startswith("rev-live-v1"), body["mode"]
-    print("  [PASS] live stream: meta + one info per depth + final")
+    assert response_all.status_code == 200, response_all.text
+    infos_all = [
+        json.loads(line)
+        for line in response_all.text.splitlines()
+        if line.strip()
+    ]
+    infos_all = [line for line in infos_all if line["type"] == "info"]
+    assert [info["depth"] for info in infos_all] == [5, 12, 20], infos_all
+    print("  [PASS] live stream: meta + gated infos + final; gate opt-out")
 
 
 def test_live_stream_terminal_synthesizes():
