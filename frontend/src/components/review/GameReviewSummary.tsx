@@ -8,7 +8,7 @@ import { ClassificationIcon } from './icons/ClassificationIcon';
 
 export type ReviewSummaryProgress = { done: number; total: number | null };
 
-export type ReviewPlatform = 'chesscom' | 'lichess' | null;
+export type ReviewPlatform = 'chesscom' | null;
 
 type GameReviewSummaryProps = {
   pgn: string;
@@ -33,24 +33,23 @@ type PlayerMeta = {
 type SummaryRowDef = {
   key: MoveClassification;
   label: string;
-  whiteClass: string;
-  blackClass: string;
+  className: string;
 };
 
 const PRIMARY_ROWS: SummaryRowDef[] = [
-  { key: 'brilliant', label: 'Brilliant', whiteClass: 'text-teal-300', blackClass: 'text-teal-300' },
-  { key: 'great', label: 'Great', whiteClass: 'text-blue-400', blackClass: 'text-blue-400' },
-  { key: 'best', label: 'Best', whiteClass: 'text-lime-400', blackClass: 'text-lime-400' },
-  { key: 'excellent', label: 'Excellent', whiteClass: 'text-green-400', blackClass: 'text-green-400' },
-  { key: 'mistake', label: 'Mistake', whiteClass: 'text-orange-400', blackClass: 'text-orange-400' },
-  { key: 'miss', label: 'Miss', whiteClass: 'text-red-400', blackClass: 'text-red-400' },
-  { key: 'blunder', label: 'Blunder', whiteClass: 'text-red-500', blackClass: 'text-red-500' },
+  { key: 'brilliant', label: 'Brilliant', className: 'text-teal-300' },
+  { key: 'great', label: 'Great', className: 'text-blue-400' },
+  { key: 'best', label: 'Best', className: 'text-lime-400' },
+  { key: 'excellent', label: 'Excellent', className: 'text-green-400' },
+  { key: 'mistake', label: 'Mistake', className: 'text-orange-400' },
+  { key: 'miss', label: 'Miss', className: 'text-red-400' },
+  { key: 'blunder', label: 'Blunder', className: 'text-red-500' },
 ];
 
 const SECONDARY_ROWS: SummaryRowDef[] = [
-  { key: 'good', label: 'Good', whiteClass: 'text-lime-300', blackClass: 'text-lime-300' },
-  { key: 'inaccuracy', label: 'Inaccuracy', whiteClass: 'text-amber-300', blackClass: 'text-amber-300' },
-  { key: 'book', label: 'Book', whiteClass: 'text-zinc-300', blackClass: 'text-zinc-300' },
+  { key: 'good', label: 'Good', className: 'text-lime-300' },
+  { key: 'inaccuracy', label: 'Inaccuracy', className: 'text-amber-300' },
+  { key: 'book', label: 'Book', className: 'text-zinc-300' },
 ];
 
 function parsePgnTag(pgn: string, tag: string): string | null {
@@ -104,7 +103,7 @@ function epLossOf(move: GameReviewMove): number {
  * exponentially to 0-100 so one blunder costs ~8-12 points and a clean
  * game stays in the 90s. Book theory moves are excluded like chess.com.
  */
-export function accuracyForMoves(moves: GameReviewMove[], color: 'white' | 'black'): number | null {
+function accuracyForMoves(moves: GameReviewMove[], color: 'white' | 'black'): number | null {
   const scored = moves.filter(
     (m) => m.color === color && m.san !== 'Start' && m.classification !== 'book',
   );
@@ -173,16 +172,6 @@ export default function GameReviewSummary({
 
   return (
     <aside className="flex h-full min-h-0 min-w-0 flex-col gap-3 overflow-hidden rounded-[24px] border border-black/50 bg-[#1e1c1a] p-4 [background-image:linear-gradient(rgba(0,0,0,0.55),rgba(0,0,0,0.55)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]">
-      {/* Header */}
-      <div className="flex min-w-0 shrink-0 items-center gap-2">
-        <span className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-[#7cb342] text-[11px] font-bold text-white">
-          ✓
-        </span>
-        <h2 className="min-w-0 flex-1 truncate text-sm font-bold text-white">
-          Game Review
-        </h2>
-      </div>
-
       {/* Progress (analyzing only) */}
       {isAnalyzing && (
         <div className="shrink-0" aria-live="polite">
@@ -262,13 +251,13 @@ export default function GameReviewSummary({
               className="grid min-w-0 grid-cols-[minmax(0,1fr)_minmax(0,76px)_28px_minmax(0,76px)] items-center gap-x-1 py-[5px]"
             >
               <span className="truncate text-[13px] font-medium text-white/85">{row.label}</span>
-              <span className={`text-center font-mono text-[15px] font-bold tabular-nums ${row.whiteClass}`}>
+              <span className={`text-center font-mono text-[15px] font-bold tabular-nums ${row.className}`}>
                 {isAnalyzing ? 0 : counts.white[row.key]}
               </span>
               <span className="flex justify-center">
                 <ClassificationIcon classification={row.key} size={20} />
               </span>
-              <span className={`text-center font-mono text-[15px] font-bold tabular-nums ${row.blackClass}`}>
+              <span className={`text-center font-mono text-[15px] font-bold tabular-nums ${row.className}`}>
                 {isAnalyzing ? 0 : counts.black[row.key]}
               </span>
             </div>
@@ -295,7 +284,7 @@ export default function GameReviewSummary({
         type="button"
         onClick={onStartReview}
         disabled={!hasResult}
-        className="inline-flex w-full shrink-0 items-center justify-center rounded-lg bg-gradient-to-b from-[#8bc34a] to-[#689f38] px-4 py-3 text-[15px] font-extrabold tracking-wide text-white shadow-[0_4px_14px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.35)] transition hover:brightness-110 active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:brightness-100"
+        className="inline-flex w-full shrink-0 items-center justify-center rounded-lg bg-moss px-4 py-3 text-[15px] font-extrabold tracking-wide text-white shadow-[0_8px_28px_rgba(46,158,91,0.35)] transition duration-300 hover:bg-moss-bright active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-40"
       >
         {isAnalyzing ? (
           <span className="inline-flex items-center gap-2">
