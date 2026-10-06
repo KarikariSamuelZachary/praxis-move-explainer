@@ -699,6 +699,7 @@ class GameAnalyzer:
         player_rating: Optional[int] = None,
         opponent_prev_ep_loss: Optional[float] = None,
         include_extras: bool = False,
+        eval_after: Optional[Evaluation] = None,
     ) -> Tuple[Dict[str, Any], Evaluation, float]:
         """Analyze one played move; shared by batch review and the sandbox.
 
@@ -706,6 +707,10 @@ class GameAnalyzer:
         pre-move evaluation (the batch loop reuses the previous ply's
         after-evaluation; the sandbox evaluates the position once). Returns
         the JSON-ready row, the post-move evaluation, and the raw EP loss.
+
+        `eval_after` lets the live stream classify each deepening snapshot
+        without re-searching: when given, it replaces the internal
+        evaluation of the post-move position (terminal synthesis included).
         """
         move_color = "white" if board.turn == chess.WHITE else "black"
         fen_before = board.fen()
@@ -723,10 +728,11 @@ class GameAnalyzer:
         # eval on dead-drawn boards (e.g. -1cp in K vs K) is part of that
         # frozen contract, so terminal synthesis cannot be made unconditional.
         terminal = terminal_state(board) if self.deterministic else None
-        if terminal is not None:
-            eval_after = terminal.evaluation
-        else:
-            eval_after = self._evaluate(board)
+        if eval_after is None:
+            if terminal is not None:
+                eval_after = terminal.evaluation
+            else:
+                eval_after = self._evaluate(board)
 
         # Raw EP impact is tracked even for book moves: Chess.com does not
         # share our opening book, so a book move can still be the opponent
@@ -851,6 +857,22 @@ class GameAnalyzer:
     def evaluate_position(self, board: chess.Board) -> Evaluation:
         """Public wrapper over the configured evaluation mode."""
         return self._evaluate(board)
+
+    def evaluate_position_depth(
+        self,
+        board: chess.Board,
+        *,
+        depth: int,
+        multipv: Optional[int] = None,
+        time_backstop: Optional[float] = None,
+    ) -> Evaluation:
+        """Depth-bounded evaluation for the live sandbox (fresh game token)."""
+        return self.engine.evaluate_depth(
+            board,
+            depth=depth,
+            multipv=multipv or self.multipv,
+            time_backstop=time_backstop,
+        )
 
     def analyze_sandbox_move(
         self,
