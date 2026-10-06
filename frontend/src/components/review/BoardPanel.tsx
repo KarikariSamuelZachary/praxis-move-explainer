@@ -30,6 +30,11 @@ type BoardPanelProps = {
   onToggleExplore?: () => void;
   // Capability signal: the toggle stays hidden unless the sandbox is on.
   sandboxEnabled?: boolean;
+  // Explore mode: best move for the side to move at the active position.
+  suggestionUci?: string | null;
+  // True while the played move has no engine snapshot yet: show a neutral
+  // pending marker instead of a placeholder classification badge.
+  classificationPending?: boolean;
 };
 
 const woodBoxStyle: React.CSSProperties = {
@@ -130,6 +135,8 @@ export default function BoardPanel({
   exploreMode = false,
   onToggleExplore,
   sandboxEnabled = false,
+  suggestionUci = null,
+  classificationPending = false,
 }: BoardPanelProps) {
   const [orientation, setOrientation] = useState<'white' | 'black'>('white');
   const [bestStep, setBestStep] = useState<'off' | 'undo' | 'best'>('off');
@@ -141,19 +148,23 @@ export default function BoardPanel({
   const bestMoveResultFen =
     fenBefore && bestMoveUci ? applyUciMove(fenBefore, bestMoveUci) : null;
 
-  // Persistent suggestion arrow: the engine's best move at every analyzed
-  // position. Hidden while the best-move animation shows other positions.
+  // Persistent suggestion arrow. Outside explore mode it is the analyzed
+  // move's "better move" (best_move_uci). In explore mode the board shows a
+  // position the user is deciding on, so the arrow must be the best move for
+  // the side to move at that position (suggestionUci), never the pre-move
+  // line of the move just played. Hidden during the best-move animation.
+  const arrowUci = exploreMode ? suggestionUci : bestMoveUci;
   const suggestionArrows = useMemo(() => {
-    if (!hasGame || bestStep !== 'off' || !bestMoveUci || bestMoveUci.length < 4) {
+    if (!hasGame || bestStep !== 'off' || !arrowUci || arrowUci.length < 4) {
       return [];
     }
-    const from = bestMoveUci.slice(0, 2);
-    const to = bestMoveUci.slice(2, 4);
+    const from = arrowUci.slice(0, 2);
+    const to = arrowUci.slice(2, 4);
     if (from === to) {
       return [];
     }
     return [{ startSquare: from, endSquare: to, color: '#10b981' }];
-  }, [hasGame, bestStep, bestMoveUci]);
+  }, [hasGame, bestStep, arrowUci]);
 
   // Adjust the animation step during render whenever the toggle flips, so the
   // board immediately shows the played move being taken back (undo) and then
@@ -389,9 +400,10 @@ export default function BoardPanel({
     [moveToPromote, onExploreMove],
   );
 
-  const showPlayedIcon =
+  const hasPlayedMove =
     hasGame && currentMove !== null && currentMove.san !== 'Start' && !showBestMove;
-  const iconCoords = showPlayedIcon
+  const showPlayedIcon = hasPlayedMove && !classificationPending;
+  const iconCoords = hasPlayedMove
     ? squareToPercent(
         getDestinationSquare(currentMove!.san, currentMove!.color),
         orientation,
@@ -509,6 +521,21 @@ export default function BoardPanel({
                 }}
               >
                 <ClassificationIcon classification="best" size="100%" />
+              </div>
+            )}
+            {classificationPending && iconCoords && (
+              <div
+                style={{
+                  position: 'absolute',
+                  left: `${iconCoords.col * SQUARE_PERCENT + SQUARE_PERCENT - ICON_SIZE_PERCENT - ICON_MARGIN_PERCENT}%`,
+                  top: `${iconCoords.row * SQUARE_PERCENT + ICON_MARGIN_PERCENT}%`,
+                  width: `${ICON_SIZE_PERCENT}%`,
+                  aspectRatio: '1 / 1',
+                  pointerEvents: 'none',
+                  zIndex: 5,
+                }}
+              >
+                <div className="h-full w-full animate-pulse rounded-full border-2 border-white/60 bg-black/30" />
               </div>
             )}
             {showPlayedIcon && iconCoords && (
