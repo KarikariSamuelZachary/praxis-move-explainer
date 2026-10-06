@@ -19,9 +19,14 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from core.analysis_mode import (
     DEFAULT_NODES_BACKSTOP_SECONDS,
+    DEFAULT_REVIEW_LIVE_INFO_MIN_DEPTH,
+    DEFAULT_REVIEW_LIVE_PREWARM_DEPTH,
     DEFAULT_REVIEW_NODES,
+    REVIEW_LIVE_DEPTH,
     book_fingerprint,
     review_deterministic_enabled,
+    review_live_info_min_depth,
+    review_live_prewarm_depth,
     review_nodes,
     review_nodes_backstop_seconds,
 )
@@ -264,10 +269,35 @@ def test_multipv_pinned_only_for_deterministic():
     print("  [PASS] deterministic requires MultiPV=2; background keeps 1")
 
 
+def test_live_tuning_defaults_and_clamps():
+    with patch.dict(os.environ, {}, clear=False):
+        os.environ.pop("REVIEW_LIVE_PREWARM_DEPTH", None)
+        os.environ.pop("REVIEW_LIVE_INFO_MIN_DEPTH", None)
+        assert review_live_prewarm_depth() == DEFAULT_REVIEW_LIVE_PREWARM_DEPTH
+        assert review_live_info_min_depth() == DEFAULT_REVIEW_LIVE_INFO_MIN_DEPTH
+
+    with patch.dict(
+        os.environ,
+        {"REVIEW_LIVE_PREWARM_DEPTH": "16", "REVIEW_LIVE_INFO_MIN_DEPTH": "12"},
+    ):
+        assert review_live_prewarm_depth() == 16
+        assert review_live_info_min_depth() == 12
+
+    # Prewarm never exceeds the settle depth; garbage falls back to defaults.
+    with patch.dict(
+        os.environ,
+        {"REVIEW_LIVE_PREWARM_DEPTH": "99", "REVIEW_LIVE_INFO_MIN_DEPTH": "nope"},
+    ):
+        assert review_live_prewarm_depth() == REVIEW_LIVE_DEPTH
+        assert review_live_info_min_depth() == DEFAULT_REVIEW_LIVE_INFO_MIN_DEPTH
+    print("  [PASS] live tuning: prewarm/info depths default, clamp, and parse")
+
+
 def run() -> int:
     print("=== Running analysis-mode tests ===")
     tests = [
         test_env_parsing,
+        test_live_tuning_defaults_and_clamps,
         test_deterministic_calls_use_nodes_and_fresh_token,
         test_non_deterministic_call_shape_unchanged,
         test_review_max_plies_gating_and_formula,
