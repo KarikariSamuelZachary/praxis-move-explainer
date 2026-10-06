@@ -12,6 +12,7 @@ without this flag and keep their historical time+depth behavior.
 """
 import hashlib
 import os
+from typing import Optional
 
 DEFAULT_REVIEW_NODES = 100_000
 DEFAULT_NODES_BACKSTOP_SECONDS = 10.0
@@ -30,6 +31,23 @@ REVIEW_MULTIPV = 2
 assert REVIEW_MULTIPV == 2, "review/live analysis requires MultiPV=2"
 # Bump when the analysis algorithm changes without its constants changing.
 MODE_VERSION = "rev-det-v1"
+
+# Live sandbox (explore) analysis: progressive deepening to a fixed depth,
+# not fixed nodes. The stream emits one snapshot per depth; the settled
+# label is the depth-N evaluation. Deliberately different from the batch
+# review's fixed-nodes budget: explore is its own deeper analysis, like
+# chess.com's analysis board. Compatibility (below) keeps the parts that
+# must match for labels to be comparable: engine, classifier and book.
+LIVE_MODE_VERSION = "rev-live-v1"
+REVIEW_LIVE_DEPTH = 20
+REVIEW_LIVE_MULTIPV = 1
+REVIEW_LIVE_PREWARM_MULTIPV = 2
+# Pathological-position guard: with depth and time both set, Stockfish
+# stops at whichever comes first.
+REVIEW_LIVE_TIME_BACKSTOP = 15.0
+# Mode keys that must be identical between a review and a live explore for
+# the stale-review gate to pass (search budget may differ by design).
+PARITY_MODE_KEYS = ("engine", "classifier", "book")
 
 
 def _env_flag(name: str) -> bool:
@@ -135,10 +153,16 @@ def classifier_fingerprint() -> str:
 
 
 def book_fingerprint() -> str:
-    """Content hash of the loaded opening book (not a load timestamp)."""
+    """Content hash of the loaded opening book (not a load timestamp).
+
+    Forces the lazy load: the review computes its mode before the analysis
+    runs, and without this the first review after boot would record
+    book=unloaded while its own labels already used the loaded book (the
+    live route would then reject every explore as stale).
+    """
     from services import opening_book
 
-    return opening_book.get_book_revision() or "unloaded"
+    return opening_book.ensure_book_revision() or "unloaded"
 
 
 def current_mode_string(engine_name: str, multipv: int, nodes: int) -> str:
@@ -155,3 +179,54 @@ def current_mode_string(engine_name: str, multipv: int, nodes: int) -> str:
             f"book={book_fingerprint()}",
         ]
     )
+
+
+def current_live_mode_string(
+    engine_name: str, depth: int = REVIEW_LIVE_DEPTH
+) -> str:
+    """Fingerprint for the progressive live/explore analysis.
+
+    No nodes/multipv component: the live stream searches to `depth` with a
+    varying MultiPV width (1 for the deepening stream, 2 for prewarm), and
+    the mode is only compared against a review on the parity keys.
+    """
+    return "|".join(
+        [
+            LIVE_MODE_VERSION,
+            f"engine={engine_name}",
+            "threads=1",
+            "hash=16",
+            f"depth={depth}",
+            f"classifier={classifier_fingerprint()}",
+            f"book={book_fingerprint()}",
+        ]
+    )
+
+
+def mode_components(mode: str) -> dict:
+    """Parse a mode string into its key=value parts (version key skipped)."""
+    parts: dict = {}
+    for chunk in mode.split("|"):
+        if "=" not in chunk:
+            continue
+        key, value = chunk.split("=", 1)
+        parts[key.strip()] = value.strip()
+    return parts
+
+
+def live_mode_compatible(expected_mode: Optional[str], live_mode: str) -> bool:
+    """True when a live explore may proceed against `expected_mode`.
+
+    The live search budget intentionally differs from the batch review
+    (depth 20 vs fixed nodes), so only the parity keys are compared:
+    engine, classifier and book. A mode missing any parity key (an old or
+    foreign fingerprint) is rejected.
+    """
+    if not expected_mode:
+        return True
+    expected = mode_components(expected_mode)
+    live = mode_components(live_mode)
+    for key in PARITY_MODE_KEYS:
+        if not expected.get(key) or expected[key] != live.get(key):
+            return False
+    return True
