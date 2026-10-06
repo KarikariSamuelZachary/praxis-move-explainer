@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from core.analysis_mode import (
     DEFAULT_NODES_BACKSTOP_SECONDS,
     DEFAULT_REVIEW_NODES,
+    book_fingerprint,
     review_deterministic_enabled,
     review_nodes,
     review_nodes_backstop_seconds,
@@ -186,6 +187,62 @@ def test_review_max_plies_gating_and_formula():
     print("  [PASS] review_max_plies: none when off; formula when on")
 
 
+def test_book_fingerprint_forces_the_lazy_load():
+    """Regression for the stale-409: the mode is computed before the game
+    analysis runs, so the fingerprint itself must load the book. Otherwise
+    the first review after boot records book=unloaded while its own labels
+    already used the loaded book, and every explore is rejected as stale."""
+    from services import opening_book
+
+    real_loader = opening_book._load_book_from_db
+    opening_book.invalidate_cache()
+    try:
+        opening_book._load_book_from_db = lambda: (
+            {"k": frozenset({"e2e4"})},
+            "rev-1",
+        )
+        assert opening_book.get_book_revision() is None, (
+            "the book starts unloaded in this test"
+        )
+        assert book_fingerprint() == "rev-1", (
+            "book_fingerprint must force the load, not read the stale None"
+        )
+        assert opening_book.get_book_revision() == "rev-1"
+    finally:
+        opening_book._load_book_from_db = real_loader
+        opening_book.invalidate_cache()
+    print("  [PASS] book fingerprint forces the lazy book load")
+
+
+def test_live_mode_compatibility():
+    from core.analysis_mode import live_mode_compatible
+
+    review_mode = (
+        "rev-det-v1|engine=Stockfish 19|threads=1|hash=16|nodes=150000|"
+        "multipv=2|classifier=v1:abc|book=rev1"
+    )
+    live_mode = (
+        "rev-live-v1|engine=Stockfish 19|threads=1|hash=16|depth=20|"
+        "classifier=v1:abc|book=rev1"
+    )
+    assert live_mode_compatible(review_mode, live_mode), (
+        "search budget may differ; engine/classifier/book must match"
+    )
+    assert live_mode_compatible(None, live_mode), "no echo is allowed"
+    assert not live_mode_compatible(
+        "rev-det-v1|engine=Stockfish 16|classifier=v1:abc|book=rev1",
+        live_mode,
+    ), "different engine must be stale"
+    assert not live_mode_compatible(
+        "rev-det-v1|engine=Stockfish 19|classifier=v1:abc|book=other",
+        live_mode,
+    ), "different book must be stale"
+    assert not live_mode_compatible("rev-det-v1|nodes=1|stale", live_mode), (
+        "a foreign fingerprint without the parity keys must be rejected"
+    )
+    print("  [PASS] live mode compatibility: budget may differ, parity keys must match")
+
+
 def test_multipv_pinned_only_for_deterministic():
     engine = _RecordingEngine()
     try:
@@ -214,6 +271,8 @@ def run() -> int:
         test_deterministic_calls_use_nodes_and_fresh_token,
         test_non_deterministic_call_shape_unchanged,
         test_review_max_plies_gating_and_formula,
+        test_book_fingerprint_forces_the_lazy_load,
+        test_live_mode_compatibility,
         test_multipv_pinned_only_for_deterministic,
     ]
     failures = 0
