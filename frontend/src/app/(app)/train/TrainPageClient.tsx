@@ -156,23 +156,6 @@ function TargetIcon() {
   );
 }
 
-function ArrowRightIcon() {
-  return (
-    <svg className="h-4 w-4 transition-transform duration-200 group-hover/cta:translate-x-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" aria-hidden="true">
-      <path d="M5 12h14" />
-      <path d="m12 5 7 7-7 7" />
-    </svg>
-  );
-}
-
-function StarIcon() {
-  return (
-    <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" aria-hidden="true">
-      <path d="m12 3 2.7 5.6 6.1.8-4.5 4.3 1.1 6.1L12 17l-5.4 2.8 1.1-6.1L3.2 9.4l6.1-.8L12 3z" />
-    </svg>
-  );
-}
-
 function CloseIcon() {
   return (
     <svg className="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" aria-hidden="true">
@@ -470,17 +453,14 @@ function TrainingModeCard({ mode }: { mode: TrainingMode }) {
       {mode.href ? (
         <Link href={mode.href} className={ctaClass}>
           <span>{mode.cta}</span>
-          <ArrowRightIcon />
         </Link>
       ) : mode.onClick ? (
         <button type="button" onClick={mode.onClick} className={ctaClass}>
           <span>{mode.cta}</span>
-          <ArrowRightIcon />
         </button>
       ) : (
         <button type="button" className={ctaClass}>
           <span>{mode.cta}</span>
-          <ArrowRightIcon />
         </button>
       )}
     </article>
@@ -502,9 +482,6 @@ function RecommendedPanel({
   return (
     <section className={`${CARD_CLASS} flex w-[314px] max-w-full flex-col gap-2 p-3 self-end shadow-2xl shadow-black/25`} aria-label="Recommended for you">
       <header className="flex items-center gap-2">
-        <span className="text-[#f7e5c6]/70">
-          <StarIcon />
-        </span>
         <h2 className="text-[10px] font-bold uppercase tracking-[0.18em] text-[#f7e5c6]/65">
           Recommended For You
         </h2>
@@ -542,10 +519,9 @@ function RecommendedPanel({
 
       <Link
         href={`/train/endgametrainer?category=${encodeURIComponent(recommendation.category)}`}
-        className="group/cta inline-flex h-9 w-full cursor-pointer items-center justify-center gap-2 rounded-lg border border-[#d9b87c]/45 px-4 text-sm font-semibold text-[#efd9a7] transition-colors duration-200 hover:bg-[#d9b87c]/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#efd9a7]"
+        className="inline-flex h-9 w-full cursor-pointer items-center justify-center rounded-lg border border-[#d9b87c]/45 px-4 text-sm font-semibold text-[#efd9a7] transition-colors duration-200 hover:bg-[#d9b87c]/10 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#efd9a7]"
       >
         <span>Start {label} Endings</span>
-        <ArrowRightIcon />
       </Link>
     </section>
   );
