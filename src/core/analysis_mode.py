@@ -42,6 +42,15 @@ LIVE_MODE_VERSION = "rev-live-v1"
 REVIEW_LIVE_DEPTH = 20
 REVIEW_LIVE_MULTIPV = 1
 REVIEW_LIVE_PREWARM_MULTIPV = 2
+# Prewarm (explore arrow + before-eval seed) searches to this depth instead of
+# the settle depth: depth 14 is ~5-10x fewer nodes than depth 20, so the first
+# arrow lands in a few hundred ms. The stream still settles the after-position
+# to REVIEW_LIVE_DEPTH, and prefers a depth-20 before-eval when cached.
+DEFAULT_REVIEW_LIVE_PREWARM_DEPTH = 14
+# Deepening snapshots below this depth are not streamed as info lines: early
+# depths flicker (best move changes almost every ply) and each line costs a
+# classifier pass. Depth 0 (exact terminal synthesis) is always emitted.
+DEFAULT_REVIEW_LIVE_INFO_MIN_DEPTH = 8
 # Pathological-position guard: with depth and time both set, Stockfish
 # stops at whichever comes first.
 REVIEW_LIVE_TIME_BACKSTOP = 15.0
@@ -113,6 +122,36 @@ def review_nodes_backstop_seconds() -> float:
     except (TypeError, ValueError):
         value = DEFAULT_NODES_BACKSTOP_SECONDS
     return value if value > 0 else DEFAULT_NODES_BACKSTOP_SECONDS
+
+
+def review_live_prewarm_depth() -> int:
+    """Depth target for the explore prewarm (suggestion + before-eval seed).
+
+    Defaults below the settle depth for a fast first arrow; clamped into
+    [1, REVIEW_LIVE_DEPTH]. Set REVIEW_LIVE_PREWARM_DEPTH=20 to restore the
+    old always-deep prewarm.
+    """
+    try:
+        value = int(os.getenv("REVIEW_LIVE_PREWARM_DEPTH", ""))
+    except (TypeError, ValueError):
+        return DEFAULT_REVIEW_LIVE_PREWARM_DEPTH
+    if value <= 0:
+        return DEFAULT_REVIEW_LIVE_PREWARM_DEPTH
+    return max(1, min(REVIEW_LIVE_DEPTH, value))
+
+
+def review_live_info_min_depth() -> int:
+    """Deepening snapshots below this depth are not streamed as info lines.
+
+    Depth 0 (exact terminal synthesis) is always emitted regardless.
+    """
+    try:
+        value = int(os.getenv("REVIEW_LIVE_INFO_MIN_DEPTH", ""))
+    except (TypeError, ValueError):
+        return DEFAULT_REVIEW_LIVE_INFO_MIN_DEPTH
+    if value <= 0:
+        return DEFAULT_REVIEW_LIVE_INFO_MIN_DEPTH
+    return max(1, value)
 
 
 def classifier_fingerprint() -> str:
