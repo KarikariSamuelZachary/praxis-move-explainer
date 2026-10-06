@@ -23,6 +23,15 @@ class ReviewRequest(BaseModel):
     target_color: TargetColor = "both"
 
 
+class SandboxLine(BaseModel):
+    move_uci: Optional[str] = None
+    move_san: Optional[str] = None
+    eval_cp: Optional[float] = None
+    eval_mate: Optional[int] = None
+    pv_uci: List[str] = []
+    pv_san: List[str] = []
+
+
 class SandboxPrewarmRequest(BaseModel):
     moves: List[str] = []
     expected_mode: Optional[str] = None
@@ -32,6 +41,10 @@ class SandboxPrewarmResponse(BaseModel):
     fen: str
     mode: str
     cached: bool = False
+    # Engine suggestion lines for the side to move at this position; the UI
+    # draws the arrow from `best`. None only for terminal/no-move positions.
+    best: Optional[SandboxLine] = None
+    second_best: Optional[SandboxLine] = None
 
 
 class SandboxMoveRequest(BaseModel):
@@ -47,15 +60,6 @@ class SandboxMoveRequest(BaseModel):
     expected_mode: Optional[str] = None
 
 
-class SandboxLine(BaseModel):
-    move_uci: Optional[str] = None
-    move_san: Optional[str] = None
-    eval_cp: Optional[float] = None
-    eval_mate: Optional[int] = None
-    pv_uci: List[str] = []
-    pv_san: List[str] = []
-
-
 class SandboxMoveResponse(BaseModel):
     classification: MoveClassification
     cp_loss: int
@@ -69,8 +73,14 @@ class SandboxMoveResponse(BaseModel):
     move_san: str
     move_uci: str
     is_book: bool = False
+    # Lines for the position BEFORE the played move (what should have been
+    # played instead; powers the Best-move replay).
     best: SandboxLine
     second_best: Optional[SandboxLine] = None
+    # Lines for the position AFTER the played move (the next mover's best
+    # move; powers the live suggestion arrow).
+    best_after: Optional[SandboxLine] = None
+    second_best_after: Optional[SandboxLine] = None
     mode: str
     cached: bool = False
 
