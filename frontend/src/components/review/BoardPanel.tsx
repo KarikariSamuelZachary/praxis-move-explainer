@@ -141,6 +141,20 @@ export default function BoardPanel({
   const bestMoveResultFen =
     fenBefore && bestMoveUci ? applyUciMove(fenBefore, bestMoveUci) : null;
 
+  // Persistent suggestion arrow: the engine's best move at every analyzed
+  // position. Hidden while the best-move animation shows other positions.
+  const suggestionArrows = useMemo(() => {
+    if (!hasGame || bestStep !== 'off' || !bestMoveUci || bestMoveUci.length < 4) {
+      return [];
+    }
+    const from = bestMoveUci.slice(0, 2);
+    const to = bestMoveUci.slice(2, 4);
+    if (from === to) {
+      return [];
+    }
+    return [{ startSquare: from, endSquare: to, color: '#10b981' }];
+  }, [hasGame, bestStep, bestMoveUci]);
+
   // Adjust the animation step during render whenever the toggle flips, so the
   // board immediately shows the played move being taken back (undo) and then
   // - after a short delay - the best move being played.
@@ -460,6 +474,7 @@ export default function BoardPanel({
                   canInteract && onExploreMove ? handlePieceDrop : undefined,
                 squareRenderer,
                 squareStyles: displaySquareStyles,
+                arrows: suggestionArrows,
                 boardStyle: {
                   width: '100%',
                   height: '100%',
