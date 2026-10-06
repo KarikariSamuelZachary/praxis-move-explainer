@@ -211,25 +211,6 @@ function EyeIcon() {
   );
 }
 
-function ArrowRightIcon() {
-  return (
-    <svg
-      width="16"
-      height="16"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M5 12h14" />
-      <path d="m13 5 7 7-7 7" />
-    </svg>
-  );
-}
-
 export default function RepertoireTrainPage({
   params,
 }: {
@@ -1095,7 +1076,6 @@ export default function RepertoireTrainPage({
                 onClick={handleBackToDetail}
                 className="flex h-12 items-center gap-2 rounded-full border-2 border-[#d9b87c] bg-black/40 px-6 text-sm font-bold uppercase tracking-wider text-[#efd9a7] transition hover:bg-[#d9b87c]/15"
               >
-                <ArrowRightIcon />
                 <span>
                   Back to {name ?? 'repertoire'}
                 </span>
