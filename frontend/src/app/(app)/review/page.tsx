@@ -5,7 +5,9 @@ import dynamic from 'next/dynamic';
 import { Chess } from 'chess.js';
 
 import AnalysisPanel from '@/components/review/AnalysisPanel';
-import GameReviewSummary from '@/components/review/GameReviewSummary';
+import GameReviewSummary, {
+  type ReviewSummaryProgress,
+} from '@/components/review/GameReviewSummary';
 import ImportPanel, {
   ImportSource,
 } from '@/components/review/ImportPanel';
@@ -18,10 +20,13 @@ import {
   SandboxStreamMessage,
 } from '@/types';
 
-import { displayedExplanationFor, lastPlyFor } from './review-page-logic';
+import {
+  type ReviewExplanation,
+  displayedExplanationFor,
+  lastPlyFor,
+} from './review-page-logic';
 import {
   ReviewTree,
-  SuggestionLine,
   addVariation,
   buildMainlineTree,
   mainlinePlyToNode,
@@ -46,14 +51,10 @@ const BoardPanel = dynamic(() => import('@/components/review/BoardPanel'), {
 
 type AnalysisState = 'idle' | 'analyzing' | 'ready' | 'error';
 
-type ReviewExplanation = NonNullable<GameReviewMove['explanation']>;
-
 type AnalyzeErrorResponse = {
   detail?: string;
   error?: string;
 };
-
-type AnalysisProgress = { done: number; total: number | null };
 
 type ReviewStreamMessage =
   | { type: 'meta'; mode: string; total: number }
@@ -68,23 +69,11 @@ type ResolvedExploreMove = {
   color: 'white' | 'black';
 };
 
-/** One engine line in the tree's suggestion shape (empty moves dropped). */
-function toSuggestionLine(line: SandboxLine): SuggestionLine {
-  return {
-    moveUci: line.move_uci ?? '',
-    moveSan: line.move_san ?? '',
-    evalCp: line.eval_cp ?? undefined,
-    evalMate: line.eval_mate ?? undefined,
-    pvSan: line.pv_san,
-  };
-}
-
-function suggestionLinesFrom(
+/** First usable engine move for the active position's board arrow. */
+function suggestionUciFrom(
   lines: Array<SandboxLine | null | undefined>,
-): SuggestionLine[] {
-  return lines
-    .filter((line): line is SandboxLine => Boolean(line && line.move_uci))
-    .map(toSuggestionLine);
+): string | null {
+  return lines.find((line) => line?.move_uci)?.move_uci ?? null;
 }
 
 /** Legal move for a drag/click on `fen`; promotions default to a queen. */
@@ -136,7 +125,7 @@ export default function ReviewPage() {
   const [exploreMode, setExploreMode] = useState(false);
   const [exploreError, setExploreError] = useState<string | null>(null);
   const [analysisProgress, setAnalysisProgress] =
-    useState<AnalysisProgress | null>(null);
+    useState<ReviewSummaryProgress | null>(null);
   // Right panel view once a game exists: chess.com-style overview first,
   // move-by-move analysis after "Start Review".
   const [rightView, setRightView] = useState<'summary' | 'moves'>('summary');
@@ -198,7 +187,7 @@ export default function ReviewPage() {
     }
     if (
       node.analysis?.status === 'analyzing' ||
-      node.analysis?.suggestionsAfter?.length
+      node.analysis?.suggestionUci
     ) {
       return;
     }
@@ -218,8 +207,11 @@ export default function ReviewPage() {
           if (!data) {
             return;
           }
-          const lines = suggestionLinesFrom([data.best, data.second_best]);
-          if (lines.length === 0) {
+          const suggestionUci = suggestionUciFrom([
+            data.best,
+            data.second_best,
+          ]);
+          if (!suggestionUci) {
             return;
           }
           setTree((current) => {
@@ -229,7 +221,7 @@ export default function ReviewPage() {
             }
             return setNodeAnalysis(current, activeNodeId, {
               ...currentNode.analysis,
-              suggestionsAfter: lines,
+              suggestionUci,
             });
           });
         })
@@ -459,7 +451,7 @@ export default function ReviewPage() {
         if (message.type === 'info') {
           // One deepening snapshot: update the provisional badge, eval bar
           // and the next-mover arrow without waiting for the final depth.
-          const afterLines = suggestionLinesFrom([message.best_after]);
+          const suggestionUci = suggestionUciFrom([message.best_after]);
           setTree((current) => {
             const node = current?.nodes[nodeId];
             if (!current || !node) {
@@ -476,10 +468,8 @@ export default function ReviewPage() {
             return setNodeAnalysis(setNodeMove(current, nodeId, row), nodeId, {
               ...node.analysis,
               status: 'analyzing',
-              classification: message.classification,
-              evalCp: message.eval_cp,
-              evalMate: message.eval_mate ?? null,
-              suggestionsAfter: afterLines,
+              classificationReady: true,
+              suggestionUci,
             });
           });
           return;
@@ -512,8 +502,7 @@ export default function ReviewPage() {
         // `best`/`second_best` are the pre-move lines (the Better-move
         // replay); `best_after`/`second_best_after` are the next mover's
         // lines, which become this node's suggestion arrow.
-        const beforeLines = suggestionLinesFrom([data.best, data.second_best]);
-        const afterLines = suggestionLinesFrom([
+        const suggestionUci = suggestionUciFrom([
           data.best_after,
           data.second_best_after,
         ]);
@@ -523,14 +512,7 @@ export default function ReviewPage() {
           }
           const withMove = setNodeMove(current, nodeId, row);
           return setNodeAnalysis(withMove, nodeId, {
-            status: 'ready',
-            mode: data.mode,
-            evalCp: data.eval_cp,
-            evalMate: data.eval_mate ?? null,
-            classification: data.classification,
-            bestMoveUci: data.best?.move_uci ?? null,
-            suggestionsBefore: beforeLines,
-            suggestionsAfter: afterLines,
+            suggestionUci,
           });
         });
       };
@@ -585,17 +567,17 @@ export default function ReviewPage() {
       ? activeNodeView(tree, activeNodeId, START_FEN)
       : null;
   const currentMove = view?.currentMove ?? null;
-  const activePly = view && tree && activeNodeId ? tree.nodes[activeNodeId].ply : 0;
-  const activeNode = tree && activeNodeId ? tree.nodes[activeNodeId] : null;
+  const activePly = view?.activePly ?? 0;
+  const activeNode =
+    view && tree && activeNodeId ? tree.nodes[activeNodeId] : null;
   // Explore-mode arrow: the engine's best move for the side to move at the
   // active position (not the pre-move "better move" the batch row carries).
-  const suggestionUci =
-    activeNode?.analysis?.suggestionsAfter?.[0]?.moveUci ?? null;
+  const suggestionUci = activeNode?.analysis?.suggestionUci ?? null;
   // No badge until the first deepening snapshot lands; the placeholder row's
   // classification must never render.
   const classificationPending =
     activeNode?.analysis?.status === 'analyzing' &&
-    activeNode.analysis.classification === undefined;
+    !activeNode.analysis.classificationReady;
   const displayedExplanation = displayedExplanationFor(
     currentMove,
     coachExplanation,
@@ -634,9 +616,9 @@ export default function ReviewPage() {
   // Where the reviewed game came from. Only chess.com has profile
   // pictures (lichess has none, pasted PGNs have no known provider).
   const reviewPlatform = importSource === 'chesscom' ? 'chesscom' : null;
-  // Left panel always stays the import form. Right panel states: move
-  // analysis placeholder (idle/error) -> loading summary (analyzing,
-  // Image 3) -> overview summary with tabs (ready, Images 1-2).
+  // The import form stays on the left. The right panel shows a placeholder
+  // before analysis, a progress summary while analyzing, and the overview
+  // after analysis completes.
   const isAnalyzingNow = analysisState === 'analyzing';
 
   const movesPanel = (
@@ -673,7 +655,6 @@ export default function ReviewPage() {
             isAnalyzing={isAnalyzingNow}
             errorMessage={analysisState === 'error' ? errorMessage : null}
             disabled={!hasGame && isAnalyzingNow}
-            progress={analysisProgress}
           />
         }
         boardPanel={
