@@ -1,12 +1,18 @@
 'use client';
 
+import { useEffect, useRef, useState, type CSSProperties } from 'react';
+
 import { GameReviewMove } from '@/types';
+
+import { ClassificationIcon } from './icons/ClassificationIcon';
 
 type ReviewExplanation = NonNullable<GameReviewMove['explanation']>;
 
 type AnalysisPanelProps = {
   currentMove: GameReviewMove | null;
   hasGame: boolean;
+  /** Full mainline rows including the synthetic Start row (for the list). */
+  moves?: GameReviewMove[] | null;
   explanation: ReviewExplanation | null;
   coachError?: string | null;
   isAskingCoach: boolean;
@@ -15,6 +21,8 @@ type AnalysisPanelProps = {
   activePly: number;
   lastPly: number;
   onPlySelect: (ply: number) => void;
+  /** Review mode: pre-move "should have played". Explore mode: suggestion
+   *  for the side to move at the current position (next position's best). */
   bestMoveSan: string | null;
   showBestMove: boolean;
   onToggleBestMove: () => void;
@@ -24,23 +32,13 @@ type AnalysisPanelProps = {
   classificationPending?: boolean;
 };
 
-const CLASSIFICATION_ROW: Record<
-  GameReviewMove['classification'],
-  { label: string; icon: string; tone: string }
-> = {
-  book: { label: 'Book', icon: '📘', tone: 'text-sky-300' },
-  brilliant: { label: 'Brilliant', icon: '!!', tone: 'text-cyan-300' },
-  great: { label: 'Great', icon: '!', tone: 'text-teal-200' },
-  best: { label: 'Best Move', icon: '⭐', tone: 'text-emerald-300' },
-  excellent: { label: 'Excellent', icon: '✨', tone: 'text-teal-300' },
-  good: { label: 'Good', icon: '👍', tone: 'text-lime-300' },
-  inaccuracy: { label: 'Inaccuracy', icon: '!', tone: 'text-amber-300' },
-  mistake: { label: 'Mistake', icon: '?', tone: 'text-orange-300' },
-  miss: { label: 'Miss', icon: '✕', tone: 'text-red-300' },
-  blunder: { label: 'Blunder', icon: '✗', tone: 'text-rose-300' },
-};
+const GOLD_BUTTON_CLASS =
+  'relative flex w-full items-center justify-center gap-2.5 rounded-xl bg-gradient-to-b from-[#eacb90] to-[#c1954f] px-4 py-3.5 text-sm font-bold text-[#2a1a06] shadow-[0_10px_22px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.55)] transition hover:from-[#f2d8a4] hover:to-[#cda261] disabled:cursor-not-allowed disabled:opacity-50';
 
-const woodBoxStyle: React.CSSProperties = {
+const SECONDARY_BUTTON_CLASS =
+  'relative flex w-full items-center justify-center gap-2.5 rounded-xl border border-white/15 bg-white/5 px-4 py-3.5 text-sm font-bold text-white/80 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50';
+
+const woodBoxStyle: CSSProperties = {
   borderRadius: '4px',
   background:
     'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.webp)',
@@ -49,10 +47,65 @@ const woodBoxStyle: React.CSSProperties = {
   boxShadow:
     '0 0 0 2px #1a0a02, inset 0 2px 0 rgba(255,200,100,0.12), inset 0 -2px 0 rgba(0,0,0,0.5), 0 4px 12px rgba(0,0,0,0.5)',
 };
+const MOVE_PHRASE: Record<GameReviewMove['classification'], (san: string) => string> = {
+  book: (san) => `${san} is a book move`,
+  brilliant: (san) => `${san} is brilliant`,
+  great: (san) => `${san} is a great move`,
+  best: (san) => `${san} is the best move`,
+  excellent: (san) => `${san} is excellent`,
+  good: (san) => `${san} is good`,
+  inaccuracy: (san) => `${san} is an inaccuracy`,
+  mistake: (san) => `${san} is a mistake`,
+  miss: (san) => `${san} is a miss`,
+  blunder: (san) => `${san} is a blunder`,
+};
+
+function formatEval(move: GameReviewMove | null): string {
+  if (!move || move.san === 'Start') {
+    return '';
+  }
+  const mate = move.eval_mate;
+  if (typeof mate === 'number' && Number.isFinite(mate) && mate !== 0) {
+    return mate > 0 ? `M${Math.abs(mate)}` : `-M${Math.abs(mate)}`;
+  }
+  const cp = Number.isFinite(move.eval_cp) ? move.eval_cp : 0;
+  const pawns = cp / 100;
+  return `${pawns >= 0 ? '+' : ''}${pawns.toFixed(2)}`;
+}
+
+/**
+ * Chess.com-style list icons: only the decisive moments get a marker, plus
+ * the book move that ends the opening sequence. Everything else (best,
+ * excellent, good, inaccuracy) renders as plain SAN in the list.
+ */
+function listIconFor(
+  move: GameReviewMove,
+  nextMove: GameReviewMove | null,
+): GameReviewMove['classification'] | null {
+  if (!move || move.san === 'Start') {
+    return null;
+  }
+  switch (move.classification) {
+    case 'mistake':
+    case 'blunder':
+    case 'brilliant':
+    case 'great':
+    case 'miss':
+      return move.classification;
+    case 'book':
+      if (!nextMove || nextMove.san === 'Start' || nextMove.classification !== 'book') {
+        return 'book';
+      }
+      return null;
+    default:
+      return null;
+  }
+}
 
 export default function AnalysisPanel({
   currentMove,
   hasGame,
+  moves = null,
   explanation,
   coachError,
   isAskingCoach,
@@ -68,221 +121,340 @@ export default function AnalysisPanel({
   exploreError = null,
   classificationPending = false,
 }: AnalysisPanelProps) {
-  const classificationStyle = currentMove
-    ? CLASSIFICATION_ROW[currentMove.classification]
-    : null;
+  const [playing, setPlaying] = useState(false);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const activeRowRef = useRef<HTMLDivElement | null>(null);
 
   const atFirst = activePly <= 0;
   const atLast = activePly >= lastPly;
   const disabledAll = !hasGame;
+  const isStart = !currentMove || currentMove.san === 'Start';
+
+  // Auto-play: step forward ~1s per ply until the final move, then stop.
+  // Paused while exploring (the list navigates the mainline only).
+  useEffect(() => {
+    if (!playing || disabledAll || atLast || exploreMode) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      const next = Math.min(lastPly, activePly + 1);
+      onPlySelect(next);
+      if (next >= lastPly) {
+        setPlaying(false);
+      }
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [playing, activePly, lastPly, disabledAll, atLast, exploreMode, onPlySelect]);
+
+  // Keep the active move visible in the list.
+  useEffect(() => {
+    activeRowRef.current?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }, [activePly]);
+
+  const phrase = (() => {
+    if (!hasGame || !currentMove || classificationPending) {
+      return null;
+    }
+    if (currentMove.san === 'Start') {
+      return 'Starting position';
+    }
+    return MOVE_PHRASE[currentMove.classification]?.(currentMove.san) ?? currentMove.san;
+  })();
+  const evalLabel = formatEval(classificationPending ? null : currentMove);
+
+  const mainline = moves ?? [];
+  const pairCount = Math.max(0, Math.ceil(Math.max(0, mainline.length - 1) / 2));
+  const mainlineSanAtPly = (ply: number): string | null => mainline[ply]?.san ?? null;
+  // In a variation the board SAN differs from the mainline SAN at the same
+  // ply: skip the list highlight so it never claims the wrong move.
+  const highlightPly =
+    currentMove && mainlineSanAtPly(activePly) === currentMove.san ? activePly : -1;
 
   return (
-    <aside className="flex h-full flex-col gap-1.5 overflow-hidden">
-      <div
-        className="wooden-scroll flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto rounded-t-[24px] border border-b-0 border-black/50 p-4 [background-image:linear-gradient(rgba(0,0,0,0.55),rgba(0,0,0,0.55)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]"
-      >
-        {hasGame && currentMove ? (
-          <>
-            <section className="rounded-2xl border border-black/40 bg-black/40 p-4 [box-shadow:inset_0_1px_0_rgba(255,255,255,0.05)]">
-              <p className="text-[10px] uppercase tracking-[0.22em] text-white/50">
-                {moveNumberLabel}
-              </p>
-              <div className="mt-2 flex items-center gap-2">
-                <span className="font-mono text-2xl font-semibold text-white">
-                  {currentMove.san}
-                </span>
-                {classificationPending ? (
-                  <span className="inline-flex items-center gap-1 rounded-full bg-black/40 px-2 py-0.5 text-[10px] font-medium text-white/50">
-                    <span className="h-2.5 w-2.5 animate-pulse rounded-full border border-white/40" />
-                    Analyzing...
+    <aside className="flex h-full min-h-0 min-w-0 flex-col gap-2 overflow-hidden rounded-[24px] border border-black/50 bg-[#1e1c1a] p-4 [background-image:linear-gradient(rgba(0,0,0,0.55),rgba(0,0,0,0.55)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]">
+      {!hasGame || !currentMove ? (
+        <section className="rounded-xl border border-dashed border-white/10 bg-black/30 p-4 text-sm leading-6 text-white/60">
+          Per-move analysis will populate here once a game is imported.
+        </section>
+      ) : (
+        <>
+          {/* Verdict card: walnut inset, cream text, gold eval */}
+          <section className="shrink-0 rounded-xl border border-[#f7e5c6]/15 bg-black/40 p-3 [box-shadow:inset_0_1px_0_rgba(255,255,255,0.06)]">
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex min-w-0 items-center gap-2">
+                {!classificationPending && !isStart && (
+                  <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center">
+                    <ClassificationIcon classification={currentMove.classification} size={24} />
                   </span>
-                ) : (
-                  classificationStyle && (
-                    <span
-                      className={`inline-flex items-center gap-1 rounded-full bg-black/40 px-2 py-0.5 text-[10px] font-medium ${classificationStyle.tone}`}
-                    >
-                      <span aria-hidden>{classificationStyle.icon}</span>
-                      {classificationStyle.label}
+                )}
+                <p className="truncate text-[15px] font-medium text-[#f7e5c6]">
+                  {classificationPending ? (
+                    <span className="inline-flex items-center gap-2 text-white/60">
+                      <span className="h-3 w-3 animate-pulse rounded-full border border-white/30" />
+                      Analyzing…
                     </span>
-                  )
-                )}
-              </div>
-              <p className="mt-2 text-[11px] text-white/50">
-                {currentMove.color} to move
-              </p>
-
-              {bestMoveSan && (
-                <button
-                  type="button"
-                  onClick={onToggleBestMove}
-                  className={`mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl px-3 py-2 text-xs font-semibold ring-1 transition-colors ${
-                    showBestMove
-                      ? 'bg-[#10b981]/30 text-[#10b981] ring-[#10b981]/50 hover:bg-[#10b981]/20'
-                      : 'bg-[#10b981]/20 text-[#10b981] ring-[#10b981]/30 hover:bg-[#10b981]/30 hover:ring-[#10b981]/50'
-                  }`}
-                >
-                  {showBestMove ? 'Hide best move' : `Best move: ${bestMoveSan}`}
-                </button>
-              )}
-            </section>
-
-            {exploreMode ? (
-              exploreError && (
-                <section className="rounded-2xl border border-[#10b981]/25 bg-black/30 p-4">
-                  <p className="text-xs leading-5 text-amber-300/90">
-                    {exploreError}
-                  </p>
-                </section>
-              )
-            ) : explanation ? (
-              <section className="rounded-2xl border border-[#f7e5c6]/20 bg-black/30 p-4">
-                <div className="flex items-center gap-2 text-[#f7e5c6]">
-                  <svg
-                    className="h-4 w-4"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth="2"
-                    viewBox="0 0 24 24"
-                    aria-hidden
-                  >
-                    <path d="M12 8a3 3 0 0 0-3 3v1a3 3 0 0 0 6 0v-1a3 3 0 0 0-3-3z" />
-                    <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
-                    <path d="M12 17v4" />
-                    <path d="M8 21h8" />
-                  </svg>
-                  <h3 className="text-[11px] font-semibold uppercase tracking-[0.22em]">
-                    Coach&apos;s Notes
-                  </h3>
-                </div>
-                <p className="mt-3 text-xs leading-6 text-white/80">
-                  {explanation.explanation}
-                </p>
-              </section>
-            ) : (
-              <section className="rounded-2xl border border-dashed border-white/10 bg-black/30 p-4">
-                <div className="flex items-center gap-2 text-white/70">
-                  <svg
-                    className="h-4 w-4"
-                    fill="none"
-                    stroke="currentColor"
-                    strokeLinecap="round"
-                    strokeLinejoin="round"
-                    strokeWidth="2"
-                    viewBox="0 0 24 24"
-                    aria-hidden
-                  >
-                    <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-                  </svg>
-                  <h3 className="text-[11px] font-semibold uppercase tracking-[0.22em]">
-                    Coach&apos;s Notes
-                  </h3>
-                </div>
-                <p className="mt-2 text-xs leading-6 text-white/50">
-                  Ask the coach to break down why this move was played.
-                </p>
-                {coachError && (
-                  <p className="mt-2 text-xs leading-5 text-amber-300/90">
-                    {coachError}
-                  </p>
-                )}
-                <button
-                  type="button"
-                  onClick={onAskCoach}
-                  disabled={isAskingCoach || atFirst}
-                  title={atFirst && !isAskingCoach ? 'Advance to a move first' : undefined}
-                  className="mt-3 inline-flex w-full items-center justify-center gap-2 rounded-xl bg-[#10b981]/20 px-3 py-2 text-xs font-semibold text-[#10b981] ring-1 ring-[#10b981]/30 transition-colors hover:bg-[#10b981]/30 hover:ring-[#10b981]/50 disabled:cursor-not-allowed disabled:bg-zinc-700/40 disabled:text-zinc-400 disabled:ring-zinc-600/30"
-                >
-                  {isAskingCoach ? (
-                    <>
-                      <span className="h-3 w-3 rounded-full border-2 border-white/40 border-t-white animate-spin" />
-                      <span>Coach is thinking...</span>
-                    </>
                   ) : (
-                    <>
-                      <span>Ask Coach to explain this move</span>
-                    </>
+                    (phrase ?? moveNumberLabel)
                   )}
-                </button>
-              </section>
-            )}
-          </>
-        ) : (
-          <section className="rounded-2xl border border-dashed border-[#f7e5c6]/20 bg-black/30 p-4 text-sm leading-6 text-[#f7e5c6]/60">
-            Per-move analysis will populate here once a game is imported.
-          </section>
-        )}
-      </div>
+                </p>
+              </div>
+              {evalLabel && (
+                <span className="shrink-0 rounded-md bg-[#eacb90]/15 px-2 py-1 font-mono text-[13px] font-bold text-[#eacb90] ring-1 ring-[#eacb90]/30">
+                  {evalLabel}
+                </span>
+              )}
+            </div>
+            <p className="mt-0.5 truncate text-[11px] text-white/40">{moveNumberLabel}</p>
 
-      {/* Movement buttons - bottom strip of the card cut into 4 wooden boxes */}
-      <div className="grid grid-cols-4 gap-1.5">
-        <button
-          type="button"
-          onClick={() => onPlySelect(0)}
+            {/* Coach explanation lives inside the verdict card when present */}
+            {!exploreMode && (explanation || isAskingCoach) && (
+              <div className="mt-2 border-t border-white/10 pt-2">
+                {isAskingCoach && !explanation ? (
+                  <p className="flex items-center gap-2 text-xs text-white/60">
+                    <span className="h-3 w-3 animate-spin rounded-full border-2 border-white/20 border-t-white" />
+                    Coach is thinking…
+                  </p>
+                ) : explanation ? (
+                  <p className="text-xs leading-5 text-white/75">{explanation.explanation}</p>
+                ) : null}
+              </div>
+            )}
+          </section>
+
+          {/* Explain / Best move */}
+          <div className="grid shrink-0 grid-cols-2 gap-3">
+            <button
+              type="button"
+              onClick={onAskCoach}
+              disabled={isAskingCoach || atFirst || exploreMode || disabledAll}
+              title={
+                exploreMode
+                  ? 'Exit explore to ask the coach'
+                  : atFirst
+                    ? 'Advance to a move first'
+                    : undefined
+              }
+              className={SECONDARY_BUTTON_CLASS}
+            >
+              {isAskingCoach ? (
+                <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/30 border-t-white" />
+              ) : null}
+              <span>{isAskingCoach ? 'Thinking…' : 'Explain'}</span>
+            </button>
+            <button
+              type="button"
+              onClick={onToggleBestMove}
+              disabled={disabledAll || classificationPending || !bestMoveSan}
+              className={GOLD_BUTTON_CLASS}
+              title={
+                exploreMode
+                  ? 'Best move for the side to move in this position'
+                  : 'Best move that should have been played instead'
+              }
+            >
+              <span>
+                {!bestMoveSan || classificationPending
+                  ? 'Best move'
+                  : showBestMove
+                    ? `Hide (${bestMoveSan})`
+                    : `Best: ${bestMoveSan}`}
+              </span>
+            </button>
+          </div>
+
+          {(exploreError || coachError) && !exploreMode && coachError && (
+            <p className="shrink-0 text-xs leading-5 text-amber-300/90">{coachError}</p>
+          )}
+          {exploreMode && exploreError && (
+            <p className="shrink-0 text-xs leading-5 text-amber-300/90">{exploreError}</p>
+          )}
+
+          {/* Move list with filtered icons */}
+          <div
+            ref={listRef}
+            className="wood-scrollbar min-h-0 flex-1 overflow-y-auto rounded-xl border border-black/40 bg-black/40 p-1.5"
+            aria-label="Move list"
+          >
+            {pairCount === 0 ? (
+              <p className="p-3 text-xs text-white/40">No moves yet.</p>
+            ) : (
+              Array.from({ length: pairCount }, (_, rowIndex) => {
+                const moveNo = rowIndex + 1;
+                const whitePly = rowIndex * 2 + 1;
+                const blackPly = rowIndex * 2 + 2;
+                const white = mainline[whitePly] ?? null;
+                const black = blackPly < mainline.length ? (mainline[blackPly] ?? null) : null;
+                const isActiveRow = highlightPly === whitePly || highlightPly === blackPly;
+                return (
+                  <div
+                    key={moveNo}
+                    ref={isActiveRow ? activeRowRef : undefined}
+                    className={`grid grid-cols-[2rem_minmax(0,1fr)_minmax(0,1fr)] items-stretch gap-1 rounded-lg px-1 py-0.5 ${
+                      isActiveRow ? 'bg-white/[0.04]' : ''
+                    }`}
+                  >
+                    <span className="flex items-center justify-center font-mono text-xs text-white/40">
+                      {moveNo}.
+                    </span>
+                    <MoveCell
+                      move={white}
+                      ply={whitePly}
+                      nextMove={mainline[whitePly + 1] ?? null}
+                      isActive={highlightPly === whitePly}
+                      onSelect={onPlySelect}
+                      disabled={disabledAll}
+                    />
+                    {black ? (
+                      <MoveCell
+                        move={black}
+                        ply={blackPly}
+                        nextMove={mainline[blackPly + 1] ?? null}
+                        isActive={highlightPly === blackPly}
+                        onSelect={onPlySelect}
+                        disabled={disabledAll}
+                      />
+                    ) : (
+                      <span />
+                    )}
+                  </div>
+                );
+              })
+            )}
+          </div>
+        </>
+      )}
+
+      {/* Movement buttons: |< < play/pause > >| — wooden boxes matching the board */}
+      <div className="grid shrink-0 grid-cols-5 gap-1.5">
+        <NavButton
+          label="First move"
           disabled={disabledAll || atFirst}
-          aria-label="First move"
-          className="flex h-8 items-center justify-center transition-transform hover:scale-105 active:scale-95 disabled:pointer-events-none disabled:opacity-40"
-          style={{
-            cursor:
-              disabledAll || atFirst ? 'default' : 'pointer',
-            ...woodBoxStyle,
-            borderRadius: '4px 4px 4px 24px',
-          }}
+          onClick={() => onPlySelect(0)}
+          cornerStyle={{ borderRadius: '4px 4px 4px 24px' }}
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="#f0e0c0">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="#f0e0c0" aria-hidden>
             <rect x="3" y="4" width="2.5" height="16" rx="1" />
             <path d="M21 4 L9 12 L21 20 Z" />
           </svg>
-        </button>
-        <button
-          type="button"
-          onClick={() => onPlySelect(Math.max(0, activePly - 1))}
+        </NavButton>
+        <NavButton
+          label="Previous move"
           disabled={disabledAll || atFirst}
-          aria-label="Previous move"
-          className="flex h-8 items-center justify-center transition-transform hover:scale-105 active:scale-95 disabled:pointer-events-none disabled:opacity-40"
-          style={{
-            cursor: disabledAll || atFirst ? 'default' : 'pointer',
-            ...woodBoxStyle,
-          }}
+          onClick={() => onPlySelect(Math.max(0, activePly - 1))}
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="#f0e0c0">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="#f0e0c0" aria-hidden>
             <path d="M18 4 L6 12 L18 20 Z" />
           </svg>
-        </button>
+        </NavButton>
         <button
           type="button"
-          onClick={() => onPlySelect(Math.min(lastPly, activePly + 1))}
-          disabled={disabledAll || atLast}
-          aria-label="Next move"
+          onClick={() => setPlaying((value) => !value)}
+          disabled={disabledAll || atLast || exploreMode}
+          aria-label={playing ? 'Pause auto-play' : 'Auto-play moves'}
+          title={exploreMode ? 'Exit explore to auto-play' : undefined}
           className="flex h-8 items-center justify-center transition-transform hover:scale-105 active:scale-95 disabled:pointer-events-none disabled:opacity-40"
-          style={{
-            cursor: disabledAll || atLast ? 'default' : 'pointer',
-            ...woodBoxStyle,
-          }}
+          style={{ cursor: disabledAll || atLast || exploreMode ? 'default' : 'pointer', ...woodBoxStyle }}
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="#f0e0c0">
+          {playing ? (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="#f0e0c0" aria-hidden>
+              <rect x="6" y="5" width="4" height="14" rx="1" />
+              <rect x="14" y="5" width="4" height="14" rx="1" />
+            </svg>
+          ) : (
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="#f0e0c0" aria-hidden>
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          )}
+        </button>
+        <NavButton
+          label="Next move"
+          disabled={disabledAll || atLast}
+          onClick={() => onPlySelect(Math.min(lastPly, activePly + 1))}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="#f0e0c0" aria-hidden>
             <path d="M6 4 L18 12 L6 20 Z" />
           </svg>
-        </button>
-        <button
-          type="button"
-          onClick={() => onPlySelect(lastPly)}
+        </NavButton>
+        <NavButton
+          label="Last move"
           disabled={disabledAll || atLast}
-          aria-label="Last move"
-          className="flex h-8 items-center justify-center transition-transform hover:scale-105 active:scale-95 disabled:pointer-events-none disabled:opacity-40"
-          style={{
-            cursor: disabledAll || atLast ? 'default' : 'pointer',
-            ...woodBoxStyle,
-            borderRadius: '4px 4px 24px 4px',
-          }}
+          onClick={() => onPlySelect(lastPly)}
+          cornerStyle={{ borderRadius: '4px 4px 24px 4px' }}
         >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="#f0e0c0">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="#f0e0c0" aria-hidden>
             <path d="M3 4 L15 12 L3 20 Z" />
             <rect x="18.5" y="4" width="2.5" height="16" rx="1" />
           </svg>
-        </button>
+        </NavButton>
       </div>
     </aside>
+  );
+}
+
+function MoveCell({
+  move,
+  ply,
+  nextMove,
+  isActive,
+  onSelect,
+  disabled,
+}: {
+  move: GameReviewMove | null;
+  ply: number;
+  nextMove: GameReviewMove | null;
+  isActive: boolean;
+  onSelect: (ply: number) => void;
+  disabled: boolean;
+}) {
+  if (!move) {
+    return <span />;
+  }
+  const icon = listIconFor(move, nextMove);
+  return (
+    <button
+      type="button"
+      onClick={() => onSelect(ply)}
+      disabled={disabled}
+      className={`flex min-w-0 items-center gap-1 rounded-md px-1.5 py-1.5 font-mono text-[13px] transition ${
+        isActive ? 'bg-white/15 font-bold text-white' : 'text-white/80 hover:bg-white/10'
+      } disabled:cursor-default`}
+      aria-current={isActive ? 'true' : undefined}
+      title={`${ply}: ${move.san}`}
+    >
+      {icon && (
+        <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center">
+          <ClassificationIcon classification={icon} size={16} />
+        </span>
+      )}
+      <span className="truncate">{move.san}</span>
+    </button>
+  );
+}
+
+function NavButton({
+  label,
+  disabled,
+  onClick,
+  cornerStyle,
+  children,
+}: {
+  label: string;
+  disabled: boolean;
+  onClick: () => void;
+  cornerStyle?: CSSProperties;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={label}
+      title={label}
+      className="flex h-8 items-center justify-center transition-transform hover:scale-105 active:scale-95 disabled:pointer-events-none disabled:opacity-40"
+      style={{ cursor: disabled ? 'default' : 'pointer', ...woodBoxStyle, ...cornerStyle }}
+    >
+      {children}
+    </button>
   );
 }
