@@ -38,9 +38,29 @@ export function ClassificationIcon({
     case 'book':
       return (
         <svg {...common}>
-          <circle cx="22" cy="22" r="21" fill="#5f5e5a" stroke="#888780" strokeWidth="0.5" />
-          <path d="M14 15h8a3 3 0 013 3v11a2 2 0 00-2-2h-9z" fill="none" stroke="#f1efe8" strokeWidth="1.6" strokeLinejoin="round" />
-          <path d="M30 15h-8a3 3 0 00-3 3v11a2 2 0 012-2h9z" fill="none" stroke="#f1efe8" strokeWidth="1.6" strokeLinejoin="round" />
+          <circle cx="22" cy="22" r="21" fill="#3a2412" stroke="#c1954f" strokeWidth="1" />
+          <path
+            d="M22 14.5c-2.6-1.7-5.7-2.1-8.8-1.6V28c3.1-.5 6.2-.1 8.8 1.6 2.6-1.7 5.7-2.1 8.8-1.6V12.9c-3.1-.5-6.2-.1-8.8 1.6Z"
+            fill="#f3e7c3"
+            stroke="#2a1a06"
+            strokeWidth="1"
+            strokeLinejoin="round"
+          />
+          <path d="M22 14.5V29.6" stroke="#8a6136" strokeWidth="1.2" />
+          <path
+            d="M15.6 17.6c1.5-.3 3-.2 4.4.3M15.6 21.1c1.5-.3 3-.2 4.4.3M24 17.9c1.4-.5 2.9-.6 4.4-.3M24 21.4c1.4-.5 2.9-.6 4.4-.3"
+            fill="none"
+            stroke="#b99a5e"
+            strokeWidth="1"
+            strokeLinecap="round"
+          />
+          <path
+            d="M26.6 12.4h3.4V19l-1.7-1.2-1.7 1.2Z"
+            fill="#eacb90"
+            stroke="#2a1a06"
+            strokeWidth="0.6"
+            strokeLinejoin="round"
+          />
         </svg>
       );
     case 'brilliant':
@@ -81,8 +101,8 @@ export function ClassificationIcon({
     case 'inaccuracy':
       return (
         <svg {...common}>
-          <circle cx="22" cy="22" r="21" fill="#412402" stroke="#BA7517" strokeWidth="0.5" />
-          <text x="22" y="30" textAnchor="middle" fontSize="22" fontWeight="500" fill="#FAC775" fontFamily="Georgia,serif">?</text>
+          <circle cx="22" cy="22" r="21" fill="#54400d" stroke="#d9a92e" strokeWidth="1" />
+          <text x="22" y="30" textAnchor="middle" fontSize="17" fontWeight="700" fill="#ffe6a3" fontFamily="Georgia,serif">?!</text>
         </svg>
       );
     case 'mistake':
