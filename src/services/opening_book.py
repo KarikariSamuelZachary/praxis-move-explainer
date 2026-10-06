@@ -99,6 +99,20 @@ def get_book_revision() -> Optional[str]:
     return _book_revision
 
 
+def ensure_book_revision() -> Optional[str]:
+    """Content hash of the book, loading it first when needed.
+
+    Mode strings are computed before the game analysis runs, but the book
+    itself loads lazily on the first is_book_move call. Without forcing the
+    load here, the first review after a process start records book=unloaded
+    while its own labels already used the loaded book, and the sandbox
+    rejects every explore of that review as stale (409). Fail-soft: an
+    empty/failed load keeps returning None (same as get_book_revision).
+    """
+    _get_book()
+    return _book_revision
+
+
 def _get_book() -> Dict[str, FrozenSet[str]]:
     """Cached opening book with fail-soft empty/error loads.
 
