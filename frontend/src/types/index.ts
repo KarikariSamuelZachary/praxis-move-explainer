@@ -360,9 +360,36 @@ export type SandboxMoveResponse = {
   move_uci: string;
   best: SandboxLine;
   second_best?: SandboxLine | null;
+  best_after?: SandboxLine | null;
+  second_best_after?: SandboxLine | null;
   mode: string;
   cached: boolean;
 };
+
+export type SandboxPrewarmResponse = {
+  fen: string;
+  mode: string;
+  cached: boolean;
+  best?: SandboxLine | null;
+  second_best?: SandboxLine | null;
+};
+
+export type SandboxStreamInfo = {
+  type: 'info';
+  depth: number;
+  classification: MoveClassification;
+  cp_loss: number;
+  ep_loss: number;
+  eval_cp: number;
+  eval_mate?: number | null;
+  best_after?: SandboxLine | null;
+};
+
+export type SandboxStreamMessage =
+  | { type: 'meta'; mode: string; depth: number }
+  | SandboxStreamInfo
+  | { type: 'final'; response: SandboxMoveResponse }
+  | { type: 'error'; detail?: string };
 
 export type ReviewCapabilities = {
   sandbox_enabled: boolean;
