@@ -283,6 +283,33 @@ class StockfishEngine:
             primary = info or {}
             second = None
 
+        return self._build_evaluation(
+            board,
+            primary,
+            second,
+            pov=pov,
+            nodes_requested=nodes,
+            elapsed=elapsed,
+            effective_time=effective_time,
+        )
+
+    def _build_evaluation(
+        self,
+        board: chess.Board,
+        primary: dict,
+        second: Optional[dict],
+        *,
+        pov: Optional[chess.Color] = None,
+        nodes_requested: Optional[int] = None,
+        elapsed: Optional[float] = None,
+        effective_time: Optional[float] = None,
+    ) -> Evaluation:
+        """Parse one (primary, second) info pair into an Evaluation.
+
+        Shared by evaluate() and the depth stream so both report scores,
+        moves and PVs identically. The backstop only applies to the
+        nodes-limited path (see evaluate()).
+        """
         score = primary.get("score")
         pv = primary.get("pv", [])
 
@@ -326,10 +353,11 @@ class StockfishEngine:
         # wall-clock limit stopped the search early. Guard nodes is None:
         # terminal positions report no node count at all.
         backstop_fired = (
-            nodes is not None
+            nodes_requested is not None
             and nodes_reported is not None
-            and nodes_reported < int(nodes)
+            and nodes_reported < int(nodes_requested)
             and effective_time is not None
+            and elapsed is not None
             and elapsed >= 0.9 * float(effective_time)
         )
 
@@ -348,6 +376,92 @@ class StockfishEngine:
             nps=nps_reported,
             backstop_fired=backstop_fired,
         )
+
+    def evaluate_depth(
+        self,
+        board: chess.Board,
+        *,
+        depth: int,
+        multipv: int = 1,
+        time_backstop: Optional[float] = None,
+    ) -> Evaluation:
+        """Depth-bounded evaluation with a fresh game token.
+
+        Same parsing as evaluate(), but the limit is a depth target instead
+        of nodes/time: this is the settled depth-N evaluation the live
+        sandbox deepens to. A fresh token clears the transposition table
+        first, matching the fixed-nodes reproducibility discipline.
+        `time_backstop` only guards a pathological position; with both depth
+        and time set, Stockfish stops at whichever comes first.
+        """
+        if not self.engine:
+            raise RuntimeError("Engine not started. Use context manager or call start()")
+        limit = chess.engine.Limit(
+            depth=max(1, int(depth)),
+            **({"time": float(time_backstop)} if time_backstop else {}),
+        )
+        with self._call_lock:
+            info = self.engine.analyse(
+                board,
+                limit,
+                multipv=max(1, int(multipv)),
+                game=object(),
+            )
+        if isinstance(info, list):
+            primary = info[0] if info else {}
+            second = info[1] if len(info) > 1 else None
+        else:
+            primary = info or {}
+            second = None
+        return self._build_evaluation(board, primary, second)
+
+    def stream_analysis(
+        self,
+        board: chess.Board,
+        *,
+        depth: int,
+        multipv: int = 1,
+        time_backstop: Optional[float] = None,
+    ):
+        """Yield (depth, Evaluation) snapshots as the engine deepens.
+
+        One snapshot per completed depth, once every requested MultiPV line
+        is present. A fresh game token clears the transposition table first
+        (same reproducibility discipline as the fixed-nodes path).
+
+        The generator holds this instance's call lock for the whole search,
+        so it must be fully consumed or closed: closing it (client
+        disconnect) stops the engine and releases the lock.
+        """
+        if not self.engine:
+            raise RuntimeError("Engine not started. Use context manager or call start()")
+        requested = max(1, int(multipv))
+        limit = chess.engine.Limit(
+            depth=max(1, int(depth)),
+            **({"time": float(time_backstop)} if time_backstop else {}),
+        )
+        with self._call_lock:
+            with self.engine.analysis(
+                board, limit, multipv=requested, game=object()
+            ) as analysis:
+                pending: dict = {}
+                for info in analysis:
+                    info_depth = info.get("depth")
+                    if info_depth is None:
+                        continue
+                    pending[info.get("multipv", 1)] = info
+                    if len(pending) < requested:
+                        continue
+                    infos = [
+                        pending.get(index, {})
+                        for index in range(1, requested + 1)
+                    ]
+                    pending = {}
+                    yield info_depth, self._build_evaluation(
+                        board,
+                        infos[0],
+                        infos[1] if requested > 1 else None,
+                    )
 
     def suggest(
         self,
