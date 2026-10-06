@@ -89,12 +89,9 @@ export default function WoodpeckerPromoCard({
           ) : null}
           <Link
             href="/woodpecker"
-            className="group mt-3.5 inline-flex items-center gap-2 rounded-md bg-moss px-5 py-2.5 text-sm font-semibold text-white shadow-[0_8px_28px_rgba(46,158,91,0.35)] transition duration-300 hover:bg-moss-bright"
+            className="mt-3.5 inline-flex items-center justify-center rounded-md bg-moss px-5 py-2.5 text-sm font-semibold text-white shadow-[0_8px_28px_rgba(46,158,91,0.35)] transition duration-300 hover:bg-moss-bright"
           >
             Start Review
-            <span className="transition-transform duration-300 group-hover:translate-x-1">
-              →
-            </span>
           </Link>
         </div>
       </div>
