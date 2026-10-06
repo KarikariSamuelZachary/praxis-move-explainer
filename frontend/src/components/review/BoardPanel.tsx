@@ -147,6 +147,13 @@ export default function BoardPanel({
   const bestMoveUci = currentMove?.best_move_uci ?? null;
   const bestMoveResultFen =
     fenBefore && bestMoveUci ? applyUciMove(fenBefore, bestMoveUci) : null;
+  // Explore mode: best move for the side to move at the current position
+  // (the next position's best). Playing it from the current position gives
+  // the preview shown when "Best move" is toggled while exploring.
+  const suggestionResultFen =
+    suggestionUci && suggestionUci.length >= 4
+      ? (applyUciMove(boardPosition, suggestionUci) ?? null)
+      : null;
 
   // Persistent suggestion arrow. Outside explore mode it is the analyzed
   // move's "better move" (best_move_uci). In explore mode the board shows a
@@ -155,7 +162,15 @@ export default function BoardPanel({
   // line of the move just played. Hidden during the best-move animation.
   const arrowUci = exploreMode ? suggestionUci : bestMoveUci;
   const suggestionArrows = useMemo(() => {
-    if (!hasGame || bestStep !== 'off' || !arrowUci || arrowUci.length < 4) {
+    if (!hasGame || !arrowUci || arrowUci.length < 4) {
+      return [];
+    }
+    // Review mode animates via bestStep; explore mode previews the
+    // suggestion directly, so hide the arrow while that preview is up.
+    if (!exploreMode && bestStep !== 'off') {
+      return [];
+    }
+    if (exploreMode && showBestMove) {
       return [];
     }
     const from = arrowUci.slice(0, 2);
@@ -164,14 +179,18 @@ export default function BoardPanel({
       return [];
     }
     return [{ startSquare: from, endSquare: to, color: '#10b981' }];
-  }, [hasGame, bestStep, arrowUci]);
+  }, [hasGame, bestStep, arrowUci, exploreMode, showBestMove]);
 
   // Adjust the animation step during render whenever the toggle flips, so the
   // board immediately shows the played move being taken back (undo) and then
-  // - after a short delay - the best move being played.
-  if (showBestMove && bestStep === 'off') {
+  // - after a short delay - the best move being played. Explore mode skips
+  // the undo replay: it previews the suggestion straight from the current
+  // position, so bestStep stays off there.
+  if (!exploreMode && showBestMove && bestStep === 'off') {
     setBestStep('undo');
   } else if (!showBestMove && bestStep !== 'off') {
+    setBestStep('off');
+  } else if (exploreMode && bestStep !== 'off') {
     setBestStep('off');
   }
 
@@ -182,11 +201,13 @@ export default function BoardPanel({
   }, [bestStep]);
 
   const boardFen =
-    bestStep === 'undo'
-      ? (fenBefore ?? boardPosition)
-      : bestStep === 'best'
-        ? (bestMoveResultFen ?? boardPosition)
-        : boardPosition;
+    exploreMode && showBestMove
+      ? (suggestionResultFen ?? boardPosition)
+      : bestStep === 'undo'
+        ? (fenBefore ?? boardPosition)
+        : bestStep === 'best'
+          ? (bestMoveResultFen ?? boardPosition)
+          : boardPosition;
 
   const game = useMemo(() => {
     try {
@@ -210,7 +231,9 @@ export default function BoardPanel({
   // Dragging/clicking is meaningless while the board is showing the
   // best-move animation (a different position than the review node), so
   // interactions are suspended for the duration of that animation.
-  const canInteract = allowDragging && bestStep === 'off';
+  // Explore's suggestion preview also shows a different position.
+  const canInteract =
+    allowDragging && bestStep === 'off' && !(exploreMode && showBestMove);
 
   const hintSquares = useMemo<Record<string, 'dot' | 'ring'>>(() => {
     if (!canInteract || !selectedSquare || !game) return {};
@@ -231,6 +254,7 @@ export default function BoardPanel({
 
   const lastMoveSquares = useMemo(() => {
     if (bestStep !== 'off' || !currentMove || !fenBefore) return null;
+    if (exploreMode && showBestMove) return null;
     const san = currentMove.san;
     if (!san || san === 'Start') return null;
     try {
@@ -240,7 +264,7 @@ export default function BoardPanel({
     } catch {
       return null;
     }
-  }, [bestStep, currentMove, fenBefore]);
+  }, [bestStep, currentMove, fenBefore, exploreMode, showBestMove]);
 
   const checkSquare = useMemo(() => {
     if (!game || !game.isCheck()) return null;
@@ -410,10 +434,14 @@ export default function BoardPanel({
       )
     : null;
 
-  const showBestIcon = showBestMove && !!bestMoveUci && !!bestMoveResultFen;
-  const bestIconCoords = showBestIcon
-    ? squareToPercent(bestMoveUci.slice(2, 4), orientation)
-    : null;
+  const showBestIcon = exploreMode
+    ? showBestMove && !!suggestionUci && !!suggestionResultFen
+    : showBestMove && !!bestMoveUci && !!bestMoveResultFen;
+  const showBestUci = exploreMode ? suggestionUci : bestMoveUci;
+  const bestIconCoords =
+    showBestIcon && showBestUci && showBestUci.length >= 4
+      ? squareToPercent(showBestUci.slice(2, 4), orientation)
+      : null;
   const evaluationBar = getEvaluationBarState(currentMove);
 
   return (
