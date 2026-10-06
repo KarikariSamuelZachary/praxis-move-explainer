@@ -1,6 +1,5 @@
 'use client';
 
-import { SuggestionLine } from '@/app/(app)/review/review-tree';
 import { GameReviewMove } from '@/types';
 
 type ReviewExplanation = NonNullable<GameReviewMove['explanation']>;
@@ -20,7 +19,6 @@ type AnalysisPanelProps = {
   showBestMove: boolean;
   onToggleBestMove: () => void;
   exploreMode?: boolean;
-  suggestions?: SuggestionLine[];
   exploreError?: string | null;
 };
 
@@ -65,7 +63,6 @@ export default function AnalysisPanel({
   showBestMove,
   onToggleBestMove,
   exploreMode = false,
-  suggestions = [],
   exploreError = null,
 }: AnalysisPanelProps) {
   const classificationStyle = currentMove
@@ -120,43 +117,11 @@ export default function AnalysisPanel({
             </section>
 
             {exploreMode ? (
-              (exploreError || suggestions.length > 0) && (
+              exploreError && (
                 <section className="rounded-2xl border border-[#10b981]/25 bg-black/30 p-4">
-                  <div className="flex flex-col gap-3">
-                    {exploreError && (
-                      <p className="text-xs leading-5 text-amber-300/90">
-                        {exploreError}
-                      </p>
-                    )}
-                    {suggestions.length > 0 && (
-                      <ul className="space-y-2">
-                        {suggestions.map((line) => (
-                          <li
-                            key={`${line.moveUci}-${line.pvSan.join('')}`}
-                            className="rounded-xl border border-white/10 bg-black/30 px-3 py-2"
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="font-mono text-xs font-semibold text-white">
-                                {line.moveSan ?? line.moveUci}
-                              </span>
-                              <span className="font-mono text-[11px] text-white/60">
-                                {typeof line.evalMate === 'number'
-                                  ? `M${Math.abs(line.evalMate)}`
-                                  : typeof line.evalCp === 'number'
-                                    ? `${line.evalCp >= 0 ? '+' : ''}${(line.evalCp / 100).toFixed(2)}`
-                                    : ''}
-                              </span>
-                            </div>
-                            {line.pvSan.length > 1 && (
-                              <p className="mt-1 font-mono text-[11px] leading-5 text-white/60">
-                                {line.pvSan.join(' ')}
-                              </p>
-                            )}
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                  </div>
+                  <p className="text-xs leading-5 text-amber-300/90">
+                    {exploreError}
+                  </p>
                 </section>
               )
             ) : explanation ? (
