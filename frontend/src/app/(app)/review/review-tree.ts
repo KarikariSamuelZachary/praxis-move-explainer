@@ -15,44 +15,11 @@
  */
 import { GameReviewMove } from '../../../types';
 
-/** One engine suggestion line (schema step will populate these). */
-export type SuggestionLine = {
-  moveUci: string;
-  moveSan: string;
-  evalCp?: number;
-  evalMate?: number | null;
-  pvSan: string[];
-};
-
-export type ReviewAnalysisStatus =
-  | 'ready'
-  | 'analyzing'
-  | 'unavailable'
-  | 'stale';
-
-export type TerminalKind =
-  | 'checkmate'
-  | 'stalemate'
-  | 'insufficient_material'
-  | 'fivefold_repetition'
-  | 'seventyfive_moves';
-
-/** Per-node eval/label data, filled by the batch response or the live path. */
+/** Per-node state consumed by the live explore route and board. */
 export type ReviewNodeEval = {
-  evalCp?: number;
-  evalMate?: number | null;
-  classification?: GameReviewMove['classification'];
-  bestMoveUci?: string | null;
-  /** Path-level context carried per node (not derivable from FEN alone). */
-  rawEpLoss?: number;
-  isBook?: boolean;
-  /** Mode fingerprint the data was produced under (stale-gate echo). */
-  mode?: string;
-  status?: ReviewAnalysisStatus;
-  terminal?: TerminalKind;
-  drawClaimable?: boolean;
-  suggestionsBefore?: SuggestionLine[];
-  suggestionsAfter?: SuggestionLine[];
+  status?: 'analyzing';
+  classificationReady?: boolean;
+  suggestionUci?: string | null;
 };
 
 export type ReviewNode = {
@@ -68,7 +35,7 @@ export type ReviewNode = {
   move: GameReviewMove | null;
   /** Ordered child ids; children[0] is the mainline continuation. */
   children: string[];
-  /** Eval/label payload; absent until the schema/live steps fill it. */
+  /** Live explore state; absent until a variation is analyzed. */
   analysis?: ReviewNodeEval;
 };
 
