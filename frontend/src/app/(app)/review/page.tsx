@@ -12,14 +12,12 @@ import ReviewShell from '@/components/review/ReviewShell';
 import {
   GameReviewMove,
   ReviewCapabilities,
-  SandboxLine,
   SandboxMoveResponse,
 } from '@/types';
 
 import { displayedExplanationFor, lastPlyFor } from './review-page-logic';
 import {
   ReviewTree,
-  SuggestionLine,
   addVariation,
   buildMainlineTree,
   mainlinePlyToNode,
@@ -97,16 +95,6 @@ function resolveExploreMove(
   } catch {
     return null;
   }
-}
-
-function toSuggestionLine(line: SandboxLine): SuggestionLine {
-  return {
-    moveUci: line.move_uci ?? '',
-    moveSan: line.move_san ?? '',
-    evalCp: line.eval_cp ?? undefined,
-    evalMate: line.eval_mate ?? undefined,
-    pvSan: line.pv_san,
-  };
 }
 
 export default function ReviewPage() {
@@ -387,16 +375,12 @@ export default function ReviewPage() {
         second_best_move_uci: data.second_best?.move_uci ?? null,
         second_best_pv_uci: data.second_best?.pv_uci ?? [],
       };
-      const lines = [data.best, data.second_best]
-        .filter((line): line is SandboxLine => Boolean(line))
-        .map(toSuggestionLine);
       setTree((current) => {
         if (!current) {
           return current;
         }
         const withMove = setNodeMove(current, nodeId, row);
         return setNodeAnalysis(withMove, nodeId, {
-          suggestionsBefore: lines,
           status: 'ready',
           mode: data.mode,
           evalCp: data.eval_cp,
@@ -433,10 +417,6 @@ export default function ReviewPage() {
   );
   const moveNumberLabel = view?.moveNumberLabel ?? 'Starting position';
   const bestMoveSan = view?.bestMoveSan ?? null;
-  const activeNode =
-    tree && activeNodeId ? tree.nodes[activeNodeId] : null;
-  const suggestions: SuggestionLine[] =
-    activeNode?.analysis?.suggestionsBefore ?? [];
 
   function handlePlySelect(ply: number) {
     if (!tree) {
@@ -495,7 +475,6 @@ export default function ReviewPage() {
             showBestMove={showBestMove}
             onToggleBestMove={() => setShowBestMove((value) => !value)}
             exploreMode={exploreMode}
-            suggestions={suggestions}
             exploreError={exploreError}
           />
         }
