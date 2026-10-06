@@ -30,7 +30,6 @@ type ImportPanelProps = {
   isAnalyzing: boolean;
   errorMessage: string | null;
   disabled?: boolean;
-  progress?: { done: number; total: number | null } | null;
 };
 
 const SOURCE_TABS: { key: ImportSource; label: string }[] = [
@@ -60,7 +59,6 @@ export default function ImportPanel({
   isAnalyzing,
   errorMessage,
   disabled,
-  progress,
 }: ImportPanelProps) {
   const inputId = useId();
   const [fileName, setFileName] = useState<string | null>(null);
@@ -193,21 +191,10 @@ export default function ImportPanel({
           {isAnalyzing ? (
             <>
               <span className="h-4 w-4 rounded-full border-2 border-[#f0e0c0]/40 border-t-[#f0e0c0] animate-spin" />
-              <span>
-                {progress
-                  ? progress.total
-                    ? `Analyzing ${progress.done}/${progress.total}...`
-                    : `Analyzing ${progress.done}...`
-                  : 'Analyzing...'}
-              </span>
+              <span>Analyzing...</span>
             </>
           ) : (
-            <>
-              <span>Import Game</span>
-              <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24" aria-hidden>
-                <path d="m9 18 6-6-6-6" />
-              </svg>
-            </>
+            <span>Import Game</span>
           )}
         </button>
       )}
@@ -356,7 +343,7 @@ function UsernameImport({
                       {formatGameDate(game.end_time)} · {game.time_class} · {game.result}
                     </span>
                   </span>
-                  {isSelected ? (
+                  {isSelected && (
                     <svg
                       className="h-3.5 w-3.5 shrink-0 text-[#f7e5c6]"
                       fill="none"
@@ -368,20 +355,6 @@ function UsernameImport({
                       aria-hidden
                     >
                       <path d="m5 12 4 4L19 6" />
-                    </svg>
-                  ) : (
-                    <svg
-                      className="h-3.5 w-3.5 shrink-0 text-[#f7e5c6]/50 transition group-hover:text-[#f7e5c6]"
-                      fill="none"
-                      stroke="currentColor"
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth="2"
-                      viewBox="0 0 24 24"
-                      aria-hidden
-                    >
-                      <path d="M5 12h14" />
-                      <path d="m12 5 7 7-7 7" />
                     </svg>
                   )}
                 </button>
