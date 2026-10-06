@@ -20,6 +20,8 @@ type AnalysisPanelProps = {
   onToggleBestMove: () => void;
   exploreMode?: boolean;
   exploreError?: string | null;
+  // True while the played move has no engine snapshot yet: no badge.
+  classificationPending?: boolean;
 };
 
 const CLASSIFICATION_ROW: Record<
@@ -64,6 +66,7 @@ export default function AnalysisPanel({
   onToggleBestMove,
   exploreMode = false,
   exploreError = null,
+  classificationPending = false,
 }: AnalysisPanelProps) {
   const classificationStyle = currentMove
     ? CLASSIFICATION_ROW[currentMove.classification]
@@ -88,13 +91,20 @@ export default function AnalysisPanel({
                 <span className="font-mono text-2xl font-semibold text-white">
                   {currentMove.san}
                 </span>
-                {classificationStyle && (
-                  <span
-                    className={`inline-flex items-center gap-1 rounded-full bg-black/40 px-2 py-0.5 text-[10px] font-medium ${classificationStyle.tone}`}
-                  >
-                    <span aria-hidden>{classificationStyle.icon}</span>
-                    {classificationStyle.label}
+                {classificationPending ? (
+                  <span className="inline-flex items-center gap-1 rounded-full bg-black/40 px-2 py-0.5 text-[10px] font-medium text-white/50">
+                    <span className="h-2.5 w-2.5 animate-pulse rounded-full border border-white/40" />
+                    Analyzing...
                   </span>
+                ) : (
+                  classificationStyle && (
+                    <span
+                      className={`inline-flex items-center gap-1 rounded-full bg-black/40 px-2 py-0.5 text-[10px] font-medium ${classificationStyle.tone}`}
+                    >
+                      <span aria-hidden>{classificationStyle.icon}</span>
+                      {classificationStyle.label}
+                    </span>
+                  )
                 )}
               </div>
               <p className="mt-2 text-[11px] text-white/50">
