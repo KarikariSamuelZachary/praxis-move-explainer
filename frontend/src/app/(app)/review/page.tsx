@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { Chess } from 'chess.js';
 
@@ -12,12 +12,15 @@ import ReviewShell from '@/components/review/ReviewShell';
 import {
   GameReviewMove,
   ReviewCapabilities,
-  SandboxMoveResponse,
+  SandboxLine,
+  SandboxPrewarmResponse,
+  SandboxStreamMessage,
 } from '@/types';
 
 import { displayedExplanationFor, lastPlyFor } from './review-page-logic';
 import {
   ReviewTree,
+  SuggestionLine,
   addVariation,
   buildMainlineTree,
   mainlinePlyToNode,
@@ -63,6 +66,25 @@ type ResolvedExploreMove = {
   fen: string;
   color: 'white' | 'black';
 };
+
+/** One engine line in the tree's suggestion shape (empty moves dropped). */
+function toSuggestionLine(line: SandboxLine): SuggestionLine {
+  return {
+    moveUci: line.move_uci ?? '',
+    moveSan: line.move_san ?? '',
+    evalCp: line.eval_cp ?? undefined,
+    evalMate: line.eval_mate ?? undefined,
+    pvSan: line.pv_san,
+  };
+}
+
+function suggestionLinesFrom(
+  lines: Array<SandboxLine | null | undefined>,
+): SuggestionLine[] {
+  return lines
+    .filter((line): line is SandboxLine => Boolean(line && line.move_uci))
+    .map(toSuggestionLine);
+}
 
 /** Legal move for a drag/click on `fen`; promotions default to a queen. */
 function resolveExploreMove(
@@ -117,6 +139,8 @@ export default function ReviewPage() {
   // Mode fingerprint of the finished review (stream meta line). Echoed back
   // as expected_mode so the sandbox rejects explores against a stale review.
   const [reviewMode, setReviewMode] = useState<string | null>(null);
+  // In-flight deepening stream; a new explored move aborts the previous one.
+  const streamAbortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -154,6 +178,66 @@ export default function ReviewPage() {
     setCoachError(null);
     setShowBestMove(false);
   }, [analysisState, gameData]);
+
+  // Explore-mode suggestion: ask for the engine's best move at the active
+  // position (the side to move) and draw it as an arrow. Debounced ~300ms
+  // after the last selection change; a new selection cancels the pending
+  // timer and aborts the in-flight request. Nodes an explore already
+  // labelled carry their own line, so they are skipped.
+  useEffect(() => {
+    if (!exploreMode || !sandboxEnabled || !tree || !activeNodeId) {
+      return;
+    }
+    const node = tree.nodes[activeNodeId];
+    if (!node) {
+      return;
+    }
+    if (
+      node.analysis?.status === 'analyzing' ||
+      node.analysis?.suggestionsAfter?.length
+    ) {
+      return;
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      fetch('/api/review/live/prewarm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          moves: pathSans(tree, activeNodeId),
+          expected_mode: reviewMode,
+        }),
+        signal: controller.signal,
+      })
+        .then((response) => (response.ok ? response.json() : null))
+        .then((data: SandboxPrewarmResponse | null) => {
+          if (!data) {
+            return;
+          }
+          const lines = suggestionLinesFrom([data.best, data.second_best]);
+          if (lines.length === 0) {
+            return;
+          }
+          setTree((current) => {
+            const currentNode = current?.nodes[activeNodeId];
+            if (!current || !currentNode) {
+              return current;
+            }
+            return setNodeAnalysis(current, activeNodeId, {
+              ...currentNode.analysis,
+              suggestionsAfter: lines,
+            });
+          });
+        })
+        .catch(() => {
+          // Prewarming is best-effort; explores work without it.
+        });
+    }, 300);
+    return () => {
+      clearTimeout(timer);
+      controller.abort();
+    };
+  }, [exploreMode, sandboxEnabled, activeNodeId, reviewMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const canAnalyze = pgnInput.trim().length > 0 && analysisState !== 'analyzing';
 
@@ -297,12 +381,17 @@ export default function ReviewPage() {
       return;
     }
 
-    // Optimistic, chess.com-style feedback: append the move immediately with
-    // a provisional "Good" label so the piece and its badge land in the same
-    // frame; the engine's real label replaces it when the live result
-    // arrives (which is why the badge can visibly change afterwards).
+    // A new move supersedes any deepening still in flight.
+    streamAbortRef.current?.abort();
+    const controller = new AbortController();
+    streamAbortRef.current = controller;
+
+    // The move lands on the board immediately with no label: the first
+    // engine snapshot (well under a second) fills in the eval bar, arrow
+    // and a provisional badge; later depths refine them; the final line
+    // settles the label at the live depth. No fake "good" in between.
     const parentId = activeNodeId;
-    const optimisticRow: GameReviewMove = {
+    const pendingRow: GameReviewMove = {
       fen: resolved.fen,
       san: resolved.san,
       color: resolved.color,
@@ -318,15 +407,14 @@ export default function ReviewPage() {
       second_best_move_uci: null,
       second_best_pv_uci: [],
     };
-    const { tree: optimisticTree, nodeId } = addVariation(
+    const { tree: pendingTree, nodeId } = addVariation(
       tree,
       parentId,
-      optimisticRow,
+      pendingRow,
       { status: 'analyzing' },
     );
-    const createdOptimisticNode =
-      optimisticTree.nodes[nodeId]?.move === optimisticRow;
-    setTree(optimisticTree);
+    const createdPendingNode = pendingTree.nodes[nodeId]?.move === pendingRow;
+    setTree(pendingTree);
     setActiveNodeId(nodeId);
     setExploreError(null);
 
@@ -334,15 +422,19 @@ export default function ReviewPage() {
       // The sandbox replays the move path from the game start (book
       // contiguity, repetition history, previous-ply context); a bare FEN
       // carries none of that and is rejected, so always send the path.
-      const response = await fetch('/api/review/live', {
+      const response = await fetch('/api/review/live/stream', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Accept: 'application/x-ndjson',
+        },
         body: JSON.stringify({
           moves: pathSans(tree, parentId),
           move: resolved.uci,
           player_rating: null,
           expected_mode: reviewMode,
         }),
+        signal: controller.signal,
       });
 
       if (!response.ok) {
@@ -355,47 +447,126 @@ export default function ReviewPage() {
         }
         throw new Error(detail);
       }
+      if (!response.body) {
+        throw new Error('Live analysis returned no stream');
+      }
 
-      const data = (await response.json()) as SandboxMoveResponse;
-      const row: GameReviewMove = {
-        fen: data.fen,
-        san: data.move_san,
-        color: data.color,
-        classification: data.classification,
-        cp_loss: data.cp_loss,
-        ep_loss: data.ep_loss,
-        eval_cp: data.eval_cp,
-        eval_mate: data.eval_mate ?? null,
-        best_move_san: data.best?.move_san ?? null,
-        best_move_uci: data.best?.move_uci ?? null,
-        fen_before: data.fen_before,
-        raw_ep_loss: data.ep_loss,
-        second_best_cp: data.second_best?.eval_cp ?? null,
-        second_best_move_san: data.second_best?.move_san ?? null,
-        second_best_move_uci: data.second_best?.move_uci ?? null,
-        second_best_pv_uci: data.second_best?.pv_uci ?? [],
-      };
-      setTree((current) => {
-        if (!current) {
-          return current;
+      const handleMessage = (message: SandboxStreamMessage) => {
+        if (message.type === 'info') {
+          // One deepening snapshot: update the provisional badge, eval bar
+          // and the next-mover arrow without waiting for the final depth.
+          const afterLines = suggestionLinesFrom([message.best_after]);
+          setTree((current) => {
+            const node = current?.nodes[nodeId];
+            if (!current || !node) {
+              return current;
+            }
+            const row: GameReviewMove = {
+              ...(node.move ?? pendingRow),
+              classification: message.classification,
+              cp_loss: message.cp_loss,
+              ep_loss: message.ep_loss,
+              eval_cp: message.eval_cp,
+              eval_mate: message.eval_mate ?? null,
+            };
+            return setNodeAnalysis(setNodeMove(current, nodeId, row), nodeId, {
+              ...node.analysis,
+              status: 'analyzing',
+              classification: message.classification,
+              evalCp: message.eval_cp,
+              evalMate: message.eval_mate ?? null,
+              suggestionsAfter: afterLines,
+            });
+          });
+          return;
         }
-        const withMove = setNodeMove(current, nodeId, row);
-        return setNodeAnalysis(withMove, nodeId, {
-          status: 'ready',
-          mode: data.mode,
-          evalCp: data.eval_cp,
-          evalMate: data.eval_mate ?? null,
+        if (message.type === 'error') {
+          throw new Error(message.detail ?? 'Could not analyze that move.');
+        }
+        if (message.type !== 'final') {
+          return;
+        }
+        const data = message.response;
+        const row: GameReviewMove = {
+          fen: data.fen,
+          san: data.move_san,
+          color: data.color,
           classification: data.classification,
-          bestMoveUci: data.best?.move_uci ?? null,
+          cp_loss: data.cp_loss,
+          ep_loss: data.ep_loss,
+          eval_cp: data.eval_cp,
+          eval_mate: data.eval_mate ?? null,
+          best_move_san: data.best?.move_san ?? null,
+          best_move_uci: data.best?.move_uci ?? null,
+          fen_before: data.fen_before,
+          raw_ep_loss: data.ep_loss,
+          second_best_cp: data.second_best?.eval_cp ?? null,
+          second_best_move_san: data.second_best?.move_san ?? null,
+          second_best_move_uci: data.second_best?.move_uci ?? null,
+          second_best_pv_uci: data.second_best?.pv_uci ?? [],
+        };
+        // `best`/`second_best` are the pre-move lines (the Better-move
+        // replay); `best_after`/`second_best_after` are the next mover's
+        // lines, which become this node's suggestion arrow.
+        const beforeLines = suggestionLinesFrom([data.best, data.second_best]);
+        const afterLines = suggestionLinesFrom([
+          data.best_after,
+          data.second_best_after,
+        ]);
+        setTree((current) => {
+          if (!current) {
+            return current;
+          }
+          const withMove = setNodeMove(current, nodeId, row);
+          return setNodeAnalysis(withMove, nodeId, {
+            status: 'ready',
+            mode: data.mode,
+            evalCp: data.eval_cp,
+            evalMate: data.eval_mate ?? null,
+            classification: data.classification,
+            bestMoveUci: data.best?.move_uci ?? null,
+            suggestionsBefore: beforeLines,
+            suggestionsAfter: afterLines,
+          });
         });
-      });
+      };
+
+      // Parse complete NDJSON lines as they arrive so each depth updates
+      // the board immediately.
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) {
+          break;
+        }
+        buffer += decoder.decode(value, { stream: true });
+        let newline = buffer.indexOf('\n');
+        while (newline >= 0) {
+          const line = buffer.slice(0, newline).trim();
+          buffer = buffer.slice(newline + 1);
+          if (line) {
+            handleMessage(JSON.parse(line) as SandboxStreamMessage);
+          }
+          newline = buffer.indexOf('\n');
+        }
+      }
+      buffer += decoder.decode();
+      const tail = buffer.trim();
+      if (tail) {
+        handleMessage(JSON.parse(tail) as SandboxStreamMessage);
+      }
     } catch (error) {
+      if (controller.signal.aborted) {
+        return; // A newer move owns the board; leave its node alone.
+      }
       const detail =
         error instanceof Error ? error.message : 'Could not analyze that move.';
       setExploreError(detail);
-      // Roll the optimistic node back when nothing branched from it yet;
-      // a re-played existing variation keeps its last good label instead.
-      if (createdOptimisticNode) {
+      // Roll the pending node back when nothing branched from it yet; a
+      // re-played existing variation keeps its last good label instead.
+      if (createdPendingNode) {
         setTree((current) =>
           current ? removeLeafNode(current, nodeId) : current,
         );
@@ -411,6 +582,16 @@ export default function ReviewPage() {
       : null;
   const currentMove = view?.currentMove ?? null;
   const activePly = view && tree && activeNodeId ? tree.nodes[activeNodeId].ply : 0;
+  const activeNode = tree && activeNodeId ? tree.nodes[activeNodeId] : null;
+  // Explore-mode arrow: the engine's best move for the side to move at the
+  // active position (not the pre-move "better move" the batch row carries).
+  const suggestionUci =
+    activeNode?.analysis?.suggestionsAfter?.[0]?.moveUci ?? null;
+  // No badge until the first deepening snapshot lands; the placeholder row's
+  // classification must never render.
+  const classificationPending =
+    activeNode?.analysis?.status === 'analyzing' &&
+    activeNode.analysis.classification === undefined;
   const displayedExplanation = displayedExplanationFor(
     currentMove,
     coachExplanation,
@@ -457,6 +638,8 @@ export default function ReviewPage() {
             exploreMode={exploreMode}
             onToggleExplore={() => setExploreMode((value) => !value)}
             sandboxEnabled={sandboxEnabled}
+            suggestionUci={suggestionUci}
+            classificationPending={classificationPending}
           />
         }
         analysisPanel={
@@ -476,6 +659,7 @@ export default function ReviewPage() {
             onToggleBestMove={() => setShowBestMove((value) => !value)}
             exploreMode={exploreMode}
             exploreError={exploreError}
+            classificationPending={classificationPending}
           />
         }
       />
