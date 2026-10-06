@@ -188,6 +188,28 @@ def test_populated_load_cached_for_ttl():
     print("  [PASS] populated load cached for TTL; expiry reloads")
 
 
+def test_ensure_book_revision_loads_before_returning():
+    real_loader, real_retry = _reset_loader_state()
+    calls = []
+    try:
+        def counting_loader():
+            calls.append(1)
+            return {"k": frozenset({"e2e4"})}, "rev-1"
+
+        mod._load_book_from_db = counting_loader
+        assert mod.get_book_revision() is None, "revision starts unloaded"
+        assert mod.ensure_book_revision() == "rev-1", (
+            "ensure_book_revision must load the book before returning"
+        )
+        assert mod.get_book_revision() == "rev-1"
+        assert len(calls) == 1, f"expected exactly one load, got {len(calls)}"
+    finally:
+        mod._load_book_from_db = real_loader
+        mod._BOOK_EMPTY_RETRY_SECONDS = real_retry
+        mod.invalidate_cache()
+    print("  [PASS] ensure_book_revision loads the book before returning")
+
+
 def test_startup_warning_on_empty_table():
     real_counter = mod.count_book_rows
     logger = logging.getLogger("services.opening_book")
@@ -537,6 +559,7 @@ def main() -> int:
         test_empty_load_not_cached_and_reload_picks_up_populated,
         test_db_exception_not_cached,
         test_populated_load_cached_for_ttl,
+        test_ensure_book_revision_loads_before_returning,
         test_startup_warning_on_empty_table,
         test_seed_if_empty_seeds_and_noop_when_populated,
         test_concurrent_seeders_no_duplicates,
