@@ -13,14 +13,21 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 
 from core.analysis_mode import (
+    REVIEW_LIVE_DEPTH,
+    REVIEW_LIVE_MULTIPV,
+    REVIEW_LIVE_PREWARM_MULTIPV,
+    REVIEW_LIVE_TIME_BACKSTOP,
     REVIEW_MULTIPV,
+    current_live_mode_string,
     current_mode_string,
+    live_mode_compatible,
     review_deterministic_enabled,
     review_max_plies,
     review_nodes,
 )
 from core.auth import require_clerk_user_id
 from core.game_analyzer import GameAnalyzer, pv_to_san
+from core.terminal import terminal_state
 from core.rate_limit import limit_by_clerk_user_id, limit_by_ip
 from engines.stockfish_engine import (
     get_review_engine_name,
@@ -151,6 +158,73 @@ def _second_line_from_eval(
         pv_uci=pv_uci,
         pv_san=pv_to_san(board, pv_uci),
     )
+
+
+def _sandbox_response(
+    row: Dict[str, Any],
+    move: chess.Move,
+    before: chess.Board,
+    eval_before: Evaluation,
+    after_board: chess.Board,
+    eval_after: Evaluation,
+    is_book: bool,
+    mode: str,
+    cached: bool = False,
+) -> SandboxMoveResponse:
+    """One sandbox move response: pre-move lines + next-mover after lines."""
+    return SandboxMoveResponse(
+        classification=row["classification"],
+        cp_loss=row["cp_loss"],
+        ep_loss=row["ep_loss"],
+        raw_ep_loss=row.get("raw_ep_loss", row["ep_loss"]),
+        eval_cp=row["eval_cp"],
+        eval_mate=row["eval_mate"],
+        color=row["color"],
+        fen_before=row["fen_before"],
+        fen=row["fen"],
+        move_san=row["san"],
+        move_uci=move.uci(),
+        is_book=is_book,
+        best=_line_from_eval(before, eval_before),
+        second_best=_second_line_from_eval(before, eval_before),
+        best_after=_line_from_eval(after_board, eval_after),
+        second_best_after=_second_line_from_eval(after_board, eval_after),
+        mode=mode,
+        cached=cached,
+    )
+
+
+def _info_line(
+    depth: int,
+    row: Dict[str, Any],
+    after_board: chess.Board,
+    eval_after: Evaluation,
+) -> Dict[str, Any]:
+    """One progressive-deepening snapshot for the live NDJSON stream."""
+    return {
+        "type": "info",
+        "depth": depth,
+        "classification": row["classification"],
+        "cp_loss": row["cp_loss"],
+        "ep_loss": row["ep_loss"],
+        "eval_cp": row["eval_cp"],
+        "eval_mate": row["eval_mate"],
+        "best_after": _line_from_eval(after_board, eval_after).model_dump(),
+    }
+
+
+def _live_eval_lookup(mode: str, fen: str) -> Optional[Evaluation]:
+    """Cached live eval for a position, prewarm width first.
+
+    The width-2 entry carries the second-best line (Great detection and the
+    second suggestion); a width-1 entry from a previous deepening stream is
+    an acceptable fallback.
+    """
+    for width in (REVIEW_LIVE_PREWARM_MULTIPV, REVIEW_LIVE_MULTIPV):
+        evaluation = _cache_get(_SANDBOX_EVAL_CACHE, f"{mode}|mpv{width}|{fen}")
+        if evaluation is not None:
+            return evaluation
+    return None
 
 
 def _build_explainer():
@@ -463,11 +537,13 @@ def review_live_prewarm(
     _ip: None = Depends(limit_by_ip(limit=30, window=60)),
     _user: None = Depends(limit_by_clerk_user_id(limit=60, window=60)),
 ):
-    """Warm the live eval cache for a path-end position, in the background.
+    """Analyze a path-end position to depth 20 and return its suggestion lines.
 
-    The first touch of a fresh position otherwise pays three engine searches
-    (before, previous-ply context, after). Prewarming when explore mode
-    starts leaves two. Returns whether the position was already cached.
+    This is the engine working on the position at rest (the eval bar, arrow
+    and top-2 lines), exactly like chess.com's analysis board: by the time
+    the player moves, the before-position evaluation is already settled at
+    depth 20 and cached, so the deepening stream of the played move starts
+    immediately. Width 2 keeps the second-best line for Great detection.
     """
     if not review_deterministic_enabled():
         raise HTTPException(status_code=403, detail="Sandbox is disabled")
@@ -481,12 +557,8 @@ def review_live_prewarm(
         log.exception("Sandbox prewarm engine failed to start")
         raise HTTPException(status_code=500, detail="Failed to analyze move") from exc
 
-    mode = current_mode_string(
-        engine_name=get_review_live_engine_name(),
-        multipv=REVIEW_MULTIPV,
-        nodes=review_nodes(),
-    )
-    if body.expected_mode and body.expected_mode != mode:
+    mode = current_live_mode_string(get_review_live_engine_name())
+    if not live_mode_compatible(body.expected_mode, mode):
         raise HTTPException(
             status_code=409,
             detail="Stale review: the analysis mode changed; re-run the review",
@@ -502,28 +574,37 @@ def review_live_prewarm(
         ) from exc
 
     try:
-        eval_key = f"{mode}|{board.fen()}"
-        if _cache_get(_SANDBOX_EVAL_CACHE, eval_key) is not None:
-            return SandboxPrewarmResponse(
-                fen=board.fen(), mode=mode, cached=True
+        eval_key = f"{mode}|mpv{REVIEW_LIVE_PREWARM_MULTIPV}|{board.fen()}"
+        evaluation = _live_eval_lookup(mode, board.fen())
+        cached = evaluation is not None
+        if evaluation is None:
+            analyzer = GameAnalyzer(
+                engine=engine,
+                explainer=MockExplainer(),
+                book_lookup=is_book_move,
+                multipv=REVIEW_LIVE_PREWARM_MULTIPV,
+                deterministic=True,
             )
-        analyzer = GameAnalyzer(
-            engine=engine,
-            explainer=MockExplainer(),
-            book_lookup=is_book_move,
-            multipv=REVIEW_MULTIPV,
-            deterministic=True,
-        )
-        _cache_put(
-            _SANDBOX_EVAL_CACHE,
-            eval_key,
-            analyzer.evaluate_position(board),
-        )
+            evaluation = analyzer.evaluate_position_depth(
+                board,
+                depth=REVIEW_LIVE_DEPTH,
+                multipv=REVIEW_LIVE_PREWARM_MULTIPV,
+                time_backstop=REVIEW_LIVE_TIME_BACKSTOP,
+            )
+            _cache_put(_SANDBOX_EVAL_CACHE, eval_key, evaluation)
     except (chess.engine.EngineError, RuntimeError) as exc:
         reset_review_live_stockfish()
         log.exception("Sandbox prewarm engine failed")
         raise HTTPException(status_code=500, detail="Failed to analyze move") from exc
-    return SandboxPrewarmResponse(fen=board.fen(), mode=mode, cached=False)
+    # The lines answer the client's real question (what should the side to
+    # move play?); caching the eval just makes the next explore cheap.
+    return SandboxPrewarmResponse(
+        fen=board.fen(),
+        mode=mode,
+        cached=cached,
+        best=_line_from_eval(board, evaluation),
+        second_best=_second_line_from_eval(board, evaluation),
+    )
 
 
 @router.post("/review/live", response_model=SandboxMoveResponse)
@@ -601,6 +682,10 @@ def review_live(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     is_book = in_book and is_book_move(board, move)
+    # Position after the explored move: the next mover's suggestion lines
+    # come from its evaluation, which analyze_ply computes anyway.
+    after_board = board.copy()
+    after_board.push(move)
 
     path_key = "|".join(body.moves) if path_context else (body.fen or "")
     result_key = (
@@ -643,7 +728,7 @@ def review_live(
                 eval_previous, eval_before, last_mover, body.player_rating
             )
 
-        row, _, _ = analyzer.analyze_ply(
+        row, eval_after, _ = analyzer.analyze_ply(
             board.copy(),
             move,
             eval_before,
@@ -651,6 +736,13 @@ def review_live(
             player_rating=body.player_rating,
             opponent_prev_ep_loss=opponent_prev_ep_loss,
             include_extras=True,
+        )
+        # Cache the after-position eval too: a prewarm for the new node
+        # (the UI asks for its suggestion) is then served without a search.
+        _cache_put(
+            _SANDBOX_EVAL_CACHE,
+            f"{mode}|{after_board.fen()}",
+            eval_after,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -660,22 +752,8 @@ def review_live(
         raise HTTPException(status_code=500, detail="Failed to analyze move") from exc
 
     before = chess.Board(board.fen())
-    response = SandboxMoveResponse(
-        classification=row["classification"],
-        cp_loss=row["cp_loss"],
-        ep_loss=row["ep_loss"],
-        raw_ep_loss=row.get("raw_ep_loss", row["ep_loss"]),
-        eval_cp=row["eval_cp"],
-        eval_mate=row["eval_mate"],
-        color=row["color"],
-        fen_before=row["fen_before"],
-        fen=row["fen"],
-        move_san=row["san"],
-        move_uci=move.uci(),
-        is_book=is_book,
-        best=_line_from_eval(before, eval_before),
-        second_best=_second_line_from_eval(before, eval_before),
-        mode=mode,
+    response = _sandbox_response(
+        row, move, before, eval_before, after_board, eval_after, is_book, mode
     )
     _cache_put(
         _SANDBOX_RESULT_CACHE,
@@ -683,6 +761,229 @@ def review_live(
         response.model_dump(exclude={"cached"}),
     )
     return response
+
+
+@router.post("/review/live/stream")
+def review_live_stream(
+    body: SandboxMoveRequest,
+    _clerk_id: str = Depends(require_clerk_user_id),
+    _ip: None = Depends(limit_by_ip(limit=30, window=60)),
+    _user: None = Depends(limit_by_clerk_user_id(limit=60, window=60)),
+):
+    """Progressive deepening for one explored move (NDJSON).
+
+    Lines:
+      {"type": "meta", "mode": <live mode>, "depth": <target>}
+      {"type": "info", "depth": d, "classification": ..., "cp_loss": ...,
+       "ep_loss": ..., "eval_cp": ..., "eval_mate": ...,
+       "best_after": {move_uci, move_san}}     # one per completed depth
+      {"type": "final", "response": <SandboxMoveResponse>}
+      {"type": "error", "detail": ...}         # terminal, after 200
+
+    The after-position search deepens to REVIEW_LIVE_DEPTH with MultiPV=1
+    (the eval bar and arrow only need the best line); the before-position
+    evaluation is the settled width-2 result the prewarm cached, so Great
+    detection still sees the second-best line. Closing the response (client
+    disconnect or a new move) stops the engine. A repeat explore replays
+    the cached final without touching the engine.
+    """
+    if not review_deterministic_enabled():
+        raise HTTPException(status_code=403, detail="Sandbox is disabled")
+
+    try:
+        engine = get_review_live_stockfish(
+            depth=int(os.getenv("REVIEW_DEPTH", "18"))
+        )
+    except (chess.engine.EngineError, RuntimeError) as exc:
+        reset_review_live_stockfish()
+        log.exception("Sandbox live stream engine failed to start")
+        raise HTTPException(status_code=500, detail="Failed to analyze move") from exc
+
+    mode = current_live_mode_string(get_review_live_engine_name())
+    if not live_mode_compatible(body.expected_mode, mode):
+        raise HTTPException(
+            status_code=409,
+            detail="Stale review: the analysis mode changed; re-run the review",
+        )
+
+    path_context = bool(body.moves)
+    if path_context:
+        board = chess.Board()
+        in_book = True
+        try:
+            for raw in body.moves:
+                path_move = _resolve_sandbox_move(board, raw)
+                if in_book:
+                    in_book = is_book_move(board, path_move)
+                board.push(path_move)
+        except ValueError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Invalid path: {exc}"
+            ) from exc
+    elif body.fen:
+        raise HTTPException(
+            status_code=400,
+            detail="Sandbox needs the moves path from the game start; "
+            "FEN-only requests are rejected",
+        )
+    else:
+        board = chess.Board()
+        in_book = True
+
+    try:
+        move = _resolve_sandbox_move(board, body.move)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    is_book = in_book and is_book_move(board, move)
+    after_board = board.copy()
+    after_board.push(move)
+
+    path_key = "|".join(body.moves) if path_context else (body.fen or "")
+    result_key = (
+        f"{mode}|{body.player_rating}|{path_key}|{board.fen()}|"
+        f"{move.uci()}|{is_book}|depth{REVIEW_LIVE_DEPTH}"
+    )
+    cached = _cache_get(_SANDBOX_RESULT_CACHE, result_key)
+    if cached is not None:
+        response = dict(cached)
+        response["cached"] = True
+
+        def generate_cached():
+            yield json.dumps(
+                {"type": "meta", "mode": mode, "depth": REVIEW_LIVE_DEPTH}
+            ) + "\n"
+            yield json.dumps({"type": "final", "response": response}) + "\n"
+
+        return StreamingResponse(
+            generate_cached(), media_type="application/x-ndjson"
+        )
+
+    analyzer = GameAnalyzer(
+        engine=engine,
+        explainer=MockExplainer(),
+        book_lookup=is_book_move,
+        multipv=REVIEW_MULTIPV,
+        deterministic=True,
+    )
+
+    # Before-position evaluation: normally the prewarm (width 2) has it.
+    eval_before = _live_eval_lookup(mode, board.fen())
+    try:
+        if eval_before is None:
+            eval_before = analyzer.evaluate_position_depth(
+                board,
+                depth=REVIEW_LIVE_DEPTH,
+                multipv=REVIEW_LIVE_PREWARM_MULTIPV,
+                time_backstop=REVIEW_LIVE_TIME_BACKSTOP,
+            )
+            _cache_put(
+                _SANDBOX_EVAL_CACHE,
+                f"{mode}|mpv{REVIEW_LIVE_PREWARM_MULTIPV}|{board.fen()}",
+                eval_before,
+            )
+    except (chess.engine.EngineError, RuntimeError) as exc:
+        reset_review_live_stockfish()
+        log.exception("Sandbox live stream before-eval failed")
+        raise HTTPException(status_code=500, detail="Failed to analyze move") from exc
+
+    # Previous-ply context for the Miss classifier: the parent position is
+    # normally prewarmed too. Missing context stays None (fail-soft).
+    opponent_prev_ep_loss: Optional[float] = None
+    if path_context and body.moves:
+        previous = chess.Board()
+        for raw in body.moves[:-1]:
+            previous.push(_resolve_sandbox_move(previous, raw))
+        last_move = _resolve_sandbox_move(previous, body.moves[-1])
+        last_mover = "white" if previous.turn == chess.WHITE else "black"
+        eval_previous = _live_eval_lookup(mode, previous.fen())
+        if eval_previous is not None:
+            opponent_prev_ep_loss = analyzer.expected_points_loss(
+                eval_previous, eval_before, last_mover, body.player_rating
+            )
+
+    terminal = terminal_state(after_board)
+
+    def generate():
+        yield json.dumps(
+            {"type": "meta", "mode": mode, "depth": REVIEW_LIVE_DEPTH}
+        ) + "\n"
+        row: Optional[Dict[str, Any]] = None
+        eval_after: Optional[Evaluation] = None
+        try:
+            if terminal is not None:
+                # Terminal synthesis: no engine search on a finished game.
+                row, eval_after, _ = analyzer.analyze_ply(
+                    board.copy(),
+                    move,
+                    eval_before,
+                    is_book_move=is_book,
+                    player_rating=body.player_rating,
+                    opponent_prev_ep_loss=opponent_prev_ep_loss,
+                    include_extras=True,
+                    eval_after=terminal.evaluation,
+                )
+                yield json.dumps(
+                    _info_line(0, row, after_board, eval_after)
+                ) + "\n"
+            else:
+                for depth, snapshot in engine.stream_analysis(
+                    after_board,
+                    depth=REVIEW_LIVE_DEPTH,
+                    multipv=REVIEW_LIVE_MULTIPV,
+                    time_backstop=REVIEW_LIVE_TIME_BACKSTOP,
+                ):
+                    row, eval_after, _ = analyzer.analyze_ply(
+                        board.copy(),
+                        move,
+                        eval_before,
+                        is_book_move=is_book,
+                        player_rating=body.player_rating,
+                        opponent_prev_ep_loss=opponent_prev_ep_loss,
+                        include_extras=True,
+                        eval_after=snapshot,
+                    )
+                    yield json.dumps(
+                        _info_line(depth, row, after_board, snapshot)
+                    ) + "\n"
+            if row is None or eval_after is None:
+                raise RuntimeError("live stream produced no evaluation")
+            response = _sandbox_response(
+                row,
+                move,
+                chess.Board(board.fen()),
+                eval_before,
+                after_board,
+                eval_after,
+                is_book,
+                mode,
+            )
+            _cache_put(
+                _SANDBOX_EVAL_CACHE,
+                f"{mode}|mpv{REVIEW_LIVE_MULTIPV}|{after_board.fen()}",
+                eval_after,
+            )
+            _cache_put(
+                _SANDBOX_RESULT_CACHE,
+                result_key,
+                response.model_dump(exclude={"cached"}),
+            )
+            yield json.dumps(
+                {"type": "final", "response": response.model_dump()}
+            ) + "\n"
+        except (chess.engine.EngineError, RuntimeError):
+            reset_review_live_stockfish()
+            log.exception("Sandbox live stream failed")
+            yield json.dumps(
+                {"type": "error", "detail": "Failed to analyze move"}
+            ) + "\n"
+        except Exception:  # noqa: BLE001 -- stream already committed a 200
+            reset_review_live_stockfish()
+            log.exception("Sandbox live stream failed")
+            yield json.dumps(
+                {"type": "error", "detail": "Failed to analyze move"}
+            ) + "\n"
+
+    return StreamingResponse(generate(), media_type="application/x-ndjson")
 
 
 @router.get("/review/capabilities")
