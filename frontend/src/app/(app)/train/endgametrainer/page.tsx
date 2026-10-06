@@ -46,23 +46,6 @@ type LoadState =
   | { kind: 'empty'; message: string }
   | { kind: 'error'; message: string };
 
-function NextIcon() {
-  return (
-    <svg
-      className="h-5 w-5"
-      fill="none"
-      stroke="currentColor"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      strokeWidth="2"
-      viewBox="0 0 24 24"
-    >
-      <path d="M5 12h14" />
-      <path d="m12 5 7 7-7 7" />
-    </svg>
-  );
-}
-
 /** Which pool the current drill is drawn from: the rated loop, or one
  * practice category. `source` is 'rated' or a category key. */
 type DrillSource = 'rated' | string;
@@ -521,10 +504,8 @@ export default function EndgamesPage() {
                   disabled={isAdvancing}
                   className={`${CARD_CLASS} flex h-14 w-full shrink-0 items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5 disabled:opacity-60`}
                 >
-                  {isAdvancing ? (
+                  {isAdvancing && (
                     <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-transparent" />
-                  ) : (
-                    <NextIcon />
                   )}
                   {isAdvancing
                     ? 'Loading…'
