@@ -18,6 +18,7 @@ Run with: cd src && ../venv/bin/python routers/review_test.py
 Requires: INTERNAL_SECRET from root .env.
 """
 import json
+import json
 import os
 import sys
 from unittest.mock import patch
@@ -225,8 +226,19 @@ def test_live_prewarm_warms_the_position():
             from schemas.models import Evaluation
 
             return Evaluation(
-                score_cp=0.0, best_move_uci="", best_move_san="(none)"
+                score_cp=20.0,
+                best_move_uci="g1f3",
+                best_move_san="Nf3",
+                mate=None,
+                second_best_cp=10.0,
+                principal_variation_uci=["g1f3", "b8c6"],
+                second_best_move_uci="d2d4",
+                second_best_move_san="d4",
+                second_best_pv_uci=["d2d4", "b8c6"],
             )
+
+        def evaluate_position_depth(self, board, **kwargs):
+            return self.evaluate_position(board)
 
     saved = (
         review_module.GameAnalyzer,
@@ -268,11 +280,19 @@ def test_live_prewarm_warms_the_position():
         ) = saved
 
     assert first.status_code == 200, first.text
-    assert first.json()["cached"] is False, first.text
+    first_body = first.json()
+    assert first_body["cached"] is False, first.text
+    assert first_body["best"]["move_san"] == "Nf3", first_body
+    assert first_body["best"]["pv_san"] == ["Nf3", "Nc6"], first_body
+    assert first_body["second_best"]["move_san"] == "d4", first_body
     assert second.status_code == 200, second.text
-    assert second.json()["cached"] is True, second.text
+    second_body = second.json()
+    assert second_body["cached"] is True, second.text
+    assert second_body["best"]["move_san"] == "Nf3", (
+        "a cached prewarm must still return the suggestion lines"
+    )
     assert calls["n"] == 1, f"prewarm evaluated {calls['n']} times"
-    print("  [PASS] live prewarm caches the position (login required too)")
+    print("  [PASS] live prewarm caches the position and returns its lines")
 
 
 def test_prewarm_flag_off_is_403_with_login():
@@ -510,6 +530,9 @@ def _stub_live(monkeypatch_calls):
                 second_best_pv_uci=["d2d4", "g8f6"],
             )
 
+        def evaluate_position_depth(self, board, **kwargs):
+            return self.evaluate_position(board)
+
         def expected_points_loss(self, before, after, turn_color, rating):
             return 0.03
 
@@ -525,7 +548,20 @@ def _stub_live(monkeypatch_calls):
                 "fen": "after",
                 "san": board.san(move),
             }
-            return row, eval_before, 0.01
+            # Distinct after-position eval: the next mover's suggestion
+            # lines must come from this, not from eval_before.
+            after = Evaluation(
+                score_cp=-10.0,
+                best_move_uci="g8f6",
+                best_move_san="Nf6",
+                mate=None,
+                second_best_cp=-20.0,
+                principal_variation_uci=["g8f6"],
+                second_best_move_uci="b8c6",
+                second_best_move_san="Nc6",
+                second_best_pv_uci=["b8c6"],
+            )
+            return row, after, 0.01
 
     return _StubAnalyzer
 
@@ -616,6 +652,11 @@ def test_live_returns_label_lines_and_caches():
     assert body["best"]["pv_san"] == ["Nf3", "Nf6"], body["best"]
     assert body["second_best"]["move_san"] == "d4", body["second_best"]
     assert body["second_best"]["pv_san"] == ["d4", "Nf6"], body["second_best"]
+    # Next-mover suggestions come from the AFTER position (black to move):
+    # Nf6/Nc6, not the pre-move Nf3/d4 lines above.
+    assert body["best_after"]["move_san"] == "Nf6", body["best_after"]
+    assert body["best_after"]["pv_san"] == ["Nf6"], body["best_after"]
+    assert body["second_best_after"]["move_san"] == "Nc6", body["second_best_after"]
     assert body["cached"] is False, body
     calls_after_first = len(calls)
     assert second.status_code == 200, second.text
@@ -731,6 +772,178 @@ def test_live_rejects_stale_mode():
     assert response.status_code == 409, response.text
     assert "Stale review" in response.json()["detail"], response.text
     print("  [PASS] live: mismatched mode -> 409 stale review")
+
+
+def test_live_stream_emits_info_then_final():
+    import routers.review as review_module
+    from schemas.models import Evaluation
+
+    review_module._SANDBOX_EVAL_CACHE.clear()
+    review_module._SANDBOX_RESULT_CACHE.clear()
+
+    class _StubEngine:
+        def stream_analysis(self, board, *, depth, multipv=1, time_backstop=None):
+            assert depth == 20, depth
+            assert multipv == 1, multipv
+            for snapshot_depth, cp in ((5, -50.0), (12, -20.0), (20, -10.0)):
+                yield snapshot_depth, Evaluation(
+                    score_cp=cp,
+                    best_move_uci="g8f6",
+                    best_move_san="Nf6",
+                    mate=None,
+                    second_best_cp=None,
+                    principal_variation_uci=["g8f6"],
+                )
+
+    stub = _stub_live([])
+    saved = (
+        review_module.GameAnalyzer,
+        review_module.get_review_live_stockfish,
+        review_module.get_review_live_engine_name,
+    )
+    review_module.GameAnalyzer = stub
+    review_module.get_review_live_stockfish = lambda *args, **kwargs: _StubEngine()
+    review_module.get_review_live_engine_name = lambda: "Stockfish 19"
+    try:
+        with patch.dict(
+            os.environ,
+            {"REVIEW_DETERMINISTIC": "1", "REVIEW_NODES": "150000"},
+            clear=False,
+        ):
+            response = _client().post(
+                "/api/review/live/stream",
+                json={"moves": ["e4", "e5"], "move": "Nf3"},
+                headers={
+                    "X-Internal-Secret": _secret(),
+                    "X-Clerk-User-Id": TEST_CLERK_ID,
+                },
+            )
+    finally:
+        (
+            review_module.GameAnalyzer,
+            review_module.get_review_live_stockfish,
+            review_module.get_review_live_engine_name,
+        ) = saved
+
+    assert response.status_code == 200, response.text
+    lines = [
+        json.loads(line) for line in response.text.splitlines() if line.strip()
+    ]
+    assert lines[0]["type"] == "meta" and lines[0]["depth"] == 20, lines[0]
+    infos = [line for line in lines if line["type"] == "info"]
+    assert [info["depth"] for info in infos] == [5, 12, 20], infos
+    assert infos[0]["classification"] == "best", infos[0]
+    assert infos[0]["best_after"]["move_san"] == "Nf6", infos[0]
+    final = lines[-1]
+    assert final["type"] == "final", final
+    body = final["response"]
+    assert body["classification"] == "best", body
+    assert body["best_after"]["move_san"] == "Nf6", body["best_after"]
+    assert body["cached"] is False, body
+    assert body["mode"].startswith("rev-live-v1"), body["mode"]
+    print("  [PASS] live stream: meta + one info per depth + final")
+
+
+def test_live_stream_terminal_synthesizes():
+    import routers.review as review_module
+    from schemas.models import Evaluation
+
+    review_module._SANDBOX_EVAL_CACHE.clear()
+    review_module._SANDBOX_RESULT_CACHE.clear()
+
+    class _FakeEngine:
+        def evaluate_depth(self, board, *, depth, multipv=1, time_backstop=None):
+            legal = list(board.legal_moves)
+            first = legal[0] if legal else None
+            return Evaluation(
+                score_cp=0.0,
+                best_move_uci=first.uci() if first else "",
+                best_move_san=board.san(first) if first else "(none)",
+                mate=None,
+                second_best_cp=None,
+                principal_variation_uci=[first.uci()] if first else [],
+            )
+
+        def stream_analysis(self, board, **kwargs):
+            raise AssertionError("terminal after-position must not be streamed")
+
+    saved = (
+        review_module.get_review_live_stockfish,
+        review_module.get_review_live_engine_name,
+    )
+    review_module.get_review_live_stockfish = lambda *args, **kwargs: _FakeEngine()
+    review_module.get_review_live_engine_name = lambda: "Stockfish 19"
+    try:
+        with patch.dict(
+            os.environ,
+            {"REVIEW_DETERMINISTIC": "1", "REVIEW_NODES": "150000"},
+            clear=False,
+        ):
+            response = _client().post(
+                "/api/review/live/stream",
+                json={"moves": ["f3", "e5", "g4"], "move": "Qh4"},
+                headers={
+                    "X-Internal-Secret": _secret(),
+                    "X-Clerk-User-Id": TEST_CLERK_ID,
+                },
+            )
+    finally:
+        (
+            review_module.get_review_live_stockfish,
+            review_module.get_review_live_engine_name,
+        ) = saved
+
+    assert response.status_code == 200, response.text
+    lines = [
+        json.loads(line) for line in response.text.splitlines() if line.strip()
+    ]
+    infos = [line for line in lines if line["type"] == "info"]
+    assert len(infos) == 1 and infos[0]["depth"] == 0, infos
+    final = lines[-1]
+    assert final["type"] == "final", final
+    assert final["response"]["eval_mate"] is not None, final["response"]
+    print("  [PASS] live stream: checkmate synthesized, no engine search")
+
+
+def test_live_stream_rejects_stale_mode():
+    import routers.review as review_module
+
+    saved = (
+        review_module.get_review_live_stockfish,
+        review_module.get_review_live_engine_name,
+    )
+    review_module.get_review_live_stockfish = lambda *args, **kwargs: object()
+    review_module.get_review_live_engine_name = lambda: "Stockfish 19"
+    try:
+        with patch.dict(
+            os.environ,
+            {"REVIEW_DETERMINISTIC": "1", "REVIEW_NODES": "150000"},
+            clear=False,
+        ):
+            response = _client().post(
+                "/api/review/live/stream",
+                json={
+                    "moves": [],
+                    "fen": _LIVE_FEN,
+                    "move": "g1f3",
+                    "expected_mode": (
+                        "rev-det-v1|engine=NotStockfish|classifier=x|book=y"
+                    ),
+                },
+                headers={
+                    "X-Internal-Secret": _secret(),
+                    "X-Clerk-User-Id": TEST_CLERK_ID,
+                },
+            )
+    finally:
+        (
+            review_module.get_review_live_stockfish,
+            review_module.get_review_live_engine_name,
+        ) = saved
+
+    assert response.status_code == 409, response.text
+    assert "Stale review" in response.json()["detail"], response.text
+    print("  [PASS] live stream: mismatched engine -> 409 stale review")
 
 
 def test_live_terminal_checkmate_and_stalemate():
@@ -1156,6 +1369,9 @@ def run() -> int:
         test_live_replays_the_move_path,
         test_live_replays_the_move_path,
         test_live_rejects_stale_mode,
+        test_live_stream_emits_info_then_final,
+        test_live_stream_terminal_synthesizes,
+        test_live_stream_rejects_stale_mode,
         test_live_rejects_fen_only_requests,
         test_live_prewarm_warms_the_position,
         test_prewarm_flag_off_is_403_with_login,
