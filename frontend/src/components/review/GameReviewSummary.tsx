@@ -1,6 +1,6 @@
 'use client';
 
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 import type { GameReviewMove, MoveClassification } from '@/types';
 
@@ -8,17 +8,26 @@ import { ClassificationIcon } from './icons/ClassificationIcon';
 
 export type ReviewSummaryProgress = { done: number; total: number | null };
 
+export type ReviewPlatform = 'chesscom' | 'lichess' | null;
+
 type GameReviewSummaryProps = {
   pgn: string;
   moves: GameReviewMove[] | null;
   isAnalyzing: boolean;
   progress?: ReviewSummaryProgress | null;
   onStartReview: () => void;
+  /** Where the game came from. Avatars only exist on chess.com (lichess
+   *  has no profile pictures, pasted PGNs have no known provider), so any
+   *  other value keeps the initials fallback. */
+  platform: ReviewPlatform;
 };
 
 type PlayerMeta = {
   name: string;
   rating: number | null;
+  /** False when the PGN carries no usable name (missing tag, "?", etc):
+   *  the head renders the pawn fallback and never hits the avatar API. */
+  known: boolean;
 };
 
 type SummaryRowDef = {
@@ -56,14 +65,33 @@ function parseRating(value: string | null): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
+function isKnownName(value: string | null): boolean {
+  if (!value) return false;
+  const trimmed = value.trim();
+  return trimmed !== '' && trimmed !== '?' && trimmed.toLowerCase() !== 'unknown';
+}
+
 function playerMetaFromPgn(pgn: string): { white: PlayerMeta; black: PlayerMeta } {
-  const whiteName = parsePgnTag(pgn, 'White') ?? 'White';
-  const blackName = parsePgnTag(pgn, 'Black') ?? 'Black';
+  const rawWhite = parsePgnTag(pgn, 'White');
+  const rawBlack = parsePgnTag(pgn, 'Black');
   return {
-    white: { name: whiteName, rating: parseRating(parsePgnTag(pgn, 'WhiteElo')) },
-    black: { name: blackName, rating: parseRating(parsePgnTag(pgn, 'BlackElo')) },
+    white: {
+      name: rawWhite ?? 'White',
+      rating: parseRating(parsePgnTag(pgn, 'WhiteElo')),
+      known: isKnownName(rawWhite),
+    },
+    black: {
+      name: rawBlack ?? 'Black',
+      rating: parseRating(parsePgnTag(pgn, 'BlackElo')),
+      known: isKnownName(rawBlack),
+    },
   };
 }
+
+// Session-level avatar cache so tab switches (Overview <-> Moves) and the
+// analyzing -> ready transition don't re-hit the profile endpoint. The
+// backend already caches for an hour; this just covers re-mounts.
+const avatarCache = new Map<string, string | null>();
 
 function epLossOf(move: GameReviewMove): number {
   const candidate = move.ep_loss ?? move.raw_ep_loss ?? 0;
@@ -106,6 +134,7 @@ export default function GameReviewSummary({
   isAnalyzing,
   progress,
   onStartReview,
+  platform,
 }: GameReviewSummaryProps) {
   const [showMore, setShowMore] = useState(false);
 
@@ -179,6 +208,8 @@ export default function GameReviewSummary({
             rating={players.white.rating}
             color="white"
             loading={isAnalyzing}
+            knownName={players.white.known}
+            platform={platform}
           />
           <span className="pt-4" />
           <PlayerHead
@@ -186,6 +217,8 @@ export default function GameReviewSummary({
             rating={players.black.rating}
             color="black"
             loading={isAnalyzing}
+            knownName={players.black.known}
+            platform={platform}
           />
         </div>
 
@@ -282,13 +315,58 @@ function PlayerHead({
   rating,
   color,
   loading,
+  knownName,
+  platform,
 }: {
   name: string;
   rating: number | null;
   color: 'white' | 'black';
   loading: boolean;
+  knownName: boolean;
+  platform: ReviewPlatform;
 }) {
   const label = rating !== null ? `${name} (${rating})` : name;
+  // Chess.com profile picture, fetched lazily (backend caches for an hour;
+  // the module map above covers re-mounts). Starts fetching even while the
+  // analysis skeleton shows, so the photo is usually ready at 100%.
+  // The cache is read during render; `fetched` only forces a re-render
+  // when an in-flight request lands (async callbacks may set state).
+  const cacheKey =
+    knownName && platform === 'chesscom' ? name.trim().toLowerCase() : null;
+  const [fetched, setFetched] = useState<{
+    key: string;
+    url: string | null;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!cacheKey || avatarCache.has(cacheKey)) return;
+    let cancelled = false;
+    fetch(
+      `/api/train/opponent-profile-info?provider=chesscom&opponent_username=${encodeURIComponent(name.trim())}`,
+    )
+      .then((response) => (response.ok ? response.json() : null))
+      .then((data: { avatar_url?: string | null } | null) => {
+        if (cancelled) return;
+        const url =
+          typeof data?.avatar_url === 'string' && data.avatar_url.length > 0
+            ? data.avatar_url
+            : null;
+        avatarCache.set(cacheKey, url);
+        setFetched({ key: cacheKey, url });
+      })
+      .catch(() => {
+        // Transport blip: keep the initials fallback, don't poison cache.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cacheKey, name]);
+
+  const avatarUrl = !cacheKey
+    ? null
+    : (avatarCache.get(cacheKey) ??
+      (fetched?.key === cacheKey ? fetched.url : null));
+
   return (
     <div className="flex min-w-0 flex-col items-center gap-1">
       <span className="w-full truncate text-center text-[11px] font-bold text-white" title={label}>
@@ -306,11 +384,22 @@ function PlayerHead({
           title={label}
           aria-label={label}
         >
-          {color === 'white' && name === 'White' ? (
-            <svg viewBox="0 0 24 24" className="h-6 w-6" fill="currentColor" aria-hidden>
-              <path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.38-1 1.72V7h1.5a.5.5 0 0 1 .4.8l-1.3 1.7a3.5 3.5 0 0 1 2.2 3.25c0 .5-.11.97-.3 1.4l1.6 2.05H7l1.6-2.05a3.5 3.5 0 0 1-.3-1.4 3.5 3.5 0 0 1 2.2-3.25L9.1 7.8a.5.5 0 0 1 .4-.8H11V5.72A2 2 0 0 1 12 2ZM7 18h10a1 1 0 0 1 1 1v1H6v-1a1 1 0 0 1 1-1Z" />
-            </svg>
-          ) : color === 'black' && name === 'Black' ? (
+          {avatarUrl ? (
+            // eslint-disable-next-line @next/next/no-img-element -- chess.com avatars come from arbitrary CDN hostnames
+            <img
+              src={avatarUrl}
+              alt=""
+              className="h-full w-full object-cover"
+              loading="lazy"
+              onError={() => {
+                // Dead CDN URL: fall back to initials for this session.
+                if (cacheKey) {
+                  avatarCache.set(cacheKey, null);
+                  setFetched({ key: cacheKey, url: null });
+                }
+              }}
+            />
+          ) : !knownName ? (
             <svg viewBox="0 0 24 24" className="h-6 w-6" fill="currentColor" aria-hidden>
               <path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.38-1 1.72V7h1.5a.5.5 0 0 1 .4.8l-1.3 1.7a3.5 3.5 0 0 1 2.2 3.25c0 .5-.11.97-.3 1.4l1.6 2.05H7l1.6-2.05a3.5 3.5 0 0 1-.3-1.4 3.5 3.5 0 0 1 2.2-3.25L9.1 7.8a.5.5 0 0 1 .4-.8H11V5.72A2 2 0 0 1 12 2ZM7 18h10a1 1 0 0 1 1 1v1H6v-1a1 1 0 0 1 1-1Z" />
             </svg>
