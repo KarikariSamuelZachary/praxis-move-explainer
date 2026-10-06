@@ -49,15 +49,6 @@ function CloseIcon() {
   );
 }
 
-function ArrowRightIcon() {
-  return (
-    <svg className="h-4 w-4 transition-transform duration-200 group-hover/cta:translate-x-0.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" aria-hidden="true">
-      <path d="M5 12h14" />
-      <path d="m12 5 7 7-7 7" />
-    </svg>
-  );
-}
-
 type StartConfig = {
   persona: PersonaKey;
   tier: TierKey;
@@ -194,7 +185,6 @@ function PersonaStartDialog({ persona, onClose, onStart }: PersonaStartDialogPro
           className="group/cta mt-5 flex h-11 w-full items-center justify-center gap-2 rounded-lg bg-amber-500/20 text-sm font-semibold text-amber-300 ring-1 ring-amber-500/30 transition-colors duration-200 hover:bg-amber-500/30 hover:ring-amber-500/50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#efd9a7] disabled:pointer-events-none disabled:opacity-40"
         >
           <span>Start Sparring</span>
-          <ArrowRightIcon />
         </button>
       </div>
     </div>
