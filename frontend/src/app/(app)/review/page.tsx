@@ -631,6 +631,9 @@ export default function ReviewPage() {
     }
   }, [analysisState]);
 
+  // Where the reviewed game came from. Only chess.com has profile
+  // pictures (lichess has none, pasted PGNs have no known provider).
+  const reviewPlatform = importSource === 'chesscom' ? 'chesscom' : null;
   // Left panel always stays the import form. Right panel states: move
   // analysis placeholder (idle/error) -> loading summary (analyzing,
   // Image 3) -> overview summary with tabs (ready, Images 1-2).
@@ -698,6 +701,7 @@ export default function ReviewPage() {
               isAnalyzing
               progress={analysisProgress}
               onStartReview={handleStartReview}
+              platform={reviewPlatform}
             />
           ) : hasGame ? (
             <div className="flex h-full min-h-0 min-w-0 flex-col gap-2 overflow-hidden">
@@ -739,6 +743,7 @@ export default function ReviewPage() {
                     isAnalyzing={false}
                     progress={null}
                     onStartReview={handleStartReview}
+                    platform={reviewPlatform}
                   />
                 ) : (
                   movesPanel
