@@ -115,7 +115,6 @@ export default memo(function ThemePickerCard({
               Every theme · rated
             </span>
           </span>
-          <ChevronRightIcon className="h-5 w-5 shrink-0 text-[#d9b87c]/60 transition group-hover:translate-x-0.5 group-hover:text-[#efd9a7]" />
         </button>
       </div>
 
