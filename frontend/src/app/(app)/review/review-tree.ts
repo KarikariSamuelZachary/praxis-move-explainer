@@ -20,6 +20,9 @@ export type ReviewNodeEval = {
   status?: 'analyzing';
   classificationReady?: boolean;
   suggestionUci?: string | null;
+  /** SAN for the suggestion arrow: best move for the side to move at this
+   *  node's position (the next position's best, not the pre-move best). */
+  suggestionSan?: string | null;
 };
 
 export type ReviewNode = {
