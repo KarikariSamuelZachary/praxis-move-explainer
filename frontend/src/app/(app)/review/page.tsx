@@ -5,6 +5,7 @@ import dynamic from 'next/dynamic';
 import { Chess } from 'chess.js';
 
 import AnalysisPanel from '@/components/review/AnalysisPanel';
+import GameReviewSummary from '@/components/review/GameReviewSummary';
 import ImportPanel, {
   ImportSource,
 } from '@/components/review/ImportPanel';
@@ -136,6 +137,9 @@ export default function ReviewPage() {
   const [exploreError, setExploreError] = useState<string | null>(null);
   const [analysisProgress, setAnalysisProgress] =
     useState<AnalysisProgress | null>(null);
+  // Right panel view once a game exists: chess.com-style overview first,
+  // move-by-move analysis after "Start Review".
+  const [rightView, setRightView] = useState<'summary' | 'moves'>('summary');
   // Mode fingerprint of the finished review (stream meta line). Echoed back
   // as expected_mode so the sandbox rejects explores against a stale review.
   const [reviewMode, setReviewMode] = useState<string | null>(null);
@@ -609,6 +613,50 @@ export default function ReviewPage() {
     }
   }
 
+  function handleStartReview() {
+    if (!tree) {
+      return;
+    }
+    // Jump to the first played move (ply 1 when the Start row exists) and
+    // flip the right panel to the move-by-move view.
+    const firstPly = tree.mainlineIds.length > 1 ? 1 : 0;
+    handlePlySelect(firstPly);
+    setRightView('moves');
+  }
+
+  // A fresh import/analysis always lands back on the overview.
+  useEffect(() => {
+    if (analysisState === 'analyzing' || analysisState === 'ready') {
+      setRightView('summary');
+    }
+  }, [analysisState]);
+
+  // Left panel always stays the import form. Right panel states: move
+  // analysis placeholder (idle/error) -> loading summary (analyzing,
+  // Image 3) -> overview summary with tabs (ready, Images 1-2).
+  const isAnalyzingNow = analysisState === 'analyzing';
+
+  const movesPanel = (
+    <AnalysisPanel
+      currentMove={currentMove}
+      hasGame={hasGame}
+      explanation={displayedExplanation}
+      coachError={coachError}
+      isAskingCoach={isAskingCoach}
+      onAskCoach={handleAskCoach}
+      moveNumberLabel={moveNumberLabel}
+      activePly={activePly}
+      lastPly={lastPlyFor(gameData ?? [])}
+      onPlySelect={handlePlySelect}
+      bestMoveSan={bestMoveSan}
+      showBestMove={showBestMove}
+      onToggleBestMove={() => setShowBestMove((value) => !value)}
+      exploreMode={exploreMode}
+      exploreError={exploreError}
+      classificationPending={classificationPending}
+    />
+  );
+
   return (
     <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-[10px] pt-6 text-white lg:overflow-hidden lg:px-10 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
       <ReviewShell
@@ -619,9 +667,9 @@ export default function ReviewPage() {
             source={importSource}
             onSourceChange={setImportSource}
             onImport={handleAnalyzeGame}
-            isAnalyzing={analysisState === 'analyzing'}
+            isAnalyzing={isAnalyzingNow}
             errorMessage={analysisState === 'error' ? errorMessage : null}
-            disabled={!hasGame && analysisState === 'analyzing'}
+            disabled={!hasGame && isAnalyzingNow}
             progress={analysisProgress}
           />
         }
@@ -643,24 +691,63 @@ export default function ReviewPage() {
           />
         }
         analysisPanel={
-          <AnalysisPanel
-            currentMove={currentMove}
-            hasGame={hasGame}
-            explanation={displayedExplanation}
-            coachError={coachError}
-            isAskingCoach={isAskingCoach}
-            onAskCoach={handleAskCoach}
-            moveNumberLabel={moveNumberLabel}
-            activePly={activePly}
-            lastPly={lastPlyFor(gameData ?? [])}
-            onPlySelect={handlePlySelect}
-            bestMoveSan={bestMoveSan}
-            showBestMove={showBestMove}
-            onToggleBestMove={() => setShowBestMove((value) => !value)}
-            exploreMode={exploreMode}
-            exploreError={exploreError}
-            classificationPending={classificationPending}
-          />
+          isAnalyzingNow ? (
+            <GameReviewSummary
+              pgn={pgnInput}
+              moves={null}
+              isAnalyzing
+              progress={analysisProgress}
+              onStartReview={handleStartReview}
+            />
+          ) : hasGame ? (
+            <div className="flex h-full min-h-0 min-w-0 flex-col gap-2 overflow-hidden">
+              <div
+                role="tablist"
+                aria-label="Right panel view"
+                className="flex shrink-0 gap-1 rounded-xl border border-black/40 bg-black/40 p-1"
+              >
+                {(
+                  [
+                    { key: 'summary', label: 'Overview' },
+                    { key: 'moves', label: 'Moves' },
+                  ] as const
+                ).map((tab) => {
+                  const isActive = rightView === tab.key;
+                  return (
+                    <button
+                      key={tab.key}
+                      type="button"
+                      role="tab"
+                      aria-selected={isActive}
+                      onClick={() => setRightView(tab.key)}
+                      className={`flex min-w-0 flex-1 cursor-pointer items-center justify-center rounded-lg px-2 py-1.5 text-xs font-medium transition ${
+                        isActive
+                          ? 'bg-[#f7e5c6]/15 text-[#f7e5c6] ring-1 ring-[#f7e5c6]/40'
+                          : 'text-[#f7e5c6]/70 hover:text-[#f7e5c6]'
+                      }`}
+                    >
+                      <span className="truncate">{tab.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="min-h-0 min-w-0 flex-1 overflow-hidden">
+                {rightView === 'summary' ? (
+                  <GameReviewSummary
+                    pgn={pgnInput}
+                    moves={gameData}
+                    isAnalyzing={false}
+                    progress={null}
+                    onStartReview={handleStartReview}
+                  />
+                ) : (
+                  movesPanel
+                )}
+              </div>
+            </div>
+          ) : (
+            movesPanel
+          )
         }
       />
     </div>
