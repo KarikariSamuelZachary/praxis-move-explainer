@@ -1,11 +1,10 @@
 /**
  * Mainline equivalence tests for the review variation tree.
  *
- * The tree refactor must not change mainline behavior before any sandbox UI
- * exists: for every ply, the path to that mainline node must equal the flat
- * `moves.slice(1, ply + 1)` that the review page, coach history, and
- * best-move undo rely on today. The component-level test compares the tree
- * selectors against a flat-array reference mirroring page.tsx derivations.
+ * The tree selectors must preserve mainline behavior: for every ply, the
+ * path to that node equals `moves.slice(1, ply + 1)`, the played moves used
+ * by coach history and live sandbox requests. The component-level test also
+ * compares the selectors against a flat-array reference.
  *
  * Run with:
  *   cd frontend
@@ -14,12 +13,7 @@
 import { strict as assert } from 'node:assert';
 
 import { GameReviewMove } from '../../../types';
-import {
-  bestMoveSanFor,
-  currentMoveFor,
-  formatMoveNumber,
-  moveHistoryFor,
-} from './review-page-logic';
+import { bestMoveSanFor, formatMoveNumber } from './review-page-logic';
 import {
   addVariation,
   buildMainlineTree,
@@ -147,44 +141,25 @@ function testSetNodeAnalysisIsImmutable() {
   const nodeId = mainlinePlyToNode(tree, 2)!;
 
   const updated = setNodeAnalysis(tree, nodeId, {
-    evalCp: -0.4,
-    evalMate: null,
-    classification: 'inaccuracy',
-    bestMoveUci: 'd7d6',
-    rawEpLoss: 0.07,
-    isBook: false,
-    mode: 'rev-det-v1|nodes=100000',
-    status: 'ready',
-    terminal: 'seventyfive_moves',
-    drawClaimable: true,
-    suggestionsBefore: [
-      { moveUci: 'd7d6', moveSan: 'd6', evalCp: -0.1, pvSan: ['d6', 'd4'] },
-    ],
-    suggestionsAfter: [
-      { moveUci: 'd2d4', moveSan: 'd4', evalCp: -0.2, pvSan: ['d4', 'd5'] },
-    ],
+    status: 'analyzing',
+    classificationReady: true,
+    suggestionUci: 'd2d4',
   });
 
   assert.equal(tree.nodes[nodeId].analysis, undefined, 'input tree mutated');
   const analysis = updated.nodes[nodeId].analysis;
-  assert.equal(analysis?.evalCp, -0.4);
-  assert.equal(analysis?.rawEpLoss, 0.07);
-  assert.equal(analysis?.isBook, false);
-  assert.equal(analysis?.mode, 'rev-det-v1|nodes=100000');
-  assert.equal(analysis?.status, 'ready');
-  assert.equal(analysis?.terminal, 'seventyfive_moves');
-  assert.equal(analysis?.drawClaimable, true);
-  assert.equal(analysis?.suggestionsBefore?.length, 1);
-  assert.equal(analysis?.suggestionsAfter?.length, 1);
+  assert.equal(analysis?.status, 'analyzing');
+  assert.equal(analysis?.classificationReady, true);
+  assert.equal(analysis?.suggestionUci, 'd2d4');
   assert.equal(updated.nodes[tree.rootId], tree.nodes[tree.rootId]);
-  console.log('  [PASS] per-node eval data (incl. path/mode/status) attaches immutably');
+  console.log('  [PASS] live node state attaches immutably');
 }
 
 function testSandboxVariationFromLiveResponse() {
   const moves = fixture();
   const tree = buildMainlineTree(moves);
   const parentId = mainlinePlyToNode(tree, 2)!;
-  // Shape returned by POST /api/review/live (label + top-2 SAN lines).
+  // Shape returned by POST /api/review/live (a labeled move + best reply).
   const sandboxMove = row({
     fen: 'fen-after-d4',
     san: 'd4',
@@ -193,13 +168,7 @@ function testSandboxVariationFromLiveResponse() {
     best_move_san: 'c3',
   });
   const { tree: branched, nodeId } = addVariation(tree, parentId, sandboxMove, {
-    suggestionsBefore: [
-      { moveUci: 'c2c3', moveSan: 'c3', evalCp: -20, pvSan: ['c3', 'd5'] },
-      { moveUci: 'g1f3', moveSan: 'Nf3', evalCp: -35, pvSan: ['Nf3', 'Nc6'] },
-    ],
-    status: 'ready',
-    mode: 'rev-det-v1|nodes=150000',
-    classification: 'inaccuracy',
+    suggestionUci: 'c2c3',
   });
 
   assert.deepEqual(
@@ -216,12 +185,8 @@ function testSandboxVariationFromLiveResponse() {
   assert.equal(view.position, 'fen-after-d4');
   assert.equal(view.fenBefore, 'fen-after-e5');
   assert.equal(view.bestMoveSan, 'c3');
-  assert.deepEqual(
-    branched.nodes[nodeId].analysis?.suggestionsBefore?.map((l) => l.moveSan),
-    ['c3', 'Nf3'],
-  );
-  assert.equal(branched.nodes[nodeId].analysis?.mode, 'rev-det-v1|nodes=150000');
-  console.log('  [PASS] sandbox variation attaches with suggestions, mainline intact');
+  assert.equal(branched.nodes[nodeId].analysis?.suggestionUci, 'c2c3');
+  console.log('  [PASS] sandbox variation attaches with its suggestion, mainline intact');
 }
 
 function testOptimisticSwapAndRollback() {
@@ -277,7 +242,19 @@ function testOptimisticSwapAndRollback() {
   console.log('  [PASS] optimistic row swap and failed-move rollback');
 }
 
-// Mirrors page.tsx using the SAME extracted functions the page imports.
+// Flat-array reference retained in the test as an equivalence oracle for
+// selectors over the review tree.
+function currentMoveFor(
+  moves: GameReviewMove[],
+  activePly: number,
+): GameReviewMove | null {
+  return moves.length === 0 ? null : moves[Math.min(activePly, moves.length - 1)];
+}
+
+function moveHistoryFor(moves: GameReviewMove[], activePly: number): string[] {
+  return moves.slice(0, activePly + 1).map((entry) => entry.san);
+}
+
 function flatReferenceView(moves: GameReviewMove[], activePly: number) {
   const currentMove = currentMoveFor(moves, activePly)!;
   return {
@@ -286,7 +263,6 @@ function flatReferenceView(moves: GameReviewMove[], activePly: number) {
     fenBefore: activePly > 0 ? moves[activePly - 1].fen : null,
     moveNumberLabel: formatMoveNumber(activePly),
     bestMoveSan: bestMoveSanFor(currentMove),
-    showPlayedIcon: activePly > 0,
     coachHistory: moveHistoryFor(moves, activePly),
   };
 }
@@ -301,6 +277,7 @@ function testComponentViewEquivalence() {
     const reference = flatReferenceView(moves, ply);
 
     assert.deepEqual(view.currentMove, reference.currentMove, `ply ${ply} move`);
+    assert.equal(view.activePly, ply, `ply ${ply} index`);
     assert.equal(view.position, reference.position, `ply ${ply} position`);
     assert.equal(view.fenBefore, reference.fenBefore, `ply ${ply} fenBefore`);
     assert.equal(
@@ -309,13 +286,8 @@ function testComponentViewEquivalence() {
       `ply ${ply} label`,
     );
     assert.equal(view.bestMoveSan, reference.bestMoveSan, `ply ${ply} bestMove`);
-    assert.equal(
-      view.showPlayedIcon,
-      reference.showPlayedIcon,
-      `ply ${ply} played icon`,
-    );
-    // page.tsx's moveHistoryFor includes the synthetic Start row; the tree
-    // path intentionally starts at the first played move (agreed contract).
+    // The flat reference includes the synthetic Start row; the tree path
+    // intentionally starts at the first played move.
     assert.deepEqual(
       view.coachHistory.map((move) => move.san),
       reference.coachHistory.slice(1),
