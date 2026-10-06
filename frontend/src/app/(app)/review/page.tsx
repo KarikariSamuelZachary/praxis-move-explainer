@@ -69,11 +69,17 @@ type ResolvedExploreMove = {
   color: 'white' | 'black';
 };
 
-/** First usable engine move for the active position's board arrow. */
-function suggestionUciFrom(
+/** First usable engine move for the active position's board arrow.
+ *  This is the best move for the side to move at the position (the next
+ *  position's best), never the pre-move "better move" of the last played move. */
+function suggestionFrom(
   lines: Array<SandboxLine | null | undefined>,
-): string | null {
-  return lines.find((line) => line?.move_uci)?.move_uci ?? null;
+): { uci: string; san: string | null } | null {
+  const line = lines.find((candidate) => candidate?.move_uci);
+  if (!line?.move_uci) {
+    return null;
+  }
+  return { uci: line.move_uci, san: line.move_san ?? null };
 }
 
 /** Legal move for a drag/click on `fen`; promotions default to a queen. */
@@ -173,7 +179,7 @@ export default function ReviewPage() {
   }, [analysisState, gameData]);
 
   // Explore-mode suggestion: ask for the engine's best move at the active
-  // position (the side to move) and draw it as an arrow. Debounced ~300ms
+  // position (the side to move) and draw it as an arrow. Debounced ~150ms
   // after the last selection change; a new selection cancels the pending
   // timer and aborts the in-flight request. Nodes an explore already
   // labelled carry their own line, so they are skipped.
@@ -207,11 +213,11 @@ export default function ReviewPage() {
           if (!data) {
             return;
           }
-          const suggestionUci = suggestionUciFrom([
+          const suggestion = suggestionFrom([
             data.best,
             data.second_best,
           ]);
-          if (!suggestionUci) {
+          if (!suggestion) {
             return;
           }
           setTree((current) => {
@@ -221,14 +227,15 @@ export default function ReviewPage() {
             }
             return setNodeAnalysis(current, activeNodeId, {
               ...currentNode.analysis,
-              suggestionUci,
+              suggestionUci: suggestion.uci,
+              suggestionSan: suggestion.san,
             });
           });
         })
         .catch(() => {
           // Prewarming is best-effort; explores work without it.
         });
-    }, 300);
+    }, 150);
     return () => {
       clearTimeout(timer);
       controller.abort();
@@ -451,7 +458,9 @@ export default function ReviewPage() {
         if (message.type === 'info') {
           // One deepening snapshot: update the provisional badge, eval bar
           // and the next-mover arrow without waiting for the final depth.
-          const suggestionUci = suggestionUciFrom([message.best_after]);
+          // best_after is the next mover's best (for the new position), not
+          // the pre-move "should have played" line.
+          const suggestion = suggestionFrom([message.best_after]);
           setTree((current) => {
             const node = current?.nodes[nodeId];
             if (!current || !node) {
@@ -469,7 +478,8 @@ export default function ReviewPage() {
               ...node.analysis,
               status: 'analyzing',
               classificationReady: true,
-              suggestionUci,
+              suggestionUci: suggestion?.uci ?? node.analysis?.suggestionUci ?? null,
+              suggestionSan: suggestion?.san ?? node.analysis?.suggestionSan ?? null,
             });
           });
           return;
@@ -502,7 +512,7 @@ export default function ReviewPage() {
         // `best`/`second_best` are the pre-move lines (the Better-move
         // replay); `best_after`/`second_best_after` are the next mover's
         // lines, which become this node's suggestion arrow.
-        const suggestionUci = suggestionUciFrom([
+        const suggestion = suggestionFrom([
           data.best_after,
           data.second_best_after,
         ]);
@@ -512,7 +522,8 @@ export default function ReviewPage() {
           }
           const withMove = setNodeMove(current, nodeId, row);
           return setNodeAnalysis(withMove, nodeId, {
-            suggestionUci,
+            suggestionUci: suggestion?.uci ?? null,
+            suggestionSan: suggestion?.san ?? null,
           });
         });
       };
@@ -573,6 +584,7 @@ export default function ReviewPage() {
   // Explore-mode arrow: the engine's best move for the side to move at the
   // active position (not the pre-move "better move" the batch row carries).
   const suggestionUci = activeNode?.analysis?.suggestionUci ?? null;
+  const suggestionSan = activeNode?.analysis?.suggestionSan ?? null;
   // No badge until the first deepening snapshot lands; the placeholder row's
   // classification must never render.
   const classificationPending =
@@ -583,7 +595,11 @@ export default function ReviewPage() {
     coachExplanation,
   );
   const moveNumberLabel = view?.moveNumberLabel ?? 'Starting position';
-  const bestMoveSan = view?.bestMoveSan ?? null;
+  // In explore mode the "best move" is the suggestion for the side to move
+  // at the current position (the next position's best). Outside explore it
+  // is the batch row's pre-move line (what should have been played instead).
+  const reviewBestMoveSan = view?.bestMoveSan ?? null;
+  const bestMoveSan = exploreMode ? (suggestionSan ?? null) : reviewBestMoveSan;
 
   function handlePlySelect(ply: number) {
     if (!tree) {
@@ -625,6 +641,7 @@ export default function ReviewPage() {
     <AnalysisPanel
       currentMove={currentMove}
       hasGame={hasGame}
+      moves={gameData}
       explanation={displayedExplanation}
       coachError={coachError}
       isAskingCoach={isAskingCoach}
@@ -668,7 +685,10 @@ export default function ReviewPage() {
             allowDragging={exploreMode}
             onExploreMove={handleExploreMove}
             exploreMode={exploreMode}
-            onToggleExplore={() => setExploreMode((value) => !value)}
+            onToggleExplore={() => {
+              setShowBestMove(false);
+              setExploreMode((value) => !value);
+            }}
             sandboxEnabled={sandboxEnabled}
             suggestionUci={suggestionUci}
             classificationPending={classificationPending}
