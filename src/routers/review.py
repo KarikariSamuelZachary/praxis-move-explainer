@@ -22,6 +22,8 @@ from core.analysis_mode import (
     current_mode_string,
     live_mode_compatible,
     review_deterministic_enabled,
+    review_live_info_min_depth,
+    review_live_prewarm_depth,
     review_max_plies,
     review_nodes,
 )
@@ -213,17 +215,33 @@ def _info_line(
     }
 
 
-def _live_eval_lookup(mode: str, fen: str) -> Optional[Evaluation]:
-    """Cached live eval for a position, prewarm width first.
+def _live_eval_key(mode: str, width: int, depth: int, fen: str) -> str:
+    """Eval-cache key. Depth-tagged so shallow prewarm seeds never collide
+    with settled depth-20 entries (pre-existing untagged entries simply miss
+    once and are replaced)."""
+    return f"{mode}|mpv{width}|d{depth}|{fen}"
+
+
+def _live_eval_lookup(
+    mode: str,
+    fen: str,
+    prefer_depth: int = REVIEW_LIVE_DEPTH,
+    fallback_depths: tuple = (),
+) -> Optional[Evaluation]:
+    """Cached live eval for a position, prewarm width first, then depth.
 
     The width-2 entry carries the second-best line (Great detection and the
     second suggestion); a width-1 entry from a previous deepening stream is
-    an acceptable fallback.
+    an acceptable fallback. Within a width the preferred (deeper) entry wins;
+    a shallower prewarm seed is usable provisionally.
     """
-    for width in (REVIEW_LIVE_PREWARM_MULTIPV, REVIEW_LIVE_MULTIPV):
-        evaluation = _cache_get(_SANDBOX_EVAL_CACHE, f"{mode}|mpv{width}|{fen}")
-        if evaluation is not None:
-            return evaluation
+    for depth in (prefer_depth, *fallback_depths):
+        for width in (REVIEW_LIVE_PREWARM_MULTIPV, REVIEW_LIVE_MULTIPV):
+            evaluation = _cache_get(
+                _SANDBOX_EVAL_CACHE, _live_eval_key(mode, width, depth, fen)
+            )
+            if evaluation is not None:
+                return evaluation
     return None
 
 
@@ -537,13 +555,15 @@ def review_live_prewarm(
     _ip: None = Depends(limit_by_ip(limit=30, window=60)),
     _user: None = Depends(limit_by_clerk_user_id(limit=60, window=60)),
 ):
-    """Analyze a path-end position to depth 20 and return its suggestion lines.
+    """Analyze a path-end position and return its suggestion lines.
 
-    This is the engine working on the position at rest (the eval bar, arrow
-    and top-2 lines), exactly like chess.com's analysis board: by the time
-    the player moves, the before-position evaluation is already settled at
-    depth 20 and cached, so the deepening stream of the played move starts
-    immediately. Width 2 keeps the second-best line for Great detection.
+    Searches to the prewarm depth (shallower than the settle depth, so the
+    first arrow lands fast) with width 2. This is the engine working on the
+    position at rest (the eval bar, arrow and top-2 lines), exactly like
+    chess.com's analysis board: by the time the player moves, the
+    before-position evaluation is already cached, so the deepening stream of
+    the played move starts immediately. Width 2 keeps the second-best line
+    for Great detection.
     """
     if not review_deterministic_enabled():
         raise HTTPException(status_code=403, detail="Sandbox is disabled")
@@ -574,8 +594,8 @@ def review_live_prewarm(
         ) from exc
 
     try:
-        eval_key = f"{mode}|mpv{REVIEW_LIVE_PREWARM_MULTIPV}|{board.fen()}"
-        evaluation = _live_eval_lookup(mode, board.fen())
+        pdepth = review_live_prewarm_depth()
+        evaluation = _live_eval_lookup(mode, board.fen(), pdepth, (REVIEW_LIVE_DEPTH,))
         cached = evaluation is not None
         if evaluation is None:
             analyzer = GameAnalyzer(
@@ -587,11 +607,17 @@ def review_live_prewarm(
             )
             evaluation = analyzer.evaluate_position_depth(
                 board,
-                depth=REVIEW_LIVE_DEPTH,
+                depth=pdepth,
                 multipv=REVIEW_LIVE_PREWARM_MULTIPV,
                 time_backstop=REVIEW_LIVE_TIME_BACKSTOP,
             )
-            _cache_put(_SANDBOX_EVAL_CACHE, eval_key, evaluation)
+            _cache_put(
+                _SANDBOX_EVAL_CACHE,
+                _live_eval_key(
+                    mode, REVIEW_LIVE_PREWARM_MULTIPV, pdepth, board.fen()
+                ),
+                evaluation,
+            )
     except (chess.engine.EngineError, RuntimeError) as exc:
         reset_review_live_stockfish()
         log.exception("Sandbox prewarm engine failed")
@@ -776,7 +802,9 @@ def review_live_stream(
       {"type": "meta", "mode": <live mode>, "depth": <target>}
       {"type": "info", "depth": d, "classification": ..., "cp_loss": ...,
        "ep_loss": ..., "eval_cp": ..., "eval_mate": ...,
-       "best_after": {move_uci, move_san}}     # one per completed depth
+       "best_after": {move_uci, move_san}}     # one per completed depth >=
+                                                # the info min-depth (depth-0
+                                                # terminal synthesis always)
       {"type": "final", "response": <SandboxMoveResponse>}
       {"type": "error", "detail": ...}         # terminal, after 200
 
@@ -867,7 +895,11 @@ def review_live_stream(
     )
 
     # Before-position evaluation: normally the prewarm (width 2) has it.
-    eval_before = _live_eval_lookup(mode, board.fen())
+    # Prefer the settled depth-20 entry; a shallower prewarm seed is usable
+    # provisionally for the deepening snapshots.
+    eval_before = _live_eval_lookup(
+        mode, board.fen(), REVIEW_LIVE_DEPTH, (review_live_prewarm_depth(),)
+    )
     try:
         if eval_before is None:
             eval_before = analyzer.evaluate_position_depth(
@@ -878,7 +910,9 @@ def review_live_stream(
             )
             _cache_put(
                 _SANDBOX_EVAL_CACHE,
-                f"{mode}|mpv{REVIEW_LIVE_PREWARM_MULTIPV}|{board.fen()}",
+                _live_eval_key(
+                    mode, REVIEW_LIVE_PREWARM_MULTIPV, REVIEW_LIVE_DEPTH, board.fen()
+                ),
                 eval_before,
             )
     except (chess.engine.EngineError, RuntimeError) as exc:
@@ -895,7 +929,9 @@ def review_live_stream(
             previous.push(_resolve_sandbox_move(previous, raw))
         last_move = _resolve_sandbox_move(previous, body.moves[-1])
         last_mover = "white" if previous.turn == chess.WHITE else "black"
-        eval_previous = _live_eval_lookup(mode, previous.fen())
+        eval_previous = _live_eval_lookup(
+            mode, previous.fen(), REVIEW_LIVE_DEPTH, (review_live_prewarm_depth(),)
+        )
         if eval_previous is not None:
             opponent_prev_ep_loss = analyzer.expected_points_loss(
                 eval_previous, eval_before, last_mover, body.player_rating
@@ -926,6 +962,11 @@ def review_live_stream(
                     _info_line(0, row, after_board, eval_after)
                 ) + "\n"
             else:
+                # Snapshots below the info min-depth still classify (cheap, no
+                # search) so the final response always settles from the deepest
+                # snapshot, but they are not streamed: early depths flicker and
+                # each line churns the board arrow for no readable gain.
+                info_min = review_live_info_min_depth()
                 for depth, snapshot in engine.stream_analysis(
                     after_board,
                     depth=REVIEW_LIVE_DEPTH,
@@ -942,9 +983,10 @@ def review_live_stream(
                         include_extras=True,
                         eval_after=snapshot,
                     )
-                    yield json.dumps(
-                        _info_line(depth, row, after_board, snapshot)
-                    ) + "\n"
+                    if depth >= info_min:
+                        yield json.dumps(
+                            _info_line(depth, row, after_board, snapshot)
+                        ) + "\n"
             if row is None or eval_after is None:
                 raise RuntimeError("live stream produced no evaluation")
             response = _sandbox_response(
@@ -959,7 +1001,9 @@ def review_live_stream(
             )
             _cache_put(
                 _SANDBOX_EVAL_CACHE,
-                f"{mode}|mpv{REVIEW_LIVE_MULTIPV}|{after_board.fen()}",
+                _live_eval_key(
+                    mode, REVIEW_LIVE_MULTIPV, REVIEW_LIVE_DEPTH, after_board.fen()
+                ),
                 eval_after,
             )
             _cache_put(
