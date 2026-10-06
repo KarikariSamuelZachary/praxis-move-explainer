@@ -216,6 +216,10 @@ data/gate_set_*.pgn
 data/gate_sets.json
 data/gate_used_ids.json
 data/measurements/*.json
+# Locally generated review dump and banded-set provenance sidecar; neither is
+# read by backend runtime code.
+/PGNs.txt
+/data/gate_set_B.neutral.bands.pgn.json
 
 #agents
 .codex
