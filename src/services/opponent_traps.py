@@ -117,6 +117,34 @@ TRAP_MIN_HITS = 2
 TRAP_MIN_GAMES = 5
 
 
+def _opponent_total_games(
+    conn,
+    *,
+    requested_by_user_id: str,
+    provider: str,
+    opponent_username: str,
+) -> int:
+    """RAW total game count for the opponent (COUNT DISTINCT over
+    opponent_games, NOT over the blunder table -- shared by both gates:
+    Gate 1 of compute_exploitable_traps and the per-trap badge in
+    compute_opponent_traps). Returns 0 when the count is unavailable."""
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT COUNT(DISTINCT id) AS total_games
+            FROM opponent_games
+            WHERE requested_by_user_id = %s
+              AND provider = %s
+              AND LOWER(opponent_username) = LOWER(%s)
+            """,
+            (requested_by_user_id, provider, opponent_username),
+        )
+        count_rows = [dict(r) for r in cur.fetchall()]
+    if not count_rows or count_rows[0].get("total_games") is None:
+        return 0
+    return int(count_rows[0]["total_games"])
+
+
 def compute_opponent_traps(
     conn,
     *,
@@ -157,11 +185,33 @@ def compute_opponent_traps(
       * ``example_classification`` — that move's own classification
                                  (may be softer than the group's worst).
       * ``tier``              — always ``"position"`` (the only tier
-                                 implemented; opening-family fallback
-                                 is intentionally not built).
+                                  implemented; opening-family fallback
+                                  is intentionally not built).
+      * ``exploitable``       — True iff this trap clears the bot's
+                                  exploitability bar under TC-NEUTRAL
+                                  weighting: the opponent has
+                                  >= TRAP_MIN_GAMES total games AND the
+                                  group's distinct games sum to >=
+                                  TRAP_MIN_HITS in recency weight (same
+                                  decay as the style signals, TC factor
+                                  1.0). True means the sparring bot will
+                                  steer toward this position; False means
+                                  an observed pattern only, shown for prep
+                                  but not played toward. The session-TC
+                                  check in compute_exploitable_traps can
+                                  only narrow this further (cross-TC
+                                  blunders are down-weighted), never widen
+                                  it — so the badge is the stable,
+                                  explainable basis for the UI.
 
     Returns ``[]`` when zero groups qualify.
     """
+    total_games = _opponent_total_games(
+        conn,
+        requested_by_user_id=requested_by_user_id,
+        provider=provider,
+        opponent_username=opponent_username,
+    )
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             """
@@ -190,6 +240,7 @@ def compute_opponent_traps(
         groups.setdefault(key, []).append(row)
 
     traps: List[Dict[str, Any]] = []
+    now_unix = time.time()
     for position_key, group_rows in groups.items():
         # Dedupe by game_id — the same game blundering twice at the same
         # position counts as ONE game, not two.
@@ -202,6 +253,20 @@ def compute_opponent_traps(
 
         moves = sorted({r["move_san"] for r in group_rows})
         move_numbers = [r["move_number"] for r in group_rows]
+
+        # TC-neutral exploitability for the UI badge: per distinct game the
+        # recency weight (TC factor 1.0 — the same basis the sparring route
+        # falls back to with no session TC). Clears iff the corpus gate
+        # passes and the weighted hits clear TRAP_MIN_HITS.
+        game_weights: Dict[Any, float] = {}
+        for r in group_rows:
+            gid = r["game_id"]
+            weight = _game_recency_weight(int(r.get("end_time") or 0), now_unix)
+            if gid not in game_weights or weight > game_weights[gid]:
+                game_weights[gid] = weight
+        exploitable = total_games >= TRAP_MIN_GAMES and sum(
+            game_weights.values()
+        ) >= float(TRAP_MIN_HITS)
 
         # Replay example: the most recent game in the group (newest
         # end_time), earliest occurrence inside it. The UI fetches this
@@ -239,6 +304,7 @@ def compute_opponent_traps(
                 "example_classification": representative.get("classification")
                 or "mistake",
                 "tier": "position",
+                "exploitable": exploitable,
             }
         )
 
@@ -325,22 +391,11 @@ def compute_exploitable_traps(
     # COUNT(DISTINCT id) over opponent_games, NOT over opponent_game_blunders
     # -- a position can be reached without a blunder occurring, so the
     # blunder table undercounts the opponent's total game base.
-    with conn.cursor(cursor_factory=RealDictCursor) as cur:
-        cur.execute(
-            """
-            SELECT COUNT(DISTINCT id) AS total_games
-            FROM opponent_games
-            WHERE requested_by_user_id = %s
-              AND provider = %s
-              AND LOWER(opponent_username) = LOWER(%s)
-            """,
-            (requested_by_user_id, provider, opponent_username),
-        )
-        count_rows = [dict(r) for r in cur.fetchall()]
-    total_games = (
-        int(count_rows[0]["total_games"])
-        if count_rows and count_rows[0].get("total_games") is not None
-        else 0
+    total_games = _opponent_total_games(
+        conn,
+        requested_by_user_id=requested_by_user_id,
+        provider=provider,
+        opponent_username=opponent_username,
     )
     if total_games < TRAP_MIN_GAMES:
         # Opponent-level gate fails -> no position_key can be exploitable
