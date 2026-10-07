@@ -242,11 +242,13 @@ class OpponentOpeningBlunder(BaseModel):
     # blunder of the opponent, or — when the game has no blunder — the
     # earliest mistake. `ply` is the explicit 1-based ply of the move
     # (move_number + side converted server-side); the UI jumps to the
-    # position BEFORE it.
+    # position BEFORE it. `position_key` (first-4-FEN) lets the replay board
+    # badge the error move without another round-trip.
     move_number: int
     ply: int
     move_san: str
     classification: Literal["mistake", "blunder"]
+    position_key: str = ""
 
 
 class OpponentOpeningGameSummary(BaseModel):
@@ -288,6 +290,10 @@ class OpponentOpeningGameResponse(BaseModel):
     result: str
     end_time: int
     time_class: str
+    # Every stored mistake/blunder in this game (opponent moves only), so
+    # the replay board can badge error moves without another round-trip.
+    # Empty for unanalyzed games — never an error signal on its own.
+    blunders: List[OpponentOpeningBlunder] = []
 
 
 class SparringMoveRequest(BaseModel):
