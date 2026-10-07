@@ -50,7 +50,7 @@ export default function WoodpeckerPromoCard({
             Reviews Due
           </div>
           <div className="mt-1 font-display text-4xl font-semibold leading-none text-gold-bright">
-            {dueCount ?? '—'}
+            {dueCount ?? '-'}
           </div>
           {dueCount === 0 ? (
             <div className="mt-1.5 text-[11px] leading-4 text-wood-mute">
