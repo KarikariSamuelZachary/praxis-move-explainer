@@ -48,6 +48,10 @@ class _FakeCursor:
         if "FROM opponent_game_blunders" in sql:
             self._fetchall = [dict(r) for r in self._state["blunders"]]
             return
+        # The corpus-size gate counts distinct games in opponent_games.
+        if "COUNT(DISTINCT id)" in sql:
+            self._fetchall = [{"total_games": self._state.get("total_games", 0)}]
+            return
         self._fetchall = []
 
     def fetchall(self):
@@ -290,6 +294,85 @@ def test_empty_blunders():
     print("[PASS] Zero blunder rows → empty list (not an error)")
 
 
+def test_trap_exploitable_badges():
+    """exploitable=True needs >=5 corpus games AND recency-weighted hits >= 2.0."""
+    import time as _time
+
+    now = int(_time.time())
+    # Future-dated: recency weight exactly 1.0 (age clamps at 0), so two
+    # games sum to exactly the 2.0 boundary — deterministic, no float dust.
+    fresh = now + 86400
+    # ~1.1 years old: weight ~0.33 each, two sum to ~0.67 < 2.0.
+    stale = now - 400 * 86400
+
+    def _row(key, gid, end, move_no=10):
+        return {
+            "position_key": key,
+            "fen": "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "move_san": "Nf3",
+            "classification": "blunder",
+            "game_id": gid,
+            "move_number": move_no,
+            "end_time": end,
+        }
+
+    state = {
+        "executed": [],
+        "total_games": 6,
+        "blunders": [
+            _row("posFresh", "g1", fresh),
+            _row("posFresh", "g2", fresh, 12),
+            _row("posStale", "g3", stale),
+            _row("posStale", "g4", stale, 12),
+        ],
+    }
+    pool = _FakePool(state)
+    database.connection_pool = pool
+
+    traps = mod.compute_opponent_traps(
+        pool.getconn(),
+        requested_by_user_id="user-1",
+        provider="lichess",
+        opponent_username="BadgeOpp",
+    )
+    by_key = {t["position_key"]: t for t in traps}
+    assert set(by_key) == {"posFresh", "posStale"}, (
+        f"both 2-game positions must display as traps; got {sorted(by_key)}"
+    )
+    assert by_key["posFresh"]["exploitable"] is True, (
+        "2 fresh hits sum to 2.0 with a 6-game corpus -> exploitable"
+    )
+    print("[PASS] fresh 2-game pattern with big corpus -> exploitable=True")
+    assert by_key["posStale"]["exploitable"] is False, (
+        "2 stale hits sum to ~0.67 < 2.0 -> observed only"
+    )
+    print("[PASS] stale 2-game pattern -> exploitable=False")
+
+    # Small corpus: weighted hits clear the per-position bar, but the
+    # opponent-level gate fails.
+    small_state = {
+        "executed": [],
+        "total_games": 3,
+        "blunders": [
+            _row("posSmall", "g1", fresh),
+            _row("posSmall", "g2", fresh, 12),
+        ],
+    }
+    small_pool = _FakePool(small_state)
+    database.connection_pool = small_pool
+
+    small_traps = mod.compute_opponent_traps(
+        small_pool.getconn(),
+        requested_by_user_id="user-1",
+        provider="lichess",
+        opponent_username="SmallOpp",
+    )
+    assert len(small_traps) == 1 and small_traps[0]["exploitable"] is False, (
+        "3-game corpus must display the trap but never badge it"
+    )
+    print("[PASS] small corpus displays the trap with exploitable=False")
+
+
 def test_all_single_occurrence():
     """Every position appears in only 1 game → empty list."""
     state = {
@@ -329,5 +412,8 @@ if __name__ == "__main__":
     print()
     print("=== TEST 3: ALL SINGLE OCCURRENCE ===")
     test_all_single_occurrence()
+    print()
+    print("=== TEST 4: EXPLOITABLE BADGES ===")
+    test_trap_exploitable_badges()
     print()
     print("All assertions passed.")
