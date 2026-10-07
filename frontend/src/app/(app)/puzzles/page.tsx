@@ -412,7 +412,7 @@ export default function PuzzlesPage() {
                 </div>
                 <div className="mt-1.5 flex items-end gap-2.5">
                   <span className="font-display text-[34px] font-semibold leading-none text-[#f7e5c6]">
-                    {currentRating ?? '—'}
+                    {currentRating ?? '-'}
                   </span>
                   {currentRating != null && (
                     <span className="mb-0.5 rounded-full bg-white/10 px-2 py-0.5 text-xs font-bold text-white/60">
@@ -422,7 +422,7 @@ export default function PuzzlesPage() {
                 </div>
                 {currentRating == null && (
                   <p className="mt-2 text-[11px] leading-4 text-white/40">
-                    Unrated — solve a puzzle to set it.
+                    Unrated - solve a puzzle to set it.
                   </p>
                 )}
               </div>
