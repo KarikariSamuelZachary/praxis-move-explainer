@@ -9,6 +9,13 @@ type ReviewShellProps = {
   defaultLeftCollapsed?: boolean;
   defaultRightCollapsed?: boolean;
   leftCollapsible?: boolean;
+  /** Controlled left-rail collapse. Uncontrolled (internal state) when omitted. */
+  leftCollapsed?: boolean;
+  onLeftCollapsedChange?: (collapsed: boolean) => void;
+  /** Center the board + right card as one group (engine-sparring spacing)
+   *  instead of stretching the board across the leftover width. Only takes
+   *  effect while the left rail is collapsed. */
+  centerPair?: boolean;
 };
 
 export default function ReviewShell({
@@ -18,14 +25,32 @@ export default function ReviewShell({
   defaultLeftCollapsed = false,
   defaultRightCollapsed = false,
   leftCollapsible = true,
+  leftCollapsed: controlledLeftCollapsed,
+  onLeftCollapsedChange,
+  centerPair = false,
 }: ReviewShellProps) {
-  const [leftCollapsedState, setLeftCollapsed] = useState(defaultLeftCollapsed);
+  const [internalLeftCollapsed, setInternalLeftCollapsed] = useState(defaultLeftCollapsed);
   const [rightCollapsed, setRightCollapsed] = useState(defaultRightCollapsed);
+  const leftCollapsedState = controlledLeftCollapsed ?? internalLeftCollapsed;
   const leftCollapsed = leftCollapsible && leftCollapsedState;
+
+  function handleLeftToggle() {
+    const next = !leftCollapsedState;
+    onLeftCollapsedChange?.(next);
+    setInternalLeftCollapsed(next);
+  }
+
+  // Centered pair: the board track shrinks to the board itself and the
+  // tracks center as a group, so the right card hugs the board with the
+  // grid gap (same 1.5rem as engine sparring) at any viewport width.
+  const pairCentered = centerPair && leftCollapsed && !rightCollapsed;
 
   const gridCols = (() => {
     if (leftCollapsed && rightCollapsed) {
       return 'xl:grid-cols-[3.25rem_minmax(0,1fr)_3.25rem]';
+    }
+    if (pairCentered) {
+      return 'xl:grid-cols-[3.25rem_minmax(0,auto)_22rem]';
     }
     if (leftCollapsed) {
       return 'xl:grid-cols-[3.25rem_minmax(0,1fr)_22rem]';
@@ -46,12 +71,12 @@ export default function ReviewShell({
 
   return (
     <div className="relative h-full w-full">
-      <div className={`grid h-full grid-cols-1 gap-6 transition-all duration-300 ease-in-out lg:grid-cols-[18rem_minmax(0,1fr)] ${gridCols}`}>
+      <div className={`grid h-full grid-cols-1 gap-6 transition-all duration-300 ease-in-out lg:grid-cols-[18rem_minmax(0,1fr)] ${gridCols} ${pairCentered ? 'xl:justify-center' : ''}`}>
         <CollapseRail
           side="left"
           collapsed={leftCollapsed}
           collapsible={leftCollapsible}
-          onToggle={() => setLeftCollapsed((value) => !value)}
+          onToggle={handleLeftToggle}
           expandedHeightClass={leftCardHeight}
         >
           {importPanel}
