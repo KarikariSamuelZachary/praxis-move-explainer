@@ -37,7 +37,7 @@ export default function WoodpeckerPromoCard({
         if (!cancelled) setDueCount(count);
       })
       .catch((error) => {
-        // Decorative: a failed count leaves the numeral on "—" rather than
+        // Decorative: a failed count leaves the numeral on "-" rather than
         // surfacing an error the drill screen does not need.
         console.error('Failed to fetch the endgame review count:', error);
       });
@@ -75,7 +75,7 @@ export default function WoodpeckerPromoCard({
             Reviews Due
           </div>
           <div className="mt-1 font-display text-4xl font-semibold leading-none text-gold-bright">
-            {dueCount ?? '—'}
+            {dueCount ?? '-'}
           </div>
           {dueCount === 0 ? (
             <div className="mt-1.5 text-[11px] leading-4 text-wood-mute">
