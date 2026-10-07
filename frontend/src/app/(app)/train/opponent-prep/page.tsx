@@ -1728,10 +1728,16 @@ function ModalShell({
   title,
   onClose,
   children,
+  hideTitle = false,
 }: {
   title: string;
   onClose: () => void;
   children: React.ReactNode;
+  /** Hides the heading row (title stays as the accessible dialog label)
+   *  and floats the close button over the card so the content below keeps
+   *  its full height. Used by the weak-opening replay, which must fit
+   *  short viewports without scrolling. */
+  hideTitle?: boolean;
 }) {
   useEffect(() => {
     function handleKeyDown(event: KeyboardEvent) {
@@ -1752,6 +1758,30 @@ function ModalShell({
       aria-label={title}
     >
       <div className={modalCardClass} onClick={(event) => event.stopPropagation()}>
+        {hideTitle ? (
+          <>
+            <h2 className="sr-only">{title}</h2>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close"
+              className="absolute right-3 top-3 z-10 flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-black/65 text-[#f7e5c6]/80 shadow-lg shadow-black/40 transition hover:bg-black/85 hover:text-[#f7e5c6]"
+            >
+              <svg
+                className="h-4 w-4"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth="2"
+                aria-hidden="true"
+              >
+                <path d="M18 6 6 18M6 6l12 12" />
+              </svg>
+            </button>
+          </>
+        ) : (
         <div className="flex items-start justify-between gap-3">
           <h2
             className="min-w-0 truncate font-display text-lg font-semibold text-[#f7e5c6]"
@@ -1779,6 +1809,7 @@ function ModalShell({
             </svg>
           </button>
         </div>
+        )}
         {children}
       </div>
     </div>
@@ -1947,6 +1978,7 @@ function useModalExplore({
   gameDetails,
   basePly,
   resetToken,
+  defaultArmed = false,
 }: {
   /** False while the game PGN is still loading. */
   active: boolean;
@@ -1958,8 +1990,11 @@ function useModalExplore({
   basePly: number;
   /** Clears deviation + live result when the game changes. */
   resetToken: string;
+  /** Starts armed. The weak-opening replay passes true (explore always on,
+   *  no toggle); the trap viewer leaves it false (opt-in). */
+  defaultArmed?: boolean;
 }) {
-  const [armed, setArmed] = useState(false);
+  const [armed, setArmed] = useState(defaultArmed);
   const [live, setLive] = useState<ModalLiveState>(EMPTY_MODAL_LIVE);
   const [deviation, setDeviation] = useState<{
     sans: string[];
@@ -2318,10 +2353,12 @@ function useModalExplore({
 }
 
 // --- Shared modal viewer chrome -------------------------------------------
-// One visual language for both replay viewers: move readout + label chips
-// on the left, copy + explore controls on the right, a wooden five-button
-// navigator under the board. Status rows keep a minimum height so badges
-// arriving late never shove the board around.
+// One visual language for both replay viewers: the trap viewer pairs a move
+// readout + label chips with copy + explore controls and a wooden
+// five-button navigator under the board, while the weak-opening viewer keeps
+// explore always on with a single slim status line (no toggle row, no
+// heading) so the card fits short viewports without scrolling. Status rows
+// keep a minimum height so badges arriving late never shove the board around.
 
 function ModalExploreToggle({
   armed,
@@ -3010,16 +3047,19 @@ function OpeningReplayModal({
   const summary = games[gameIndex] ?? null;
   const lastMoveIndex = positions.length - 1;
   const position = positions[moveIndex] ?? START_FEN;
-  const [copied, setCopied] = useState(false);
   const navButtonClass =
     'flex h-7 w-7 items-center justify-center rounded-lg border border-[#f7e5c6]/20 bg-black/40 text-xs text-[#f7e5c6]/80 transition hover:bg-black/60 disabled:pointer-events-none disabled:opacity-35';
 
+  // Explore is always on in this viewer: every studied position gets a live
+  // label plus the side-to-move's best reply as a board arrow, and dragging
+  // a different move analyzes the deviation. There is no toggle.
   const explore = useModalExplore({
     active: gamePhase === 'ready' && game !== null && positions.length > 1,
     gameSans: moveSans,
     gameDetails: moveDetails,
     basePly: moveIndex,
     resetToken: game?.game_id ?? 'none',
+    defaultArmed: true,
   });
   const displayedFen = explore.deviation?.fen ?? position;
   // Unique per mount (same co-mount reason as the trap board).
@@ -3065,9 +3105,6 @@ function OpeningReplayModal({
     explore.live.classification !== null &&
     (explore.deviation !== null || explore.live.key === currentGameKey);
 
-  const displaySan =
-    explore.deviation?.san ??
-    (moveIndex > 0 ? (moveDetails[moveIndex - 1]?.san ?? null) : null);
   const displayPly =
     moveIndex + (explore.deviation ? explore.deviation.sans.length : 0);
 
@@ -3144,20 +3181,11 @@ function OpeningReplayModal({
     setGameIndex(nextIndex);
   };
 
-  async function copyOpeningFen() {
-    try {
-      await navigator.clipboard.writeText(displayedFen);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // Clipboard can be unavailable (permissions / insecure context).
-    }
-  }
-
   return (
     <ModalShell
       title={`${family} · as ${color === 'white' ? 'White' : 'Black'}`}
       onClose={onClose}
+      hideTitle
     >
       {phase === 'loading' && (
         <div className="mt-6 flex items-center justify-center gap-2 py-10 text-xs text-[#f7e5c6]/60">
@@ -3221,64 +3249,11 @@ function OpeningReplayModal({
             </div>
           </div>
 
-          {/* Explore strip: move readout + label chips on the left, copy +
-              explore controls on the right. Minimum height reserves the row
-              so late badges never shove the board. */}
-          {gamePhase === 'ready' && game && (
-            <>
-              <div className="mt-2 flex min-h-10 items-center justify-between gap-2">
-                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
-                  <ModalMoveReadout
-                    ply={displayPly}
-                    total={lastMoveIndex}
-                    san={displaySan}
-                  />
-                  {storedBlunder && !showLive && (
-                    <ModalLabelChip
-                      classification={storedBlunder.classification}
-                      title="From stored analysis — no engine call"
-                    />
-                  )}
-                  {showLive && explore.live.classification && (
-                    <ModalLabelChip
-                      classification={explore.live.classification}
-                      title="Live engine label for the position on screen"
-                    />
-                  )}
-                  {explore.armed && explore.live.pending && !showLive && (
-                    <span className="inline-flex items-center gap-1.5 text-[11px] text-[#f7e5c6]/60">
-                      <span className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-white/20 border-t-white" />
-                      Analyzing…
-                    </span>
-                  )}
-                  {showLive && (
-                    <ModalEvalChip
-                      cp={explore.live.evalCp}
-                      mate={explore.live.evalMate}
-                    />
-                  )}
-                </div>
-                <div className="flex shrink-0 items-center gap-1.5">
-                  <ModalCopyFenButton onCopy={copyOpeningFen} copied={copied} />
-                  <ModalExploreToggle
-                    armed={explore.armed}
-                    onToggle={explore.toggleArmed}
-                  />
-                </div>
-              </div>
-              {explore.armed && explore.live.error && (
-                <p className="mt-1 text-[11px] leading-5 text-amber-300/90">
-                  {explore.live.error}
-                </p>
-              )}
-            </>
-          )}
-
-          {/* One control bar: game nav on the left (losses lead the list,
-              newest first, so ‹ steps towards newer games) and move nav on
-              the right, so the modal stays inside short viewports. The move
-              group is dimmed until the selected game's PGN is replayed. */}
-          <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
+          {/* Slim status bar: game stepper + move counter on the left,
+              live explore label on the right. Explore is always on here, so
+              there is no toggle row — one line covers context plus engine
+              feedback and the card fits short viewports without scrolling. */}
+          <div className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
             <div className="flex items-center gap-1">
               <button
                 type="button"
@@ -3301,8 +3276,52 @@ function OpeningReplayModal({
               <span className="ml-1 text-[11px] tabular-nums text-[#f7e5c6]/50">
                 Game {gameIndex + 1} / {games.length}
               </span>
+              {gamePhase === 'ready' && game && (
+                <>
+                  <span
+                    className="h-1 w-1 rounded-full bg-[#f7e5c6]/25"
+                    aria-hidden
+                  />
+                  <span className="text-[11px] tabular-nums text-[#f7e5c6]/50">
+                    Move {displayPly} / {lastMoveIndex}
+                  </span>
+                </>
+              )}
             </div>
+            {gamePhase === 'ready' && game && (
+              <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                {storedBlunder && !showLive && (
+                  <ModalLabelChip
+                    classification={storedBlunder.classification}
+                    title="From stored analysis — no engine call"
+                  />
+                )}
+                {showLive && explore.live.classification && (
+                  <ModalLabelChip
+                    classification={explore.live.classification}
+                    title="Live engine label for the position on screen"
+                  />
+                )}
+                {explore.live.pending && !showLive && (
+                  <span className="inline-flex items-center gap-1.5 text-[11px] text-[#f7e5c6]/60">
+                    <span className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-white/20 border-t-white" />
+                    Analyzing…
+                  </span>
+                )}
+                {showLive && (
+                  <ModalEvalChip
+                    cp={explore.live.evalCp}
+                    mate={explore.live.evalMate}
+                  />
+                )}
+              </div>
+            )}
           </div>
+          {explore.live.error && (
+            <p className="mt-1 text-[11px] leading-5 text-amber-300/90">
+              {explore.live.error}
+            </p>
+          )}
 
           {explore.deviation && (
             <div className="mt-2 flex items-center justify-between gap-2 rounded-xl border border-emerald-400/25 bg-emerald-500/[0.07] px-3 py-2">
@@ -3360,7 +3379,7 @@ function OpeningReplayModal({
           </div>
 
           {gamePhase === 'ready' && game && summary.first_blunder && (
-            <div className="mt-3 flex items-center justify-between gap-3 rounded-xl border border-black/30 bg-black/30 px-3 py-2">
+            <div className="mt-2 flex items-center justify-between gap-3 rounded-xl border border-black/30 bg-black/30 px-3 py-2">
               <span className="min-w-0 truncate text-[11px] text-[#f7e5c6]/70">
                 First {summary.first_blunder.classification}: move{' '}
                 {summary.first_blunder.move_number} ·{' '}
