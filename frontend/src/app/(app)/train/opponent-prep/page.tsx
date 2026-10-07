@@ -1,9 +1,9 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { Chess, Square } from 'chess.js';
 import dynamic from 'next/dynamic';
-import type { SquareRenderer } from 'react-chessboard';
+import type { PieceDropHandlerArgs, SquareRenderer } from 'react-chessboard';
 
 import ReviewShell from '@/components/review/ReviewShell';
 
@@ -89,6 +89,7 @@ type OpeningGameBlunder = {
   ply: number;
   move_san: string;
   classification: 'mistake' | 'blunder';
+  position_key: string;
 };
 
 type OpeningGameSummary = {
@@ -114,6 +115,7 @@ type OpeningGame = {
   result: string;
   end_time: number;
   time_class: string;
+  blunders: OpeningGameBlunder[];
 };
 
 type ApiErrorResponse = {
@@ -904,6 +906,12 @@ export default function OpponentPrepPage() {
                 />
                 <Chessboard
                   options={{
+                    // Unique DOM id: the library measures squares with
+                    // document.querySelector, so co-mounted boards must
+                    // never share the default 'chessboard' id (a modal
+                    // board would otherwise animate with the main
+                    // board's square size and overshoot its target).
+                    id: 'sparring-board',
                     position: game.fen() === new Chess().fen() ? START_FEN : game.fen(),
                     boardOrientation: humanColor,
                     allowDragging: humanCanMove || canPremove,
@@ -1592,7 +1600,6 @@ function RecurringBlunders({ profile }: { profile: OpponentProfile | null }) {
 
   const top = traps.slice(0, 5);
   const isAnalyzing = phase === 'polling';
-  const anyExploitable = top.some((trap) => trap.exploitable);
 
   return (
     <section className="rounded-[18px] border border-[#f7e5c6]/10 bg-black/25 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
@@ -1705,13 +1712,6 @@ function RecurringBlunders({ profile }: { profile: OpponentProfile | null }) {
         </div>
       )}
 
-      {top.length > 0 && !anyExploitable && phase === 'complete' && (
-        <p className="mt-2 text-[11px] leading-5 text-[#f7e5c6]/45">
-          Observed patterns below the bot&apos;s bar — useful for prep, but
-          sparring won&apos;t steer into them.
-        </p>
-      )}
-
       {selectedTrap && (
         <TrapPositionModal
           trap={selectedTrap}
@@ -1785,6 +1785,739 @@ function ModalShell({
   );
 }
 
+// --- Modal explore (shared by both replay viewers) -------------------------
+// Opt-in engine layer transplanted from the review sandbox: when armed, the
+// studied position gets a live label plus the side-to-move's best reply as
+// a board arrow; dragging a different move analyzes the deviation the same
+// way. One in-flight request max (new work aborts the previous), stepped
+// positions debounce ~500ms so fast click-through never queues the shared
+// live engine. Browsing with explore off costs zero engine calls.
+
+type ModalExploreClassification =
+  | 'book'
+  | 'brilliant'
+  | 'great'
+  | 'best'
+  | 'excellent'
+  | 'good'
+  | 'inaccuracy'
+  | 'mistake'
+  | 'miss'
+  | 'blunder';
+
+type ModalSandboxLine = {
+  move_uci?: string | null;
+  move_san?: string | null;
+  eval_cp?: number | null;
+  eval_mate?: number | null;
+  pv_uci: string[];
+  pv_san: string[];
+};
+
+type ModalStreamMessage =
+  | { type: 'meta'; mode: string; depth: number }
+  | {
+      type: 'info';
+      depth: number;
+      classification: ModalExploreClassification;
+      cp_loss: number;
+      ep_loss: number;
+      eval_cp: number;
+      eval_mate?: number | null;
+      best_after?: ModalSandboxLine | null;
+    }
+  | {
+      type: 'final';
+      response: {
+        classification: ModalExploreClassification;
+        cp_loss: number;
+        ep_loss: number;
+        eval_cp: number;
+        eval_mate?: number | null;
+        move_san: string;
+        fen: string;
+        best_after?: ModalSandboxLine | null;
+        second_best_after?: ModalSandboxLine | null;
+      };
+    }
+  | { type: 'error'; detail?: string };
+
+type ModalLiveState = {
+  key: string | null;
+  classification: ModalExploreClassification | null;
+  evalCp: number;
+  evalMate: number | null;
+  suggestionUci: string | null;
+  suggestionSan: string | null;
+  pending: boolean;
+  error: string | null;
+};
+
+const EMPTY_MODAL_LIVE: ModalLiveState = {
+  key: null,
+  classification: null,
+  evalCp: 0,
+  evalMate: null,
+  suggestionUci: null,
+  suggestionSan: null,
+  pending: false,
+  error: null,
+};
+
+type VerboseHistoryMove = {
+  from: string;
+  to: string;
+  san: string;
+  promotion?: string;
+};
+
+// Session-level sandbox capability (the review page fetches its own copy;
+// both modals share this one so the second modal costs nothing).
+let modalSandboxEnabled: boolean | null = null;
+
+async function modalSandboxAvailable(): Promise<boolean> {
+  if (modalSandboxEnabled !== null) {
+    return modalSandboxEnabled;
+  }
+  try {
+    const response = await fetch('/api/review/capabilities', {
+      cache: 'no-store',
+    });
+    if (!response.ok) {
+      modalSandboxEnabled = false;
+      return false;
+    }
+    const data = (await response.json()) as { sandbox_enabled?: boolean };
+    modalSandboxEnabled = data.sandbox_enabled === true;
+    return modalSandboxEnabled;
+  } catch {
+    modalSandboxEnabled = false;
+    return false;
+  }
+}
+
+function formatModalEval(cp: number, mate: number | null): string {
+  if (typeof mate === 'number' && Number.isFinite(mate) && mate !== 0) {
+    return mate > 0 ? `M${Math.abs(mate)}` : `-M${Math.abs(mate)}`;
+  }
+  const pawns = (Number.isFinite(cp) ? cp : 0) / 100;
+  return `${pawns >= 0 ? '+' : ''}${pawns.toFixed(2)}`;
+}
+
+function exploreLabel(classification: ModalExploreClassification): string {
+  switch (classification) {
+    case 'book':
+      return 'Book';
+    case 'brilliant':
+      return 'Brilliant';
+    case 'great':
+      return 'Great';
+    case 'best':
+      return 'Best';
+    case 'excellent':
+      return 'Excellent';
+    case 'good':
+      return 'Good';
+    case 'inaccuracy':
+      return 'Inaccuracy';
+    case 'mistake':
+      return 'Mistake';
+    case 'miss':
+      return 'Miss';
+    case 'blunder':
+      return 'Blunder';
+    default:
+      return classification;
+  }
+}
+
+function exploreTone(classification: ModalExploreClassification): string {
+  return classification === 'blunder'
+    ? 'border-rose-400/30 bg-rose-500/10 text-rose-200'
+    : classification === 'mistake' || classification === 'miss'
+      ? 'border-amber-400/30 bg-amber-500/10 text-amber-200'
+      : classification === 'book'
+        ? 'border-white/15 bg-white/5 text-white/70'
+        : 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200';
+}
+
+function useModalExplore({
+  active,
+  gameSans,
+  gameDetails,
+  basePly,
+  resetToken,
+}: {
+  /** False while the game PGN is still loading. */
+  active: boolean;
+  /** SAN history of the replayed game (path context for the sandbox). */
+  gameSans: string[];
+  /** Verbose history parallel to gameSans (for move UCIs). */
+  gameDetails: VerboseHistoryMove[];
+  /** Current replay ply (0 = start position). */
+  basePly: number;
+  /** Clears deviation + live result when the game changes. */
+  resetToken: string;
+}) {
+  const [armed, setArmed] = useState(false);
+  const [live, setLive] = useState<ModalLiveState>(EMPTY_MODAL_LIVE);
+  const [deviation, setDeviation] = useState<{
+    sans: string[];
+    fen: string;
+    san: string;
+    from: string;
+    to: string;
+  } | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const reqIdRef = useRef(0);
+
+  // New game: drop deviation + live result (armed persists across games).
+  useEffect(() => {
+    abortRef.current?.abort();
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    setDeviation(null);
+    setLive(EMPTY_MODAL_LIVE);
+  }, [resetToken]);
+
+  // Abort in-flight work on unmount.
+  useEffect(
+    () => () => {
+      abortRef.current?.abort();
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+      }
+    },
+    []
+  );
+
+  const toggleArmed = useCallback(() => {
+    abortRef.current?.abort();
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    setLive(EMPTY_MODAL_LIVE);
+    setArmed((value) => !value);
+  }, []);
+
+  const resetDeviation = useCallback(() => {
+    abortRef.current?.abort();
+    if (timerRef.current) {
+      clearTimeout(timerRef.current);
+      timerRef.current = null;
+    }
+    setDeviation(null);
+    setLive(EMPTY_MODAL_LIVE);
+  }, []);
+
+  const runStream = useCallback(
+    async (
+      pathSans: string[],
+      moveUci: string,
+      key: string
+    ): Promise<{ san: string; fen: string } | null> => {
+      abortRef.current?.abort();
+      const controller = new AbortController();
+      abortRef.current = controller;
+      const reqId = ++reqIdRef.current;
+      setLive({ ...EMPTY_MODAL_LIVE, key, pending: true });
+      const apply = (partial: Partial<ModalLiveState>) => {
+        if (reqIdRef.current === reqId) {
+          setLive((prev) =>
+            prev.key === key ? { ...prev, ...partial } : prev
+          );
+        }
+      };
+      try {
+        if (!(await modalSandboxAvailable())) {
+          throw new Error('Explore is unavailable right now.');
+        }
+        const response = await fetch('/api/review/live/stream', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Accept: 'application/x-ndjson',
+          },
+          body: JSON.stringify({
+            moves: pathSans,
+            move: moveUci,
+            player_rating: null,
+            expected_mode: null,
+          }),
+          signal: controller.signal,
+        });
+        if (!response.ok) {
+          let detail = `Live analysis returned ${response.status}`;
+          try {
+            const errorBody = (await response.json()) as {
+              detail?: unknown;
+              error?: unknown;
+            };
+            const parsed =
+              errorBody.detail ?? errorBody.error ?? detail;
+            if (typeof parsed === 'string' && parsed.trim()) {
+              detail = parsed;
+            }
+          } catch {
+            // Keep the status-based message.
+          }
+          throw new Error(detail);
+        }
+        if (!response.body) {
+          throw new Error('Live analysis returned no stream');
+        }
+        const suggestionFrom = (
+          lines: Array<ModalSandboxLine | null | undefined>
+        ): { uci: string; san: string | null } | null => {
+          const line = lines.find((candidate) => candidate?.move_uci);
+          if (!line?.move_uci) {
+            return null;
+          }
+          return { uci: line.move_uci, san: line.move_san ?? null };
+        };
+        let settled: { san: string; fen: string } | null = null;
+        const handleMessage = (message: ModalStreamMessage) => {
+          if (message.type === 'info') {
+            const suggestion = suggestionFrom([message.best_after]);
+            apply({
+              classification: message.classification,
+              evalCp: message.eval_cp,
+              evalMate: message.eval_mate ?? null,
+              suggestionUci: suggestion?.uci ?? null,
+              suggestionSan: suggestion?.san ?? null,
+            });
+            return;
+          }
+          if (message.type === 'error') {
+            throw new Error(message.detail ?? 'Could not analyze that move.');
+          }
+          if (message.type !== 'final') {
+            return;
+          }
+          const data = message.response;
+          const suggestion = suggestionFrom([
+            data.best_after,
+            data.second_best_after,
+          ]);
+          apply({
+            pending: false,
+            classification: data.classification,
+            evalCp: data.eval_cp,
+            evalMate: data.eval_mate ?? null,
+            suggestionUci: suggestion?.uci ?? null,
+            suggestionSan: suggestion?.san ?? null,
+          });
+          settled = { san: data.move_san, fen: data.fen };
+        };
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        for (;;) {
+          const { done, value } = await reader.read();
+          if (done) {
+            break;
+          }
+          buffer += decoder.decode(value, { stream: true });
+          let newline = buffer.indexOf('\n');
+          while (newline >= 0) {
+            const line = buffer.slice(0, newline).trim();
+            buffer = buffer.slice(newline + 1);
+            if (line) {
+              handleMessage(JSON.parse(line) as ModalStreamMessage);
+            }
+            newline = buffer.indexOf('\n');
+          }
+        }
+        buffer += decoder.decode();
+        const tail = buffer.trim();
+        if (tail) {
+          handleMessage(JSON.parse(tail) as ModalStreamMessage);
+        }
+        return reqIdRef.current === reqId ? settled : null;
+      } catch (error) {
+        if (controller.signal.aborted || reqIdRef.current !== reqId) {
+          return null;
+        }
+        const detail =
+          error instanceof Error ? error.message : 'Could not analyze that move.';
+        setLive((prev) =>
+          prev.key === key
+            ? { ...prev, pending: false, error: detail }
+            : prev
+        );
+        return null;
+      }
+    },
+    []
+  );
+
+  // Auto-analyze the studied game position once stepping settles. Deviations
+  // are analyzed at play time, so they are skipped here.
+  useEffect(() => {
+    if (!armed || !active || deviation) {
+      return;
+    }
+    if (basePly <= 0 || basePly > gameDetails.length) {
+      // Start position (or out of range): suggestion only, via prewarm —
+      // there is no played move to label.
+      if (basePly !== 0) {
+        return;
+      }
+      let cancelled = false;
+      timerRef.current = setTimeout(async () => {
+        try {
+          if (!(await modalSandboxAvailable())) {
+            return;
+          }
+          const response = await fetch('/api/review/live/prewarm', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ moves: [], expected_mode: null }),
+          });
+          if (!response.ok || cancelled) {
+            return;
+          }
+          const data = (await response.json()) as {
+            best?: ModalSandboxLine | null;
+            second_best?: ModalSandboxLine | null;
+          };
+          const line =
+            [data.best, data.second_best].find((l) => l?.move_uci) ?? null;
+          if (!cancelled && line?.move_uci) {
+            setLive({
+              ...EMPTY_MODAL_LIVE,
+              key: 'start',
+              suggestionUci: line.move_uci,
+              suggestionSan: line.move_san ?? null,
+            });
+          }
+        } catch {
+          // Best-effort; stepping still works without the arrow.
+        }
+      }, 400);
+      return () => {
+        cancelled = true;
+        if (timerRef.current) {
+          clearTimeout(timerRef.current);
+          timerRef.current = null;
+        }
+      };
+    }
+    const detail = gameDetails[basePly - 1];
+    if (!detail) {
+      return;
+    }
+    const uci = `${detail.from}${detail.to}${detail.promotion ?? ''}`;
+    const path = gameSans.slice(0, basePly - 1);
+    const key = `${path.join(' ')}|${uci}`;
+    timerRef.current = setTimeout(() => {
+      void runStream(path, uci, key);
+    }, 500);
+    return () => {
+      if (timerRef.current) {
+        clearTimeout(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [armed, active, basePly, gameSans, gameDetails, deviation, runStream]);
+
+  /** Play a deviation from the displayed position (auto-queens promotions).
+   *  Returns false when the drag is not a legal move. */
+  const playDeviation = useCallback(
+    (
+      from: string,
+      to: string,
+      baseFen: string,
+      gamePathSans: string[],
+      devSans: string[]
+    ) => {
+      let uci: string | null = null;
+      let optimistic: { sans: string[]; fen: string; san: string } | null =
+        null;
+      try {
+        const chess = new Chess(baseFen);
+        const options = chess
+          .moves({ verbose: true })
+          .filter((move) => move.from === from && move.to === to);
+        if (options.length === 0) {
+          return false;
+        }
+        const piece = (() => {
+          try {
+            return chess.get(from as Square);
+          } catch {
+            return null;
+          }
+        })();
+        const promotion =
+          piece?.type === 'p' && (to.charAt(1) === '8' || to.charAt(1) === '1')
+            ? 'q'
+            : undefined;
+        const played = chess.move({ from, to, promotion });
+        uci = `${from}${to}${played.promotion ?? ''}`;
+        optimistic = {
+          sans: [...devSans, played.san],
+          fen: chess.fen(),
+          san: played.san,
+        };
+      } catch {
+        return false;
+      }
+      if (!uci || !optimistic) {
+        return false;
+      }
+      const path = [...gamePathSans, ...devSans];
+      const key = `${path.join(' ')}|${uci}`;
+      // Optimistic: show the dragged move instantly (the position is fully
+      // determined locally); the stream below only settles its label and
+      // the reply arrow. Without this the piece snaps back until the
+      // engine answers seconds later.
+      const optimisticSnapshot = optimistic;
+      setDeviation({ ...optimisticSnapshot, from, to });
+      void runStream(path, uci, key).then((result) => {
+        if (result) {
+          setDeviation({
+            sans: [...devSans, result.san],
+            fen: result.fen,
+            san: result.san,
+            from,
+            to,
+          });
+        }
+      });
+      return true;
+    },
+    [runStream]
+  );
+
+  const arrows = useMemo(() => {
+    if (!armed || !live.suggestionUci || live.suggestionUci.length < 4) {
+      return [];
+    }
+    const from = live.suggestionUci.slice(0, 2);
+    const to = live.suggestionUci.slice(2, 4);
+    if (from === to) {
+      return [];
+    }
+    return [{ startSquare: from, endSquare: to, color: '#10b981' }];
+  }, [armed, live.suggestionUci]);
+
+  return {
+    armed,
+    toggleArmed,
+    live,
+    deviation,
+    playDeviation,
+    resetDeviation,
+    arrows,
+  };
+}
+
+// --- Shared modal viewer chrome -------------------------------------------
+// One visual language for both replay viewers: move readout + label chips
+// on the left, copy + explore controls on the right, a wooden five-button
+// navigator under the board. Status rows keep a minimum height so badges
+// arriving late never shove the board around.
+
+function ModalExploreToggle({
+  armed,
+  onToggle,
+}: {
+  armed: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onToggle}
+      aria-pressed={armed}
+      title={
+        armed
+          ? 'Stop exploring — back to plain replay'
+          : 'Explore: label each studied move and show the best reply (drag to try your own moves)'
+      }
+      className={`shrink-0 cursor-pointer rounded-full border px-3 py-1.5 text-[11px] font-semibold transition-colors duration-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#efd9a7] ${
+        armed
+          ? 'border-emerald-400/50 bg-emerald-500/15 text-emerald-200 hover:bg-emerald-500/25'
+          : 'border-[#f7e5c6]/25 bg-black/45 text-[#f7e5c6]/80 hover:bg-black/65'
+      }`}
+    >
+      Explore: {armed ? 'On' : 'Off'}
+    </button>
+  );
+}
+
+function ModalEvalChip({ cp, mate }: { cp: number; mate: number | null }) {
+  return (
+    <span className="shrink-0 rounded-md bg-[#eacb90]/15 px-2 py-0.5 font-mono text-[11px] font-bold text-[#eacb90] ring-1 ring-[#eacb90]/30">
+      {formatModalEval(cp, mate)}
+    </span>
+  );
+}
+
+function ModalLabelChip({
+  classification,
+  title,
+}: {
+  classification: ModalExploreClassification;
+  title?: string;
+}) {
+  return (
+    <span
+      title={title}
+      className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] ${exploreTone(classification)}`}
+    >
+      {exploreLabel(classification)}
+    </span>
+  );
+}
+
+function ModalMoveReadout({
+  ply,
+  total,
+  san,
+}: {
+  ply: number;
+  total: number;
+  san: string | null;
+}) {
+  const label =
+    ply <= 0 || !san ? 'Start' : `${Math.ceil(ply / 2)}. ${san}`;
+  return (
+    <span className="flex min-w-0 items-baseline gap-1.5">
+      <span className="truncate font-mono text-sm font-bold text-[#f7e5c6]">
+        {label}
+      </span>
+      <span className="shrink-0 font-mono text-[11px] tabular-nums text-[#f7e5c6]/40">
+        {ply} / {total}
+      </span>
+    </span>
+  );
+}
+
+function ModalCopyFenButton({
+  onCopy,
+  copied,
+}: {
+  onCopy: () => void;
+  copied: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onCopy}
+      title="Copy the displayed FEN"
+      className="shrink-0 cursor-pointer rounded-full border border-[#f7e5c6]/25 bg-black/45 px-2.5 py-1.5 text-[10px] font-semibold text-[#f7e5c6]/80 transition-colors duration-200 hover:bg-black/65 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#efd9a7]"
+    >
+      {copied ? 'Copied' : 'FEN'}
+    </button>
+  );
+}
+
+function ModalWoodNav({
+  disabled,
+  onFirst,
+  onPrev,
+  onPlay,
+  onNext,
+  onLast,
+  playing,
+}: {
+  disabled: boolean;
+  onFirst: () => void;
+  onPrev: () => void;
+  onPlay: () => void;
+  onNext: () => void;
+  onLast: () => void;
+  playing: boolean;
+}) {
+  const base =
+    'flex h-10 flex-1 items-center justify-center text-[#f0e0c0] transition-transform hover:scale-105 active:scale-95 disabled:pointer-events-none disabled:opacity-40 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#efd9a7]';
+  const cursor = disabled ? 'default' : 'pointer';
+  return (
+    <div className="grid shrink-0 grid-cols-5 gap-1.5" role="group" aria-label="Move navigation">
+      <button
+        type="button"
+        onClick={onFirst}
+        disabled={disabled}
+        aria-label="First position"
+        title="First position"
+        className={base}
+        style={{ cursor, ...woodBoxStyle, borderRadius: '4px 4px 4px 24px' }}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+          <rect x="3" y="4" width="2.5" height="16" rx="1" />
+          <path d="M21 4 L9 12 L21 20 Z" />
+        </svg>
+      </button>
+      <button
+        type="button"
+        onClick={onPrev}
+        disabled={disabled}
+        aria-label="Previous move"
+        title="Previous move"
+        className={base}
+        style={{ cursor, ...woodBoxStyle }}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+          <path d="M18 4 L6 12 L18 20 Z" />
+        </svg>
+      </button>
+      <button
+        type="button"
+        onClick={onPlay}
+        disabled={disabled}
+        aria-label={playing ? 'Pause auto-play' : 'Auto-play moves'}
+        title={playing ? 'Pause auto-play' : 'Auto-play moves'}
+        className={base}
+        style={{ cursor, ...woodBoxStyle }}
+      >
+        {playing ? (
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+            <rect x="6" y="5" width="4" height="14" rx="1" />
+            <rect x="14" y="5" width="4" height="14" rx="1" />
+          </svg>
+        ) : (
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+            <path d="M8 5v14l11-7z" />
+          </svg>
+        )}
+      </button>
+      <button
+        type="button"
+        onClick={onNext}
+        disabled={disabled}
+        aria-label="Next move"
+        title="Next move"
+        className={base}
+        style={{ cursor, ...woodBoxStyle }}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+          <path d="M6 4 L18 12 L6 20 Z" />
+        </svg>
+      </button>
+      <button
+        type="button"
+        onClick={onLast}
+        disabled={disabled}
+        aria-label="Last position"
+        title="Last position"
+        className={base}
+        style={{ cursor, ...woodBoxStyle, borderRadius: '4px 4px 24px 4px' }}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden>
+          <path d="M3 4 L15 12 L3 20 Z" />
+          <rect x="18.5" y="4" width="2.5" height="16" rx="1" />
+        </svg>
+      </button>
+    </div>
+  );
+}
+
 function TrapPositionModal({
   trap,
   onClose,
@@ -1796,9 +2529,15 @@ function TrapPositionModal({
   // the board toward them for the whole replay.
   const erringSide: 'white' | 'black' =
     trap.fen.split(' ')[1] === 'b' ? 'black' : 'white';
+  // Unique per mount: the trap board co-mounts with the sparring board
+  // behind it (see the sparring-board id note above).
+  const trapBoardId = `trap-board-${useId().replace(/:/g, '')}`;
   const [phase, setPhase] = useState<'loading' | 'error' | 'ready'>('loading');
   const [positions, setPositions] = useState<string[]>([trap.fen]);
   const [moveIndex, setMoveIndex] = useState(0);
+  const [moveSans, setMoveSans] = useState<string[]>([]);
+  const [moveDetails, setMoveDetails] = useState<VerboseHistoryMove[]>([]);
+  const [blunders, setBlunders] = useState<OpeningGameBlunder[]>([]);
   const [copied, setCopied] = useState(false);
 
   // Fetch the example game (most recent game with this recurring error) so
@@ -1824,7 +2563,8 @@ function TrapPositionModal({
           return;
         }
         // Replay locally: positions[i] is the FEN after i plies, so the
-        // position before the error (ply p) is positions[p - 1].
+        // position before the error (ply p) is positions[p - 1]. Keep the
+        // SAN history and verbose details alongside for explore paths.
         const replay = new Chess();
         replay.loadPgn(game.pgn);
         const stepper = new Chess();
@@ -1834,6 +2574,11 @@ function TrapPositionModal({
           nextPositions.push(stepper.fen());
         }
         setPositions(nextPositions);
+        setMoveSans(replay.history());
+        setMoveDetails(
+          replay.history({ verbose: true }) as unknown as VerboseHistoryMove[]
+        );
+        setBlunders(game.blunders ?? []);
         setMoveIndex(Math.max(0, trap.example_ply - 1));
         setPhase('ready');
       } catch {
@@ -1851,14 +2596,134 @@ function TrapPositionModal({
 
   const lastMoveIndex = positions.length - 1;
   const position = positions[moveIndex] ?? trap.fen;
+
+  const explore = useModalExplore({
+    active: phase === 'ready' && positions.length > 1,
+    gameSans: moveSans,
+    gameDetails: moveDetails,
+    basePly: moveIndex,
+    resetToken: trap.example_game_id,
+  });
+  const displayedFen = explore.deviation?.fen ?? position;
   const sideToMove: 'white' | 'black' =
-    position.split(' ')[1] === 'b' ? 'black' : 'white';
-  const navButtonClass =
-    'flex h-7 w-7 items-center justify-center rounded-lg border border-[#f7e5c6]/20 bg-black/40 text-xs text-[#f7e5c6]/80 transition hover:bg-black/60 disabled:pointer-events-none disabled:opacity-35';
+    displayedFen.split(' ')[1] === 'b' ? 'black' : 'white';
+
+  function goToPly(ply: number) {
+    explore.resetDeviation();
+    setMoveIndex(Math.max(0, Math.min(positions.length - 1, ply)));
+  }
+
+  // Stored error badge for the arriving move (free, no engine): match the
+  // pre-move position key + SAN against this game's blunder rows.
+  const storedBlunder = useMemo(() => {
+    if (moveIndex <= 0 || moveIndex > moveDetails.length) {
+      return null;
+    }
+    const key = positionKey(positions[moveIndex - 1] ?? '');
+    const san = moveDetails[moveIndex - 1]?.san;
+    if (!key || !san) {
+      return null;
+    }
+    return (
+      blunders.find((b) => b.position_key === key && b.move_san === san) ??
+      null
+    );
+  }, [moveIndex, positions, moveDetails, blunders]);
+
+  const currentGameKey = useMemo(() => {
+    if (moveIndex === 0) {
+      return 'start';
+    }
+    if (moveIndex > moveDetails.length) {
+      return null;
+    }
+    const detail = moveDetails[moveIndex - 1];
+    if (!detail) {
+      return null;
+    }
+    return `${moveSans.slice(0, moveIndex - 1).join(' ')}|${detail.from}${detail.to}${detail.promotion ?? ''}`;
+  }, [moveIndex, moveDetails, moveSans]);
+
+  // Live result wins while it describes exactly what's on screen (the
+  // studied game move, or the deviation just played).
+  const showLive =
+    explore.armed &&
+    explore.live.classification !== null &&
+    (explore.deviation !== null || explore.live.key === currentGameKey);
+
+  const displaySan =
+    explore.deviation?.san ??
+    (moveIndex > 0 ? (moveDetails[moveIndex - 1]?.san ?? null) : null);
+  const displayPly =
+    moveIndex + (explore.deviation ? explore.deviation.sans.length : 0);
+
+  const lastMoveSquares = useMemo(() => {
+    if (explore.deviation) {
+      return { from: explore.deviation.from, to: explore.deviation.to };
+    }
+    if (moveIndex <= 0 || moveIndex > moveDetails.length) {
+      return null;
+    }
+    const detail = moveDetails[moveIndex - 1];
+    return detail ? { from: detail.from, to: detail.to } : null;
+  }, [explore.deviation, moveIndex, moveDetails]);
+  const boardSquareStyles = useMemo(() => {
+    if (!lastMoveSquares) {
+      return undefined;
+    }
+    return {
+      [lastMoveSquares.from]: {
+        backgroundColor: 'rgba(255, 213, 105, 0.30)',
+      },
+      [lastMoveSquares.to]: {
+        backgroundColor: 'rgba(255, 213, 105, 0.40)',
+      },
+    };
+  }, [lastMoveSquares]);
+
+  const [playing, setPlaying] = useState(false);
+  const { resetDeviation } = explore;
+  useEffect(() => {
+    if (!playing || phase !== 'ready' || moveIndex >= lastMoveIndex) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      resetDeviation();
+      setMoveIndex(moveIndex + 1);
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [playing, phase, moveIndex, lastMoveIndex, resetDeviation]);
+  const togglePlay = () => {
+    if (playing) {
+      setPlaying(false);
+      return;
+    }
+    if (moveIndex >= lastMoveIndex) {
+      explore.resetDeviation();
+      setMoveIndex(0);
+    }
+    setPlaying(true);
+  };
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
+        return;
+      }
+      event.preventDefault();
+      goToPly(moveIndex + (event.key === 'ArrowRight' ? 1 : -1));
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  });
 
   async function copyFen() {
     try {
-      await navigator.clipboard.writeText(position);
+      await navigator.clipboard.writeText(displayedFen);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
     } catch {
@@ -1891,75 +2756,100 @@ function TrapPositionModal({
           : 'Observed pattern — the bot won’t steer here.'}
       </p>
 
+      <div className="mt-2 flex min-h-10 items-center justify-between gap-2">
+        <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+          <ModalMoveReadout ply={displayPly} total={lastMoveIndex} san={displaySan} />
+          {storedBlunder && !showLive && (
+            <ModalLabelChip
+              classification={storedBlunder.classification}
+              title="From stored analysis — no engine call"
+            />
+          )}
+          {showLive && explore.live.classification && (
+            <ModalLabelChip
+              classification={explore.live.classification}
+              title="Live engine label for the position on screen"
+            />
+          )}
+          {explore.armed && explore.live.pending && !showLive && (
+            <span className="inline-flex items-center gap-1.5 text-[11px] text-[#f7e5c6]/60">
+              <span className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-white/20 border-t-white" />
+              Analyzing…
+            </span>
+          )}
+          {showLive && (
+            <ModalEvalChip cp={explore.live.evalCp} mate={explore.live.evalMate} />
+          )}
+        </div>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <ModalCopyFenButton onCopy={copyFen} copied={copied} />
+          <ModalExploreToggle armed={explore.armed} onToggle={explore.toggleArmed} />
+        </div>
+      </div>
+      {explore.armed && explore.live.error && (
+        <p className="mt-1 text-[11px] leading-5 text-amber-300/90">
+          {explore.live.error}
+        </p>
+      )}
+
       <div
         className={`mt-3 overflow-hidden rounded-2xl border border-black/50 ${modalBoardWidthClass}`}
       >
         <div className="relative aspect-square w-full">
           <Chessboard
             options={{
-              position,
-              boardOrientation: erringSide,
               ...modalBoardOptions,
+              id: trapBoardId,
+              position: displayedFen,
+              boardOrientation: erringSide,
+              animationDurationInMs: explore.armed ? 150 : 0,
+              squareStyles: boardSquareStyles,
+              allowDragging: explore.armed,
+              onPieceDrop: explore.armed
+                ? (args: PieceDropHandlerArgs) => {
+                    if (!args.sourceSquare || !args.targetSquare) {
+                      return false;
+                    }
+                    return explore.playDeviation(
+                      args.sourceSquare,
+                      args.targetSquare,
+                      displayedFen,
+                      moveSans.slice(0, moveIndex),
+                      explore.deviation?.sans ?? []
+                    );
+                  }
+                : undefined,
+              arrows: explore.arrows,
             }}
           />
         </div>
       </div>
 
-      <div className="mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
-        <div
-          className={`flex items-center gap-1 transition-opacity ${
-            phase === 'ready' ? '' : 'pointer-events-none opacity-40'
-          }`}
-        >
-          <button
-            type="button"
-            onClick={() => setMoveIndex(0)}
-            disabled={moveIndex === 0}
-            aria-label="First position"
-            className={navButtonClass}
-          >
-            «
-          </button>
-          <button
-            type="button"
-            onClick={() => setMoveIndex((current) => Math.max(0, current - 1))}
-            disabled={moveIndex === 0}
-            aria-label="Previous move"
-            className={navButtonClass}
-          >
-            ‹
-          </button>
-          <button
-            type="button"
-            onClick={() =>
-              setMoveIndex((current) => Math.min(lastMoveIndex, current + 1))
-            }
-            disabled={moveIndex >= lastMoveIndex}
-            aria-label="Next move"
-            className={navButtonClass}
-          >
-            ›
-          </button>
-          <button
-            type="button"
-            onClick={() => setMoveIndex(lastMoveIndex)}
-            disabled={moveIndex >= lastMoveIndex}
-            aria-label="Last position"
-            className={navButtonClass}
-          >
-            »
-          </button>
-          <span className="ml-1 text-[11px] tabular-nums text-[#f7e5c6]/50">
-            {phase === 'ready' ? `${moveIndex} / ${lastMoveIndex}` : '– / –'}
+      {explore.deviation && (
+        <div className="mt-2 flex items-center justify-between gap-2 rounded-xl border border-emerald-400/25 bg-emerald-500/[0.07] px-3 py-2">
+          <span className="min-w-0 truncate text-[11px] text-emerald-100/90">
+            Your line: {explore.deviation.sans.join(' ')}
           </span>
+          <button
+            type="button"
+            onClick={explore.resetDeviation}
+            className="shrink-0 cursor-pointer rounded-full border border-emerald-400/30 bg-emerald-500/10 px-3 py-1 text-[11px] font-semibold text-emerald-200 transition-colors duration-200 hover:bg-emerald-500/20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#efd9a7]"
+          >
+            Back to game
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={copyFen}
-          className="shrink-0 rounded-full border border-[#f7e5c6]/25 bg-black/45 px-3 py-1.5 text-[11px] font-semibold text-[#f7e5c6]/80 transition hover:bg-black/65"
-        >
-          {copied ? 'Copied' : 'Copy FEN'}
-        </button>
+      )}
+
+      <div className="mt-2">
+        <ModalWoodNav
+          disabled={phase !== 'ready'}
+          onFirst={() => goToPly(0)}
+          onPrev={() => goToPly(moveIndex - 1)}
+          onPlay={togglePlay}
+          onNext={() => goToPly(moveIndex + 1)}
+          onLast={() => goToPly(lastMoveIndex)}
+          playing={playing}
+        />
       </div>
 
       <div className="mt-2 flex items-center justify-between gap-3">
@@ -2005,6 +2895,9 @@ function OpeningReplayModal({
   const [game, setGame] = useState<OpeningGame | null>(null);
   const [positions, setPositions] = useState<string[]>([START_FEN]);
   const [moveIndex, setMoveIndex] = useState(0);
+  const [moveSans, setMoveSans] = useState<string[]>([]);
+  const [moveDetails, setMoveDetails] = useState<VerboseHistoryMove[]>([]);
+  const [blunders, setBlunders] = useState<OpeningGameBlunder[]>([]);
   const gameCache = useRef(new Map<string, OpeningGame>());
 
   // Load the bucket's ordered game list once; open on the server-chosen
@@ -2083,6 +2976,7 @@ function OpeningReplayModal({
         }
         // Replay locally: positions[i] is the FEN after i plies, so the
         // position before ply p is positions[p - 1] (the blunder jump).
+        // Keep the SAN history and verbose details alongside for explore.
         const replay = new Chess();
         replay.loadPgn(next.pgn);
         const stepper = new Chess();
@@ -2093,6 +2987,11 @@ function OpeningReplayModal({
         }
         setGame(next);
         setPositions(nextPositions);
+        setMoveSans(replay.history());
+        setMoveDetails(
+          replay.history({ verbose: true }) as unknown as VerboseHistoryMove[]
+        );
+        setBlunders(next.blunders ?? []);
         setMoveIndex(0);
         setGamePhase('ready');
       } catch {
@@ -2111,15 +3010,149 @@ function OpeningReplayModal({
   const summary = games[gameIndex] ?? null;
   const lastMoveIndex = positions.length - 1;
   const position = positions[moveIndex] ?? START_FEN;
+  const [copied, setCopied] = useState(false);
   const navButtonClass =
     'flex h-7 w-7 items-center justify-center rounded-lg border border-[#f7e5c6]/20 bg-black/40 text-xs text-[#f7e5c6]/80 transition hover:bg-black/60 disabled:pointer-events-none disabled:opacity-35';
+
+  const explore = useModalExplore({
+    active: gamePhase === 'ready' && game !== null && positions.length > 1,
+    gameSans: moveSans,
+    gameDetails: moveDetails,
+    basePly: moveIndex,
+    resetToken: game?.game_id ?? 'none',
+  });
+  const displayedFen = explore.deviation?.fen ?? position;
+  // Unique per mount (same co-mount reason as the trap board).
+  const openingBoardId = `opening-board-${useId().replace(/:/g, '')}`;
+
+  function goToPly(ply: number) {
+    explore.resetDeviation();
+    setMoveIndex(Math.max(0, Math.min(positions.length - 1, ply)));
+  }
+
+  // Stored error badge for the arriving move (free, no engine).
+  const storedBlunder = useMemo(() => {
+    if (moveIndex <= 0 || moveIndex > moveDetails.length) {
+      return null;
+    }
+    const key = positionKey(positions[moveIndex - 1] ?? '');
+    const san = moveDetails[moveIndex - 1]?.san;
+    if (!key || !san) {
+      return null;
+    }
+    return (
+      blunders.find((b) => b.position_key === key && b.move_san === san) ??
+      null
+    );
+  }, [moveIndex, positions, moveDetails, blunders]);
+
+  const currentGameKey = useMemo(() => {
+    if (moveIndex === 0) {
+      return 'start';
+    }
+    if (moveIndex > moveDetails.length) {
+      return null;
+    }
+    const detail = moveDetails[moveIndex - 1];
+    if (!detail) {
+      return null;
+    }
+    return `${moveSans.slice(0, moveIndex - 1).join(' ')}|${detail.from}${detail.to}${detail.promotion ?? ''}`;
+  }, [moveIndex, moveDetails, moveSans]);
+
+  const showLive =
+    explore.armed &&
+    explore.live.classification !== null &&
+    (explore.deviation !== null || explore.live.key === currentGameKey);
+
+  const displaySan =
+    explore.deviation?.san ??
+    (moveIndex > 0 ? (moveDetails[moveIndex - 1]?.san ?? null) : null);
+  const displayPly =
+    moveIndex + (explore.deviation ? explore.deviation.sans.length : 0);
+
+  const lastMoveSquares = useMemo(() => {
+    if (explore.deviation) {
+      return { from: explore.deviation.from, to: explore.deviation.to };
+    }
+    if (moveIndex <= 0 || moveIndex > moveDetails.length) {
+      return null;
+    }
+    const detail = moveDetails[moveIndex - 1];
+    return detail ? { from: detail.from, to: detail.to } : null;
+  }, [explore.deviation, moveIndex, moveDetails]);
+  const boardSquareStyles = useMemo(() => {
+    if (!lastMoveSquares) {
+      return undefined;
+    }
+    return {
+      [lastMoveSquares.from]: {
+        backgroundColor: 'rgba(255, 213, 105, 0.30)',
+      },
+      [lastMoveSquares.to]: {
+        backgroundColor: 'rgba(255, 213, 105, 0.40)',
+      },
+    };
+  }, [lastMoveSquares]);
+
+  const [playing, setPlaying] = useState(false);
+  const { resetDeviation } = explore;
+  useEffect(() => {
+    if (!playing || gamePhase !== 'ready' || moveIndex >= lastMoveIndex) {
+      return;
+    }
+    const timer = setTimeout(() => {
+      resetDeviation();
+      setMoveIndex(moveIndex + 1);
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [playing, gamePhase, moveIndex, lastMoveIndex, resetDeviation]);
+  const togglePlay = () => {
+    if (playing) {
+      setPlaying(false);
+      return;
+    }
+    if (moveIndex >= lastMoveIndex) {
+      explore.resetDeviation();
+      setMoveIndex(0);
+    }
+    setPlaying(true);
+  };
+
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) {
+        return;
+      }
+      event.preventDefault();
+      goToPly(moveIndex + (event.key === 'ArrowRight' ? 1 : -1));
+    }
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  });
 
   const goToGame = (nextIndex: number) => {
     if (nextIndex < 0 || nextIndex >= games.length || nextIndex === gameIndex) {
       return;
     }
+    setPlaying(false);
+    explore.resetDeviation();
     setGameIndex(nextIndex);
   };
+
+  async function copyOpeningFen() {
+    try {
+      await navigator.clipboard.writeText(displayedFen);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard can be unavailable (permissions / insecure context).
+    }
+  }
 
   return (
     <ModalShell
@@ -2149,9 +3182,28 @@ function OpeningReplayModal({
               {gamePhase === 'ready' && game ? (
                 <Chessboard
                   options={{
-                    position,
-                    boardOrientation: color,
                     ...modalBoardOptions,
+                    id: openingBoardId,
+                    position: displayedFen,
+                    boardOrientation: color,
+                    animationDurationInMs: explore.armed ? 150 : 0,
+                    squareStyles: boardSquareStyles,
+                    allowDragging: explore.armed,
+                    onPieceDrop: explore.armed
+                      ? (args: PieceDropHandlerArgs) => {
+                          if (!args.sourceSquare || !args.targetSquare) {
+                            return false;
+                          }
+                          return explore.playDeviation(
+                            args.sourceSquare,
+                            args.targetSquare,
+                            displayedFen,
+                            moveSans.slice(0, moveIndex),
+                            explore.deviation?.sans ?? []
+                          );
+                        }
+                      : undefined,
+                    arrows: explore.arrows,
                   }}
                 />
               ) : (
@@ -2169,11 +3221,64 @@ function OpeningReplayModal({
             </div>
           </div>
 
+          {/* Explore strip: move readout + label chips on the left, copy +
+              explore controls on the right. Minimum height reserves the row
+              so late badges never shove the board. */}
+          {gamePhase === 'ready' && game && (
+            <>
+              <div className="mt-2 flex min-h-10 items-center justify-between gap-2">
+                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
+                  <ModalMoveReadout
+                    ply={displayPly}
+                    total={lastMoveIndex}
+                    san={displaySan}
+                  />
+                  {storedBlunder && !showLive && (
+                    <ModalLabelChip
+                      classification={storedBlunder.classification}
+                      title="From stored analysis — no engine call"
+                    />
+                  )}
+                  {showLive && explore.live.classification && (
+                    <ModalLabelChip
+                      classification={explore.live.classification}
+                      title="Live engine label for the position on screen"
+                    />
+                  )}
+                  {explore.armed && explore.live.pending && !showLive && (
+                    <span className="inline-flex items-center gap-1.5 text-[11px] text-[#f7e5c6]/60">
+                      <span className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-white/20 border-t-white" />
+                      Analyzing…
+                    </span>
+                  )}
+                  {showLive && (
+                    <ModalEvalChip
+                      cp={explore.live.evalCp}
+                      mate={explore.live.evalMate}
+                    />
+                  )}
+                </div>
+                <div className="flex shrink-0 items-center gap-1.5">
+                  <ModalCopyFenButton onCopy={copyOpeningFen} copied={copied} />
+                  <ModalExploreToggle
+                    armed={explore.armed}
+                    onToggle={explore.toggleArmed}
+                  />
+                </div>
+              </div>
+              {explore.armed && explore.live.error && (
+                <p className="mt-1 text-[11px] leading-5 text-amber-300/90">
+                  {explore.live.error}
+                </p>
+              )}
+            </>
+          )}
+
           {/* One control bar: game nav on the left (losses lead the list,
               newest first, so ‹ steps towards newer games) and move nav on
               the right, so the modal stays inside short viewports. The move
               group is dimmed until the selected game's PGN is replayed. */}
-          <div className="mt-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+          <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-2">
             <div className="flex items-center gap-1">
               <button
                 type="button"
@@ -2197,61 +3302,33 @@ function OpeningReplayModal({
                 Game {gameIndex + 1} / {games.length}
               </span>
             </div>
-            <div
-              className={`flex items-center gap-1 transition-opacity ${
-                gamePhase === 'ready' && game
-                  ? ''
-                  : 'pointer-events-none opacity-40'
-              }`}
-            >
-              <button
-                type="button"
-                onClick={() => setMoveIndex(0)}
-                disabled={moveIndex === 0}
-                aria-label="First position"
-                className={navButtonClass}
-              >
-                «
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  setMoveIndex((current) => Math.max(0, current - 1))
-                }
-                disabled={moveIndex === 0}
-                aria-label="Previous move"
-                className={navButtonClass}
-              >
-                ‹
-              </button>
-              <button
-                type="button"
-                onClick={() =>
-                  setMoveIndex((current) =>
-                    Math.min(lastMoveIndex, current + 1)
-                  )
-                }
-                disabled={moveIndex >= lastMoveIndex}
-                aria-label="Next move"
-                className={navButtonClass}
-              >
-                ›
-              </button>
-              <button
-                type="button"
-                onClick={() => setMoveIndex(lastMoveIndex)}
-                disabled={moveIndex >= lastMoveIndex}
-                aria-label="Last position"
-                className={navButtonClass}
-              >
-                »
-              </button>
-              <span className="ml-1 text-[11px] tabular-nums text-[#f7e5c6]/50">
-                {gamePhase === 'ready' && game
-                  ? `${moveIndex} / ${lastMoveIndex}`
-                  : '– / –'}
+          </div>
+
+          {explore.deviation && (
+            <div className="mt-2 flex items-center justify-between gap-2 rounded-xl border border-emerald-400/25 bg-emerald-500/[0.07] px-3 py-2">
+              <span className="min-w-0 truncate text-[11px] text-emerald-100/90">
+                Your line: {explore.deviation.sans.join(' ')}
               </span>
+              <button
+                type="button"
+                onClick={explore.resetDeviation}
+                className="shrink-0 cursor-pointer rounded-full border border-emerald-400/30 bg-emerald-500/10 px-3 py-1 text-[11px] font-semibold text-emerald-200 transition-colors duration-200 hover:bg-emerald-500/20 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#efd9a7]"
+              >
+                Back to game
+              </button>
             </div>
+          )}
+
+          <div className="mt-2">
+            <ModalWoodNav
+              disabled={gamePhase !== 'ready' || !game}
+              onFirst={() => goToPly(0)}
+              onPrev={() => goToPly(moveIndex - 1)}
+              onPlay={togglePlay}
+              onNext={() => goToPly(moveIndex + 1)}
+              onLast={() => goToPly(lastMoveIndex)}
+              playing={playing}
+            />
           </div>
 
           {/* Game meta: result badge + date come from the summary; players,
@@ -2292,9 +3369,7 @@ function OpeningReplayModal({
               <button
                 type="button"
                 onClick={() =>
-                  setMoveIndex(
-                    Math.max(0, (summary.first_blunder?.ply ?? 1) - 1)
-                  )
+                  goToPly(Math.max(0, (summary.first_blunder?.ply ?? 1) - 1))
                 }
                 className="shrink-0 rounded-full border border-rose-400/30 bg-rose-500/10 px-3 py-1.5 text-[11px] font-semibold text-rose-200 transition hover:bg-rose-500/20"
               >
