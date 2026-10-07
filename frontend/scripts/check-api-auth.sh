@@ -97,8 +97,6 @@ check GET  /api/train/opponent-profile-info
 check GET  /api/train/opponents
 check POST /api/train/sparring-move '{}'
 check POST /api/train/sparring-warmup '{}'
-check POST /api/train/weakness-profile '{}'
-check GET  /api/train/weakness-profile/test-id
 
 # Woodpecker.
 check POST /api/woodpecker/attempts '{}'
