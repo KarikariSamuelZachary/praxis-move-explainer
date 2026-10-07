@@ -69,6 +69,9 @@ type OpponentTrap = {
   example_move_san: string;
   example_classification: 'mistake' | 'blunder';
   tier: 'position';
+  /** True when the trap clears the bot's exploitability bar (shown for
+   *  prep either way; only exploitable traps steer sparring). */
+  exploitable: boolean;
 };
 
 type SparringMoveResponse = {
@@ -76,6 +79,8 @@ type SparringMoveResponse = {
   move_san: string;
   source: 'in_book' | 'playing_naturally';
   opponent_elo: number;
+  opponent_elo_estimated: boolean;
+  user_elo?: number | null;
   repertoire_frequency?: number | null;
 };
 
@@ -143,12 +148,20 @@ type AnalysisStatusResponse = {
   status: 'idle' | 'running' | 'complete';
   analyzed_games: number;
   total_games: number;
+  heartbeat_at: string | null;
 };
 
 // 'checking' is the brief first status fetch; 'polling' means analyzed <
 // total; 'complete' means every analyzed game is in and traps were
-// refreshed; 'idle' is the no-job/error/total-0 fallback (old empty state).
-type TrapsPhase = 'idle' | 'checking' | 'polling' | 'complete';
+// refreshed; 'idle' is the no-job/total-0 fallback; 'failed' is the
+// visible error state (analysis never started, or the worker died —
+// previously both collapsed silently into 'idle').
+type TrapsPhase = 'idle' | 'checking' | 'polling' | 'complete' | 'failed';
+
+// A 'running' job whose heartbeat is older than this is a dead worker, not
+// a slow one: the backend reclaims stale heartbeats after 5 minutes, so
+// twice that (plus client/server clock skew) means no worker is alive.
+const ANALYSIS_HEARTBEAT_STALE_MS = 10 * 60 * 1000;
 
 const woodBoxStyle: React.CSSProperties = {
   borderRadius: '4px',
@@ -1271,9 +1284,9 @@ function WeakOpenings({
                   <div className="truncate text-[15px] font-semibold text-[#fff2df]">
                     {opening.family}
                   </div>
-                  {opening.color === 'white' && (
+                  {opening.color && (
                     <div className="mt-0.5 text-[11px] text-[#f7e5c6]/55">
-                      Playing as White
+                      Playing as {opening.color === 'white' ? 'White' : 'Black'}
                     </div>
                   )}
                 </div>
@@ -1323,9 +1336,9 @@ function WeakOpenings({
                 <div className="min-w-0">
                   <div className="truncate text-xs font-semibold text-[#f7e5c6]/90">
                     {opening.family}
-                    {opening.color === 'white' && (
+                    {opening.color && (
                       <span className="ml-1.5 text-[10px] font-normal text-[#f7e5c6]/45">
-                        as White
+                        as {opening.color === 'white' ? 'White' : 'Black'}
                       </span>
                     )}
                   </div>
@@ -1419,6 +1432,10 @@ function RecurringBlunders({ profile }: { profile: OpponentProfile | null }) {
     provider && username ? 'checking' : 'idle'
   );
   const [progress, setProgress] = useState<{ analyzed: number; total: number } | null>(null);
+  // Why polling stopped with an error (null while healthy). 'not-started'
+  // = the job row never appeared (import trigger died silently);
+  // 'stalled' = a running job whose heartbeat went stale (worker crashed).
+  const [failReason, setFailReason] = useState<'not-started' | 'stalled' | null>(null);
   // Trap row currently open in the position viewer (null = modal closed).
   const [selectedTrap, setSelectedTrap] = useState<OpponentTrap | null>(null);
 
@@ -1434,6 +1451,28 @@ function RecurringBlunders({ profile }: { profile: OpponentProfile | null }) {
 
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout> | null = null;
+    // Whether any status row was ever observed this mount. Distinguishes
+    // "analysis never started" (trigger died before creating the row) from
+    // transient 404s after a row was already seen.
+    let sawRow = false;
+
+    function heartbeatStale(heartbeatAt: string | null): boolean {
+      if (!heartbeatAt) {
+        return false;
+      }
+      const parsed = Date.parse(heartbeatAt);
+      if (Number.isNaN(parsed)) {
+        return false;
+      }
+      return Date.now() - parsed > ANALYSIS_HEARTBEAT_STALE_MS;
+    }
+
+    function fail(reason: 'not-started' | 'stalled') {
+      if (!cancelled) {
+        setFailReason(reason);
+        setPhase('failed');
+      }
+    }
 
     async function refreshTraps() {
       try {
@@ -1477,8 +1516,17 @@ function RecurringBlunders({ profile }: { profile: OpponentProfile | null }) {
             );
             return;
           }
+          // Wait window exhausted. A row seen earlier means the job
+          // existed (transient read failure — stay idle and keep showing
+          // whatever traps are on screen). No row ever seen means the
+          // import trigger died before creating one: say so instead of
+          // the generic "no traps" copy.
           if (!cancelled) {
-            setPhase('idle');
+            if (sawRow) {
+              setPhase('idle');
+            } else {
+              fail('not-started');
+            }
           }
           return;
         }
@@ -1486,6 +1534,7 @@ function RecurringBlunders({ profile }: { profile: OpponentProfile | null }) {
         if (cancelled) {
           return;
         }
+        sawRow = true;
         // No job / no games / unanalyzable corpus: fall back to the plain
         // empty state instead of spinning forever.
         if (data.total_games <= 0) {
@@ -1498,6 +1547,13 @@ function RecurringBlunders({ profile }: { profile: OpponentProfile | null }) {
         const analysisComplete =
           data.status === 'complete' ||
           data.analyzed_games >= data.total_games;
+        // A running job with a stale heartbeat has no live worker (the
+        // backend reclaims after 5 min) — e.g. Stockfish crashed mid-run.
+        // Stop polling and say so; a re-import reclaims and restarts it.
+        if (!analysisComplete && heartbeatStale(data.heartbeat_at)) {
+          fail('stalled');
+          return;
+        }
         if (!analysisComplete) {
           setProgress({ analyzed: data.analyzed_games, total: data.total_games });
           setPhase('polling');
@@ -1536,6 +1592,7 @@ function RecurringBlunders({ profile }: { profile: OpponentProfile | null }) {
 
   const top = traps.slice(0, 5);
   const isAnalyzing = phase === 'polling';
+  const anyExploitable = top.some((trap) => trap.exploitable);
 
   return (
     <section className="rounded-[18px] border border-[#f7e5c6]/10 bg-black/25 p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
@@ -1548,9 +1605,22 @@ function RecurringBlunders({ profile }: { profile: OpponentProfile | null }) {
         </div>
       )}
 
+      {top.length > 0 && phase === 'failed' && (
+        <p className="mt-2 text-[11px] leading-5 text-rose-200/80">
+          Analysis stopped early — these traps may be partial. Try
+          re-importing to restart it.
+        </p>
+      )}
+
       {top.length === 0 ? (
         <div className="mt-3">
-          {phase === 'checking' || phase === 'polling' ? (
+          {phase === 'failed' ? (
+            <div className="rounded-2xl border border-rose-400/30 bg-rose-500/10 px-3 py-2.5 text-[11px] leading-5 text-rose-200">
+              {failReason === 'not-started'
+                ? "Analysis couldn't start — try re-importing the opponent."
+                : 'Analysis stalled — try re-importing to restart it.'}
+            </div>
+          ) : phase === 'checking' || phase === 'polling' ? (
             <div className="flex items-center gap-2 rounded-2xl border border-black/30 bg-black/30 px-3 py-2.5 text-[11px] text-[#f7e5c6]/60">
               <span className="h-2 w-2 animate-pulse rounded-full bg-emerald-400/80" aria-hidden />
               {phase === 'polling'
@@ -1561,7 +1631,9 @@ function RecurringBlunders({ profile }: { profile: OpponentProfile | null }) {
             <EmptyHint
               text={
                 phase === 'complete'
-                  ? 'Not enough game data yet for reliable traps.'
+                  ? (profile?.game_count ?? 0) < 5
+                    ? 'Not enough games yet — traps need 5+ games on file.'
+                    : 'Analysis complete — no recurring patterns found.'
                   : 'No recurring traps detected yet.'
               }
             />
@@ -1603,6 +1675,21 @@ function RecurringBlunders({ profile }: { profile: OpponentProfile | null }) {
                       >
                         {trap.classification}
                       </span>
+                      {trap.exploitable ? (
+                        <span
+                          title="Clears the bot's bar — sparring steers toward this position"
+                          className="shrink-0 rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-200"
+                        >
+                          In bot&apos;s sights
+                        </span>
+                      ) : (
+                        <span
+                          title="Observed pattern below the bot's bar — shown for prep, not played toward"
+                          className="shrink-0 rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white/40"
+                        >
+                          Observed
+                        </span>
+                      )}
                     </div>
                     <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] text-[#f7e5c6]/50">
                       <span>{moveRange}</span>
@@ -1616,6 +1703,13 @@ function RecurringBlunders({ profile }: { profile: OpponentProfile | null }) {
             );
           })}
         </div>
+      )}
+
+      {top.length > 0 && !anyExploitable && phase === 'complete' && (
+        <p className="mt-2 text-[11px] leading-5 text-[#f7e5c6]/45">
+          Observed patterns below the bot&apos;s bar — useful for prep, but
+          sparring won&apos;t steer into them.
+        </p>
       )}
 
       {selectedTrap && (
@@ -1788,6 +1882,13 @@ function TrapPositionModal({
       <p className="mt-1 text-[11px] text-[#f7e5c6]/50">
         {moveRange} · {trap.game_count} game{trap.game_count === 1 ? '' : 's'} ·{' '}
         {sideToMove === 'white' ? 'White' : 'Black'} to move
+      </p>
+      <p
+        className={`mt-1 text-[11px] ${trap.exploitable ? 'text-emerald-200/80' : 'text-[#f7e5c6]/40'}`}
+      >
+        {trap.exploitable
+          ? 'The sparring bot plays toward this position.'
+          : 'Observed pattern — the bot won’t steer here.'}
       </p>
 
       <div
