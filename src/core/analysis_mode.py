@@ -7,7 +7,7 @@ Fixed nodes without a cleared TT is not reproducible: a warm-vs-fresh sweep
 on SF19 showed 290/300 positions changing score/best move and 77/301 move
 labels changing, with a warm-vs-warm reversed-order floor of 80/301.
 
-Background jobs (opponent analysis, weakness profile) construct GameAnalyzer
+Background jobs (opponent analysis) construct GameAnalyzer
 without this flag and keep their historical time+depth behavior.
 """
 import hashlib
@@ -25,8 +25,8 @@ REVIEW_HEADROOM = 2.0
 GATE_P99_PLIES = 157
 
 # Fixed in review and live; background jobs keep GameAnalyzer's default of 1:
-# opponent_game_analysis.py and weakness_profile.py construct GameAnalyzer
-# without multipv, and analyze_game.py (CLI) does too.
+# opponent_game_analysis.py constructs GameAnalyzer without multipv, and
+# analyze_game.py (CLI) does too.
 REVIEW_MULTIPV = 2
 assert REVIEW_MULTIPV == 2, "review/live analysis requires MultiPV=2"
 # Bump when the analysis algorithm changes without its constants changing.
