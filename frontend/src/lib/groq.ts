@@ -130,7 +130,7 @@ Move history so far: ${moveHistory.join(' ')}
 Position (FEN): ${fen}
 Move: ${sanMove}
 
-Explain the opportunity that was missed — the tactic, mate, or winning continuation available in the position — without just naming the engine move. Show the idea so the player can spot it next time.
+Explain the opportunity that was missed - the tactic, mate, or winning continuation available in the position - without just naming the engine move. Show the idea so the player can spot it next time.
 
 Respond in this exact JSON format:
 {
