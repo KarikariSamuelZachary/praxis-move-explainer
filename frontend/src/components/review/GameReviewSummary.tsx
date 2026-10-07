@@ -34,22 +34,23 @@ type SummaryRowDef = {
   key: MoveClassification;
   label: string;
   className: string;
+  bubbleClassName: string;
 };
 
 const PRIMARY_ROWS: SummaryRowDef[] = [
-  { key: 'brilliant', label: 'Brilliant', className: 'text-teal-300' },
-  { key: 'great', label: 'Great', className: 'text-blue-400' },
-  { key: 'best', label: 'Best', className: 'text-lime-400' },
-  { key: 'excellent', label: 'Excellent', className: 'text-green-400' },
-  { key: 'mistake', label: 'Mistake', className: 'text-orange-400' },
-  { key: 'miss', label: 'Miss', className: 'text-red-400' },
-  { key: 'blunder', label: 'Blunder', className: 'text-red-500' },
+  { key: 'brilliant', label: 'Brilliant', className: 'text-teal-300', bubbleClassName: 'bg-teal-300' },
+  { key: 'great', label: 'Great', className: 'text-blue-400', bubbleClassName: 'bg-blue-400' },
+  { key: 'best', label: 'Best', className: 'text-lime-400', bubbleClassName: 'bg-lime-400' },
+  { key: 'excellent', label: 'Excellent', className: 'text-green-400', bubbleClassName: 'bg-green-400' },
+  { key: 'mistake', label: 'Mistake', className: 'text-orange-400', bubbleClassName: 'bg-orange-400' },
+  { key: 'miss', label: 'Miss', className: 'text-red-400', bubbleClassName: 'bg-red-400' },
+  { key: 'blunder', label: 'Blunder', className: 'text-red-500', bubbleClassName: 'bg-red-500' },
 ];
 
 const SECONDARY_ROWS: SummaryRowDef[] = [
-  { key: 'good', label: 'Good', className: 'text-lime-300' },
-  { key: 'inaccuracy', label: 'Inaccuracy', className: 'text-amber-300' },
-  { key: 'book', label: 'Book', className: 'text-zinc-300' },
+  { key: 'good', label: 'Good', className: 'text-lime-300', bubbleClassName: 'bg-lime-300' },
+  { key: 'inaccuracy', label: 'Inaccuracy', className: 'text-amber-300', bubbleClassName: 'bg-amber-300' },
+  { key: 'book', label: 'Book', className: 'text-zinc-300', bubbleClassName: 'bg-zinc-300' },
 ];
 
 function parsePgnTag(pgn: string, tag: string): string | null {
@@ -252,13 +253,21 @@ export default function GameReviewSummary({
             >
               <span className="truncate text-[13px] font-medium text-white/85">{row.label}</span>
               <span className={`text-center font-mono text-[15px] font-bold tabular-nums ${row.className}`}>
-                {isAnalyzing ? 0 : counts.white[row.key]}
+                {isAnalyzing ? (
+                  <span className={`mx-auto block h-4 w-4 animate-pulse rounded-full ${row.bubbleClassName}`} aria-hidden="true" />
+                ) : (
+                  counts.white[row.key]
+                )}
               </span>
-              <span className="flex justify-center">
+              <span className={`flex justify-center ${isAnalyzing ? 'animate-pulse' : ''}`}>
                 <ClassificationIcon classification={row.key} size={20} />
               </span>
               <span className={`text-center font-mono text-[15px] font-bold tabular-nums ${row.className}`}>
-                {isAnalyzing ? 0 : counts.black[row.key]}
+                {isAnalyzing ? (
+                  <span className={`mx-auto block h-4 w-4 animate-pulse rounded-full ${row.bubbleClassName}`} aria-hidden="true" />
+                ) : (
+                  counts.black[row.key]
+                )}
               </span>
             </div>
           ))}
