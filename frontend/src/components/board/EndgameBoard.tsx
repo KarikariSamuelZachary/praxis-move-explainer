@@ -1032,6 +1032,9 @@ export default function EndgameBoard<
           />
           <Chessboard
             options={{
+              // Unique DOM id (see the sparring-board note in
+              // train/opponent-prep/page.tsx).
+              id: 'endgame-board',
               position: game.fen(),
               boardOrientation: getOrientation(position),
               squareStyles: displayedSquareStyles,
