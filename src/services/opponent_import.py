@@ -22,6 +22,10 @@ from services.opponent_repertoire import (
     upsert_opponent_profile_snapshot,
     replay_opponent_game,
 )
+from services.sparring_caches import (
+    drop_ensure_throttle,
+    invalidate_opponent_caches,
+)
 
 log = logging.getLogger(__name__)
 
@@ -225,6 +229,15 @@ def run_opponent_import_job(job_id: str) -> None:
         else:
             _mark_job_completed(conn, job_id, imported_count, warnings)
         conn.commit()
+
+        if not errors:
+            # Fresh games change every computed view (style/traps/openings):
+            # drop the caches so the prep page and sparring recompute
+            # instead of serving the pre-import corpus until TTL expiry.
+            for provider, username in repertoire_jobs:
+                invalidate_opponent_caches(
+                    job["requested_by_user_id"], provider, username
+                )
 
         # Cost telemetry: how much opponent_games data this user currently
         # holds. Never raises (see helper) — it must not fail the import.
@@ -436,6 +449,13 @@ def run_opponent_repertoire_index(
             status="complete",
         )
         conn.commit()
+        # Fresh repertoire rows are live-read, but the sparring move path
+        # may skip its inline ensure inside the 60s throttle window — drop
+        # it so the next move picks up the newly indexed games.
+        for provider, opponent_username in opponents:
+            drop_ensure_throttle(
+                requested_by_user_id, provider, opponent_username
+            )
     except Exception as exc:  # noqa: BLE001
         conn.rollback()
         _update_repertoire_index_progress(
@@ -801,9 +821,9 @@ def _log_import_profile(profile: Dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 #
 # The sparring feature imports an opponent's recent games into opponent_games
-# and runs Stockfish blunder classification + repertoire indexing + (optional)
-# weakness profile analysis on them.  The imported PGN corpus is the source of
-# truth that opponent_style / opponent_repertoire / weakness_profile re-read on
+# and runs Stockfish blunder classification + repertoire indexing on them.
+# The imported PGN corpus is the source of
+# truth that opponent_style / opponent_repertoire re-read on
 # every page load to recompute style / time-control / opening distributions, so
 # the bulky `pgn` column CANNOT be trimmed without breaking the sparring page
 # (see ADR note in _store_opponent_games for the raw_summary trim, which IS
@@ -967,6 +987,15 @@ def clear_opponent_data(
                 weakness_jobs_deleted = cur.rowcount
 
         conn.commit()
+        # The deleted rows back the sparring caches: drop them (including
+        # per-game PGN entries, unmappable without a query) so the next
+        # request recomputes instead of serving the cleared corpus.
+        invalidate_opponent_caches(
+            requested_by_user_id,
+            provider if per_opponent else None,
+            opponent_username if per_opponent else None,
+            drop_single_game=True,
+        )
         return {
             "scope": scope,
             "provider": provider if per_opponent else None,
