@@ -156,7 +156,7 @@ type AnalysisStatusResponse = {
 // 'checking' is the brief first status fetch; 'polling' means analyzed <
 // total; 'complete' means every analyzed game is in and traps were
 // refreshed; 'idle' is the no-job/total-0 fallback; 'failed' is the
-// visible error state (analysis never started, or the worker died —
+// visible error state (analysis never started, or the worker died -
 // previously both collapsed silently into 'idle').
 type TrapsPhase = 'idle' | 'checking' | 'polling' | 'complete' | 'failed';
 
@@ -180,6 +180,52 @@ const panelClass =
 
 const rightPanelClass =
   'flex h-full min-h-0 flex-col gap-4 overflow-hidden rounded-[24px] border border-black/50 [background-image:linear-gradient(rgba(0,0,0,0.55),rgba(0,0,0,0.55)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
+
+// In-game right card: the button language of the engine sparring page
+// (SparringGame), rendered directly on the card surface - no nested boxes.
+
+// Endgame Trainer's gold primary assist (Hint), compacted for a 3-up row.
+const GOLD_BUTTON_CLASS =
+  'flex w-full items-center justify-center gap-1.5 rounded-xl bg-gradient-to-b from-[#eacb90] to-[#c1954f] px-2 py-3 text-xs font-bold text-[#2a1a06] shadow-[0_10px_22px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.55)] transition hover:from-[#f2d8a4] hover:to-[#cda261] disabled:cursor-not-allowed disabled:opacity-50';
+
+// Endgame Trainer's secondary action, compacted for a 3-up row.
+const SECONDARY_BUTTON_CLASS =
+  'flex w-full items-center justify-center gap-1.5 rounded-xl border border-white/15 bg-white/5 px-2 py-3 text-xs font-bold text-white/80 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50';
+
+// Resign reads as a danger action, not a neutral one.
+const DANGER_BUTTON_CLASS =
+  'flex w-full items-center justify-center gap-1.5 rounded-xl border border-red-400/25 bg-red-400/10 px-2 py-3 text-xs font-bold text-red-200 transition hover:bg-red-400/20 disabled:cursor-not-allowed disabled:opacity-50';
+
+// The result modal's actions use the FULL-size button language; the in-game
+// row above uses the compacted variants. Same as the engine sparring page.
+const MODAL_PRIMARY_BUTTON_CLASS =
+  'flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-b from-[#eacb90] to-[#c1954f] px-4 py-3.5 text-sm font-bold text-[#2a1a06] shadow-[0_10px_22px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.55)] transition hover:from-[#f2d8a4] hover:to-[#cda261]';
+
+const MODAL_SECONDARY_BUTTON_CLASS =
+  'flex w-full items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/5 px-4 py-3.5 text-sm font-bold text-white/80 transition hover:bg-white/10';
+
+// The modal card: same walnut language as the engine sparring result modal.
+const MODAL_CARD_CLASS =
+  'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
+
+type GameOutcome = { title: string; subtitle: string };
+
+// The Puzzles / Endgame Trainer hint language, verbatim: only the piece to
+// move is highlighted, in emerald, and it fades on its own. The destination
+// is deliberately withheld.
+const HIGHLIGHT_HINT = 'rgba(16, 185, 129, 0.4)';
+const HINT_FADE_MS = 4000;
+
+type SparringHistoryMove = {
+  san: string;
+  color: 'w' | 'b';
+  fen: string;
+};
+
+type PrewarmLine = {
+  move_uci?: string | null;
+  move_san?: string | null;
+};
 
 const modalCardClass =
   'relative m-auto w-full max-w-md rounded-[24px] border border-black/50 p-4 [background-image:linear-gradient(rgba(0,0,0,0.55),rgba(0,0,0,0.55)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
@@ -349,27 +395,59 @@ export default function OpponentPrepPage() {
   const [selectedKey, setSelectedKey] = useState('');
   const [humanColor, setHumanColor] = useState<'white' | 'black'>('white');
   const [game, setGame] = useState(() => new Chess());
+  const [viewIndex, setViewIndex] = useState(0);
+  const [resigned, setResigned] = useState(false);
   const [isStarted, setIsStarted] = useState(false);
   const [isThinking, setIsThinking] = useState(false);
   const [status, setStatus] = useState<BotSource>('ready');
-  const [message, setMessage] = useState<string | null>(null);
-  const [lastMove, setLastMove] = useState<SparringMoveResponse | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
   const [premove, setPremove] = useState<Premove | null>(null);
   const [importWarnings, setImportWarnings] = useState<string[]>([]);
   const [timeControl, setTimeControl] = useState<TimeClassKey | ''>('');
+  // Two-press hint, same as engine sparring: the first press highlights only
+  // the piece to move (it fades on its own); the fetched move is kept so a
+  // second press plays it.
+  const [hint, setHint] = useState<{
+    from: string;
+    to: string;
+    promotion?: string;
+  } | null>(null);
+  const [hintVisible, setHintVisible] = useState(false);
+  const [isHintLoading, setIsHintLoading] = useState(false);
+  const [hintsUsed, setHintsUsed] = useState(0);
+  // The end-of-game modal: shown when the game resolves (checkmate, draw or
+  // resignation), dismissable so the final position and move list stay
+  // reviewable. Same modal as the engine sparring page.
+  const [showResult, setShowResult] = useState(false);
+  // The left setup panel collapses once the game starts so the board and the
+  // moves card take the stage; it expands again when leaving to prep.
+  const [leftCollapsed, setLeftCollapsed] = useState(false);
   const gameRef = useRef(game);
   const botMoveInFlightRef = useRef(false);
+  const moveListRef = useRef<HTMLDivElement>(null);
+  const hintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Latest viewed FEN, for discarding hint answers that land after the board
+  // has moved on. Bumped on every fresh start (and every undo): answers from
+  // the previous line are discarded instead of landing on the new board.
+  const viewFenRef = useRef(START_FEN);
+  const gameIdRef = useRef(0);
+  // A resignation ends the game immediately, so a bot reply already in
+  // flight must not land on the final position.
+  const resignedRef = useRef(false);
   // Every position key since the game started. The game is rebuilt from a
   // FEN on each ply, which resets chess.js's own repetition counter, so
   // threefold repetition is counted from these keys instead. Reset with the
-  // game (startGame/resetGame).
+  // game in startGame.
   const positionKeysRef = useRef<string[]>([positionKey(START_FEN)]);
 
   useEffect(() => {
     gameRef.current = game;
   }, [game]);
+
+  useEffect(() => {
+    resignedRef.current = resigned;
+  }, [resigned]);
 
   useEffect(() => {
     let isCancelled = false;
@@ -426,7 +504,7 @@ export default function OpponentPrepPage() {
         );
       }
     } catch {
-      // Malformed payload or storage unavailable — nothing to show.
+      // Malformed payload or storage unavailable - nothing to show.
     }
   }, []);
 
@@ -456,28 +534,53 @@ export default function OpponentPrepPage() {
     );
   }, [selectedProfile]);
 
-  // The right card no longer shows a per-move log - the mockup replaces
-  // it with three aggregate sections (Openings / Traps / Time Control).
-  // The latest bot move's SAN still surfaces in the StatusStrip via the
-  // `lastMove` API response, so we don't need a derived `moveHistory`
-  // here.
   // checkmate | stalemate | insufficient material | fifty-move rule |
   // threefold repetition (the last one via the tracked keys -- see
-  // detectGameEnding). Any of them ends the game.
+  // detectGameEnding) or resignation. Any of them ends the game.
   const ending = detectGameEnding(game, positionKeysRef.current);
   const gameOver = ending !== null;
-  const endingText = ending ? gameEndingLabel(ending, game) : null;
+  const over = gameOver || resigned;
 
+  // Verbose history is the single source for the move list, the replayed
+  // positions and whose turn it is at any of them (chess.js Move carries
+  // the SAN, the mover's color and the FEN AFTER the move).
+  const history = useMemo<SparringHistoryMove[]>(
+    () =>
+      game.history({ verbose: true }).map((entry) => ({
+        san: entry.san,
+        color: entry.color,
+        fen: entry.after,
+      })),
+    [game]
+  );
+
+  // Clamped on read: transient states (a premove landing, an undone line, a
+  // reset racing an in-flight reply) must never index past the history.
+  const safeViewIndex = Math.max(0, Math.min(viewIndex, history.length));
+
+  const viewFen =
+    safeViewIndex === 0 ? START_FEN : (history[safeViewIndex - 1]?.fen ?? START_FEN);
+  useEffect(() => {
+    viewFenRef.current = viewFen;
+  }, [viewFen]);
+  // A read-only Chess for the viewed position: click-selection legality
+  // answers for the position ON the board, which is the reviewed one while
+  // browsing and the live one otherwise.
+  const viewGame = useMemo(() => new Chess(viewFen), [viewFen]);
+  const viewTurn: 'w' | 'b' =
+    safeViewIndex === 0 ? 'w' : (history[safeViewIndex - 1]?.color ?? 'w') === 'w' ? 'b' : 'w';
+  const isViewingLive = safeViewIndex === history.length;
   const humanCanMove =
     isStarted &&
     !isThinking &&
-    !gameOver &&
-    (game.turn() === 'w' ? 'white' : 'black') === humanColor;
+    !over &&
+    (viewTurn === 'w' ? 'white' : 'black') === humanColor;
 
   // Premoving: while the bot is on the move the user may commit a move that
   // is played automatically (when still legal) the moment it becomes their
-  // turn, so sparring keeps a bullet-like rhythm.
-  const canPremove = isStarted && !gameOver && !humanCanMove;
+  // turn, so sparring keeps a bullet-like rhythm. Live view only: reviewing
+  // an older position is read-only navigation.
+  const canPremove = isStarted && !over && !humanCanMove && isViewingLive;
   const humanPieceColor = humanColor === 'white' ? 'w' : 'b';
 
   // Probe position with the turn flipped to the human. Used to validate
@@ -496,27 +599,17 @@ export default function OpponentPrepPage() {
     }
   }, [canPremove, game, humanPieceColor]);
 
-  const premoveSan = useMemo<string | null>(() => {
-    if (!premove || !premoveProbeGame) {
-      return null;
-    }
-    try {
-      const probe = new Chess(premoveProbeGame.fen());
-      return probe.move({ from: premove.from, to: premove.to, promotion: 'q' })?.san ?? null;
-    } catch {
-      return null;
-    }
-  }, [premove, premoveProbeGame]);
-
   const requestBotMove = useCallback(async () => {
-    if (!selectedProfile || botMoveInFlightRef.current || gameRef.current.isGameOver()) {
+    if (!selectedProfile || botMoveInFlightRef.current || gameRef.current.isGameOver() || resignedRef.current) {
       return;
     }
 
     botMoveInFlightRef.current = true;
     setIsThinking(true);
     setStatus('thinking');
-    setMessage(null);
+
+    const pliesBefore = gameRef.current.history().length;
+    const gameId = gameIdRef.current;
 
     try {
       const response = await fetch('/api/train/sparring-move', {
@@ -538,18 +631,31 @@ export default function OpponentPrepPage() {
       }
 
       const data = (await response.json()) as SparringMoveResponse;
-      const nextGame = new Chess(gameRef.current.fen());
+      // A reset replaced the game, or the player resigned, while this
+      // reply was in flight: drop it rather than mutating a finished board.
+      if (gameIdRef.current !== gameId || resignedRef.current) {
+        return;
+      }
+      // Replay the full line: building from a FEN starts history empty, and
+      // the move list / review navigation depend on the complete SAN line.
+      const nextGame = replaySans(gameRef.current.history());
       nextGame.move(uciToMove(data.move_uci));
       positionKeysRef.current.push(positionKey(nextGame.fen()));
       setGame(nextGame);
-      setLastMove(data);
+      // Follow the reply only when the player is watching the live position;
+      // reviewing an earlier move keeps their place.
+      setViewIndex((prev) => (prev === pliesBefore ? pliesBefore + 1 : prev));
       setStatus(data.source);
-    } catch (error) {
+    } catch {
+      // The board simply stays put; Undo re-arms the bot for a retry.
       setStatus('error');
-      setMessage(error instanceof Error ? error.message : 'Failed to get a sparring move.');
     } finally {
-      botMoveInFlightRef.current = false;
-      setIsThinking(false);
+      // Only the current game owns the thinking flag: a stale reply from the
+      // previous game must not unlock the new game's board mid-request.
+      if (gameIdRef.current === gameId) {
+        botMoveInFlightRef.current = false;
+        setIsThinking(false);
+      }
     }
   }, [botColor, selectedProfile, timeControl]);
 
@@ -560,7 +666,7 @@ export default function OpponentPrepPage() {
     if (!premove) {
       return;
     }
-    if (!isStarted || gameOver) {
+    if (!isStarted || over) {
       setPremove(null);
       return;
     }
@@ -572,7 +678,9 @@ export default function OpponentPrepPage() {
 
     setPremove(null);
 
-    const nextGame = new Chess(game.fen());
+    // Same full-line replay as the bot reply: building from a FEN would
+    // start history empty and break the move list.
+    const nextGame = replaySans(game.history());
     let move: ReturnType<typeof nextGame.move> | null = null;
     try {
       move = nextGame.move({ from: premove.from, to: premove.to, promotion: 'q' });
@@ -583,15 +691,15 @@ export default function OpponentPrepPage() {
     if (move) {
       positionKeysRef.current.push(positionKey(nextGame.fen()));
       setGame(nextGame);
-      setLastMove(null);
-      setMessage(null);
+      // The premove only fires while watching live, so the view follows it.
+      setViewIndex(nextGame.history().length);
       setStatus('ready');
       setSelectedSquare(null);
     }
-  }, [game, gameOver, humanColor, isStarted, premove]);
+  }, [game, over, humanColor, isStarted, premove]);
 
   useEffect(() => {
-    if (!isStarted || !selectedProfile || gameOver || isThinking || status === 'error') {
+    if (!isStarted || !selectedProfile || over || isThinking || status === 'error') {
       return;
     }
 
@@ -599,18 +707,69 @@ export default function OpponentPrepPage() {
     if (turnColor === botColor) {
       requestBotMove();
     }
-  }, [botColor, game, gameOver, isStarted, isThinking, requestBotMove, selectedProfile, status]);
+  }, [botColor, game, over, isStarted, isThinking, requestBotMove, selectedProfile, status]);
+
+  // Keep the move box pinned to the newest move while the player is
+  // following the live game; leave their scroll alone while reviewing.
+  useEffect(() => {
+    if (!isViewingLive) {
+      return;
+    }
+    const list = moveListRef.current;
+    if (list) {
+      list.scrollTop = list.scrollHeight;
+    }
+  }, [isViewingLive, history.length]);
+
+  // Reviewing an older position must not leak into the next position:
+  // selection and hint highlights reset with the view.
+  useEffect(() => {
+    setSelectedSquare(null);
+    setHint(null);
+    setHintVisible(false);
+  }, [viewIndex]);
+
+  useEffect(() => {
+    return () => {
+      if (hintTimerRef.current) {
+        clearTimeout(hintTimerRef.current);
+      }
+    };
+  }, []);
+
+  // The result modal pops the moment the game resolves, once per game; the
+  // user can dismiss it to review the final position and move list.
+  const outcomeName = selectedProfile?.opponent_username ?? 'Opponent';
+  const resultOutcome = describeOutcome(game, resigned, humanColor, outcomeName);
+  useEffect(() => {
+    if (over) {
+      setShowResult(true);
+    }
+  }, [over]);
 
   function startGame() {
     const nextGame = new Chess();
     positionKeysRef.current = [positionKey(nextGame.fen())];
+    gameIdRef.current += 1;
+    if (hintTimerRef.current) {
+      clearTimeout(hintTimerRef.current);
+      hintTimerRef.current = null;
+    }
     setGame(nextGame);
+    setViewIndex(0);
+    setResigned(false);
     setIsStarted(true);
-    setLastMove(null);
-    setMessage(null);
     setStatus('ready');
     setSelectedSquare(null);
     setPremove(null);
+    setHint(null);
+    setHintVisible(false);
+    setIsHintLoading(false);
+    setHintsUsed(0);
+    setShowResult(false);
+    // The setup panel steps aside so the board and the moves card take the
+    // stage; the rail arrow brings it back anytime.
+    setLeftCollapsed(true);
 
     // Fire-and-forget session warmup: while the user plays their first
     // moves, the backend indexes any missing repertoire rows and
@@ -631,20 +790,7 @@ export default function OpponentPrepPage() {
     }
   }
 
-  function resetGame() {
-    positionKeysRef.current = [positionKey(START_FEN)];
-    setGame(new Chess());
-    setIsStarted(false);
-    setLastMove(null);
-    setMessage(null);
-    setStatus('ready');
-    setSelectedSquare(null);
-    setPremove(null);
-    botMoveInFlightRef.current = false;
-    setIsThinking(false);
-  }
-
-  function tryMove(sourceSquare: string, targetSquare: string): boolean {
+  function tryMove(sourceSquare: string, targetSquare: string, promotion = 'q'): boolean {
     if (!humanCanMove) {
       return false;
     }
@@ -653,13 +799,16 @@ export default function OpponentPrepPage() {
       return false;
     }
 
-    const nextGame = new Chess(gameRef.current.fen());
+    // Moving from a reviewed position branches: the future after that move
+    // is discarded and the game continues from the new choice.
+    const baseSans = gameRef.current.history().slice(0, viewIndex);
+    const nextGame = replaySans(baseSans);
     let move: ReturnType<typeof nextGame.move> | null = null;
     try {
       move = nextGame.move({
         from: sourceSquare,
         to: targetSquare,
-        promotion: 'q',
+        promotion,
       });
     } catch {
       return false;
@@ -669,13 +818,174 @@ export default function OpponentPrepPage() {
       return false;
     }
 
-    positionKeysRef.current.push(positionKey(nextGame.fen()));
+    positionKeysRef.current = [
+      ...positionKeysRef.current.slice(0, viewIndex + 1),
+      positionKey(nextGame.fen()),
+    ];
     setGame(nextGame);
-    setLastMove(null);
-    setMessage(null);
+    setViewIndex(baseSans.length + 1);
     setStatus('ready');
     setSelectedSquare(null);
+    setPremove(null);
+    setHint(null);
+    setHintVisible(false);
     return true;
+  }
+
+  function goToIndex(ply: number) {
+    setViewIndex(ply);
+    setSelectedSquare(null);
+    setHint(null);
+    setHintVisible(false);
+  }
+
+  function resignGame() {
+    if (over) {
+      return;
+    }
+    setResigned(true);
+    setSelectedSquare(null);
+    setPremove(null);
+    setHint(null);
+    setHintVisible(false);
+  }
+
+  // Same settings, fresh board (the result modal's "Rematch").
+  function rematch() {
+    startGame();
+  }
+
+  // Leave the finished (or idle) game and return to the prep overview with
+  // the setup panel expanded (the result modal's secondary action).
+  function exitToPrep() {
+    positionKeysRef.current = [positionKey(START_FEN)];
+    gameIdRef.current += 1;
+    if (hintTimerRef.current) {
+      clearTimeout(hintTimerRef.current);
+      hintTimerRef.current = null;
+    }
+    botMoveInFlightRef.current = false;
+    setGame(new Chess());
+    setViewIndex(0);
+    setResigned(false);
+    setIsStarted(false);
+    setStatus('ready');
+    setIsThinking(false);
+    setSelectedSquare(null);
+    setPremove(null);
+    setHint(null);
+    setHintVisible(false);
+    setIsHintLoading(false);
+    setHintsUsed(0);
+    setShowResult(false);
+    setLeftCollapsed(false);
+  }
+
+  function undoMove() {
+    if (isThinking || over || history.length === 0) {
+      return;
+    }
+
+    // Take back to the player's previous decision point: the bot's reply
+    // goes with the player's move, a lone un-answered player move goes alone.
+    const lastPlyWasPlayer =
+      (history.length - 1) % 2 === (humanColor === 'white' ? 0 : 1);
+    const target = Math.max(0, history.length - (lastPlyWasPlayer ? 1 : 2));
+    if (target === history.length) {
+      return;
+    }
+
+    const rebuilt = buildGameAt(
+      history.map((entry) => entry.san),
+      target
+    );
+    // A bot reply fetched before the undo must not land on the rewound game.
+    gameIdRef.current += 1;
+    positionKeysRef.current = positionKeysRef.current.slice(0, target + 1);
+    setGame(rebuilt);
+    setViewIndex(target);
+    setSelectedSquare(null);
+    setPremove(null);
+    setHint(null);
+    setHintVisible(false);
+    setStatus('ready');
+    botMoveInFlightRef.current = false;
+  }
+
+  async function requestHint() {
+    if (!humanCanMove || isHintLoading) {
+      return;
+    }
+
+    // Second press on a position whose hint was already fetched: play it.
+    // The first press only points at the piece; this second press is the
+    // "show move" assist.
+    if (hint) {
+      if (hintTimerRef.current) {
+        clearTimeout(hintTimerRef.current);
+        hintTimerRef.current = null;
+      }
+      const { from, to, promotion } = hint;
+      setHint(null);
+      setHintVisible(false);
+      tryMove(from, to, promotion);
+      return;
+    }
+
+    setIsHintLoading(true);
+
+    // The live sandbox's best line for the side to move (the human here):
+    // no Elo or persona needed, unlike the sparring bot endpoint.
+    const pathSans = gameRef.current.history().slice(0, viewIndex);
+    const fenBefore = viewFen;
+    const gameId = gameIdRef.current;
+
+    try {
+      const response = await fetch('/api/review/live/prewarm', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ moves: pathSans, expected_mode: null }),
+      });
+      if (!response.ok) {
+        throw new Error(`Hint request failed (${response.status})`);
+      }
+      const data = (await response.json()) as {
+        best?: PrewarmLine | null;
+        second_best?: PrewarmLine | null;
+      };
+      const line =
+        [data.best, data.second_best].find((entry) => entry?.move_uci) ?? null;
+      const uci = line?.move_uci ?? null;
+      if (!uci || uci.length < 4) {
+        throw new Error('No hint available for this position.');
+      }
+
+      // A slow answer can land after the board has moved on (or a reset
+      // replaced it): a hint for a position that is no longer on the board
+      // is never shown.
+      if (gameIdRef.current !== gameId || viewFenRef.current !== fenBefore) {
+        return;
+      }
+
+      // Puzzles-style: only the piece to move is highlighted, and it fades
+      // on its own. The destination is deliberately withheld; the fetched
+      // move is retained so the next press can play it.
+      if (hintTimerRef.current) {
+        clearTimeout(hintTimerRef.current);
+      }
+      const parsed = uciToMove(uci);
+      setHint(parsed);
+      setHintVisible(true);
+      setHintsUsed((count) => count + 1);
+      hintTimerRef.current = setTimeout(() => {
+        hintTimerRef.current = null;
+        setHintVisible(false);
+      }, HINT_FADE_MS);
+    } catch {
+      // The highlight simply never appears; pressing Hint again retries.
+    } finally {
+      setIsHintLoading(false);
+    }
   }
 
   // Validate a premove against the turn-flipped probe position. Allows any
@@ -738,8 +1048,8 @@ export default function OpponentPrepPage() {
 
   function handleSquareClick({ square }: { piece: { pieceType: string } | null; square: string }) {
     if (humanCanMove) {
-      const clickedPiece = gameRef.current.get(square as Square);
-      const isOwnPiece = clickedPiece?.color === gameRef.current.turn();
+      const clickedPiece = viewGame.get(square as Square);
+      const isOwnPiece = clickedPiece?.color === viewTurn;
 
       if (!selectedSquare) {
         setSelectedSquare(isOwnPiece ? square : null);
@@ -751,12 +1061,11 @@ export default function OpponentPrepPage() {
         return;
       }
 
-      const sourcePiece = gameRef.current.get(selectedSquare as Square);
-      const legalMove = gameRef.current
+      const legalMove = viewGame
         .moves({ square: selectedSquare as Square, verbose: true })
         .some((move) => move.to === square);
 
-      if (legalMove && sourcePiece) {
+      if (legalMove) {
         tryMove(selectedSquare, square);
         return;
       }
@@ -796,6 +1105,12 @@ export default function OpponentPrepPage() {
 
   const highlightSquares = useMemo<Record<string, React.CSSProperties>>(() => {
     const squares: Record<string, React.CSSProperties> = {};
+    // The piece-only hint sits under the selection tint: the user's own
+    // selection always wins the square.
+    const hintFrom = hintVisible ? hint?.from : null;
+    if (hintFrom) {
+      squares[hintFrom] = { backgroundColor: HIGHLIGHT_HINT };
+    }
     if (premove) {
       const premoveStyle = { backgroundColor: 'rgba(56, 189, 248, 0.4)' };
       squares[premove.from] = premoveStyle;
@@ -805,10 +1120,27 @@ export default function OpponentPrepPage() {
       squares[selectedSquare] = { backgroundColor: 'rgba(255, 170, 0, 0.35)' };
     }
     return squares;
-  }, [premove, selectedSquare]);
+  }, [hint, hintVisible, premove, selectedSquare]);
+
+  // Pairs of plies for the in-game move list: White always opens, so index
+  // 0 is White's move. Same as the engine sparring page.
+  const moveRows = useMemo(() => {
+    const rows: { number: number; startPly: number; white: string; black: string | null }[] = [];
+    for (let ply = 0; ply < history.length; ply += 2) {
+      rows.push({
+        number: ply / 2 + 1,
+        startPly: ply,
+        white: history[ply].san,
+        black: history[ply + 1]?.san ?? null,
+      });
+    }
+    return rows;
+  }, [history]);
 
   const hintSquares = useMemo<Record<string, 'dot' | 'ring'>>(() => {
-    const sourceGame = humanCanMove ? game : premoveProbeGame;
+    // Destination dots answer for the position ON the board (the viewed one
+    // while browsing), never the live game behind it.
+    const sourceGame = humanCanMove ? viewGame : premoveProbeGame;
     if (!selectedSquare || !sourceGame) {
       return {};
     }
@@ -823,7 +1155,7 @@ export default function OpponentPrepPage() {
     } catch {
       return {};
     }
-  }, [game, humanCanMove, premoveProbeGame, selectedSquare]);
+  }, [viewGame, humanCanMove, premoveProbeGame, selectedSquare]);
 
   const squareRenderer = useCallback<SquareRenderer>(
     ({ square, children }) => {
@@ -847,6 +1179,9 @@ export default function OpponentPrepPage() {
   return (
     <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-1 pt-6 text-white lg:overflow-hidden lg:px-10 xl:pt-5 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
       <ReviewShell
+        leftCollapsed={leftCollapsed}
+        onLeftCollapsedChange={setLeftCollapsed}
+        centerPair={isStarted}
         importPanel={
           <aside className={panelClass}>
             <ProfileCard
@@ -912,12 +1247,12 @@ export default function OpponentPrepPage() {
                     // board would otherwise animate with the main
                     // board's square size and overshoot its target).
                     id: 'sparring-board',
-                    position: game.fen() === new Chess().fen() ? START_FEN : game.fen(),
+                    position: viewFen,
                     boardOrientation: humanColor,
                     allowDragging: humanCanMove || canPremove,
                     canDragPiece: ({ piece }) => {
                       if (humanCanMove) {
-                        return piece.pieceType[0] === gameRef.current.turn();
+                        return piece.pieceType[0] === viewTurn;
                       }
                       if (!canPremove) {
                         return false;
@@ -955,39 +1290,291 @@ export default function OpponentPrepPage() {
         }
         analysisPanel={
           <aside className={rightPanelClass}>
-            <div className="wood-scrollbar flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
-              <WeakOpenings
-                openings={selectedProfile?.openings_lost_against ?? []}
-                warnings={importWarnings}
-                provider={selectedProfile?.provider ?? null}
-                username={selectedProfile?.opponent_username ?? null}
-              />
+            {isStarted ? (
+              <>
+                {/* Moves fill the card: no nested boxes, one uniform surface. */}
+                <div className="flex min-h-0 flex-1 flex-col overflow-hidden px-4 pt-4">
+                  <div className="flex shrink-0 items-center justify-between gap-2">
+                    <span className="text-[11px] font-bold uppercase tracking-[0.3em] text-[#f7e5c6]/60">
+                      Moves
+                    </span>
+                  </div>
 
-              <RecurringBlunders key={trapsPanelKey} profile={selectedProfile} />
+                  <div
+                    ref={moveListRef}
+                    className="wood-scrollbar mt-2 min-h-0 flex-1 overflow-y-auto pb-2"
+                  >
+                    {history.length === 0 ? (
+                      <p className="px-1 py-3 text-[12px] leading-5 text-white/40">
+                        {humanColor === 'white'
+                          ? 'No moves yet - play your first move on the board.'
+                          : 'The engine opens while you watch - moves appear here.'}
+                      </p>
+                    ) : (
+                      <div className="flex flex-col gap-0.5">
+                        {moveRows.map((row) => (
+                          <div key={row.startPly} className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => goToIndex(row.startPly)}
+                              className="w-7 shrink-0 rounded-md px-1 py-1 text-right text-[11px] font-semibold text-white/35 transition hover:text-white/60"
+                              aria-label={`Go to position before move ${row.number}`}
+                            >
+                              {row.number}.
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => goToIndex(row.startPly + 1)}
+                              className={moveCellClass(safeViewIndex === row.startPly + 1)}
+                            >
+                              {row.white}
+                            </button>
+                            {row.black ? (
+                              <button
+                                type="button"
+                                onClick={() => goToIndex(row.startPly + 2)}
+                                className={moveCellClass(safeViewIndex === row.startPly + 2)}
+                              >
+                                {row.black}
+                              </button>
+                            ) : (
+                              <span className="flex-1" />
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
 
-              <PreferredTimeControl
-                distribution={selectedProfile?.time_control_distribution ?? null}
-                mostPlayed={selectedProfile?.preferred_time_control ?? null}
-              />
-            </div>
+                {/* Resign / Hint / Undo on the same surface, divided by hairlines. */}
+                <div className="shrink-0 border-t border-black/40 px-4 py-3">
+                  <div className="grid grid-cols-3 gap-3">
+                    <button
+                      type="button"
+                      onClick={resignGame}
+                      disabled={over}
+                      className={DANGER_BUTTON_CLASS}
+                    >
+                      <FlagIcon />
+                      <span>Resign</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={requestHint}
+                      disabled={!humanCanMove || isHintLoading}
+                      className={GOLD_BUTTON_CLASS}
+                      title={
+                        hint ? 'Play the hinted move' : 'Highlight the piece to move'
+                      }
+                    >
+                      {isHintLoading ? (
+                        <span className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-[#2a1a06]/40 border-t-[#2a1a06]" />
+                      ) : hint ? (
+                        <EyeIcon />
+                      ) : (
+                        <BulbIcon />
+                      )}
+                      <span>{hint ? 'Solve' : 'Hint'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={undoMove}
+                      disabled={history.length === 0 || isThinking || over}
+                      className={SECONDARY_BUTTON_CLASS}
+                    >
+                      <UndoIcon />
+                      <span>Undo</span>
+                    </button>
+                  </div>
+                </div>
+              </>
+            ) : (
+              <div className="wood-scrollbar flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto p-4">
+                <WeakOpenings
+                  openings={selectedProfile?.openings_lost_against ?? []}
+                  warnings={importWarnings}
+                  provider={selectedProfile?.provider ?? null}
+                  username={selectedProfile?.opponent_username ?? null}
+                />
 
-            <StatusStrip
-              status={status}
-              isThinking={isThinking}
-              lastMove={lastMove}
-              message={message}
-              gameOver={gameOver && isStarted}
-              endingText={endingText}
-              isStarted={isStarted}
-              premoveSan={premoveSan}
-              onReset={resetGame}
-              canReset={isStarted}
-            />
+                <RecurringBlunders key={trapsPanelKey} profile={selectedProfile} />
+
+                <PreferredTimeControl
+                  distribution={selectedProfile?.time_control_distribution ?? null}
+                  mostPlayed={selectedProfile?.preferred_time_control ?? null}
+                />
+              </div>
+            )}
           </aside>
         }
       />
+
+      {showResult && over && isStarted && (
+        <GameOverModal
+          outcome={resultOutcome}
+          moves={Math.ceil(history.length / 2)}
+          hintsUsed={hintsUsed}
+          opponentRating={selectedProfile?.rating ?? null}
+          onRematch={rematch}
+          onExitPrep={exitToPrep}
+          onClose={() => setShowResult(false)}
+        />
+      )}
     </div>
   );
+}
+
+// The end-of-game card: who won and why, a small game summary, and the two
+// follow-ups (back to the prep overview or a rematch). Same modal as the
+// engine sparring page; dismissable so the final position and move list
+// stay reviewable.
+function GameOverModal({
+  outcome,
+  moves,
+  hintsUsed,
+  opponentRating,
+  onRematch,
+  onExitPrep,
+  onClose,
+}: {
+  outcome: GameOutcome;
+  moves: number;
+  hintsUsed: number;
+  opponentRating: number | null;
+  onRematch: () => void;
+  onExitPrep: () => void;
+  onClose: () => void;
+}) {
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        onClose();
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [onClose]);
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 px-4 backdrop-blur-sm"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label={`${outcome.title} ${outcome.subtitle}`}
+    >
+      <div
+        className={`${MODAL_CARD_CLASS} relative w-full max-w-md rounded-2xl p-6`}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <button
+          type="button"
+          onClick={onClose}
+          aria-label="Close and review the game"
+          className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-lg text-[#f7e5c6]/70 transition hover:bg-white/10 hover:text-[#f7e5c6]"
+        >
+          <CloseIcon />
+        </button>
+
+        <h2 className="mt-2 text-center font-display text-2xl font-bold text-[#efd9a7]">
+          {outcome.title}
+        </h2>
+        <p className="mt-1 text-center text-sm text-[#a79b8a]">
+          {outcome.subtitle}
+        </p>
+
+        <div className="mt-6 grid grid-cols-3 gap-3">
+          <ResultStat icon={<MovesIcon />} value={moves} label="Moves" />
+          <ResultStat icon={<BulbIcon />} value={hintsUsed} label="Hints" />
+          <ResultStat
+            icon={<RatingIcon />}
+            value={opponentRating ?? '–'}
+            label="Opp. Elo"
+          />
+        </div>
+
+        <div className="mt-6 grid grid-cols-2 gap-3">
+          <button
+            type="button"
+            onClick={onExitPrep}
+            className={MODAL_SECONDARY_BUTTON_CLASS}
+          >
+            Back to Prep
+          </button>
+          <button
+            type="button"
+            onClick={onRematch}
+            className={MODAL_PRIMARY_BUTTON_CLASS}
+          >
+            Rematch
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ResultStat({
+  icon,
+  value,
+  label,
+}: {
+  icon: React.ReactNode;
+  value: React.ReactNode;
+  label: string;
+}) {
+  return (
+    <div className="flex flex-col items-center gap-2">
+      <div className="flex items-center gap-2">
+        <span className="flex h-7 w-7 items-center justify-center rounded-full bg-[#d9b87c]/15 text-[#eacb90]">
+          {icon}
+        </span>
+        <span className="font-display text-lg font-bold tabular-nums text-[#f7e5c6]">
+          {value}
+        </span>
+      </div>
+      <span className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#f7e5c6]/45">
+        {label}
+      </span>
+    </div>
+  );
+}
+
+// The result modal's headline + reason: "<opponent> Won / by resignation"
+// mirrors the sparring page's "Nora Won / by resignation" shape.
+function describeOutcome(
+  game: Chess,
+  resigned: boolean,
+  playerColor: 'white' | 'black',
+  opponentName: string
+): GameOutcome {
+  if (resigned) {
+    return { title: `${opponentName} Won`, subtitle: 'by resignation' };
+  }
+  if (game.isCheckmate()) {
+    const winner = game.turn() === 'w' ? 'black' : 'white';
+    return {
+      title: winner === playerColor ? 'You Won' : `${opponentName} Won`,
+      subtitle: 'by checkmate',
+    };
+  }
+  if (game.isStalemate()) {
+    return { title: 'Draw', subtitle: 'by stalemate' };
+  }
+  if (game.isInsufficientMaterial()) {
+    return { title: 'Draw', subtitle: 'insufficient material' };
+  }
+  if (game.isThreefoldRepetition()) {
+    return { title: 'Draw', subtitle: 'by repetition' };
+  }
+  if (game.isDraw()) {
+    return { title: 'Draw', subtitle: 'by the fifty-move rule' };
+  }
+  return { title: 'Game Over', subtitle: '' };
 }
 
 function ProfileCard({
@@ -1433,7 +2020,7 @@ function RecurringBlunders({ profile }: { profile: OpponentProfile | null }) {
   const provider = profile?.provider ?? null;
   const username = profile?.opponent_username ?? null;
   // The parent keys this panel by opponent, so switching opponents
-  // remounts it and the state below starts from the new profile — no
+  // remounts it and the state below starts from the new profile - no
   // set-state-in-effect reset.
   const [traps, setTraps] = useState<OpponentTrap[]>(profile?.traps ?? []);
   const [phase, setPhase] = useState<TrapsPhase>(
@@ -1525,7 +2112,7 @@ function RecurringBlunders({ profile }: { profile: OpponentProfile | null }) {
             return;
           }
           // Wait window exhausted. A row seen earlier means the job
-          // existed (transient read failure — stay idle and keep showing
+          // existed (transient read failure - stay idle and keep showing
           // whatever traps are on screen). No row ever seen means the
           // import trigger died before creating one: say so instead of
           // the generic "no traps" copy.
@@ -1556,7 +2143,7 @@ function RecurringBlunders({ profile }: { profile: OpponentProfile | null }) {
           data.status === 'complete' ||
           data.analyzed_games >= data.total_games;
         // A running job with a stale heartbeat has no live worker (the
-        // backend reclaims after 5 min) — e.g. Stockfish crashed mid-run.
+        // backend reclaims after 5 min) - e.g. Stockfish crashed mid-run.
         // Stop polling and say so; a re-import reclaims and restarts it.
         if (!analysisComplete && heartbeatStale(data.heartbeat_at)) {
           fail('stalled');
@@ -1568,7 +2155,7 @@ function RecurringBlunders({ profile }: { profile: OpponentProfile | null }) {
           timer = setTimeout(pollAnalysis, ANALYSIS_POLL_INTERVAL_MS);
           return;
         }
-        // Analysis finished — pull the traps it produced, then stop.
+        // Analysis finished - pull the traps it produced, then stop.
         setProgress({ analyzed: data.analyzed_games, total: data.total_games });
         await refreshTraps();
         if (!cancelled) {
@@ -1614,7 +2201,7 @@ function RecurringBlunders({ profile }: { profile: OpponentProfile | null }) {
 
       {top.length > 0 && phase === 'failed' && (
         <p className="mt-2 text-[11px] leading-5 text-rose-200/80">
-          Analysis stopped early — these traps may be partial. Try
+          Analysis stopped early - these traps may be partial. Try
           re-importing to restart it.
         </p>
       )}
@@ -1624,8 +2211,8 @@ function RecurringBlunders({ profile }: { profile: OpponentProfile | null }) {
           {phase === 'failed' ? (
             <div className="rounded-2xl border border-rose-400/30 bg-rose-500/10 px-3 py-2.5 text-[11px] leading-5 text-rose-200">
               {failReason === 'not-started'
-                ? "Analysis couldn't start — try re-importing the opponent."
-                : 'Analysis stalled — try re-importing to restart it.'}
+                ? "Analysis couldn't start - try re-importing the opponent."
+                : 'Analysis stalled - try re-importing to restart it.'}
             </div>
           ) : phase === 'checking' || phase === 'polling' ? (
             <div className="flex items-center gap-2 rounded-2xl border border-black/30 bg-black/30 px-3 py-2.5 text-[11px] text-[#f7e5c6]/60">
@@ -1639,8 +2226,8 @@ function RecurringBlunders({ profile }: { profile: OpponentProfile | null }) {
               text={
                 phase === 'complete'
                   ? (profile?.game_count ?? 0) < 5
-                    ? 'Not enough games yet — traps need 5+ games on file.'
-                    : 'Analysis complete — no recurring patterns found.'
+                    ? 'Not enough games yet - traps need 5+ games on file.'
+                    : 'Analysis complete - no recurring patterns found.'
                   : 'No recurring traps detected yet.'
               }
             />
@@ -1684,14 +2271,14 @@ function RecurringBlunders({ profile }: { profile: OpponentProfile | null }) {
                       </span>
                       {trap.exploitable ? (
                         <span
-                          title="Clears the bot's bar — sparring steers toward this position"
+                          title="Clears the bot's bar - sparring steers toward this position"
                           className="shrink-0 rounded-full border border-emerald-400/30 bg-emerald-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-emerald-200"
                         >
                           In bot&apos;s sights
                         </span>
                       ) : (
                         <span
-                          title="Observed pattern below the bot's bar — shown for prep, not played toward"
+                          title="Observed pattern below the bot's bar - shown for prep, not played toward"
                           className="shrink-0 rounded-full border border-white/10 bg-white/5 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-white/40"
                         >
                           Observed
@@ -2197,7 +2784,7 @@ function useModalExplore({
       return;
     }
     if (basePly <= 0 || basePly > gameDetails.length) {
-      // Start position (or out of range): suggestion only, via prewarm —
+      // Start position (or out of range): suggestion only, via prewarm -
       // there is no played move to label.
       if (basePly !== 0) {
         return;
@@ -2374,7 +2961,7 @@ function ModalExploreToggle({
       aria-pressed={armed}
       title={
         armed
-          ? 'Stop exploring — back to plain replay'
+          ? 'Stop exploring - back to plain replay'
           : 'Explore: label each studied move and show the best reply (drag to try your own moves)'
       }
       className={`shrink-0 cursor-pointer rounded-full border px-3 py-1.5 text-[11px] font-semibold transition-colors duration-200 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#efd9a7] ${
@@ -2790,7 +3377,7 @@ function TrapPositionModal({
       >
         {trap.exploitable
           ? 'The sparring bot plays toward this position.'
-          : 'Observed pattern — the bot won’t steer here.'}
+          : 'Observed pattern - the bot won’t steer here.'}
       </p>
 
       <div className="mt-2 flex min-h-10 items-center justify-between gap-2">
@@ -2799,7 +3386,7 @@ function TrapPositionModal({
           {storedBlunder && !showLive && (
             <ModalLabelChip
               classification={storedBlunder.classification}
-              title="From stored analysis — no engine call"
+              title="From stored analysis - no engine call"
             />
           )}
           {showLive && explore.live.classification && (
@@ -3197,7 +3784,7 @@ function OpeningReplayModal({
       {phase === 'error' && (
         <div className="mt-4 rounded-xl border border-amber-400/30 bg-amber-400/10 px-3 py-3 text-xs leading-relaxed text-amber-200">
           No games found for this opening. The opponent may have been
-          re-imported since this row was built — refresh and try again.
+          re-imported since this row was built - refresh and try again.
         </div>
       )}
 
@@ -3251,7 +3838,7 @@ function OpeningReplayModal({
 
           {/* Slim status bar: game stepper + move counter on the left,
               live explore label on the right. Explore is always on here, so
-              there is no toggle row — one line covers context plus engine
+              there is no toggle row - one line covers context plus engine
               feedback and the card fits short viewports without scrolling. */}
           <div className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
             <div className="flex items-center gap-1">
@@ -3293,7 +3880,7 @@ function OpeningReplayModal({
                 {storedBlunder && !showLive && (
                   <ModalLabelChip
                     classification={storedBlunder.classification}
-                    title="From stored analysis — no engine call"
+                    title="From stored analysis - no engine call"
                   />
                 )}
                 {showLive && explore.live.classification && (
@@ -3519,76 +4106,6 @@ function PreferredTimeControl({
   );
 }
 
-function StatusStrip({
-  status,
-  isThinking,
-  lastMove,
-  message,
-  gameOver,
-  endingText,
-  isStarted,
-  premoveSan,
-  onReset,
-  canReset,
-}: {
-  status: BotSource;
-  isThinking: boolean;
-  lastMove: SparringMoveResponse | null;
-  message: string | null;
-  gameOver: boolean;
-  /** How the game ended (win/draw + rule); null falls back to "Finished". */
-  endingText: string | null;
-  isStarted: boolean;
-  premoveSan: string | null;
-  onReset: () => void;
-  canReset: boolean;
-}) {
-  const label = sourceLabel(status);
-
-  if (!isStarted && !message) {
-    return null;
-  }
-
-  return (
-    <div className="flex shrink-0 items-center justify-between gap-3 border-t border-black/40 bg-black/40 px-4 py-2.5">
-      <div className="flex min-w-0 items-center gap-2">
-        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-[#f7e5c6]/55">
-          {gameOver ? (endingText ?? 'Finished') : label}
-        </span>
-        {isThinking && (
-          <span className="h-3 w-3 rounded-full border-2 border-[#f7e5c6]/35 border-t-[#f7e5c6] animate-spin" />
-        )}
-        {lastMove && !gameOver && (
-          <span className="truncate text-[11px] text-[#f7e5c6]/65">
-            {lastMove.move_san}
-          </span>
-        )}
-        {premoveSan && !gameOver && (
-          <span className="shrink-0 rounded-full border border-sky-400/30 bg-sky-400/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-sky-200">
-            Premove {premoveSan}
-          </span>
-        )}
-      </div>
-      <div className="flex items-center gap-2">
-        {message && (
-          <span className="max-w-[12rem] truncate text-[11px] text-red-300" title={message}>
-            {message}
-          </span>
-        )}
-        {canReset && (
-          <button
-            type="button"
-            onClick={onReset}
-            className="h-7 rounded-full border border-[#f7e5c6]/25 bg-black/45 px-3 text-[11px] font-semibold text-[#f7e5c6]/80 transition hover:bg-black/65"
-          >
-            Reset
-          </button>
-        )}
-      </div>
-    </div>
-  );
-}
-
 function SectionHeader({ icon, title }: { icon?: React.ReactNode; title: string }) {
   return (
     <div className="flex items-center gap-2 border-b border-white/5 pb-2 text-[#f7e5c6]">
@@ -3629,6 +4146,134 @@ function EmptyHint({ text }: { text: string }) {
     <div className="rounded-2xl border border-dashed border-[#f7e5c6]/15 bg-black/20 px-3 py-3 text-center text-[11px] text-[#f7e5c6]/45">
       {text}
     </div>
+  );
+}
+
+// In-game action icons, same glyphs as the engine sparring page.
+function CloseIcon() {
+  return (
+    <svg
+      className="h-4 w-4"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M18 6 6 18M6 6l12 12" />
+    </svg>
+  );
+}
+
+function MovesIcon() {
+  return (
+    <svg
+      className="h-4 w-4"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M8 6h13M8 12h13M8 18h13" />
+      <path d="M3.5 6h.01M3.5 12h.01M3.5 18h.01" />
+    </svg>
+  );
+}
+
+function RatingIcon() {
+  return (
+    <svg
+      className="h-4 w-4"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 17l6-6 4 4 8-8" />
+      <path d="M14 7h7v7" />
+    </svg>
+  );
+}
+
+function FlagIcon() {
+  return (
+    <svg
+      className="h-4 w-4 shrink-0"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+      aria-hidden
+    >
+      <path d="M4 22V4" />
+      <path d="M4 4c3-2 6 2 9 0s5-2 7-1v9c-2-1-4-1-7 1s-6 0-9 0" />
+    </svg>
+  );
+}
+
+function BulbIcon() {
+  return (
+    <svg
+      className="h-4 w-4 shrink-0"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+      aria-hidden
+    >
+      <path d="M9 18h6" />
+      <path d="M10 22h4" />
+      <path d="M8.5 14.5A6 6 0 1 1 15.5 14c-.8.5-1.5 1.3-1.5 2.2V17h-4v-.8c0-.7-.5-1.3-1.5-1.7Z" />
+    </svg>
+  );
+}
+
+// The "show move" mark for the second Hint press.
+function EyeIcon() {
+  return (
+    <svg
+      className="h-4 w-4 shrink-0"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+      aria-hidden
+    >
+      <path d="M2 12s3.5-6 10-6 10 6 10 6-3.5 6-10 6S2 12 2 12Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
+function UndoIcon() {
+  return (
+    <svg
+      className="h-4 w-4 shrink-0"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+      aria-hidden
+    >
+      <path d="M3 7v6h6" />
+      <path d="M21 17a9 9 0 0 0-15-6.7L3 13" />
+    </svg>
   );
 }
 
@@ -3698,14 +4343,6 @@ function displayProvider(provider: 'lichess' | 'chesscom') {
   return provider === 'lichess' ? 'Lichess' : 'Chess.com';
 }
 
-function sourceLabel(status: BotSource) {
-  if (status === 'in_book') return 'In book';
-  if (status === 'playing_naturally') return 'Playing naturally';
-  if (status === 'thinking') return 'Thinking';
-  if (status === 'error') return 'Needs attention';
-  return 'Ready';
-}
-
 type GameEnding =
   | 'checkmate'
   | 'stalemate'
@@ -3743,15 +4380,31 @@ function detectGameEnding(
   return null;
 }
 
-function gameEndingLabel(ending: GameEnding, game: Chess): string {
-  if (ending === 'checkmate') {
-    const winner = game.turn() === 'w' ? 'Black' : 'White';
-    return `Checkmate — ${winner} wins`;
+// Rebuild the position after `ply` plies by replaying the SAN line. Games
+// here are short, so replaying from the start is cheaper than caching FEN
+// chains and keeps every branch point exact.
+function buildGameAt(sans: string[], ply: number): Chess {
+  return replaySans(sans.slice(0, ply));
+}
+
+// Replay a SAN line from the start position, keeping the full move history
+// on the resulting game (unlike `new Chess(fen)`, which starts history empty).
+function replaySans(sans: string[]): Chess {
+  const rebuilt = new Chess();
+  for (const san of sans) {
+    rebuilt.move(san);
   }
-  if (ending === 'stalemate') return 'Draw — stalemate';
-  if (ending === 'insufficient_material') return 'Draw — insufficient material';
-  if (ending === 'fifty_move_rule') return 'Draw — fifty-move rule';
-  return 'Draw — threefold repetition';
+  return rebuilt;
+}
+
+// A move cell in the in-game history box; the reviewed ply carries the amber
+// tint. Same as the engine sparring page.
+function moveCellClass(active: boolean): string {
+  return `flex-1 truncate rounded-md px-2 py-1 text-left text-[13px] font-semibold transition ${
+    active
+      ? 'bg-[#eacb90]/30 text-[#f7e5c6]'
+      : 'text-[#f7e5c6]/80 hover:bg-white/10'
+  }`;
 }
 
 function uciToMove(uci: string) {
