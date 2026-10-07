@@ -10,10 +10,10 @@ import { EndgamePlayoutEnding, EndgamePosition } from '@/types';
 /** How the ungraded continuation ended, in the panel's voice. */
 const PLAYOUT_ENDING_LABELS: Record<EndgamePlayoutEnding, string> = {
   checkmate: 'Checkmate',
-  stalemate: 'Draw — stalemate',
-  insufficient_material: 'Draw — insufficient material',
-  fifty_move_rule: 'Draw — fifty-move rule',
-  threefold_repetition: 'Draw — threefold repetition',
+  stalemate: 'Draw - stalemate',
+  insufficient_material: 'Draw - insufficient material',
+  fifty_move_rule: 'Draw - fifty-move rule',
+  threefold_repetition: 'Draw - threefold repetition',
 };
 
 /**
@@ -419,8 +419,8 @@ export default function DrillStatusPanel({
           {playout?.state === 'done' && (
             <p className="mt-4 text-center text-[12px] text-[#f0e0c0]/70">
               {playout.ending
-                ? `Played out — ${PLAYOUT_ENDING_LABELS[playout.ending]}`
-                : 'Played out — the line ended here.'}
+                ? `Played out - ${PLAYOUT_ENDING_LABELS[playout.ending]}`
+                : 'Played out - the line ended here.'}
             </p>
           )}
         </>
