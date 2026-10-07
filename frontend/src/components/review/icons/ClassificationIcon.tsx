@@ -66,15 +66,15 @@ export function ClassificationIcon({
     case 'brilliant':
       return (
         <svg {...common}>
-          <circle cx="22" cy="22" r="21" fill="#083D3D" stroke="#2BC4B4" strokeWidth="1" />
-          <text x="22" y="29" textAnchor="middle" fontSize="17" fontWeight="700" fill="#A8F0E6" fontFamily="Georgia,serif">!!</text>
+          <circle cx="22" cy="22" r="21" fill="#2f80d6" stroke="#9cc8f5" strokeWidth="1" />
+          <text x="22" y="29" textAnchor="middle" fontSize="17" fontWeight="700" fill="#d9ecff" fontFamily="Georgia,serif">!!</text>
         </svg>
       );
     case 'great':
       return (
         <svg {...common}>
-          <circle cx="22" cy="22" r="21" fill="#0B3B2A" stroke="#1D9E75" strokeWidth="0.5" />
-          <text x="22" y="30" textAnchor="middle" fontSize="20" fontWeight="700" fill="#9FE1CB" fontFamily="Georgia,serif">!</text>
+          <circle cx="22" cy="22" r="21" fill="#5b21b6" stroke="#a78bfa" strokeWidth="1" />
+          <text x="22" y="30" textAnchor="middle" fontSize="20" fontWeight="700" fill="#e3d5ff" fontFamily="Georgia,serif">!</text>
         </svg>
       );
     case 'best':
@@ -87,8 +87,9 @@ export function ClassificationIcon({
     case 'excellent':
       return (
         <svg {...common}>
-          <circle cx="22" cy="22" r="21" fill="#04342C" stroke="#1D9E75" strokeWidth="0.5" />
-          <path d="M13 22l6 6 12-13" fill="none" stroke="#9FE1CB" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+          <circle cx="22" cy="22" r="21" fill="#065f46" stroke="#34d399" strokeWidth="1" />
+          <path d="M11 22.5l5.5 5.5L25 17" fill="none" stroke="#d1fae5" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
+          <path d="M31 9l1.1 2.6 2.6 1.1-2.6 1.1L31 16.4l-1.1-2.6-2.6-1.1 2.6-1.1Z" fill="#d1fae5" />
         </svg>
       );
     case 'good':
