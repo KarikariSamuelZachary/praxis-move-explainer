@@ -1456,7 +1456,7 @@ def find_opening_games(
 
         cur.execute(
             """
-            SELECT game_id::text AS game_id, fen, move_number,
+            SELECT game_id::text AS game_id, fen, position_key, move_number,
                    move_san, classification
             FROM opponent_game_blunders
             WHERE requested_by_user_id = %s
@@ -1484,6 +1484,7 @@ def find_opening_games(
             "ply": _blunder_ply(move_number, side),
             "move_san": row.get("move_san") or "",
             "classification": row.get("classification") or "mistake",
+            "position_key": row.get("position_key") or "",
         }
         existing = first_blunder_by_game.get(row["game_id"])
         if existing is None or _blunder_precedence(entry) < _blunder_precedence(existing):
@@ -1549,6 +1550,35 @@ def get_opening_game(
         return None
 
     game = dict(row)
+
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT position_key, move_san, classification, move_number, fen
+            FROM opponent_game_blunders
+            WHERE game_id = %s::uuid
+            ORDER BY move_number ASC
+            """,
+            (game["game_id"],),
+        )
+        blunder_rows = [dict(r) for r in cur.fetchall()]
+
+    blunders: List[Dict[str, Any]] = []
+    for brow in blunder_rows:
+        fen = brow.get("fen") or ""
+        parts = fen.split(" ")
+        side = "white" if len(parts) > 1 and parts[1] == "w" else "black"
+        move_number = int(brow.get("move_number") or 0)
+        blunders.append(
+            {
+                "move_number": move_number,
+                "ply": _blunder_ply(move_number, side),
+                "move_san": brow.get("move_san") or "",
+                "classification": brow.get("classification") or "mistake",
+                "position_key": brow.get("position_key") or "",
+            }
+        )
+
     return {
         "game_id": game["game_id"],
         "game_url": game.get("game_url") or "",
@@ -1558,4 +1588,5 @@ def get_opening_game(
         "result": game.get("result") or "",
         "end_time": int(game.get("end_time") or 0),
         "time_class": game.get("time_class") or "",
+        "blunders": blunders,
     }
