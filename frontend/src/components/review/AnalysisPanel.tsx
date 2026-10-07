@@ -169,12 +169,18 @@ export default function AnalysisPanel({
   // ply: skip the list highlight so it never claims the wrong move.
   const highlightPly =
     currentMove && mainlineSanAtPly(activePly) === currentMove.san ? activePly : -1;
+  // No game yet: hide the transport controls entirely — there is nothing to step through.
+  const showNav = hasGame && !!currentMove;
 
   return (
     <aside className="flex h-full min-h-0 min-w-0 flex-col gap-2 overflow-hidden rounded-[24px] border border-black/50 bg-[#1e1c1a] p-4 [background-image:linear-gradient(rgba(0,0,0,0.55),rgba(0,0,0,0.55)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]">
       {!hasGame || !currentMove ? (
-        <section className="rounded-xl border border-dashed border-white/10 bg-black/30 p-4 text-sm leading-6 text-white/60">
-          Per-move analysis will populate here once a game is imported.
+        <section className="flex flex-1 flex-col items-center justify-center gap-2 rounded-xl border border-dashed border-white/10 bg-black/30 p-6 text-center">
+          <p className="text-sm font-semibold text-white/80">No game to review yet</p>
+          <p className="max-w-[26ch] text-sm leading-6 text-white/60">
+            Import a game on the left to see your overview here, then press Start
+            Review for the move-by-move breakdown.
+          </p>
         </section>
       ) : (
         <>
@@ -324,7 +330,9 @@ export default function AnalysisPanel({
         </>
       )}
 
-      {/* Movement buttons: |< < play/pause > >| — wooden boxes matching the board */}
+      {/* Movement buttons: |< < play/pause > >| — wooden boxes matching the board.
+          Hidden until a game exists; there is nothing to step through before that. */}
+      {showNav && (
       <div className="grid shrink-0 grid-cols-5 gap-1.5">
         <NavButton
           label="First move"
@@ -387,6 +395,7 @@ export default function AnalysisPanel({
           </svg>
         </NavButton>
       </div>
+      )}
     </aside>
   );
 }
