@@ -68,6 +68,7 @@ from core.game_analyzer import GameAnalyzer
 from engines.stockfish_engine import StockfishEngine
 from llms.mock_explainer import MockExplainer
 from services.opening_book import is_book_move
+from services.sparring_caches import invalidate_opponent_caches
 
 log = logging.getLogger(__name__)
 
@@ -377,6 +378,12 @@ def run_opponent_game_analysis(
                 status="complete",
             )
             conn.commit()
+            # New blunder rows change traps and opening first-blunder data:
+            # drop the computed caches so the prep page and sparring
+            # recompute instead of serving the pre-analysis views.
+            invalidate_opponent_caches(
+                requested_by_user_id, provider, opponent_username
+            )
     except Exception:
         conn.rollback()
         log.exception(
