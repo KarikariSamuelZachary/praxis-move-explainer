@@ -230,7 +230,7 @@ export default function SparringGame({
 
   const resultText = useMemo(() => {
     if (resigned) {
-      return `You resigned — ${persona.name} wins.`;
+      return `You resigned - ${persona.name} wins.`;
     }
     return describeGameEnd(game);
   }, [game, resigned, persona.name]);
@@ -858,8 +858,8 @@ export default function SparringGame({
               {history.length === 0 ? (
                 <p className="px-2 py-3 text-[12px] leading-5 text-white/40">
                   {color === 'white'
-                    ? 'No moves yet — play your first move on the board.'
-                    : 'The engine opens while you watch — moves appear here.'}
+                    ? 'No moves yet - play your first move on the board.'
+                    : 'The engine opens while you watch - moves appear here.'}
                 </p>
               ) : (
                 <div className="flex flex-col gap-0.5">
@@ -1001,13 +1001,13 @@ function describeGameEnd(game: Chess): string | null {
     return `${winner} wins by checkmate`;
   }
   if (game.isStalemate()) {
-    return 'Stalemate — draw';
+    return 'Stalemate - draw';
   }
   if (game.isInsufficientMaterial()) {
-    return 'Insufficient material — draw';
+    return 'Insufficient material - draw';
   }
   if (game.isThreefoldRepetition()) {
-    return 'Threefold repetition — draw';
+    return 'Threefold repetition - draw';
   }
   if (game.isDraw()) {
     return 'Draw';
