@@ -318,10 +318,19 @@ def build_opponent_profile_snapshot(
     ]
     opening_results = compute_opening_results(games) if games else None
     tc_profile = compute_time_control_distribution(games) if games else None
+    # Reuse the stored username casing (see _existing_snapshot_username) so
+    # a re-import under different casing updates the row instead of forking.
+    stored_username = _existing_snapshot_username(
+        conn,
+        requested_by_user_id=requested_by_user_id,
+        provider=provider,
+        opponent_username=opponent_username,
+    )
+    resolved_username = stored_username or opponent_username
     return {
         "requested_by_user_id": requested_by_user_id,
         "provider": provider,
-        "opponent_username": opponent_username,
+        "opponent_username": resolved_username,
         "game_count": int(row.get("game_count") or 0),
         "rating": _rating_from_player_lists(
             opponent_username=opponent_username,
@@ -356,6 +365,39 @@ def build_opponent_profile_snapshot(
         "avatar_url": avatar_url,
         "verified": verified,
     }
+
+
+def _existing_snapshot_username(
+    conn,
+    *,
+    requested_by_user_id: str,
+    provider: str,
+    opponent_username: str,
+) -> Optional[str]:
+    """Stored username casing for this opponent, if a snapshot exists.
+
+    The snapshots UNIQUE constraint is case-sensitive while every read is
+    LOWER()-based, so writing a re-import under different casing ("Hikaru"
+    vs "hikaru") would create a second row and split the UI. Reusing the
+    stored casing keeps one row per opponent while preserving display case.
+    """
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT opponent_username
+            FROM opponent_profile_snapshots
+            WHERE requested_by_user_id = %s
+              AND provider = %s
+              AND LOWER(opponent_username) = LOWER(%s)
+            LIMIT 1
+            """,
+            (requested_by_user_id, provider, opponent_username),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        stored = dict(row).get("opponent_username")
+        return stored or None
 
 
 def upsert_opponent_profile_snapshot(conn, snapshot: Dict[str, Any]) -> None:
@@ -941,7 +983,13 @@ def _rating_from_player_lists(
     opponent_username: str,
     white_players: list[Dict[str, Any]],
     black_players: list[Dict[str, Any]],
-) -> int:
+) -> Optional[int]:
+    """Mean of the opponent's parseable per-game ratings, or None.
+
+    None (not a fabricated number) when the corpus carries no usable rating
+    for the opponent, so callers must choose an explicit fallback instead of
+    silently sparring/presenting at 1500.
+    """
     normalized_opponent = _normalize_username(opponent_username)
     ratings: list[int] = []
 
@@ -952,9 +1000,83 @@ def _rating_from_player_lists(
                 ratings.append(rating)
 
     if not ratings:
-        return 1500
+        return None
 
     return round(sum(ratings) / len(ratings))
+
+
+# Last-resort bot strength when the opponent's corpus carries no parseable
+# rating. Used ONLY via resolve_opponent_elo_for_sparring so every use is
+# logged and flagged (never a silent 1500).
+FALLBACK_OPPONENT_ELO = 1500
+
+
+def resolve_opponent_elo_for_sparring(
+    opponent_rating: Optional[int],
+    *,
+    context: str,
+) -> tuple[int, bool]:
+    """Resolve the bot's playing strength plus whether it was estimated.
+
+    Returns (elo, estimated). A real corpus rating is authoritative; otherwise
+    the fallback applies loudly (warning log) and the caller must surface
+    `estimated` so the UI can disclose it.
+    """
+    if opponent_rating is not None:
+        return opponent_rating, False
+    log.warning(
+        "opponent rating unavailable (%s); using estimated %d",
+        context,
+        FALLBACK_OPPONENT_ELO,
+    )
+    return FALLBACK_OPPONENT_ELO, True
+
+
+def get_user_playing_elo(
+    *,
+    requested_by_user_id: str,
+) -> tuple[Optional[int], str]:
+    """The sparring user's own playing strength for Maia's oppo_elo.
+
+    Prefers users.tactical_rating, then the onboarding skill-band midpoint
+    (same rule as GET /api/user/rating). Returns (elo, source) where source
+    is "tactical_rating", "skill_band:<level>", or "unknown" when the user
+    has neither. Callers fall back to the opponent's elo (legacy symmetric
+    behavior) only on "unknown" — and must log that choice.
+    """
+    # Local import: routers.puzzles never imports services, so no cycle;
+    # kept function-local to preserve the services-never-import-routers rule.
+    from routers.puzzles import SKILL_RATING_BANDS
+
+    if database.connection_pool is None:
+        raise RuntimeError("Database connection pool is not initialized")
+
+    conn = database.connection_pool.getconn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT tactical_rating, skill_level
+                FROM users WHERE clerk_id = %s
+                """,
+                (requested_by_user_id,),
+            )
+            row = cur.fetchone()
+    finally:
+        database.connection_pool.putconn(conn)
+
+    if row is None:
+        return None, "unknown"
+    tactical_rating = row.get("tactical_rating")
+    if isinstance(tactical_rating, bool):
+        tactical_rating = None
+    if isinstance(tactical_rating, int) and tactical_rating > 0:
+        return tactical_rating, "tactical_rating"
+    skill_level = row.get("skill_level")
+    band = SKILL_RATING_BANDS.get(skill_level) if skill_level else None
+    if band:
+        return (band[0] + band[1]) // 2, f"skill_band:{skill_level}"
+    return None, "unknown"
 
 
 # Thresholds mapping recency-weighted sacrifice frequency to a
@@ -1368,8 +1490,12 @@ def find_opening_games(
             first_blunder_by_game[row["game_id"]] = entry
 
     bucket_games: List[Dict[str, Any]] = []
+    # _analyze_game expects an already-casefolded name (it compares against
+    # casefolded PGN headers); passing the raw request casing silently drops
+    # every game for mixed-case usernames.
+    normalized_username = _normalize_username(opponent_username)
     for game in games:
-        analyzed = _analyze_game(game.get("pgn") or "", opponent_username)
+        analyzed = _analyze_game(game.get("pgn") or "", normalized_username)
         if analyzed is None:
             continue
         if analyzed["family"] != family or analyzed["opponent_color"] != color:
