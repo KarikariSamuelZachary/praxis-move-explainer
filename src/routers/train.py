@@ -26,9 +26,6 @@ from schemas.train_schemas import (
     SparringMoveResponse,
     SparringWarmupRequest,
     SparringWarmupResponse,
-    WeaknessProfileJobResponse,
-    WeaknessProfileRequest,
-    WeaknessProfileStartResponse,
 )
 from services.gambit_book import (
     GAMBITER_OFFER_PROBABILITY,
@@ -49,17 +46,29 @@ from services.opponent_repertoire import (
     find_opening_games,
     get_opening_game,
     get_opponent_rating,
+    get_user_playing_elo,
     list_opponent_profiles,
     pick_near_repertoire_moves,
     pick_repertoire_move,
+    resolve_opponent_elo_for_sparring,
 )
 from services.opponent_style import compute_opponent_style
 from services.opponent_style_reranker import rerank_candidates
 from services.opponent_traps import compute_exploitable_traps
-from services.weakness_profile import (
-    create_weakness_profile_job,
-    get_weakness_profile_job,
-    run_weakness_profile_job,
+from services.sparring_caches import (
+    CHESSCOM_PROFILE_TTL_SECONDS as _CHESSCOM_PROFILE_TTL_SECONDS,
+    OPENING_GAME_CACHE_TTL_SECONDS as _OPENING_GAME_CACHE_TTL_SECONDS,
+    SPARRING_ENSURE_REPERTOIRE_TTL_SECONDS as _SPARRING_ENSURE_REPERTOIRE_TTL_SECONDS,
+    SPARRING_STYLE_TRAPS_TTL_SECONDS as _SPARRING_STYLE_TRAPS_TTL_SECONDS,
+    chesscom_profile_cache as _chesscom_profile_cache,
+    opening_game_cache as _opening_game_cache,
+    opening_game_cache_key,
+    opening_games_cache as _opening_games_cache,
+    opening_games_cache_key,
+    sparring_ensure_repertoire_cache as _sparring_ensure_repertoire_cache,
+    sparring_ensure_repertoire_cache_key,
+    sparring_style_traps_cache as _sparring_style_traps_cache,
+    sparring_style_traps_cache_key as _sparring_style_traps_cache_key,
 )
 
 router = APIRouter()
@@ -168,68 +177,9 @@ def clear_opponent_sparring_data(
         provider=provider,
         opponent_username=opponent_username,
     )
-    # Drop the matching style/traps cache entry so the next sparring move
-    # recomputes against the freshly-cleared data instead of a stale entry.
-    _invalidate_style_traps_cache(
-        requested_by_user_id=clerk_id,
-        provider=provider,
-        opponent_username=opponent_username,
-    )
+    # Cache invalidation lives inside clear_opponent_data (it drops style,
+    # traps, opening, and per-game entries for the cleared scope).
     return OpponentDataClearResponse(**result)
-
-
-@router.post(
-    "/train/weakness-profile",
-    response_model=WeaknessProfileStartResponse,
-    status_code=202,
-)
-def start_weakness_profile(
-    body: WeaknessProfileRequest,
-    background_tasks: BackgroundTasks,
-    request: Request,
-    _: None = Depends(limit_by_clerk_user_id(limit=3, window=60)),
-):
-    clerk_id = request.headers.get("X-Clerk-User-Id")
-    if not clerk_id:
-        raise HTTPException(status_code=400, detail="Missing X-Clerk-User-Id header")
-
-    job = create_weakness_profile_job(
-        requested_by_user_id=clerk_id,
-        source_type=body.source_type,
-        provider=body.provider,
-        opponent_username=body.opponent_username,
-        limit=body.limit,
-    )
-    background_tasks.add_task(run_weakness_profile_job, job["job_id"])
-
-    return WeaknessProfileStartResponse(
-        job_id=job["job_id"],
-        status="queued",
-        source_type=job["source_type"],
-        provider=job["provider"],
-        opponent_username=job["opponent_username"],
-        limit=job["requested_limit"],
-    )
-
-
-@router.get(
-    "/train/weakness-profile/{job_id}",
-    response_model=WeaknessProfileJobResponse,
-)
-def get_weakness_profile_status(
-    request: Request,
-    job_id: str = Path(..., min_length=1),
-    _: None = Depends(limit_by_clerk_user_id(limit=30, window=60)),
-):
-    clerk_id = request.headers.get("X-Clerk-User-Id")
-    if not clerk_id:
-        raise HTTPException(status_code=400, detail="Missing X-Clerk-User-Id header")
-
-    job = get_weakness_profile_job(job_id=job_id, requested_by_user_id=clerk_id)
-    if not job:
-        raise HTTPException(status_code=404, detail="Weakness profile job not found")
-
-    return WeaknessProfileJobResponse(**job)
 
 
 @router.get(
@@ -260,123 +210,18 @@ def list_train_opponents(
 # were expanded, and (b) the upstream providers expose avatar/verified
 # ONLY through the public profile API (chess.com) or not at all (lichess).
 #
-# In-process TTL cache keyed by (provider, username). 1 hour is short
-# enough to pick up an avatar change the player makes (rare) but long
-# enough that re-mounting the sparring page within a session doesn't
-# re-hit chess.com. Cache lives in module scope so every FastAPI worker
-# gets its own copy — fine for a non-critical display hint.
-_CHESSCOM_PROFILE_TTL_SECONDS = 3600
-_chesscom_profile_cache: dict[tuple[str, str], tuple[float, Dict[str, Any]]] = {}
+# Process-local sparring caches (chess.com profile, opening games, style +
+# traps, ensure throttle) live in services/sparring_caches so background
+# services can invalidate them when imports/analysis/indexing complete.
+# The names below are that module's objects, imported under their historic
+# underscore aliases so every use site below is untouched.
 
-# --- Weak Openings representative-game cache ------------------------------
-#
-# Listing a bucket scans the opponent's PGNs to re-derive family/color, so a
-# repeated click must not pay that parse again. Same process-local TTL
-# pattern as the caches above; 10 min is short enough that a re-import's
-# fresh PGNs show up quickly. Negative results are cached too (an empty
-# bucket is a 404 until the corpus changes). Single-game fetches cache by
-# game id under the same TTL so stepping through the list is instant.
-_OPENING_GAME_CACHE_TTL_SECONDS = 600
-_opening_games_cache: dict[
-    tuple[str, str, str, str, str], tuple[float, Optional[Dict[str, Any]]]
-] = {}
-_opening_game_cache: dict[
-    tuple[str, str], tuple[float, Optional[Dict[str, Any]]]
-] = {}
+# (Opening-games/single-game cache definitions live in
+# services/sparring_caches — see the pointer comment above.)
 
 
-# --- style + traps in-memory cache (sparring hot path) --------------------
-#
-# compute_opponent_style (~2.4s cold-cache for a 500-game opponent at
-# ~4.8ms/game PGN-parsing cost; ~960ms for the previous 200-game cap) and
-# compute_exploitable_traps (~6ms) are recomputed on every out-of-book
-# sparring move. The opponent's imported games never change mid-session,
-# so both are cached together in one process-local entry and reused until
-# the TTL expires. Same pattern as _chesscom_profile_cache above: module
-# scope, no cross-worker sharing, time-based invalidation only.
-#
-# Cache entry shape: (cached_at_unix, style, exploitable_trap_keys,
-# traps_ok). style is only ever stored when compute_opponent_style
-# succeeded (it always returns a dict on success, so a stored style is
-# never None). traps_ok is False when traps was NOT successfully computed
-# (either it failed, or style was insufficient so it was never needed); a
-# hit then reuses the expensive style profile but re-runs traps rather
-# than trusting a poisoned None.
-_SPARRING_STYLE_TRAPS_TTL_SECONDS = 1800  # 30 minutes
-# Cache key includes the sparring time control so a session that switches
-# speed (e.g. bullet then rapid vs the same opponent) does not reuse a
-# style profile computed under the wrong TC weighting. The key stores the
-# raw normalized TC string (not the resolved bucket) so two
-# differently-spelled-but-equivalent labels are conservative cache misses
-# (recompute) rather than a stale-bucket correctness risk.
-_sparring_style_traps_cache: dict[
-    tuple[str, str, str, str],
-    tuple[float, Optional[Dict[str, Any]], Optional[set], bool],
-] = {}
-
-# --- ensure_opponent_repertoire throttle (sparring hot path) ---------------
-#
-# The sparring endpoint calls ensure_opponent_repertoire() on EVERY move.
-# Its anti-join query scans the user's whole game list for that opponent,
-# which is wasted work on every move after the first (import jobs already
-# index games in the background; new rows only appear when a new import
-# finishes). This in-process TTL gate runs the ensure at most once per
-# opponent+TC per TTL window; a fresh import doesn't need the endpoint to
-# notice it faster than this because ensure also runs as part of the
-# import job itself.
-_SPARRING_ENSURE_REPERTOIRE_TTL_SECONDS = 60
-_sparring_ensure_repertoire_cache: dict[
-    tuple[str, str, str],
-    float,
-] = {}
-
-
-def _sparring_style_traps_cache_key(
-    requested_by_user_id: str,
-    provider: str,
-    opponent_username: str,
-    time_control: Optional[str] = None,
-) -> tuple[str, str, str, str]:
-    """Canonical cache key. Username is lowercased to match the SQL LOWER()
-    the style/traps queries use, so a casing change in the request can't
-    fragment the entry. The time-control string (lowercased) is the 4th
-    element so different sparring speeds get separate cache entries."""
-    return (
-        requested_by_user_id,
-        provider,
-        (opponent_username or "").strip().lower(),
-        (time_control or "").strip().lower(),
-    )
-
-
-def _invalidate_style_traps_cache(
-    requested_by_user_id: str,
-    provider: Optional[str] = None,
-    opponent_username: Optional[str] = None,
-) -> None:
-    """Drop cached style/traps for one opponent, or the whole user.
-
-    Best-effort nice-to-have: TTL is the primary invalidation mechanism.
-    """
-    if provider and opponent_username:
-        # Drop ALL time-control variants for this opponent (the TC element
-        # varies across cache entries for one opponent, so a single pop on
-        # the 3-element prefix would miss; iterate the matching prefix).
-        prefix = (
-            requested_by_user_id,
-            provider,
-            (opponent_username or "").strip().lower(),
-        )
-        for key in [
-            k for k in _sparring_style_traps_cache if k[:3] == prefix
-        ]:
-            _sparring_style_traps_cache.pop(key, None)
-        return
-    for key in [
-        k for k in _sparring_style_traps_cache if k[0] == requested_by_user_id
-    ]:
-        _sparring_style_traps_cache.pop(key, None)
-
+# (Style/traps cache, ensure throttle, key builders, and the invalidation
+# helper live in services/sparring_caches — see the pointer comment above.)
 
 def _warm_sparring_style_traps_cache(
     *,
@@ -603,11 +448,11 @@ def get_opponent_opening_games(
     if not clerk_id:
         raise HTTPException(status_code=400, detail="Missing X-Clerk-User-Id header")
 
-    cache_key = (
+    cache_key = opening_games_cache_key(
         clerk_id,
         provider,
-        opponent_username.strip().lower(),
-        family.strip().lower(),
+        opponent_username,
+        family,
         color,
     )
     now = time.time()
@@ -662,7 +507,7 @@ def get_opponent_opening_game(
     if not clerk_id:
         raise HTTPException(status_code=400, detail="Missing X-Clerk-User-Id header")
 
-    cache_key = (clerk_id, game_id)
+    cache_key = opening_game_cache_key(clerk_id, game_id)
     now = time.time()
     cached = _opening_game_cache.get(cache_key)
     if cached is not None and now - cached[0] < _OPENING_GAME_CACHE_TTL_SECONDS:
@@ -710,18 +555,48 @@ def get_sparring_move(
     if board.turn != bot_color:
         raise HTTPException(status_code=409, detail="It is not the bot's turn")
 
-    opponent_elo = get_opponent_rating(
-        requested_by_user_id=clerk_id,
-        provider=body.provider,
-        opponent_username=body.opponent_username,
+    opponent_elo, opponent_elo_estimated = resolve_opponent_elo_for_sparring(
+        get_opponent_rating(
+            requested_by_user_id=clerk_id,
+            provider=body.provider,
+            opponent_username=body.opponent_username,
+        ),
+        context=f"sparring-move {body.provider}/{body.opponent_username}",
     )
-    if opponent_elo is None:
-        raise HTTPException(status_code=404, detail="Opponent profile not found")
 
-    ensure_key = (
+    # Maia's oppo_elo models the HUMAN facing the bot: the sparring user's
+    # own strength (tactical rating, else onboarding skill-band midpoint).
+    # Only when the user is unknown do we keep the legacy symmetric
+    # assumption (user == opponent strength) — logged, not silent.
+    user_elo, user_elo_source = get_user_playing_elo(
+        requested_by_user_id=clerk_id,
+    )
+    if user_elo is None:
+        log.info(
+            "sparring user elo unknown (%s); oppo_elo falls back to "
+            "opponent_elo=%s for %s/%s",
+            user_elo_source,
+            opponent_elo,
+            body.provider,
+            body.opponent_username,
+        )
+        oppo_elo = opponent_elo
+    else:
+        log.info(
+            "sparring elos for %s/%s: self(opponent)=%s%s oppo(user)=%s (%s)",
+            body.provider,
+            body.opponent_username,
+            opponent_elo,
+            " (estimated)" if opponent_elo_estimated else "",
+            user_elo,
+            user_elo_source,
+        )
+        oppo_elo = user_elo
+
+    ensure_key = sparring_ensure_repertoire_cache_key(
         clerk_id,
         body.provider,
-        (body.opponent_username or "").strip().lower(),
+        body.opponent_username,
     )
     now = time.time()
     if (
@@ -891,7 +766,7 @@ def get_sparring_move(
                     board,
                     multipv=5,
                     self_elo=opponent_elo,
-                    oppo_elo=opponent_elo,
+                    oppo_elo=oppo_elo,
                 )
                 # --- trap-mode data (decision (6)) -----------------------
                 # compute_exploitable_traps returns the bare set of
@@ -1098,6 +973,8 @@ def get_sparring_move(
         move_san=move_san or board.san(candidate_move),
         source=source,
         opponent_elo=opponent_elo,
+        opponent_elo_estimated=opponent_elo_estimated,
+        user_elo=user_elo,
         repertoire_frequency=repertoire_frequency,
     )
 
@@ -1129,13 +1006,14 @@ def warm_sparring_session(
     if not clerk_id:
         raise HTTPException(status_code=400, detail="Missing X-Clerk-User-Id header")
 
-    opponent_elo = get_opponent_rating(
-        requested_by_user_id=clerk_id,
-        provider=body.provider,
-        opponent_username=body.opponent_username,
+    opponent_elo, opponent_elo_estimated = resolve_opponent_elo_for_sparring(
+        get_opponent_rating(
+            requested_by_user_id=clerk_id,
+            provider=body.provider,
+            opponent_username=body.opponent_username,
+        ),
+        context=f"sparring-warmup {body.provider}/{body.opponent_username}",
     )
-    if opponent_elo is None:
-        raise HTTPException(status_code=404, detail="Opponent profile not found")
 
     # Index any missing repertoire entries up front — same call the move
     # endpoint makes, just moved here so the user's first move never waits
@@ -1152,10 +1030,10 @@ def warm_sparring_session(
             provider=body.provider,
             opponent_username=body.opponent_username,
         )
-        ensure_key = (
+        ensure_key = sparring_ensure_repertoire_cache_key(
             clerk_id,
             body.provider,
-            (body.opponent_username or "").strip().lower(),
+            body.opponent_username,
         )
         _sparring_ensure_repertoire_cache[ensure_key] = time.time()
 
@@ -1177,6 +1055,7 @@ def warm_sparring_session(
         warmed=warmed,
         already_warm=already_warm,
         opponent_elo=opponent_elo,
+        opponent_elo_estimated=opponent_elo_estimated,
     )
 
 
