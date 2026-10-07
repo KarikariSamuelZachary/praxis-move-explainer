@@ -505,6 +505,10 @@ export default function BoardPanel({
             />
             <BaseChessboard
               options={{
+                // Unique DOM id: the library measures squares with
+                // document.querySelector, so co-mounted boards must never
+                // share the default 'chessboard' id.
+                id: 'review-board',
                 position: boardFen,
                 boardOrientation: orientation,
                 allowDragging: canInteract,
