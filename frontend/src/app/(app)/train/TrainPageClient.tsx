@@ -281,7 +281,7 @@ function OpponentPrepDialog({ onClose }: { onClose: () => void }) {
                 JSON.stringify(pollData.warnings)
               );
             } catch {
-              // Storage can be unavailable (private mode) — the import
+              // Storage can be unavailable (private mode) - the import
               // itself succeeded, so the warning is simply not shown.
             }
           }
