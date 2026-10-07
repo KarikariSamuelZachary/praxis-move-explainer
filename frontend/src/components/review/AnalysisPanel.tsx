@@ -169,7 +169,7 @@ export default function AnalysisPanel({
   // ply: skip the list highlight so it never claims the wrong move.
   const highlightPly =
     currentMove && mainlineSanAtPly(activePly) === currentMove.san ? activePly : -1;
-  // No game yet: hide the transport controls entirely — there is nothing to step through.
+  // No game yet: hide the transport controls entirely - there is nothing to step through.
   const showNav = hasGame && !!currentMove;
 
   return (
@@ -330,7 +330,7 @@ export default function AnalysisPanel({
         </>
       )}
 
-      {/* Movement buttons: |< < play/pause > >| — wooden boxes matching the board.
+      {/* Movement buttons: |< < play/pause > >| - wooden boxes matching the board.
           Hidden until a game exists; there is nothing to step through before that. */}
       {showNav && (
       <div className="grid shrink-0 grid-cols-5 gap-1.5">
