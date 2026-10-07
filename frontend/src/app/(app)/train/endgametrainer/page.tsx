@@ -386,7 +386,7 @@ export default function EndgamesPage() {
                   </div>
                   <div className="mt-1.5 flex items-end gap-2.5">
                     <span className="font-display text-[34px] font-semibold leading-none text-[#f7e5c6]">
-                      {rating ?? '—'}
+                      {rating ?? '-'}
                     </span>
                     {rating != null && ratingChange != null && (
                       <span
@@ -406,7 +406,7 @@ export default function EndgamesPage() {
                   </div>
                   {rating == null && (
                     <p className="mt-2 text-[11px] leading-4 text-white/40">
-                      Unrated — your first resolved drill sets it.
+                      Unrated - your first resolved drill sets it.
                     </p>
                   )}
                 </div>
