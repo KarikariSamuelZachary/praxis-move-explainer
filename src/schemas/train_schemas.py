@@ -54,42 +54,6 @@ class OpponentImportJobResponse(BaseModel):
     repertoire_total_games: int = 0
 
 
-class WeaknessProfileRequest(BaseModel):
-    source_type: Literal["opponent", "user"] = "opponent"
-    provider: Optional[Literal["lichess", "chesscom"]] = None
-    opponent_username: Optional[str] = Field(None, min_length=1, max_length=100)
-    limit: int = Field(
-        50,
-        ge=1,
-        le=200,
-        description="Maximum games to analyze from the selected corpus.",
-    )
-
-
-class WeaknessProfileStartResponse(BaseModel):
-    job_id: str
-    status: Literal["queued"]
-    source_type: Literal["opponent", "user"]
-    provider: Optional[str] = None
-    opponent_username: Optional[str] = None
-    limit: int
-
-
-class WeaknessProfileJobResponse(BaseModel):
-    job_id: str
-    status: Literal["queued", "running", "completed", "failed"]
-    source_type: Literal["opponent", "user"]
-    provider: Optional[str] = None
-    opponent_username: Optional[str] = None
-    requested_limit: int
-    analyzed_games_count: int
-    analyzed_moves_count: int
-    mistake_count: int
-    blunder_count: int
-    summary: dict
-    error_message: Optional[str] = None
-
-
 class OpponentTrapResponse(BaseModel):
     # A recurring position the opponent has blundered in across 2+
     # different games. Produced by `services.opponent_traps
@@ -126,6 +90,13 @@ class OpponentTrapResponse(BaseModel):
     example_ply: int
     example_move_san: str
     example_classification: Literal["mistake", "blunder"]
+    # True iff the trap clears the sparring bot's exploitability bar under
+    # TC-neutral weighting (>= TRAP_MIN_GAMES corpus games and
+    # recency-weighted hits >= TRAP_MIN_HITS). True = the bot steers toward
+    # this position (subject to session-TC narrowing); False = observed
+    # pattern only, shown for prep but not played toward. Lets the UI badge
+    # the traps the bot actually uses.
+    exploitable: bool = False
     # Always "position" — the only tier implemented. An opening-family
     # fallback tier is intentionally NOT built (scope creep for this
     # task). If a later task adds it, this field becomes a Literal
@@ -137,7 +108,10 @@ class OpponentProfileResponse(BaseModel):
     provider: Literal["lichess", "chesscom"]
     opponent_username: str
     game_count: int
-    rating: int
+    # Mean of the opponent's parseable per-game ratings, or None when the
+    # corpus carries none (never a fabricated number — callers choose an
+    # explicit fallback). Renders as "—" when unknown.
+    rating: Optional[int] = None
     avatar_url: Optional[str] = None
     verified: bool = False
     # Per-time-class average rating for the opponent, keyed by the
@@ -345,6 +319,13 @@ class SparringMoveResponse(BaseModel):
     move_san: str
     source: Literal["in_book", "playing_naturally"]
     opponent_elo: int
+    # True when opponent_elo is the FALLBACK_OPPONENT_ELO estimate because
+    # the corpus carried no parseable rating (also warning-logged server
+    # side). Lets the UI disclose "est." instead of presenting a guess.
+    opponent_elo_estimated: bool = False
+    # The user's own strength used as Maia's oppo_elo for this move (None
+    # when unknown — the bot then assumed an equal-strength user).
+    user_elo: Optional[int] = None
     repertoire_frequency: Optional[int] = None
 
 
@@ -363,6 +344,8 @@ class SparringWarmupResponse(BaseModel):
     warmed: bool
     already_warm: bool
     opponent_elo: int
+    # Same estimate flag as SparringMoveResponse.opponent_elo_estimated.
+    opponent_elo_estimated: bool = False
 
 
 # The Engine Sparring persona choices as a schema-layer Literal. REDECLARED
