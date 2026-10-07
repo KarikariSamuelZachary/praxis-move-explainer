@@ -703,6 +703,7 @@ export default function SparringGame({
   // (messages, hint spinner, …) out of it.
   const boardOptions = useMemo(
     () => ({
+      id: 'sparring-game-board',
       position: viewFen,
       boardOrientation: color,
       allowDragging: humanCanMove,
