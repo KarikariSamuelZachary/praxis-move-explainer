@@ -374,6 +374,10 @@ export default function BoardShell({
         <div style={WOOD_OVERLAY_STYLE} aria-hidden="true" />
         <Chessboard
           options={{
+            // Unique DOM id (see the sparring-board note in
+            // train/opponent-prep/page.tsx): co-mounted boards must never
+            // share the library's default 'chessboard' id.
+            id: 'training-board-shell',
             position,
             boardOrientation: orientation,
             showNotation,
