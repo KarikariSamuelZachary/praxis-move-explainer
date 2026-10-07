@@ -10,13 +10,16 @@ Asserts shape + closed-form expected values across a small set of fixtures.
 import sys
 
 from services.opponent_repertoire import (
+    FALLBACK_OPPONENT_ELO,
     _blunder_ply,
     _blunder_precedence,
     _initial_opening_game_id,
     _openings_lost_against,
     _order_opening_games,
     _playing_style_from_sac_freq,
+    _rating_from_player_lists,
     _ratings_by_time_class,
+    resolve_opponent_elo_for_sparring,
 )
 from services.opponent_style import compute_opening_results
 
@@ -410,10 +413,51 @@ def test_blunder_precedence() -> None:
     _print_pass("blunder outranks mistake; earliest ply inside each class")
 
 
+def test_rating_from_player_lists_none_when_unrated() -> None:
+    _print_section("TEST: unrated corpus returns None, never a fabricated rating")
+
+    assert _rating_from_player_lists(
+        opponent_username="hikaru",
+        white_players=[{"username": "hikaru", "rating": "?"}],
+        black_players=[],
+    ) is None, "unparseable '?' rating must yield None"
+    _print_pass("unparseable rating -> None")
+
+    assert _rating_from_player_lists(
+        opponent_username="hikaru",
+        white_players=[{"username": "someone", "rating": 1500}],
+        black_players=[],
+    ) is None, "another player's rating must not leak in"
+    _print_pass("non-opponent rows ignored -> None")
+
+    assert _rating_from_player_lists(
+        opponent_username="hikaru",
+        white_players=[{"username": "HIKARU", "rating": 2800}],
+        black_players=[],
+    ) == 2800, "matching is case-insensitive and keeps the mean"
+    _print_pass("casefold match keeps real rating")
+
+
+def test_resolve_opponent_elo_for_sparring_flags_estimates() -> None:
+    _print_section("TEST: sparring elo resolution flags estimates")
+
+    elo, estimated = resolve_opponent_elo_for_sparring(1800, context="test")
+    assert (elo, estimated) == (1800, False), "real rating passes through unflagged"
+    _print_pass("real rating -> (elo, False)")
+
+    elo, estimated = resolve_opponent_elo_for_sparring(None, context="test")
+    assert (elo, estimated) == (FALLBACK_OPPONENT_ELO, True), (
+        "missing rating falls back loudly, flagged estimated"
+    )
+    _print_pass("missing rating -> (fallback, True)")
+
+
 def main() -> int:
     print("=== Running opponent_repertoire derivation smoke tests ===")
     try:
         test_playing_style_bands()
+        test_rating_from_player_lists_none_when_unrated()
+        test_resolve_opponent_elo_for_sparring_flags_estimates()
         test_ratings_by_time_class_basic()
         test_ratings_by_time_class_empty()
         test_ratings_by_time_class_black_side_excluded_when_wrong_user()
