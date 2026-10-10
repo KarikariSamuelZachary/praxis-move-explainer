@@ -620,6 +620,19 @@ def _verify_and_store(conn, clerk_id: str, job_id: str, stage2: _Stage2Engine,
     played_cp = -opp_cp if opp_cp is not None else None
     if best_cp is None or played_cp is None:
         return "no_engine_line"
+    # Stage 1 is a low-budget candidate screen. Recheck at Stage 2 that the
+    # played move is still a meaningful mistake; a unique best move alone
+    # does not make this position a puzzle. This also rejects candidates
+    # where the deeper search now prefers the move the user actually played.
+    if best.get("move") == r["played_uci"]:
+        return "played_is_best"
+    verified_ep_loss = max(
+        0.0,
+        expected_points(best_cp, rating) - expected_points(played_cp, rating),
+    )
+    verified_cp_loss = max(0, int(round(best_cp - played_cp)))
+    if verified_ep_loss < CAND_EP or verified_cp_loss < CAND_CP:
+        return "loss_below_threshold"
     if best.get("mate") and best["mate"] > 0 and second is not None and (second.get("mate") or 0) > 0:
         return "mate_mate"
     if best.get("mate") and best["mate"] > 0:

@@ -1,0 +1,2590 @@
+{
+ "seed": 20261008,
+ "entries": {
+  "1": {
+   "url": "https://www.chess.com/game/live/173438456408",
+   "fen_before": "Q1bqk2r/2p2ppp/1pPb1n2/1p2p3/8/2P2N2/PP1P1PPP/RNB2RK1 b k - 1 9",
+   "side_to_move": "black",
+   "ply_index": 17,
+   "move_number": 9,
+   "played_san": "O-O",
+   "rating": 1555,
+   "group": "kept",
+   "origin": "verify",
+   "ply_id": 1209,
+   "best_source": "stage2",
+   "best_san": "e4",
+   "best_uci": "e5e4",
+   "pv_san": "e4 d4 exf3 Re1+ Be7 Qa3 Be6 Qa6 O-O Qxb5 fxg2 Bg5 Nd5 Bxe7 Qxe7 Nd2 Nf4 Qe5 Qh4 Re3 Bd5 c4 Bxc6",
+   "ep_best": 0.25478167066713,
+   "ep_played": 0.0983813960707717,
+   "ep_loss": 0.15640027459635827,
+   "cp_loss": 249,
+   "margin_ep": 0.1657421243625351,
+   "char": {
+    "capture": 0,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 1
+   },
+   "pv_mat_best": 320,
+   "pv_mat_played": 0,
+   "clk_seconds": 144.8,
+   "base_time_s": 180.0,
+   "pilot_reject": "kept",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.2548"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "144.8s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.1564"
+    },
+    "suggest_Q": {
+     "value": false,
+     "why": "quiet=True pv_mat=320"
+    }
+   }
+  },
+  "2": {
+   "url": "https://lichess.org/nuFq8tmk",
+   "fen_before": "2kr3r/p1pb1ppp/2pb1q2/8/3Pp3/2P1Q1N1/PP3PPP/R1B2RK1 w - - 4 15",
+   "side_to_move": "white",
+   "ply_index": 28,
+   "move_number": 15,
+   "played_san": "Qxe4",
+   "rating": 1369,
+   "group": "kept",
+   "origin": "verify",
+   "ply_id": 263,
+   "best_source": "stage2",
+   "best_san": "Nxe4",
+   "best_uci": "g3e4",
+   "pv_san": "Nxe4 Qg6 Nxd6+ Qxd6 Qd3 Kb8 Bg5 Rde8 c4 Ka8 Rad1",
+   "ep_best": 0.7156814955347327,
+   "ep_played": 0.5385663181055679,
+   "ep_loss": 0.17711517742916483,
+   "cp_loss": 179,
+   "margin_ep": 0.10382335954821453,
+   "char": {
+    "capture": 1,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 0
+   },
+   "pv_mat_best": 110,
+   "pv_mat_played": 100,
+   "clk_seconds": 77.0,
+   "base_time_s": 180.0,
+   "pilot_reject": "kept",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "captured value 100 < 300"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.7157"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "77.0s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.1771"
+    },
+    "suggest_Q": {
+     "value": false,
+     "why": "quiet=False pv_mat=110"
+    }
+   }
+  },
+  "3": {
+   "url": "https://lichess.org/WtARkVtS",
+   "fen_before": "r1r2bk1/1p3p1p/pq4pB/3pPp2/3n4/1N3PR1/PP1Q1P1P/2R4K w - - 0 21",
+   "side_to_move": "white",
+   "ply_index": 40,
+   "move_number": 21,
+   "played_san": "Bxf8",
+   "rating": 1681,
+   "group": "kept",
+   "origin": "verify",
+   "ply_id": 209,
+   "best_source": "stage2",
+   "best_san": "Rxc8",
+   "best_uci": "c1c8",
+   "pv_san": "Rxc8 Rxc8",
+   "ep_best": 0.5887694379545193,
+   "ep_played": 0.2746074715657973,
+   "ep_loss": 0.314161966388722,
+   "cp_loss": 278,
+   "margin_ep": 0.28567448752403524,
+   "char": {
+    "capture": 1,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 0
+   },
+   "pv_mat_best": 0,
+   "pv_mat_played": 0,
+   "clk_seconds": 466.0,
+   "base_time_s": 600.0,
+   "pilot_reject": "kept",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "captured piece defended"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.5888"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "466.0s vs 20% of 600s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.3142"
+    },
+    "suggest_Q": {
+     "value": false,
+     "why": "quiet=False pv_mat=0"
+    }
+   }
+  },
+  "4": {
+   "url": "https://www.chess.com/game/live/184551359070",
+   "fen_before": "2r1r1k1/1p3p1p/3q2p1/pP3p2/P1PB4/5Q2/2N3PP/3R3K b - - 4 27",
+   "side_to_move": "black",
+   "ply_index": 53,
+   "move_number": 27,
+   "played_san": "b6",
+   "rating": 1532,
+   "group": "clock_ex",
+   "origin": "plies",
+   "ply_id": 724,
+   "best_source": "screen",
+   "best_san": "Rxc4",
+   "best_uci": "c8c4",
+   "pv_san": null,
+   "ep_best": 0.5454,
+   "ep_played": 0.1351,
+   "ep_loss": 0.4103,
+   "cp_loss": 448,
+   "margin_ep": null,
+   "char": {
+    "capture": 1,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 0
+   },
+   "pv_mat_best": 200,
+   "pv_mat_played": null,
+   "clk_seconds": 6.0,
+   "base_time_s": 180.0,
+   "pilot_reject": "excluded:clock",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "captured value 100 < 300"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.5454"
+    },
+    "suggest_C": {
+     "value": true,
+     "why": "6.0s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": "N/A",
+     "why": "no Stage 2 data"
+    },
+    "suggest_Q": {
+     "value": false,
+     "why": "quiet=False pv_mat=200"
+    }
+   }
+  },
+  "5": {
+   "url": "https://lichess.org/3ecTOztQ",
+   "fen_before": "5rk1/2pbqpbp/p5p1/2Pp4/2nP3P/P1Q1P1P1/6KN/1BB2R2 b - - 0 24",
+   "side_to_move": "black",
+   "ply_index": 47,
+   "move_number": 24,
+   "played_san": "g5",
+   "rating": 1634,
+   "group": "reject",
+   "origin": "verify",
+   "ply_id": 127,
+   "best_source": "stage2",
+   "best_san": "Qxc5",
+   "best_uci": "e7c5",
+   "pv_san": "Qxc5 dxc5 Bxc3 e4 Rb8 Ba2 Be6 Nf3 dxe4 Ng5 Ne3+ Bxe3 Bxa2 Rd1 Be5",
+   "ep_best": 0.8592461965677145,
+   "ep_played": 0.4905790151163434,
+   "ep_loss": 0.3686671814513711,
+   "cp_loss": 392,
+   "margin_ep": 0.0391560880480345,
+   "char": {
+    "capture": 1,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 0
+   },
+   "pv_mat_best": 100,
+   "pv_mat_played": 0,
+   "clk_seconds": 486.0,
+   "base_time_s": 600.0,
+   "pilot_reject": "margin_lt_0.10",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "captured value 100 < 300"
+    },
+    "suggest_X": {
+     "value": true,
+     "why": "ep_best=0.8592"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "486.0s vs 20% of 600s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.3687"
+    },
+    "suggest_Q": {
+     "value": false,
+     "why": "quiet=False pv_mat=100"
+    }
+   }
+  },
+  "6": {
+   "url": "https://lichess.org/DAsZjWUo",
+   "fen_before": "r2qkb1r/5ppp/1pn1p1n1/3pPb2/1P6/2P2N2/P3BPPP/RNBQ1RK1 w kq - 0 11",
+   "side_to_move": "white",
+   "ply_index": 20,
+   "move_number": 11,
+   "played_san": "Bg5",
+   "rating": 1712,
+   "group": "kept",
+   "origin": "verify",
+   "ply_id": 524,
+   "best_source": "stage2",
+   "best_san": "Bb5",
+   "best_uci": "e2b5",
+   "pv_san": "Bb5 Qd7 Nd4 Ngxe5 Re1 Bd3 Bxc6 Nxc6 Qxd3 Nxd4 Qxd4 Bd6 Qd1",
+   "ep_best": 0.9644820733286523,
+   "ep_played": 0.6488311382805408,
+   "ep_loss": 0.3156509350481115,
+   "cp_loss": 556,
+   "margin_ep": 0.15520245604570626,
+   "char": {
+    "capture": 0,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 1
+   },
+   "pv_mat_best": -100,
+   "pv_mat_played": 0,
+   "clk_seconds": 553.0,
+   "base_time_s": 600.0,
+   "pilot_reject": "kept",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": true,
+     "why": "ep_best=0.9645"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "553.0s vs 20% of 600s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.3157"
+    },
+    "suggest_Q": {
+     "value": true,
+     "why": "quiet=True pv_mat=-100"
+    }
+   }
+  },
+  "7": {
+   "url": "https://lichess.org/WtARkVtS",
+   "fen_before": "r4Bk1/1p3p1p/pq4p1/3pPp2/3n4/1N3PR1/PP1Q1P1P/2r4K w - - 0 22",
+   "side_to_move": "white",
+   "ply_index": 42,
+   "move_number": 22,
+   "played_san": "Qxc1",
+   "rating": 1681,
+   "group": "near",
+   "origin": "verify",
+   "ply_id": 210,
+   "best_source": "stage2",
+   "best_san": "Nxc1",
+   "best_uci": "b3c1",
+   "pv_san": "Nxc1 Rxf8 Qh6 Qc7 Nd3 Ne6 Rh3 f6 exf6 Rxf6 a3 d4 f4 a5 Kg1 a4 Qh4",
+   "ep_best": 0.2329936867005888,
+   "ep_played": 0.14078825733496067,
+   "ep_loss": 0.09220542936562812,
+   "cp_loss": 129,
+   "margin_ep": 0.07456833125050327,
+   "char": {
+    "capture": 1,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 0
+   },
+   "pv_mat_best": 170,
+   "pv_mat_played": -150,
+   "clk_seconds": 462.0,
+   "base_time_s": 600.0,
+   "pilot_reject": "margin_lt_0.10",
+   "suggestions": {
+    "suggest_T": {
+     "value": true,
+     "why": "undefended capture gaining 500"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.2330"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "462.0s vs 20% of 600s"
+    },
+    "suggest_A": {
+     "value": true,
+     "why": "ep_loss=0.0922"
+    },
+    "suggest_Q": {
+     "value": false,
+     "why": "quiet=False pv_mat=170"
+    }
+   }
+  },
+  "8": {
+   "url": "https://lichess.org/LgKbO9T3",
+   "fen_before": "rn2k2r/ppq2pp1/2pbp1p1/6Q1/3P4/2N2NB1/PPP2PPn/R4RK1 w kq - 0 14",
+   "side_to_move": "white",
+   "ply_index": 26,
+   "move_number": 14,
+   "played_san": "Ne5",
+   "rating": 1697,
+   "group": "kept",
+   "origin": "verify",
+   "ply_id": 493,
+   "best_source": "stage2",
+   "best_san": "Nxh2",
+   "best_uci": "f3h2",
+   "pv_san": "Nxh2 Rh5 Qe3 Nd7 Ne4 Bxg3 Qxg3 O-O-O Qxc7+ Kxc7 Ng3 Rh6 Nf3 Rdh8 Ng5 f5 Nf7",
+   "ep_best": 0.9444464713418794,
+   "ep_played": 0.12370729470410038,
+   "ep_loss": 0.8207391766377791,
+   "cp_loss": 996,
+   "margin_ep": 0.621613382289728,
+   "char": {
+    "capture": 1,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 0
+   },
+   "pv_mat_best": -10,
+   "pv_mat_played": -490,
+   "clk_seconds": 505.0,
+   "base_time_s": 600.0,
+   "pilot_reject": "kept",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "captured piece defended"
+    },
+    "suggest_X": {
+     "value": true,
+     "why": "ep_best=0.9444"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "505.0s vs 20% of 600s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.8207"
+    },
+    "suggest_Q": {
+     "value": false,
+     "why": "quiet=False pv_mat=-10"
+    }
+   }
+  },
+  "9": {
+   "url": "https://lichess.org/8cbJ5DRG",
+   "fen_before": "5qk1/p4ppp/1p2p3/3rQ1P1/1P1B4/P7/7P/5RK1 w - - 6 32",
+   "side_to_move": "white",
+   "ply_index": 62,
+   "move_number": 32,
+   "played_san": "Qf5",
+   "rating": 1711,
+   "group": "kept",
+   "origin": "verify",
+   "ply_id": 402,
+   "best_source": "stage2",
+   "best_san": "Qf4",
+   "best_uci": "e5f4",
+   "pv_san": "Qf4 Rf5 Qg3 Rd5 Be3 Qd8 Qf3 Qc7 a4 a6 h4 Rd3 Rf2 a5 b5 h5 gxh6 Qe5 Qxf7+ Kh7",
+   "ep_best": 0.8970512404198484,
+   "ep_played": 0.009214765972396276,
+   "ep_loss": 0.8878364744474522,
+   "cp_loss": 1416,
+   "margin_ep": 0.11781229358321244,
+   "char": {
+    "capture": 0,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 1
+   },
+   "pv_mat_best": 0,
+   "pv_mat_played": -900,
+   "clk_seconds": 316.0,
+   "base_time_s": 600.0,
+   "pilot_reject": "kept",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": true,
+     "why": "ep_best=0.8971"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "316.0s vs 20% of 600s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.8878"
+    },
+    "suggest_Q": {
+     "value": true,
+     "why": "quiet=True pv_mat=0"
+    }
+   }
+  },
+  "10": {
+   "url": "https://www.chess.com/game/live/174103519292",
+   "fen_before": "2B4k/1p3Qpp/p2q4/5p2/5P2/4p1P1/PKR4P/8 b - - 13 44",
+   "side_to_move": "black",
+   "ply_index": 87,
+   "move_number": 44,
+   "played_san": "Qd4+",
+   "rating": 1525,
+   "group": "clock_ex",
+   "origin": "plies",
+   "ply_id": 868,
+   "best_source": "screen",
+   "best_san": "Qd4+",
+   "best_uci": "d6d4",
+   "pv_san": null,
+   "ep_best": 0.5,
+   "ep_played": 0.02510000000000001,
+   "ep_loss": 0.4749,
+   "cp_loss": 806,
+   "margin_ep": null,
+   "char": {
+    "capture": 0,
+    "check": 1,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 0
+   },
+   "pv_mat_best": 0,
+   "pv_mat_played": null,
+   "clk_seconds": 12.3,
+   "base_time_s": 180.0,
+   "pilot_reject": "excluded:clock",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.5000"
+    },
+    "suggest_C": {
+     "value": true,
+     "why": "12.3s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": "N/A",
+     "why": "no Stage 2 data"
+    },
+    "suggest_Q": {
+     "value": false,
+     "why": "quiet=False pv_mat=0"
+    }
+   }
+  },
+  "11": {
+   "url": "https://lichess.org/BFbElKXx",
+   "fen_before": "r1q1k1nr/1b1pbppp/2n1p3/1N6/4P3/4BP2/PPPQ2PP/2KR1B1R w kq - 1 12",
+   "side_to_move": "white",
+   "ply_index": 22,
+   "move_number": 12,
+   "played_san": "Nc3",
+   "rating": 1711,
+   "group": "reject",
+   "origin": "verify",
+   "ply_id": 311,
+   "best_source": "stage2",
+   "best_san": "Kb1",
+   "best_uci": "c1b1",
+   "pv_san": "Kb1 Ba6 c4 Qb7 Be2 h6 h4",
+   "ep_best": 0.39873286825704934,
+   "ep_played": 0.12696128826655684,
+   "ep_loss": 0.2717715799904925,
+   "cp_loss": 314,
+   "margin_ep": 0.012672582484131945,
+   "char": {
+    "capture": 0,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 1
+   },
+   "pv_mat_best": 0,
+   "pv_mat_played": 0,
+   "clk_seconds": 559.0,
+   "base_time_s": 600.0,
+   "pilot_reject": "margin_lt_0.10",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.3987"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "559.0s vs 20% of 600s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.2718"
+    },
+    "suggest_Q": {
+     "value": true,
+     "why": "quiet=True pv_mat=0"
+    }
+   }
+  },
+  "12": {
+   "url": "https://www.chess.com/game/live/173754832234",
+   "fen_before": "2k1r3/pbp2pp1/2n3rp/4q3/8/P2NBP2/1PPQ2PP/R4RK1 w - - 1 23",
+   "side_to_move": "white",
+   "ply_index": 44,
+   "move_number": 23,
+   "played_san": "Qc3",
+   "rating": 1548,
+   "group": "clock_ex",
+   "origin": "plies",
+   "ply_id": 1037,
+   "best_source": "screen",
+   "best_san": "Nxe5",
+   "best_uci": "d3e5",
+   "pv_san": null,
+   "ep_best": 0.9595,
+   "ep_played": 0.0534,
+   "ep_loss": 0.9061,
+   "cp_loss": 1320,
+   "margin_ep": null,
+   "char": {
+    "capture": 1,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 0
+   },
+   "pv_mat_best": 700,
+   "pv_mat_played": null,
+   "clk_seconds": 5.9,
+   "base_time_s": 180.0,
+   "pilot_reject": "excluded:clock",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "captured piece defended"
+    },
+    "suggest_X": {
+     "value": true,
+     "why": "ep_best=0.9595"
+    },
+    "suggest_C": {
+     "value": true,
+     "why": "5.9s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": "N/A",
+     "why": "no Stage 2 data"
+    },
+    "suggest_Q": {
+     "value": false,
+     "why": "quiet=False pv_mat=700"
+    }
+   }
+  },
+  "13": {
+   "url": "https://www.chess.com/game/live/184551359070",
+   "fen_before": "2rr2k1/1p3ppp/1q2p3/pP3b2/P1Ppn3/NQ1BbN2/1B4PP/3R1R1K b - - 7 20",
+   "side_to_move": "black",
+   "ply_index": 39,
+   "move_number": 20,
+   "played_san": "Nf2+",
+   "rating": 1532,
+   "group": "kept",
+   "origin": "verify",
+   "ply_id": 717,
+   "best_source": "stage2",
+   "best_san": "Nc5",
+   "best_uci": "e4c5",
+   "pv_san": "Nc5 Qc2 Nxd3 Rxd3 Qd6 Ne1 Bxd3 Nxd3 e5 c5 Qd5 Rf5 f6 h3 Qe6 Rf3",
+   "ep_best": 0.7401199328338054,
+   "ep_played": 0.4909002048931811,
+   "ep_loss": 0.2492197279406243,
+   "cp_loss": 238,
+   "margin_ep": 0.21511361331545686,
+   "char": {
+    "capture": 0,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 1
+   },
+   "pv_mat_best": 10,
+   "pv_mat_played": 180,
+   "clk_seconds": 21.0,
+   "base_time_s": 180.0,
+   "pilot_reject": "kept",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.7401"
+    },
+    "suggest_C": {
+     "value": true,
+     "why": "21.0s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.2492"
+    },
+    "suggest_Q": {
+     "value": true,
+     "why": "quiet=True pv_mat=10"
+    }
+   }
+  },
+  "14": {
+   "url": "https://www.chess.com/game/live/184551359070",
+   "fen_before": "2rr2k1/1p3p1p/1q4p1/pP3p2/P1PN4/N2Q4/1B3bPP/3R3K b - - 0 24",
+   "side_to_move": "black",
+   "ply_index": 47,
+   "move_number": 24,
+   "played_san": "Bxd4",
+   "rating": 1532,
+   "group": "clock_ex",
+   "origin": "plies",
+   "ply_id": 721,
+   "best_source": "screen",
+   "best_san": "Bh4",
+   "best_uci": "f2h4",
+   "pv_san": null,
+   "ep_best": 0.579,
+   "ep_played": 0.30599999999999994,
+   "ep_loss": 0.273,
+   "cp_loss": 250,
+   "margin_ep": null,
+   "char": {
+    "capture": 0,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 1
+   },
+   "pv_mat_best": 0,
+   "pv_mat_played": null,
+   "clk_seconds": 13.8,
+   "base_time_s": 180.0,
+   "pilot_reject": "excluded:clock",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.5790"
+    },
+    "suggest_C": {
+     "value": true,
+     "why": "13.8s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": "N/A",
+     "why": "no Stage 2 data"
+    },
+    "suggest_Q": {
+     "value": true,
+     "why": "quiet=True pv_mat=0"
+    }
+   }
+  },
+  "15": {
+   "url": "https://www.chess.com/game/live/173755196038",
+   "fen_before": "1r4k1/6p1/Rp5p/1RpK1P2/2P2P2/2r5/8/8 b - - 5 43",
+   "side_to_move": "black",
+   "ply_index": 85,
+   "move_number": 43,
+   "played_san": "Rf3",
+   "rating": 1540,
+   "group": "kept",
+   "origin": "verify",
+   "ply_id": 998,
+   "best_source": "stage2",
+   "best_san": "Rd8+",
+   "best_uci": "b8d8",
+   "pv_san": "Rd8+ Kc6 Rxc4 f6 Rxf4 Kc7 Rf8 fxg7 R8f6 Raxb6 Rxb6 Kxb6 c4 Rc5 Kxg7 Kb7",
+   "ep_best": 0.8830266241490197,
+   "ep_played": 0.5,
+   "ep_loss": 0.38302662414901967,
+   "cp_loss": 443,
+   "margin_ep": 0.20123427029674312,
+   "char": {
+    "capture": 0,
+    "check": 1,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 0
+   },
+   "pv_mat_best": 200,
+   "pv_mat_played": 0,
+   "clk_seconds": 62.5,
+   "base_time_s": 180.0,
+   "pilot_reject": "kept",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": true,
+     "why": "ep_best=0.8830"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "62.5s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.3830"
+    },
+    "suggest_Q": {
+     "value": false,
+     "why": "quiet=False pv_mat=200"
+    }
+   }
+  },
+  "16": {
+   "url": "https://lichess.org/rslweHTa",
+   "fen_before": "r4rk1/4ppbp/p2pbnp1/1p1N4/4P3/4BP2/PPPqB1PP/1K1R3R w - - 0 15",
+   "side_to_move": "white",
+   "ply_index": 28,
+   "move_number": 15,
+   "played_san": "Rxd2",
+   "rating": 1310,
+   "group": "kept",
+   "origin": "verify",
+   "ply_id": 15,
+   "best_source": "stage2",
+   "best_san": "Nxe7+",
+   "best_uci": "d5e7",
+   "pv_san": "Nxe7+ Kh8 Bxd2 Rfe8 Nc6 d5 e5 Nd7 f4 f6 Nd4 Bg8 e6 Bxe6 Nxe6 Rxe6 Bf3 Nb6 h4 Rae8 g4",
+   "ep_best": 0.7072691085179056,
+   "ep_played": 0.5031505208038326,
+   "ep_loss": 0.20411858771407299,
+   "cp_loss": 207,
+   "margin_ep": 0.19152150605301532,
+   "char": {
+    "capture": 1,
+    "check": 1,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 0
+   },
+   "pv_mat_best": 1000,
+   "pv_mat_played": 900,
+   "clk_seconds": 125.0,
+   "base_time_s": 180.0,
+   "pilot_reject": "kept",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "captured value 100 < 300"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.7073"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "125.0s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.2041"
+    },
+    "suggest_Q": {
+     "value": false,
+     "why": "quiet=False pv_mat=1000"
+    }
+   }
+  },
+  "17": {
+   "url": "https://www.chess.com/game/live/174103519292",
+   "fen_before": "2r3k1/1p4pp/pn1qp3/5p2/3PpP2/1Q4P1/P2R1K1P/5B2 b - - 6 28",
+   "side_to_move": "black",
+   "ply_index": 55,
+   "move_number": 28,
+   "played_san": "Nc4",
+   "rating": 1525,
+   "group": "clock_ex",
+   "origin": "plies",
+   "ply_id": 852,
+   "best_source": "screen",
+   "best_san": "Rc7",
+   "best_uci": "c8c7",
+   "pv_san": null,
+   "ep_best": 0.9315,
+   "ep_played": 0.16390000000000005,
+   "ep_loss": 0.7676,
+   "cp_loss": 934,
+   "margin_ep": null,
+   "char": {
+    "capture": 0,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 1
+   },
+   "pv_mat_best": 0,
+   "pv_mat_played": null,
+   "clk_seconds": 13.4,
+   "base_time_s": 180.0,
+   "pilot_reject": "excluded:clock",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": true,
+     "why": "ep_best=0.9315"
+    },
+    "suggest_C": {
+     "value": true,
+     "why": "13.4s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": "N/A",
+     "why": "no Stage 2 data"
+    },
+    "suggest_Q": {
+     "value": true,
+     "why": "quiet=True pv_mat=0"
+    }
+   }
+  },
+  "18": {
+   "url": "https://www.chess.com/game/live/173574482590",
+   "fen_before": "rn1qkbnr/pp3ppp/4b3/3Np3/P1p1P3/8/1P3PPP/R1BQKBNR b KQkq - 0 7",
+   "side_to_move": "black",
+   "ply_index": 13,
+   "move_number": 7,
+   "played_san": "Ne7",
+   "rating": 1556,
+   "group": "book_ex",
+   "origin": "plies",
+   "ply_id": 1046,
+   "best_source": "screen",
+   "best_san": "Nf6",
+   "best_uci": "g8f6",
+   "pv_san": null,
+   "ep_best": 0.6635,
+   "ep_played": 0.48619999999999997,
+   "ep_loss": 0.1773,
+   "cp_loss": 160,
+   "margin_ep": null,
+   "char": {
+    "capture": 0,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 1
+   },
+   "pv_mat_best": 0,
+   "pv_mat_played": null,
+   "clk_seconds": 156.4,
+   "base_time_s": 180.0,
+   "pilot_reject": "excluded:book_fallback",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.6635"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "156.4s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": "N/A",
+     "why": "no Stage 2 data"
+    },
+    "suggest_Q": {
+     "value": true,
+     "why": "quiet=True pv_mat=0"
+    }
+   }
+  },
+  "19": {
+   "url": "https://www.chess.com/game/live/173906785604",
+   "fen_before": "2r1kb1r/pQ2np1p/2n1b1p1/2q1N3/8/2N3P1/PP1PPPBP/R1B1K2R b KQk - 2 12",
+   "side_to_move": "black",
+   "ply_index": 23,
+   "move_number": 12,
+   "played_san": "Bg7",
+   "rating": 1524,
+   "group": "near",
+   "origin": "verify",
+   "ply_id": 880,
+   "best_source": "stage2",
+   "best_san": "Qxe5",
+   "best_uci": "c5e5",
+   "pv_san": "Qxe5 d4 Nxd4 Bf4 Qa5 O-O Bg7 e3 Ndc6 Bd6 Bxc3 bxc3 Qb6 Rfb1 Qxb7 Rxb7 Rd8 Bxe7 Nxe7 Rxa7 Nc8",
+   "ep_best": 0.6339206788470997,
+   "ep_played": 0.1224527885508081,
+   "ep_loss": 0.5114678902962916,
+   "cp_loss": 555,
+   "margin_ep": 0.09655363020583196,
+   "char": {
+    "capture": 1,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 0
+   },
+   "pv_mat_best": 420,
+   "pv_mat_played": 0,
+   "clk_seconds": 74.6,
+   "base_time_s": 180.0,
+   "pilot_reject": "margin_lt_0.10",
+   "suggestions": {
+    "suggest_T": {
+     "value": true,
+     "why": "undefended capture gaining 320"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.6339"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "74.6s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.5115"
+    },
+    "suggest_Q": {
+     "value": false,
+     "why": "quiet=False pv_mat=420"
+    }
+   }
+  },
+  "20": {
+   "url": "https://lichess.org/WtARkVtS",
+   "fen_before": "rn2kbnr/pp3ppp/1q2p3/2ppP3/3P2b1/2PB1N2/PP3PPP/RNBQ1RK1 w kq - 0 8",
+   "side_to_move": "white",
+   "ply_index": 14,
+   "move_number": 8,
+   "played_san": "Nbd2",
+   "rating": 1681,
+   "group": "book_ex",
+   "origin": "plies",
+   "ply_id": 196,
+   "best_source": "screen",
+   "best_san": "Qa4+",
+   "best_uci": "d1a4",
+   "pv_san": null,
+   "ep_best": 0.9802,
+   "ep_played": 0.6441999999999999,
+   "ep_loss": 0.336,
+   "cp_loss": 691,
+   "margin_ep": null,
+   "char": {
+    "capture": 0,
+    "check": 1,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 0
+   },
+   "pv_mat_best": 330,
+   "pv_mat_played": null,
+   "clk_seconds": 537.0,
+   "base_time_s": 600.0,
+   "pilot_reject": "excluded:book_fallback",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": true,
+     "why": "ep_best=0.9802"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "537.0s vs 20% of 600s"
+    },
+    "suggest_A": {
+     "value": "N/A",
+     "why": "no Stage 2 data"
+    },
+    "suggest_Q": {
+     "value": false,
+     "why": "quiet=False pv_mat=330"
+    }
+   }
+  },
+  "21": {
+   "url": "https://lichess.org/DAsZjWUo",
+   "fen_before": "r3k2r/4qppp/1pn1p1n1/3pPb2/1P6/2P2N2/P3BPPP/RN1Q1RK1 w kq - 0 13",
+   "side_to_move": "white",
+   "ply_index": 24,
+   "move_number": 13,
+   "played_san": "Nd4",
+   "rating": 1712,
+   "group": "kept",
+   "origin": "verify",
+   "ply_id": 526,
+   "best_source": "stage2",
+   "best_san": "Bb5",
+   "best_uci": "e2b5",
+   "pv_san": "Bb5 Qd7 Nd4 Nge7 a4 O-O Na3 h6 Re1 Rfd8 Qd2 Qc8 Bxc6 Nxc6",
+   "ep_best": 0.7725869690561017,
+   "ep_played": 0.6276296173584427,
+   "ep_loss": 0.144957351697659,
+   "cp_loss": 145,
+   "margin_ep": 0.16550781568116502,
+   "char": {
+    "capture": 0,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 1
+   },
+   "pv_mat_best": 0,
+   "pv_mat_played": 0,
+   "clk_seconds": 533.0,
+   "base_time_s": 600.0,
+   "pilot_reject": "kept",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.7726"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "533.0s vs 20% of 600s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.1450"
+    },
+    "suggest_Q": {
+     "value": true,
+     "why": "quiet=True pv_mat=0"
+    }
+   }
+  },
+  "22": {
+   "url": "https://www.chess.com/game/live/173754832234",
+   "fen_before": "2kr1b1r/pbp2pp1/2n2n1p/1Bq5/4p3/2NP1N2/PPP2PPP/R1BQ1RK1 w - - 0 12",
+   "side_to_move": "white",
+   "ply_index": 22,
+   "move_number": 12,
+   "played_san": "Ne1",
+   "rating": 1548,
+   "group": "kept",
+   "origin": "verify",
+   "ply_id": 1026,
+   "best_source": "stage2",
+   "best_san": "Be3",
+   "best_uci": "c1e3",
+   "pv_san": "Be3 Qh5 Nd2 exd3 Bxd3 g6 Qxh5 Nxh5 Bc4 Nd4 Rad1 Bg7 Bxf7 Nxc2 Nb3",
+   "ep_best": 0.7140467294863506,
+   "ep_played": 0.4748554290770406,
+   "ep_loss": 0.23919130040931003,
+   "cp_loss": 222,
+   "margin_ep": 0.12133204097018613,
+   "char": {
+    "capture": 0,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 1
+   },
+   "pv_mat_best": 0,
+   "pv_mat_played": 0,
+   "clk_seconds": 109.6,
+   "base_time_s": 180.0,
+   "pilot_reject": "kept",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.7140"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "109.6s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.2392"
+    },
+    "suggest_Q": {
+     "value": true,
+     "why": "quiet=True pv_mat=0"
+    }
+   }
+  },
+  "23": {
+   "url": "https://www.chess.com/game/live/173438456408",
+   "fen_before": "Q1bqk1nr/1pp2ppp/2nb4/1p1Pp3/8/2P2N2/PP1P1PPP/RNB1K2R b KQk - 0 7",
+   "side_to_move": "black",
+   "ply_index": 13,
+   "move_number": 7,
+   "played_san": "Nf6",
+   "rating": 1555,
+   "group": "book_ex",
+   "origin": "plies",
+   "ply_id": 1207,
+   "best_source": "screen",
+   "best_san": "Nce7",
+   "best_uci": "c6e7",
+   "pv_san": null,
+   "ep_best": 0.396,
+   "ep_played": 0.11310000000000003,
+   "ep_loss": 0.2829,
+   "cp_loss": 357,
+   "margin_ep": null,
+   "char": {
+    "capture": 0,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 1
+   },
+   "pv_mat_best": -430,
+   "pv_mat_played": null,
+   "clk_seconds": 152.4,
+   "base_time_s": 180.0,
+   "pilot_reject": "excluded:book_fallback",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.3960"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "152.4s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": "N/A",
+     "why": "no Stage 2 data"
+    },
+    "suggest_Q": {
+     "value": true,
+     "why": "quiet=True pv_mat=-430"
+    }
+   }
+  },
+  "24": {
+   "url": "https://www.chess.com/game/live/184551359070",
+   "fen_before": "2rr2k1/1p3ppp/1q6/pP3p2/P1Pp4/N2Q1N2/1B3bPP/3R3K b - - 1 23",
+   "side_to_move": "black",
+   "ply_index": 45,
+   "move_number": 23,
+   "played_san": "g6",
+   "rating": 1532,
+   "group": "clock_ex",
+   "origin": "plies",
+   "ply_id": 720,
+   "best_source": "screen",
+   "best_san": "Qc5",
+   "best_uci": "b6c5",
+   "pv_san": null,
+   "ep_best": 0.6086,
+   "ep_played": 0.3753,
+   "ep_loss": 0.2333,
+   "cp_loss": 209,
+   "margin_ep": null,
+   "char": {
+    "capture": 0,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 1
+   },
+   "pv_mat_best": 0,
+   "pv_mat_played": null,
+   "clk_seconds": 14.6,
+   "base_time_s": 180.0,
+   "pilot_reject": "excluded:clock",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.6086"
+    },
+    "suggest_C": {
+     "value": true,
+     "why": "14.6s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": "N/A",
+     "why": "no Stage 2 data"
+    },
+    "suggest_Q": {
+     "value": true,
+     "why": "quiet=True pv_mat=0"
+    }
+   }
+  },
+  "25": {
+   "url": "https://www.chess.com/game/live/173438456408",
+   "fen_before": "r1bqkbnr/ppp2ppp/2n5/1B1pp3/4P3/2P2N2/PP1P1PPP/RNBQK2R b KQkq - 1 4",
+   "side_to_move": "black",
+   "ply_index": 7,
+   "move_number": 4,
+   "played_san": "Bd6",
+   "rating": 1555,
+   "group": "book_ex",
+   "origin": "plies",
+   "ply_id": 1204,
+   "best_source": "screen",
+   "best_san": "dxe4",
+   "best_uci": "d5e4",
+   "pv_san": null,
+   "ep_best": 0.5729,
+   "ep_played": 0.38079999999999997,
+   "ep_loss": 0.1921,
+   "cp_loss": 170,
+   "margin_ep": null,
+   "char": {
+    "capture": 1,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 0
+   },
+   "pv_mat_best": 0,
+   "pv_mat_played": null,
+   "clk_seconds": 165.3,
+   "base_time_s": 180.0,
+   "pilot_reject": "excluded:book_fallback",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "captured value 100 < 300"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.5729"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "165.3s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": "N/A",
+     "why": "no Stage 2 data"
+    },
+    "suggest_Q": {
+     "value": false,
+     "why": "quiet=False pv_mat=0"
+    }
+   }
+  },
+  "26": {
+   "url": "https://lichess.org/8cbJ5DRG",
+   "fen_before": "r2q1rk1/ppb2ppp/1np1p3/4Pn2/1P1P4/P1N5/4BPPP/R1BQ1RK1 w - - 0 15",
+   "side_to_move": "white",
+   "ply_index": 28,
+   "move_number": 15,
+   "played_san": "g4",
+   "rating": 1711,
+   "group": "kept",
+   "origin": "verify",
+   "ply_id": 385,
+   "best_source": "stage2",
+   "best_san": "Be3",
+   "best_uci": "c1e3",
+   "pv_san": "Be3 f6 exf6 Qxf6 g3 Rad8 Qc2 Nd5 Nxd5 exd5 Bd3 g6 Bxf5 gxf5 Bd2",
+   "ep_best": 0.4806803233787041,
+   "ep_played": 0.16205855537981098,
+   "ep_loss": 0.3186217679988931,
+   "cp_loss": 324,
+   "margin_ep": 0.21274506955557287,
+   "char": {
+    "capture": 0,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 1
+   },
+   "pv_mat_best": 0,
+   "pv_mat_played": -110,
+   "clk_seconds": 512.0,
+   "base_time_s": 600.0,
+   "pilot_reject": "kept",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.4807"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "512.0s vs 20% of 600s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.3186"
+    },
+    "suggest_Q": {
+     "value": true,
+     "why": "quiet=True pv_mat=0"
+    }
+   }
+  },
+  "27": {
+   "url": "https://lichess.org/CotneR1y",
+   "fen_before": "r1bq1rk1/pp2nppp/2np4/8/Q1B5/B1p2N2/P4PPP/3RR1K1 w - - 4 15",
+   "side_to_move": "white",
+   "ply_index": 28,
+   "move_number": 15,
+   "played_san": "Rxd6",
+   "rating": 1724,
+   "group": "reject",
+   "origin": "verify",
+   "ply_id": 542,
+   "best_source": "stage2",
+   "best_san": "Rxd6",
+   "best_uci": "d1d6",
+   "pv_san": "Rxd6 Qc7 Ng5 Qa5 Qxa5 Nxa5 Bxf7+ Rxf7 Rd8+ Rf8 Rxf8+ Kxf8 Bxe7+ Kg8 Bb4 Bf5 Bxa5 h6",
+   "ep_best": 0.7487355725277521,
+   "ep_played": 0.7682830435499688,
+   "ep_loss": 0.0,
+   "cp_loss": 0,
+   "margin_ep": 0.026415027457839524,
+   "char": {
+    "capture": 1,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 0
+   },
+   "pv_mat_best": 100,
+   "pv_mat_played": -230,
+   "clk_seconds": 480.0,
+   "base_time_s": 600.0,
+   "pilot_reject": "margin_lt_0.10",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "captured value 100 < 300"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.7487"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "480.0s vs 20% of 600s"
+    },
+    "suggest_A": {
+     "value": true,
+     "why": "ep_loss=0.0000"
+    },
+    "suggest_Q": {
+     "value": false,
+     "why": "quiet=False pv_mat=100"
+    }
+   }
+  },
+  "28": {
+   "url": "https://www.chess.com/game/live/184575572144",
+   "fen_before": "r3r3/p2q2pk/1pp1p2p/2p1N3/P3P2Q/3P3P/1PP3P1/R4RK1 b - - 1 22",
+   "side_to_move": "black",
+   "ply_index": 43,
+   "move_number": 22,
+   "played_san": "Qc7",
+   "rating": 1523,
+   "group": "kept",
+   "origin": "verify",
+   "ply_id": 691,
+   "best_source": "stage2",
+   "best_san": "Qd4+",
+   "best_uci": "d7d4",
+   "pv_san": "Qd4+ Rf2 Qxe5 Raf1 Qxb2 Rf7 Qxc2 Qh5 Rg8 R1f6 Qc1+ Kh2 Qg5 Qxg5 hxg5 Rc7",
+   "ep_best": 0.48299571642276107,
+   "ep_played": 0.028243127179969983,
+   "ep_loss": 0.4547525892427911,
+   "cp_loss": 765,
+   "margin_ep": 0.44640268928362153,
+   "char": {
+    "capture": 0,
+    "check": 1,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 0
+   },
+   "pv_mat_best": 420,
+   "pv_mat_played": 0,
+   "clk_seconds": 103.3,
+   "base_time_s": 180.0,
+   "pilot_reject": "kept",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.4830"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "103.3s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.4548"
+    },
+    "suggest_Q": {
+     "value": false,
+     "why": "quiet=False pv_mat=420"
+    }
+   }
+  },
+  "29": {
+   "url": "https://www.chess.com/game/live/174130588758",
+   "fen_before": "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
+   "side_to_move": "black",
+   "ply_index": 3,
+   "move_number": 2,
+   "played_san": "Qh4",
+   "rating": 1516,
+   "group": "book_ex",
+   "origin": "plies",
+   "ply_id": 810,
+   "best_source": "screen",
+   "best_san": "Nc6",
+   "best_uci": "b8c6",
+   "pv_san": null,
+   "ep_best": 0.465,
+   "ep_played": 0.017800000000000038,
+   "ep_loss": 0.4472,
+   "cp_loss": 855,
+   "margin_ep": null,
+   "char": {
+    "capture": 0,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 1
+   },
+   "pv_mat_best": 0,
+   "pv_mat_played": null,
+   "clk_seconds": 181.7,
+   "base_time_s": 180.0,
+   "pilot_reject": "excluded:book_fallback",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.4650"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "181.7s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": "N/A",
+     "why": "no Stage 2 data"
+    },
+    "suggest_Q": {
+     "value": true,
+     "why": "quiet=True pv_mat=0"
+    }
+   }
+  },
+  "30": {
+   "url": "https://www.chess.com/game/live/173754832234",
+   "fen_before": "2krr3/pbp2pp1/2nb3p/1N3q2/8/P2NB3/1PP1QPPP/R4RK1 w - - 6 20",
+   "side_to_move": "white",
+   "ply_index": 38,
+   "move_number": 20,
+   "played_san": "Nxd6+",
+   "rating": 1548,
+   "group": "near",
+   "origin": "verify",
+   "ply_id": 1034,
+   "best_source": "stage2",
+   "best_san": "Ne1",
+   "best_uci": "d3e1",
+   "pv_san": "Ne1 Bf4 h3 h5 Qc4 Re4 Qc5 Re5 Qc4 Rxb5 Qxf4 Qxf4 Bxf4 Nd4 Kh2 Rxb2 Be3 Ba6 Rh1 Rd5 Nf3 Nxf3+ gxf3",
+   "ep_best": 0.37676171351663496,
+   "ep_played": 0.09290676300732323,
+   "ep_loss": 0.28385495050931175,
+   "cp_loss": 388,
+   "margin_ep": 0.06000149721736309,
+   "char": {
+    "capture": 0,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 1
+   },
+   "pv_mat_best": 0,
+   "pv_mat_played": 10,
+   "clk_seconds": 21.8,
+   "base_time_s": 180.0,
+   "pilot_reject": "margin_lt_0.10",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.3768"
+    },
+    "suggest_C": {
+     "value": true,
+     "why": "21.8s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.2839"
+    },
+    "suggest_Q": {
+     "value": true,
+     "why": "quiet=True pv_mat=0"
+    }
+   }
+  },
+  "31": {
+   "url": "https://www.chess.com/game/live/184551359070",
+   "fen_before": "3q2k1/5p1p/6p1/pP1N1p2/P1P5/2Q4P/6PK/4r3 b - - 3 34",
+   "side_to_move": "black",
+   "ply_index": 67,
+   "move_number": 34,
+   "played_san": "Re8",
+   "rating": 1532,
+   "group": "clock_ex",
+   "origin": "plies",
+   "ply_id": 731,
+   "best_source": "screen",
+   "best_san": "Qd6+",
+   "best_uci": "d8d6",
+   "pv_san": null,
+   "ep_best": 0.9131,
+   "ep_played": 0.07500000000000007,
+   "ep_loss": 0.8381,
+   "cp_loss": 1069,
+   "margin_ep": null,
+   "char": {
+    "capture": 0,
+    "check": 1,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 0
+   },
+   "pv_mat_best": 0,
+   "pv_mat_played": null,
+   "clk_seconds": 7.7,
+   "base_time_s": 180.0,
+   "pilot_reject": "excluded:clock",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": true,
+     "why": "ep_best=0.9131"
+    },
+    "suggest_C": {
+     "value": true,
+     "why": "7.7s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": "N/A",
+     "why": "no Stage 2 data"
+    },
+    "suggest_Q": {
+     "value": false,
+     "why": "quiet=False pv_mat=0"
+    }
+   }
+  },
+  "32": {
+   "url": "https://www.chess.com/game/live/173438456408",
+   "fen_before": "Q7/2p2kpp/1pP2n1r/1p5q/4N3/2P3Bb/PP3PP1/R3R1K1 b - - 0 21",
+   "side_to_move": "black",
+   "ply_index": 41,
+   "move_number": 21,
+   "played_san": "Bf5",
+   "rating": 1555,
+   "group": "kept",
+   "origin": "verify",
+   "ply_id": 1221,
+   "best_source": "stage2",
+   "best_san": "Bxg2",
+   "best_uci": "h3g2",
+   "pv_san": "Bxg2 Nd6+ cxd6 Qb7+ Kg6 Kxg2 Qd5+ f3 Qd2+ Kg1 Rh3 Bf2 Rxf3 Qxb6 Qg5+ Kf1 Ng4 c7 Nxf2 Qxd6+ Kh5",
+   "ep_best": 0.25652729147585024,
+   "ep_played": 0.036605530253994656,
+   "ep_loss": 0.21992176122185558,
+   "cp_loss": 481,
+   "margin_ep": 0.18255615090505664,
+   "char": {
+    "capture": 1,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 0
+   },
+   "pv_mat_best": 90,
+   "pv_mat_played": 220,
+   "clk_seconds": 89.1,
+   "base_time_s": 180.0,
+   "pilot_reject": "kept",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "captured value 100 < 300"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.2565"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "89.1s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.2199"
+    },
+    "suggest_Q": {
+     "value": false,
+     "why": "quiet=False pv_mat=90"
+    }
+   }
+  },
+  "33": {
+   "url": "https://lichess.org/nuFq8tmk",
+   "fen_before": "2kr3r/p1pb1pq1/2pb2p1/6Q1/3P4/2P3N1/PP3PPP/R1B2RK1 w - - 4 19",
+   "side_to_move": "white",
+   "ply_index": 36,
+   "move_number": 19,
+   "played_san": "Bf4",
+   "rating": 1369,
+   "group": "near",
+   "origin": "verify",
+   "ply_id": 267,
+   "best_source": "stage2",
+   "best_san": "h3",
+   "best_uci": "h2h3",
+   "pv_san": "h3 f6",
+   "ep_best": 0.587122209712692,
+   "ep_played": 0.20686610997266203,
+   "ep_loss": 0.38025609974003,
+   "cp_loss": 395,
+   "margin_ep": 0.08712220971269202,
+   "char": {
+    "capture": 0,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 1
+   },
+   "pv_mat_best": 0,
+   "pv_mat_played": -330,
+   "clk_seconds": 51.0,
+   "base_time_s": 180.0,
+   "pilot_reject": "margin_lt_0.10",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.5871"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "51.0s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.3803"
+    },
+    "suggest_Q": {
+     "value": true,
+     "why": "quiet=True pv_mat=0"
+    }
+   }
+  },
+  "34": {
+   "url": "https://lichess.org/rslweHTa",
+   "fen_before": "r4rk1/4ppbp/p2pb1p1/1p1n4/4P3/4BP2/PPPRB1PP/1K5R w - - 0 16",
+   "side_to_move": "white",
+   "ply_index": 30,
+   "move_number": 16,
+   "played_san": "Rxd5",
+   "rating": 1310,
+   "group": "kept",
+   "origin": "verify",
+   "ply_id": 16,
+   "best_source": "stage2",
+   "best_san": "exd5",
+   "best_uci": "e4d5",
+   "pv_san": "exd5 Bd7 h4 h5 g4 hxg4 fxg4 Rae8 h5 e6 Bf3 exd5 Bf4 Be5 Bh6 Re6",
+   "ep_best": 0.5,
+   "ep_played": 0.24571457426700669,
+   "ep_loss": 0.2542854257329933,
+   "cp_loss": 267,
+   "margin_ep": 0.270266390747428,
+   "char": {
+    "capture": 1,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 0
+   },
+   "pv_mat_best": 220,
+   "pv_mat_played": 150,
+   "clk_seconds": 124.0,
+   "base_time_s": 180.0,
+   "pilot_reject": "kept",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "captured piece defended"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.5000"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "124.0s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.2543"
+    },
+    "suggest_Q": {
+     "value": false,
+     "why": "quiet=False pv_mat=220"
+    }
+   }
+  },
+  "35": {
+   "url": "https://www.chess.com/game/live/173754832234",
+   "fen_before": "2kr3r/pbp2pp1/2nb3p/5q2/8/P1NNB3/1PP1QPPP/R4RK1 w - - 4 19",
+   "side_to_move": "white",
+   "ply_index": 36,
+   "move_number": 19,
+   "played_san": "Nb5",
+   "rating": 1548,
+   "group": "near",
+   "origin": "verify",
+   "ply_id": 1033,
+   "best_source": "stage2",
+   "best_san": "f3",
+   "best_uci": "f2f3",
+   "pv_san": "f3 Ne5 Bxa7 Nxd3 cxd3 Rhe8",
+   "ep_best": 0.5827368902869263,
+   "ep_played": 0.0505480958013754,
+   "ep_loss": 0.5321887944855509,
+   "cp_loss": 714,
+   "margin_ep": 0.08273689028692632,
+   "char": {
+    "capture": 0,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 1
+   },
+   "pv_mat_best": 100,
+   "pv_mat_played": -1220,
+   "clk_seconds": 22.8,
+   "base_time_s": 180.0,
+   "pilot_reject": "margin_lt_0.10",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.5827"
+    },
+    "suggest_C": {
+     "value": true,
+     "why": "22.8s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.5322"
+    },
+    "suggest_Q": {
+     "value": false,
+     "why": "quiet=True pv_mat=100"
+    }
+   }
+  },
+  "36": {
+   "url": "https://lichess.org/8cbJ5DRG",
+   "fen_before": "r2qr1k1/ppb2ppp/1n2p3/1pB5/1P3PP1/P2B4/7P/R2Q1RK1 w - - 2 21",
+   "side_to_move": "white",
+   "ply_index": 40,
+   "move_number": 21,
+   "played_san": "Qc2",
+   "rating": 1711,
+   "group": "kept",
+   "origin": "verify",
+   "ply_id": 391,
+   "best_source": "stage2",
+   "best_san": "Bxb5",
+   "best_uci": "d3b5",
+   "pv_san": "Bxb5 Qxd1 Raxd1 Red8 Rxd8+ Rxd8 f5 exf5 Rxf5 g6 Rf1 a6 Be2 Rd2 Rf2 Rd7 Bf3",
+   "ep_best": 0.46863114113380056,
+   "ep_played": 0.2660438286899976,
+   "ep_loss": 0.20258731244380296,
+   "cp_loss": 184,
+   "margin_ep": 0.17634683582959088,
+   "char": {
+    "capture": 1,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 0
+   },
+   "pv_mat_best": 100,
+   "pv_mat_played": 100,
+   "clk_seconds": 406.0,
+   "base_time_s": 600.0,
+   "pilot_reject": "kept",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "captured value 100 < 300"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.4686"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "406.0s vs 20% of 600s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.2026"
+    },
+    "suggest_Q": {
+     "value": false,
+     "why": "quiet=False pv_mat=100"
+    }
+   }
+  },
+  "37": {
+   "url": "https://lichess.org/QUVZz0Xr",
+   "fen_before": "r1b2rk1/p1p1q1bp/4ppp1/2pp4/3P4/4PNQP/PPPN1PP1/R4RK1 b - - 1 14",
+   "side_to_move": "black",
+   "ply_index": 27,
+   "move_number": 14,
+   "played_san": "Bb7",
+   "rating": 1249,
+   "group": "near",
+   "origin": "verify",
+   "ply_id": 349,
+   "best_source": "stage2",
+   "best_san": "cxd4",
+   "best_uci": "c5d4",
+   "pv_san": "cxd4 Nxd4 e5 N4b3 a5 a4 Be6 f4 c5 fxe5 fxe5 Rxf8+ Rxf8 Rf1 c4 Nxa5 Qc5 Rxf8+ Kxf8 Nb7",
+   "ep_best": 0.6979075820934334,
+   "ep_played": 0.5389155463575773,
+   "ep_loss": 0.15899203573585607,
+   "cp_loss": 166,
+   "margin_ep": 0.08010138947061263,
+   "char": {
+    "capture": 1,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 0
+   },
+   "pv_mat_best": 0,
+   "pv_mat_played": 0,
+   "clk_seconds": 110.0,
+   "base_time_s": 180.0,
+   "pilot_reject": "margin_lt_0.10",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "captured value 100 < 300"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.6979"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "110.0s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.1590"
+    },
+    "suggest_Q": {
+     "value": false,
+     "why": "quiet=False pv_mat=0"
+    }
+   }
+  },
+  "38": {
+   "url": "https://www.chess.com/game/live/184551359070",
+   "fen_before": "6k1/5p1p/1q4p1/pP1N1p2/P1P5/5Q1P/6PK/4r3 b - - 1 33",
+   "side_to_move": "black",
+   "ply_index": 65,
+   "move_number": 33,
+   "played_san": "Qd8",
+   "rating": 1532,
+   "group": "clock_ex",
+   "origin": "plies",
+   "ply_id": 730,
+   "best_source": "screen",
+   "best_san": "Qd4",
+   "best_uci": "b6d4",
+   "pv_san": null,
+   "ep_best": 0.8712,
+   "ep_played": 0.5057,
+   "ep_loss": 0.3655,
+   "cp_loss": 415,
+   "margin_ep": null,
+   "char": {
+    "capture": 0,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 1
+   },
+   "pv_mat_best": 0,
+   "pv_mat_played": null,
+   "clk_seconds": 7.3,
+   "base_time_s": 180.0,
+   "pilot_reject": "excluded:clock",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": true,
+     "why": "ep_best=0.8712"
+    },
+    "suggest_C": {
+     "value": true,
+     "why": "7.3s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": "N/A",
+     "why": "no Stage 2 data"
+    },
+    "suggest_Q": {
+     "value": true,
+     "why": "quiet=True pv_mat=0"
+    }
+   }
+  },
+  "39": {
+   "url": "https://www.chess.com/game/live/173906785604",
+   "fen_before": "2r2rk1/pQ3pbp/2n1b1p1/2q5/4N3/6P1/PP1PPPBP/R1B2RK1 b - - 3 15",
+   "side_to_move": "black",
+   "ply_index": 29,
+   "move_number": 15,
+   "played_san": "Qc4",
+   "rating": 1524,
+   "group": "kept",
+   "origin": "verify",
+   "ply_id": 883,
+   "best_source": "stage2",
+   "best_san": "Qa5",
+   "best_uci": "c5a5",
+   "pv_san": "Qa5 Nc3 Nd4 e3 Rb8 Qe4 Bf5 Qd5 Qxd5 Nxd5 Nc2",
+   "ep_best": 0.3280600291722143,
+   "ep_played": 0.0945053946965769,
+   "ep_loss": 0.23355463447563737,
+   "cp_loss": 340,
+   "margin_ep": 0.11505170069143963,
+   "char": {
+    "capture": 0,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 1
+   },
+   "pv_mat_best": 0,
+   "pv_mat_played": -80,
+   "clk_seconds": 48.9,
+   "base_time_s": 180.0,
+   "pilot_reject": "kept",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.3281"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "48.9s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.2336"
+    },
+    "suggest_Q": {
+     "value": true,
+     "why": "quiet=True pv_mat=0"
+    }
+   }
+  },
+  "40": {
+   "url": "https://lichess.org/CotneR1y",
+   "fen_before": "r4rk1/pp2nppp/2nR4/q7/2B3b1/BQp2N2/P4PPP/4R1K1 w - - 3 17",
+   "side_to_move": "white",
+   "ply_index": 32,
+   "move_number": 17,
+   "played_san": "Ng5",
+   "rating": 1724,
+   "group": "kept",
+   "origin": "verify",
+   "ply_id": 544,
+   "best_source": "stage2",
+   "best_san": "Nd4",
+   "best_uci": "f3d4",
+   "pv_san": "Nd4 Bf5 Re3 c2 Nxc2 Bxc2 Qxc2 Nf5 Rh3 h6 Rxc6 bxc6 Bxf8 Rxf8 Bf1 Nd4 Qc4 Rd8 Rd3 c5 Re3 Nf5 Rd3 Rxd3 Qxd3",
+   "ep_best": 0.4444233954859261,
+   "ep_played": 0.07323582659423113,
+   "ep_loss": 0.37118756889169496,
+   "cp_loss": 477,
+   "margin_ep": 0.11126853146022908,
+   "char": {
+    "capture": 0,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 1
+   },
+   "pv_mat_best": -220,
+   "pv_mat_played": -220,
+   "clk_seconds": 443.0,
+   "base_time_s": 600.0,
+   "pilot_reject": "kept",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.4444"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "443.0s vs 20% of 600s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.3712"
+    },
+    "suggest_Q": {
+     "value": true,
+     "why": "quiet=True pv_mat=-220"
+    }
+   }
+  },
+  "41": {
+   "url": "https://lichess.org/8ZwF2nvP",
+   "fen_before": "r1bq1b1r/ppp3pp/3k4/3Bp3/8/P1N2Q2/1P1P1PPP/n1BK3R w - - 1 12",
+   "side_to_move": "white",
+   "ply_index": 22,
+   "move_number": 12,
+   "played_san": "Qf7",
+   "rating": 1289,
+   "group": "kept",
+   "origin": "verify",
+   "ply_id": 334,
+   "best_source": "stage2",
+   "best_san": "Nb5+",
+   "best_uci": "c3b5",
+   "pv_san": "Nb5+ Kc5 Bxb7 Bxb7 Qxb7 Qd5",
+   "ep_best": 0.5125004195939157,
+   "ep_played": 0.1144238995407035,
+   "ep_loss": 0.39807652005321215,
+   "cp_loss": 503,
+   "margin_ep": 0.26124555844243963,
+   "char": {
+    "capture": 0,
+    "check": 1,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 0
+   },
+   "pv_mat_best": 100,
+   "pv_mat_played": 0,
+   "clk_seconds": 134.0,
+   "base_time_s": 180.0,
+   "pilot_reject": "kept",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.5125"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "134.0s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.3981"
+    },
+    "suggest_Q": {
+     "value": false,
+     "why": "quiet=False pv_mat=100"
+    }
+   }
+  },
+  "42": {
+   "url": "https://www.chess.com/game/live/174103519292",
+   "fen_before": "r3k2r/pp1n1ppp/4p3/3p4/Q2P4/3K4/Pq2PPPP/3R1B1R b kq - 1 14",
+   "side_to_move": "black",
+   "ply_index": 27,
+   "move_number": 14,
+   "played_san": "a6",
+   "rating": 1525,
+   "group": "kept",
+   "origin": "verify",
+   "ply_id": 838,
+   "best_source": "stage2",
+   "best_san": "e5",
+   "best_uci": "e6e5",
+   "pv_san": "e5 f3 Rc8 Ke3 Rc4 Qxa7 exd4+ Kf4 O-O e4 d3 Bxd3 Rc6 exd5 Qe5+ Kg4 Nf6+ Kh3 Nxd5",
+   "ep_best": 0.9039974034846855,
+   "ep_played": 0.7107020688289399,
+   "ep_loss": 0.19329533465574555,
+   "cp_loss": 296,
+   "margin_ep": 0.12152996703375707,
+   "char": {
+    "capture": 0,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 1
+   },
+   "pv_mat_best": -100,
+   "pv_mat_played": 0,
+   "clk_seconds": 88.6,
+   "base_time_s": 180.0,
+   "pilot_reject": "kept",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": true,
+     "why": "ep_best=0.9040"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "88.6s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.1933"
+    },
+    "suggest_Q": {
+     "value": true,
+     "why": "quiet=True pv_mat=-100"
+    }
+   }
+  },
+  "43": {
+   "url": "https://lichess.org/xKJgVItt",
+   "fen_before": "r7/pppq2k1/3p1p2/3Np1pR/2PbP3/P4PP1/1PPQ2P1/2K5 b - - 2 20",
+   "side_to_move": "black",
+   "ply_index": 39,
+   "move_number": 20,
+   "played_san": "Rh8",
+   "rating": 1283,
+   "group": "kept",
+   "origin": "verify",
+   "ply_id": 428,
+   "best_source": "stage2",
+   "best_san": "Qf7",
+   "best_uci": "d7f7",
+   "pv_san": "Qf7 g4",
+   "ep_best": 0.2928579885029355,
+   "ep_played": 0.11574335856058032,
+   "ep_loss": 0.17711462994235516,
+   "cp_loss": 277,
+   "margin_ep": 0.13129672444791032,
+   "char": {
+    "capture": 0,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 1
+   },
+   "pv_mat_best": 0,
+   "pv_mat_played": -100,
+   "clk_seconds": 129.0,
+   "base_time_s": 180.0,
+   "pilot_reject": "kept",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.2929"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "129.0s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.1771"
+    },
+    "suggest_Q": {
+     "value": true,
+     "why": "quiet=True pv_mat=0"
+    }
+   }
+  },
+  "44": {
+   "url": "https://www.chess.com/game/live/184551359070",
+   "fen_before": "2r2rk1/1p1n1ppp/1q2p3/pP3b2/P1Pp4/1Q2bN2/1B1NB1PP/3R1R1K b - - 1 17",
+   "side_to_move": "black",
+   "ply_index": 33,
+   "move_number": 17,
+   "played_san": "Nf6",
+   "rating": 1532,
+   "group": "kept",
+   "origin": "verify",
+   "ply_id": 714,
+   "best_source": "stage2",
+   "best_san": "Nc5",
+   "best_uci": "d7c5",
+   "pv_san": "Nc5 Qa3 d3 g4 dxe2 Qxe3 exf1=Q+ Rxf1 Bd3 Rc1 Qd6 Bd4",
+   "ep_best": 0.892878460869403,
+   "ep_played": 0.13617111570860463,
+   "ep_loss": 0.7567073451607984,
+   "cp_loss": 872,
+   "margin_ep": 0.4883867345084208,
+   "char": {
+    "capture": 0,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 1
+   },
+   "pv_mat_best": 0,
+   "pv_mat_played": 0,
+   "clk_seconds": 44.1,
+   "base_time_s": 180.0,
+   "pilot_reject": "kept",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": true,
+     "why": "ep_best=0.8929"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "44.1s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.7567"
+    },
+    "suggest_Q": {
+     "value": true,
+     "why": "quiet=True pv_mat=0"
+    }
+   }
+  },
+  "45": {
+   "url": "https://www.chess.com/game/live/173755557612",
+   "fen_before": "2rq1rk1/4bppp/p1npbn2/1p1Np3/4P3/2P1NP2/PP2B1PP/R1BQ1RK1 w - - 5 15",
+   "side_to_move": "white",
+   "ply_index": 28,
+   "move_number": 15,
+   "played_san": "c4",
+   "rating": 1532,
+   "group": "near",
+   "origin": "verify",
+   "ply_id": 908,
+   "best_source": "stage2",
+   "best_san": "a4",
+   "best_uci": "a2a4",
+   "pv_san": "a4 Bxd5 exd5 Na5 Kh1 Nc4 Nc2 Qd7 Nb4 Bd8 b3 Na5 axb5 axb5 Nc6 Nxc6 Bxb5 Nxd5 Qxd5 Qc7 Be3",
+   "ep_best": 0.6540876625306947,
+   "ep_played": 0.47612856222218375,
+   "ep_loss": 0.17795910030851098,
+   "cp_loss": 161,
+   "margin_ep": 0.05857938889167691,
+   "char": {
+    "capture": 0,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 1
+   },
+   "pv_mat_best": 10,
+   "pv_mat_played": 10,
+   "clk_seconds": 142.0,
+   "base_time_s": 180.0,
+   "pilot_reject": "margin_lt_0.10",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.6541"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "142.0s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.1780"
+    },
+    "suggest_Q": {
+     "value": true,
+     "why": "quiet=True pv_mat=10"
+    }
+   }
+  },
+  "46": {
+   "url": "https://lichess.org/3ecTOztQ",
+   "fen_before": "1r3rk1/2pbqpbp/p5p1/2Pp4/2nPn2P/P1N1P1P1/2B3KN/1RB1QR2 b - - 5 22",
+   "side_to_move": "black",
+   "ply_index": 43,
+   "move_number": 22,
+   "played_san": "Nxc3",
+   "rating": 1634,
+   "group": "kept",
+   "origin": "verify",
+   "ply_id": 125,
+   "best_source": "stage2",
+   "best_san": "Nxc3",
+   "best_uci": "e4c3",
+   "pv_san": "Nxc3 Qxc3 Rxb1 Bxb1 Rb8 Ba2 Qe4+ Kg1 Bh3 Rf2 h5 Bxc4 dxc4 Qxc4",
+   "ep_best": 0.8065033965593783,
+   "ep_played": 0.8675776922784633,
+   "ep_loss": 0.0,
+   "cp_loss": 0,
+   "margin_ep": 0.10834009379930631,
+   "char": {
+    "capture": 1,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 0
+   },
+   "pv_mat_best": 0,
+   "pv_mat_played": -400,
+   "clk_seconds": 498.0,
+   "base_time_s": 600.0,
+   "pilot_reject": "kept",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "captured piece defended"
+    },
+    "suggest_X": {
+     "value": false,
+     "why": "ep_best=0.8065"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "498.0s vs 20% of 600s"
+    },
+    "suggest_A": {
+     "value": true,
+     "why": "ep_loss=0.0000"
+    },
+    "suggest_Q": {
+     "value": false,
+     "why": "quiet=False pv_mat=0"
+    }
+   }
+  },
+  "47": {
+   "url": "https://www.chess.com/game/live/173906785604",
+   "fen_before": "1r2kb1r/p1Q1nppp/2n1b3/3qp3/8/5NP1/PP1PPPBP/RNB1K2R b KQk - 0 9",
+   "side_to_move": "black",
+   "ply_index": 17,
+   "move_number": 9,
+   "played_san": "g6",
+   "rating": 1524,
+   "group": "kept",
+   "origin": "verify",
+   "ply_id": 877,
+   "best_source": "stage2",
+   "best_san": "Rc8",
+   "best_uci": "b8c8",
+   "pv_san": "Rc8 Nc3 Rxc7 Nxd5 Bxd5 O-O Bxf3 Bxf3 Nd4 d3 Nxf3+ exf3 f6 Be3 Rd7 Rac1 Kf7 Rfd1 Nd5 Rc8 Rg8 Rdc1 Be7",
+   "ep_best": 0.9147661185442688,
+   "ep_played": 0.1621002353657959,
+   "ep_loss": 0.7526658831784729,
+   "cp_loss": 885,
+   "margin_ep": 0.37852737317324225,
+   "char": {
+    "capture": 0,
+    "check": 0,
+    "mate": 0,
+    "promotion": 0,
+    "quiet": 1
+   },
+   "pv_mat_best": 320,
+   "pv_mat_played": 0,
+   "clk_seconds": 103.2,
+   "base_time_s": 180.0,
+   "pilot_reject": "kept",
+   "suggestions": {
+    "suggest_T": {
+     "value": false,
+     "why": "best is not a capture"
+    },
+    "suggest_X": {
+     "value": true,
+     "why": "ep_best=0.9148"
+    },
+    "suggest_C": {
+     "value": false,
+     "why": "103.2s vs 20% of 180s"
+    },
+    "suggest_A": {
+     "value": false,
+     "why": "ep_loss=0.7527"
+    },
+    "suggest_Q": {
+     "value": false,
+     "why": "quiet=True pv_mat=320"
+    }
+   }
+  }
+ }
+}

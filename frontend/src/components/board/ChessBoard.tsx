@@ -31,10 +31,9 @@ interface ChessBoardProps {
   /** Fires when "Solution" actually plays a solution move. Counted the
    *  same as a hint -- a solution-assisted pass is not clean. */
   onSolutionRevealed?: () => void;
-  /** Fires with the attempted move in UCI for every LEGAL board attempt
-   *  (correct or wrong), so a page can grade server-side. Illegal drops
-   *  never fire. Additive: existing callbacks are untouched. */
-  onMoveAttempted?: (uci: string) => void;
+  /** Fires with the attempted move in UCI and whether it matches the current
+   *  solution move. Illegal drops never fire. */
+  onMoveAttempted?: (uci: string, isCorrect: boolean) => void;
   apiRef?: React.MutableRefObject<BoardApi | null>;
 }
 
@@ -348,7 +347,7 @@ export default function ChessBoardComponent({
         return false;
       }
       setGame(wrongGame);
-      onMoveAttempted?.(sourceSquare + targetSquare + (promotionChoice ?? ''));
+      onMoveAttempted?.(sourceSquare + targetSquare + (promotionChoice ?? ''), false);
 
       // Red highlight on destination square only
       setHighlightSquares({
@@ -386,7 +385,7 @@ export default function ChessBoardComponent({
     }
 
     const opponentReplyIndex = currentMoveIndexRef.current + 1;
-    onMoveAttempted?.(sourceSquare + targetSquare + (promotionChoice ?? ''));
+    onMoveAttempted?.(sourceSquare + targetSquare + (promotionChoice ?? ''), true);
     setBoardState(nextGame, opponentReplyIndex);
     clearWrongFlashTimeout();
 

@@ -39,6 +39,7 @@ type QueueEntry = {
     fen_before: string;
     best_move_uci: string;
     best_move_san: string;
+    solution_moves_uci: string[];
     played_move_san: string;
     game_url: string;
     move_number: number;
@@ -261,6 +262,7 @@ export default function MyPuzzlesPage() {
 
   const boardApi = useRef<BoardApi | null>(null);
   const scoredRef = useRef(false);
+  const attemptedMovesRef = useRef<string[]>([]);
   const hintsUsedRef = useRef(0);
   const startTimeRef = useRef(Date.now());
   const advanceTimerRef = useRef<number | null>(null);
@@ -276,6 +278,7 @@ export default function MyPuzzlesPage() {
       setFeedback('idle');
       setVerdict(null);
       scoredRef.current = false;
+      attemptedMovesRef.current = [];
       hintsUsedRef.current = 0;
       startTimeRef.current = Date.now();
       if (entries.length === 0) setDialogOpen(true);
@@ -306,6 +309,7 @@ export default function MyPuzzlesPage() {
     setFeedback('idle');
     setVerdict(null);
     scoredRef.current = false;
+    attemptedMovesRef.current = [];
     hintsUsedRef.current = 0;
     startTimeRef.current = Date.now();
     if (index + 1 >= queue.length) {
@@ -318,11 +322,10 @@ export default function MyPuzzlesPage() {
     boardApi.current?.resetPuzzle();
   }, [index, queue]);
 
-  // Server-graded attempt: the board reports the attempted UCI, the backend
-  // decides solved/wrong. Only the FIRST attempt per card is graded (the
-  // once-per-card guard); retries are free practice.
-  const handleMoveAttempted = useCallback(
-    async (uci: string) => {
+  // A card is graded once, after the whole line is solved or a move is missed.
+  // Later retries are free practice, just as they were for single-move cards.
+  const scoreAttempt = useCallback(
+    async (moves: string[]) => {
       if (!current || scoredRef.current || busy) return;
       scoredRef.current = true;
       setBusy(true);
@@ -332,7 +335,7 @@ export default function MyPuzzlesPage() {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             entry_id: current.id,
-            move_uci: uci,
+            moves_uci: moves,
             time_taken_ms: Date.now() - startTimeRef.current,
             hints_used: hintsUsedRef.current,
           }),
@@ -343,9 +346,9 @@ export default function MyPuzzlesPage() {
           advanceTimerRef.current = window.setTimeout(advance, 1500);
         } else {
           setFeedback('mistake');
-          setVerdict(
-            `Not quite — the move was ${res.best_move_san}. Try again, or skip.`
-          );
+          setVerdict(res.expected_move_san
+            ? `Not quite — the line continues with ${res.expected_move_san}. Try again, or skip.`
+            : 'Solution revealed — this review counts as a miss.');
         }
       } catch (e) {
         scoredRef.current = false;
@@ -356,6 +359,17 @@ export default function MyPuzzlesPage() {
     },
     [advance, busy, current]
   );
+
+  const handleMoveAttempted = useCallback((uci: string, isCorrect: boolean) => {
+    if (scoredRef.current) return;
+    const moves = [...attemptedMovesRef.current, uci];
+    attemptedMovesRef.current = moves;
+    if (!isCorrect) void scoreAttempt(moves);
+  }, [scoreAttempt]);
+
+  const handlePuzzleEnd = useCallback(() => {
+    void scoreAttempt(attemptedMovesRef.current);
+  }, [scoreAttempt]);
 
   const handleSkip = useCallback(() => {
     scoredRef.current = true;
@@ -384,7 +398,9 @@ export default function MyPuzzlesPage() {
     ? {
         id: current.puzzle.id,
         fen: current.puzzle.fen_before,
-        moves: [current.puzzle.best_move_uci],
+        moves: current.puzzle.solution_moves_uci.length
+          ? current.puzzle.solution_moves_uci
+          : [current.puzzle.best_move_uci],
         rating: 1500,
         themes: ['myGame'],
         gameUrl: current.puzzle.game_url,
@@ -455,7 +471,7 @@ export default function MyPuzzlesPage() {
                   </span>
                 </div>
                 <p className="mt-2 text-[11px] leading-4 text-white/40">
-                  Mined from your own games — find the move you missed.
+                  Mined from your own games — find the move or combination you missed.
                 </p>
               </div>
             </div>
@@ -490,7 +506,14 @@ export default function MyPuzzlesPage() {
                   )}
                   {feedback === 'correct' && (
                     <p className="mt-1 text-emerald-300">
-                      Correct — the move you missed.
+                      {hintsUsedRef.current > 0
+                        ? 'Line complete — a hint counted against this review.'
+                        : 'Line complete — you found the move you missed.'}
+                    </p>
+                  )}
+                  {current.puzzle.solution_moves_uci.length > 2 && feedback === 'idle' && (
+                    <p className="mt-1 text-white/60">
+                      Find the full combination. Opponent replies play automatically.
                     </p>
                   )}
                 </div>
@@ -541,11 +564,13 @@ export default function MyPuzzlesPage() {
                     onPuzzleSolved={() => undefined}
                     onPuzzleFailed={() => undefined}
                     onMoveAttempted={handleMoveAttempted}
+                    onPuzzleEnd={handlePuzzleEnd}
                     onHintRevealed={() => {
                       hintsUsedRef.current += 1;
                     }}
                     onSolutionRevealed={() => {
                       hintsUsedRef.current += 1;
+                      void scoreAttempt(attemptedMovesRef.current);
                     }}
                     apiRef={boardApi}
                   />

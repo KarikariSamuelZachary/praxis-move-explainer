@@ -34,6 +34,7 @@ class UserPuzzleQueuePuzzle(BaseModel):
     fen_before: str
     best_move_uci: str
     best_move_san: str
+    solution_moves_uci: List[str] = Field(default_factory=list)
     played_move_san: str
     game_url: str
     move_number: int
@@ -57,7 +58,7 @@ class UserPuzzleCountResponse(BaseModel):
 
 class UserPuzzleAttemptRequest(BaseModel):
     entry_id: UUID
-    move_uci: str
+    moves_uci: List[str] = Field(default_factory=list)
     time_taken_ms: int = 0
     hints_used: int = 0
 
@@ -67,6 +68,7 @@ class UserPuzzleAttemptResponse(BaseModel):
     solved: bool
     best_move_uci: str
     best_move_san: str
+    expected_move_san: Optional[str] = None
     scheduling: Optional[dict] = None
 
 

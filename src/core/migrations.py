@@ -804,8 +804,8 @@ def run_migrations():
             # and `woodpecker_entries` (same rationale as the endgame queue
             # block below): puzzle routes key off `puzzle_id` with Lichess
             # shape/scale assumptions and a client-asserted grading contract,
-            # while these rows are single-move user positions graded
-            # server-side against a stored best move. Sharing a table would
+            # while these rows are positions from the user's games graded
+            # server-side against a stored engine line. Sharing a table would
             # force a type branch into every route for zero shared logic
             # beyond core/fsrs.py.
             #
@@ -909,12 +909,17 @@ def run_migrations():
                     entry_id         UUID NOT NULL REFERENCES user_puzzle_entries(id) ON DELETE CASCADE,
                     user_id          TEXT NOT NULL REFERENCES users(clerk_id) ON UPDATE CASCADE,
                     move_uci         TEXT NOT NULL,
+                    moves_uci        TEXT NOT NULL DEFAULT '',
                     solved_correctly BOOLEAN NOT NULL,
                     time_taken_ms    INT NOT NULL,
                     hints_used       INTEGER NOT NULL DEFAULT 0,
                     attempted_at     TIMESTAMP DEFAULT NOW()
                 )
                 """
+            )
+            cur.execute(
+                "ALTER TABLE user_puzzle_attempts "
+                "ADD COLUMN IF NOT EXISTS moves_uci TEXT NOT NULL DEFAULT ''"
             )
             # Per-user "bad puzzle" feedback: the tuning signal that replaces
             # the skipped labeling step. The extractor excludes flagged
