@@ -31,6 +31,10 @@ interface ChessBoardProps {
   /** Fires when "Solution" actually plays a solution move. Counted the
    *  same as a hint -- a solution-assisted pass is not clean. */
   onSolutionRevealed?: () => void;
+  /** Fires with the attempted move in UCI for every LEGAL board attempt
+   *  (correct or wrong), so a page can grade server-side. Illegal drops
+   *  never fire. Additive: existing callbacks are untouched. */
+  onMoveAttempted?: (uci: string) => void;
   apiRef?: React.MutableRefObject<BoardApi | null>;
 }
 
@@ -94,6 +98,7 @@ export default function ChessBoardComponent({
   onPuzzleEnd,
   onHintRevealed,
   onSolutionRevealed,
+  onMoveAttempted,
   apiRef,
 }: ChessBoardProps) {
   const [game, setGame] = useState<Chess>(() => buildInitialGame(puzzle));
@@ -343,6 +348,7 @@ export default function ChessBoardComponent({
         return false;
       }
       setGame(wrongGame);
+      onMoveAttempted?.(sourceSquare + targetSquare + (promotionChoice ?? ''));
 
       // Red highlight on destination square only
       setHighlightSquares({
@@ -380,6 +386,7 @@ export default function ChessBoardComponent({
     }
 
     const opponentReplyIndex = currentMoveIndexRef.current + 1;
+    onMoveAttempted?.(sourceSquare + targetSquare + (promotionChoice ?? ''));
     setBoardState(nextGame, opponentReplyIndex);
     clearWrongFlashTimeout();
 
@@ -412,7 +419,7 @@ export default function ChessBoardComponent({
     setPuzzleState('playing');
     scheduleOpponentMove(nextGame, opponentReplyIndex);
     return true;
-  }, [clearHintTimeout, clearSnapbackTimeout, clearWrongFlashTimeout, onPuzzleEnd, onPuzzleFailed, onPuzzleWrongMove, onPuzzleSolved, puzzle, scheduleOpponentMove, setBoardState]);
+  }, [clearHintTimeout, clearSnapbackTimeout, clearWrongFlashTimeout, onPuzzleEnd, onPuzzleFailed, onPuzzleWrongMove, onPuzzleSolved, onMoveAttempted, puzzle, scheduleOpponentMove, setBoardState]);
 
   const onDrop = useCallback((sourceSquare: string, targetSquare: string, pieceType: string) => {
     setSelectedSquare(null);
