@@ -2,6 +2,9 @@ import { getEndgameRecommendation } from '@/lib/endgame-recommendation';
 
 import TrainPageClient from './TrainPageClient';
 
+// The recommendation is user-specific and depends on request authentication.
+export const dynamic = 'force-dynamic';
+
 /**
  * Awaiting the recommendation here (instead of fetching it in the client)
  * makes the card part of the server-rendered first paint, so the user never
