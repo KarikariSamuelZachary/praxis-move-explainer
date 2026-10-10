@@ -797,6 +797,169 @@ def run_migrations():
                 """
             )
 
+            # --- user puzzle extractor --------------------------------------
+            # Personal puzzles mined from the user's OWN games (see
+            # services/user_puzzle_extract.py, routers/user_puzzles.py).
+            # Deliberately separate tables from the Lichess `puzzles` corpus
+            # and `woodpecker_entries` (same rationale as the endgame queue
+            # block below): puzzle routes key off `puzzle_id` with Lichess
+            # shape/scale assumptions and a client-asserted grading contract,
+            # while these rows are single-move user positions graded
+            # server-side against a stored best move. Sharing a table would
+            # force a type branch into every route for zero shared logic
+            # beyond core/fsrs.py.
+            #
+            # `user_games` (created above) is the owned-game corpus this
+            # feature fills; opponent_games stays untouched. These tables
+            # must be created BEFORE the FK-cascade fixup loop below.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_puzzle_jobs (
+                    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    requested_by_user_id TEXT NOT NULL REFERENCES users(clerk_id) ON UPDATE CASCADE,
+                    lichess_username     TEXT,
+                    chesscom_username    TEXT,
+                    requested_limit      INTEGER NOT NULL DEFAULT 20,
+                    status               TEXT NOT NULL DEFAULT 'queued'
+                                           CHECK (status IN ('queued', 'running', 'completed', 'failed')),
+                    fetched_games        INTEGER NOT NULL DEFAULT 0,
+                    screened_games       INTEGER NOT NULL DEFAULT 0,
+                    candidates           INTEGER NOT NULL DEFAULT 0,
+                    puzzles_kept         INTEGER NOT NULL DEFAULT 0,
+                    error_message        TEXT,
+                    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    started_at           TIMESTAMPTZ,
+                    completed_at         TIMESTAMPTZ
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_puzzles (
+                    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    requested_by_user_id TEXT NOT NULL REFERENCES users(clerk_id) ON UPDATE CASCADE,
+                    job_id               UUID REFERENCES user_puzzle_jobs(id) ON DELETE SET NULL,
+                    source_game_id       UUID REFERENCES user_games(id) ON DELETE SET NULL,
+                    game_url             TEXT NOT NULL DEFAULT '',
+                    ply_index            INTEGER NOT NULL,
+                    move_number          INTEGER NOT NULL,
+                    color                TEXT NOT NULL CHECK (color IN ('white', 'black')),
+                    fen_before           TEXT NOT NULL,
+                    position_key         TEXT NOT NULL,
+                    played_move_san      TEXT NOT NULL DEFAULT '',
+                    played_move_uci      TEXT NOT NULL DEFAULT '',
+                    best_move_san        TEXT NOT NULL,
+                    best_move_uci        TEXT NOT NULL,
+                    best_pv_uci          TEXT NOT NULL DEFAULT '',
+                    ep_loss              REAL NOT NULL,
+                    cp_loss              INTEGER NOT NULL,
+                    margin_ep            REAL,
+                    player_rating        INTEGER NOT NULL,
+                    mode                 TEXT NOT NULL DEFAULT '',
+                    bad_count            INTEGER NOT NULL DEFAULT 0,
+                    excluded             BOOLEAN NOT NULL DEFAULT FALSE,
+                    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (requested_by_user_id, game_url, ply_index)
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_puzzle_entries (
+                    id            UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    user_id       TEXT NOT NULL REFERENCES users(clerk_id) ON UPDATE CASCADE,
+                    puzzle_id     UUID NOT NULL REFERENCES user_puzzles(id) ON DELETE CASCADE,
+                    theme         TEXT NOT NULL DEFAULT 'myGame',
+                    added_at      TIMESTAMP DEFAULT NOW(),
+                    mastered_at   TIMESTAMP,
+                    is_mastered   BOOLEAN DEFAULT FALSE,
+                    source_reason TEXT NOT NULL DEFAULT 'my_mistake'
+                                         CHECK (
+                                             source_reason IN (
+                                                 'my_mistake',
+                                                 'coach_recommended'
+                                             )
+                                         ),
+                    due          TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    stability    DOUBLE PRECISION,
+                    difficulty   DOUBLE PRECISION,
+                    state        INTEGER NOT NULL DEFAULT 1
+                                     CHECK (state IN (1, 2, 3)),
+                    step         INTEGER,
+                    reps         INTEGER NOT NULL DEFAULT 0,
+                    lapses       INTEGER NOT NULL DEFAULT 0,
+                    last_review  TIMESTAMPTZ
+                )
+                """
+            )
+            # One active card per user+position (mirrors
+            # uq_endgame_woodpecker_active_entry): re-extraction reuses the
+            # existing card instead of duplicating the queue.
+            cur.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_user_puzzle_active_entry
+                    ON user_puzzle_entries(user_id, puzzle_id)
+                    WHERE is_mastered = FALSE
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_puzzle_attempts (
+                    id               UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    entry_id         UUID NOT NULL REFERENCES user_puzzle_entries(id) ON DELETE CASCADE,
+                    user_id          TEXT NOT NULL REFERENCES users(clerk_id) ON UPDATE CASCADE,
+                    move_uci         TEXT NOT NULL,
+                    solved_correctly BOOLEAN NOT NULL,
+                    time_taken_ms    INT NOT NULL,
+                    hints_used       INTEGER NOT NULL DEFAULT 0,
+                    attempted_at     TIMESTAMP DEFAULT NOW()
+                )
+                """
+            )
+            # Per-user "bad puzzle" feedback: the tuning signal that replaces
+            # the skipped labeling step. The extractor excludes flagged
+            # puzzles from the queue; counts per (user, reason) steer future
+            # threshold work.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS user_puzzle_feedback (
+                    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    user_id      TEXT NOT NULL REFERENCES users(clerk_id) ON UPDATE CASCADE,
+                    puzzle_id    UUID NOT NULL REFERENCES user_puzzles(id) ON DELETE CASCADE,
+                    created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (user_id, puzzle_id)
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_puzzle_entries_user_due
+                    ON user_puzzle_entries(user_id, due)
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_puzzle_attempts_entry_id
+                    ON user_puzzle_attempts(entry_id)
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_user_puzzles_user_excluded
+                    ON user_puzzles(requested_by_user_id, excluded)
+                """
+            )
+            # Worker heartbeat (stale "running" rows are reclaimable, see
+            # services/user_puzzle_extract.py) and a run summary (exclusion
+            # and Stage-2 reject breakdowns, so a 0-kept run explains itself).
+            cur.execute(
+                """
+                ALTER TABLE user_puzzle_jobs
+                    ADD COLUMN IF NOT EXISTS heartbeat_at TIMESTAMPTZ,
+                    ADD COLUMN IF NOT EXISTS summary JSONB NOT NULL DEFAULT '{}'::jsonb
+                """
+            )
+
             # A Clerk account can be deleted and recreated with the same
             # email address. The onboarding reconciliation path then renames
             # users.clerk_id. Every FK that stores that identity must cascade
@@ -866,6 +1029,36 @@ def run_migrations():
                     "weakness_profile_moves",
                     "weakness_profile_moves_requested_by_user_id_fkey",
                     "requested_by_user_id",
+                    "",
+                ),
+                (
+                    "user_puzzle_jobs",
+                    "user_puzzle_jobs_requested_by_user_id_fkey",
+                    "requested_by_user_id",
+                    "",
+                ),
+                (
+                    "user_puzzles",
+                    "user_puzzles_requested_by_user_id_fkey",
+                    "requested_by_user_id",
+                    "",
+                ),
+                (
+                    "user_puzzle_entries",
+                    "user_puzzle_entries_user_id_fkey",
+                    "user_id",
+                    "",
+                ),
+                (
+                    "user_puzzle_attempts",
+                    "user_puzzle_attempts_user_id_fkey",
+                    "user_id",
+                    "",
+                ),
+                (
+                    "user_puzzle_feedback",
+                    "user_puzzle_feedback_user_id_fkey",
+                    "user_id",
                     "",
                 ),
             )
