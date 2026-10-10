@@ -7,13 +7,27 @@ import { useEffect, useRef, useState } from 'react';
 
 import { KnightMark } from '@/components/layout/KnightMark';
 
-type NavItem = {
+type NavChild = {
   href: string;
   label: string;
 };
 
+type NavItem = {
+  href: string;
+  label: string;
+  children?: NavChild[];
+};
+
 const NAV_ITEMS: NavItem[] = [
-  { href: '/puzzles', label: 'Puzzles' },
+  {
+    href: '/puzzles',
+    label: 'Puzzles',
+    // Lichess-style submenu: hovering Puzzles reveals its modes.
+    children: [
+      { href: '/puzzles', label: 'Puzzles' },
+      { href: '/my-puzzles', label: 'My Puzzles' },
+    ],
+  },
   { href: '/train', label: 'Train' },
   { href: '/review', label: 'Game Review' },
   { href: '/woodpecker', label: 'Woodpecker' },
@@ -22,32 +36,114 @@ const NAV_ITEMS: NavItem[] = [
   { href: '/endgames', label: 'Endgames' },
 ];
 
-function NavLinks({ onNavigate }: { onNavigate?: () => void }) {
+function NavLinks({
+  onNavigate,
+  variant = 'bar',
+}: {
+  onNavigate?: () => void;
+  variant?: 'bar' | 'menu';
+}) {
   const pathname = usePathname();
   // Most-specific match wins: /train/endgametrainer lives under /train, so a
-  // plain startsWith would light up both the Train and Endgames tabs.
-  const activeHref = NAV_ITEMS.filter(
-    (item) => pathname === item.href || pathname.startsWith(`${item.href}/`)
-  ).sort((a, b) => b.href.length - a.href.length)[0]?.href;
+  // plain startsWith would light up both the Train and Endgames tabs. Child
+  // hrefs (e.g. /my-puzzles) participate so the parent highlights too.
+  const allHrefs = NAV_ITEMS.flatMap((item) => [
+    item.href,
+    ...(item.children ?? []).map((child) => child.href),
+  ]);
+  const activeHref = allHrefs
+    .filter((href) => pathname === href || pathname.startsWith(`${href}/`))
+    .sort((a, b) => b.length - a.length)[0];
+  const isActive = (item: NavItem) =>
+    item.href === activeHref ||
+    (item.children ?? []).some((child) => child.href === activeHref);
+
+  const linkClass = (active: boolean) =>
+    `relative inline-flex h-12 items-center px-2 text-sm font-semibold transition ${
+      active
+        ? 'text-white after:absolute after:bottom-0 after:left-2 after:right-2 after:h-0.5 after:bg-[#10b981]'
+        : 'text-wood-mute hover:text-gold-bright'
+    }`;
 
   return (
     <>
       {NAV_ITEMS.map((item) => {
-        const isActive = item.href === activeHref;
-
+        const active = isActive(item);
+        if (!item.children || item.children.length === 0 || variant === 'menu') {
+          return (
+            <>
+              <Link
+                key={item.href}
+                href={item.href}
+                onClick={onNavigate}
+                className={linkClass(active)}
+              >
+                <span>{item.label}</span>
+              </Link>
+              {variant === 'menu' &&
+                (item.children ?? []).map((child) => (
+                  <Link
+                    key={child.href}
+                    href={child.href}
+                    onClick={onNavigate}
+                    className="inline-flex h-10 items-center gap-3 pl-6 pr-2 text-sm font-medium text-cream/80 transition hover:text-white"
+                  >
+                    <span
+                      aria-hidden
+                      className="h-5 w-0.5 rounded-full bg-[#d9b87c]/50"
+                    />
+                    <span>{child.label}</span>
+                  </Link>
+                ))}
+            </>
+          );
+        }
         return (
-          <Link
+          <div
             key={item.href}
-            href={item.href}
+            className="group relative"
             onClick={onNavigate}
-            className={`relative inline-flex h-12 items-center px-2 text-sm font-semibold transition ${
-              isActive
-                ? 'text-white after:absolute after:bottom-0 after:left-2 after:right-2 after:h-0.5 after:bg-[#10b981]'
-                : 'text-wood-mute hover:text-gold-bright'
-            }`}
           >
-            <span>{item.label}</span>
-          </Link>
+            <Link
+              href={item.href}
+              onClick={onNavigate}
+              aria-haspopup="menu"
+              className={linkClass(active)}
+            >
+              <span>{item.label}</span>
+            </Link>
+            <div
+              role="menu"
+              aria-label={`${item.label} modes`}
+              className="invisible absolute left-0 top-full z-50 w-52 translate-y-1 overflow-hidden rounded-xl border border-[#d9b87c]/30 bg-[#1b120d]/95 p-1.5 opacity-0 shadow-[0_16px_38px_rgba(0,0,0,0.48),inset_0_1px_0_rgba(255,255,255,0.08)] backdrop-blur-xl transition-all duration-150 group-hover:visible group-hover:translate-y-0 group-hover:opacity-100 group-focus-within:visible group-focus-within:translate-y-0 group-focus-within:opacity-100"
+            >
+              <div className="h-px rounded-full bg-gradient-to-r from-transparent via-[#d9b87c]/80 to-transparent" />
+              {item.children.map((child) => {
+                const childActive =
+                  pathname === child.href ||
+                  pathname.startsWith(`${child.href}/`);
+                return (
+                  <Link
+                    key={child.href}
+                    href={child.href}
+                    onClick={onNavigate}
+                    role="menuitem"
+                    className={`mt-1 flex w-full items-center gap-3 rounded-lg px-3 py-2.5 text-left text-sm font-medium transition hover:bg-white/10 hover:text-white ${
+                      childActive ? 'text-white' : 'text-cream/90'
+                    }`}
+                  >
+                    <span
+                      aria-hidden
+                      className={`h-6 w-1 rounded-full ${
+                        childActive ? 'bg-[#10b981]' : 'bg-transparent'
+                      }`}
+                    />
+                    {child.label}
+                  </Link>
+                );
+              })}
+            </div>
+          </div>
         );
       })}
     </>
@@ -233,7 +329,7 @@ export default function TopNav() {
             </div>
 
             <div className="mt-4 flex flex-col gap-1">
-              <NavLinks onNavigate={() => setIsOpen(false)} />
+              <NavLinks variant="menu" onNavigate={() => setIsOpen(false)} />
             </div>
 
             <div className="mt-4 flex items-center border-t border-white/10 pt-4">
