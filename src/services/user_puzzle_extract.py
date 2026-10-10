@@ -467,7 +467,7 @@ def _store_user_game(conn, clerk_id: str, provider: str, source_username: str, g
 
 
 def _screen_game(conn, analyzer: GameAnalyzer, book_lookup, g: Dict[str, Any], color: str):
-    """Review per-ply screen; returns included+excluded user rows (no gating)."""
+    """Review eligible plies; avoid engine searches before a usable user move."""
     game = chess.pgn.read_game(StringIO(g.get("pgn", "")))
     if game is None:
         raise ValueError("unparseable PGN")
@@ -488,9 +488,13 @@ def _screen_game(conn, analyzer: GameAnalyzer, book_lookup, g: Dict[str, Any], c
     previous_ep_loss = None
     in_book = True
     ply_index = 0
+    # The shortcut below depends on fixed-node fresh-token searches. Keep the
+    # historical full scan if this helper is ever used with another mode.
+    screening_started = not analyzer.deterministic
     for node in game.mainline():
         move = node.move
         move_color = "white" if board.turn == chess.WHITE else "black"
+        move_number = board.fullmove_number
         rating = (header_rating or ratings.get(move_color)) if move_color == color else ratings.get(move_color)
         if in_book and book_lookup is not None:
             try:
@@ -501,6 +505,66 @@ def _screen_game(conn, analyzer: GameAnalyzer, book_lookup, g: Dict[str, Any], c
             is_book = False
         if not is_book:
             in_book = False
+
+        # Determine exclusions before searching. Until the first move we
+        # could keep, the fixed-node fresh-token evaluation at that position
+        # is identical to the value we'd have carried forward through every
+        # skipped opening/excluded ply. Fast-forward those moves without
+        # starting Stockfish; candidate evaluations remain unchanged.
+        exclusion = None
+        clk = parse_clk_seconds(node.comment or "") if move_color == color else None
+        if move_color == color:
+            if variant != "Standard":
+                exclusion = "variant"
+            elif (time_class or "").strip().lower() in BULLET_TIME_CLASSES:
+                exclusion = "time_class"
+            elif book_lookup is None:
+                if move_number <= MIN_MOVE:
+                    exclusion = "book_fallback"
+            elif is_book:
+                exclusion = "book"
+            if (
+                exclusion is None
+                and clk is not None
+                and clk < clock_threshold_s(base_time)
+            ):
+                exclusion = "clock"
+
+        if not screening_started:
+            if move_color == color and exclusion is not None:
+                fen_before = board.fen()
+                played_san = board.san(move)
+                board.push(move)
+                rows.append({
+                    "ply_index": ply_index + 1,
+                    "move_number": move_number,
+                    "color": move_color,
+                    "fen_before": fen_before,
+                    "fen_after": board.fen(),
+                    "position_key": position_key_4(fen_before),
+                    "played_san": played_san,
+                    "played_uci": move.uci(),
+                    "best_san": "",
+                    "best_uci": "",
+                    "best_pv_uci": [],
+                    "ep_loss": 0.0,
+                    "cp_loss": 0,
+                    "player_rating": int(rating or 1500),
+                    "exclusion": exclusion,
+                })
+                ply_index += 1
+                continue
+            if move_color != color:
+                board.push(move)
+                ply_index += 1
+                continue
+
+            # Fixed-node evaluations use a fresh engine token, so this is
+            # the same evaluation as evaluating the same position while
+            # processing the preceding excluded move.
+            screening_started = True
+            previous_eval = analyzer._evaluate(board)
+
         eval_before = previous_eval if previous_eval is not None else analyzer._evaluate(board)
         turn_entry, eval_after, raw_ep = analyzer.analyze_ply(
             board, move, eval_before, is_book_move=is_book,
@@ -512,19 +576,6 @@ def _screen_game(conn, analyzer: GameAnalyzer, book_lookup, g: Dict[str, Any], c
         ply_index += 1
         if move_color != color:
             continue
-        clk = parse_clk_seconds(node.comment or "")
-        exclusion = None
-        if variant != "Standard":
-            exclusion = "variant"
-        elif (time_class or "").strip().lower() in BULLET_TIME_CLASSES:
-            exclusion = "time_class"
-        elif book_lookup is None:
-            if (turn_entry.get("move_number") or 0) <= MIN_MOVE:
-                exclusion = "book_fallback"
-        elif is_book:
-            exclusion = "book"
-        if exclusion is None and clk is not None and clk < clock_threshold_s(base_time):
-            exclusion = "clock"
         rows.append({
             "ply_index": ply_index,
             "move_number": turn_entry.get("move_number") or 0,
