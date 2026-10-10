@@ -1,6 +1,7 @@
 import 'server-only';
 
 import { auth } from '@clerk/nextjs/server';
+import { unstable_rethrow } from 'next/navigation';
 
 import { getBackendConfig } from '@/lib/backend';
 
@@ -63,6 +64,7 @@ async function fetchEndgameRecommendation(
 
     return { category: data.category, sample_fen: data.sample_fen ?? null };
   } catch (error) {
+    unstable_rethrow(error);
     console.error('Endgame recommendation fetch failed:', error);
     return null;
   }
@@ -79,6 +81,7 @@ export async function getEndgameRecommendation(): Promise<EndgameRecommendation>
     if (!userId) return STARTER_RECOMMENDATION;
     return (await fetchEndgameRecommendation(userId)) ?? STARTER_RECOMMENDATION;
   } catch (error) {
+    unstable_rethrow(error);
     console.error('Endgame recommendation lookup failed:', error);
     return STARTER_RECOMMENDATION;
   }
