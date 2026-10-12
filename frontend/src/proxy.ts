@@ -7,8 +7,8 @@ import {
   serializeSkillCache,
 } from "@/lib/skill-cache";
 
-const isProtectedRoute = createRouteMatcher(["/puzzles(.*)", "/review(.*)", "/woodpecker(.*)", "/train(.*)", "/repertoire(.*)", "/onboarding(.*)"]);
-const isAppRoute = createRouteMatcher(["/puzzles(.*)", "/review(.*)", "/woodpecker(.*)", "/train(.*)", "/repertoire(.*)"]);
+const isProtectedRoute = createRouteMatcher(["/puzzles(.*)", "/puzzle-extractor(.*)", "/my-puzzles(.*)", "/review(.*)", "/woodpecker(.*)", "/train(.*)", "/repertoire(.*)", "/onboarding(.*)"]);
+const isAppRoute = createRouteMatcher(["/puzzles(.*)", "/puzzle-extractor(.*)", "/my-puzzles(.*)", "/review(.*)", "/woodpecker(.*)", "/train(.*)", "/repertoire(.*)"]);
 const isOnboardingRoute = createRouteMatcher(["/onboarding(.*)"]);
 
 // Skill level is fixed once onboarding completes, so caching it in an
