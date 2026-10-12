@@ -37,6 +37,7 @@ from core.rate_limit import limit_by_clerk_user_id
 from schemas.user_puzzle_schemas import (
     UserPuzzleAttemptRequest,
     UserPuzzleAttemptResponse,
+    UserPuzzleClearResponse,
     UserPuzzleCountResponse,
     UserPuzzleExtractRequest,
     UserPuzzleExtractStartResponse,
@@ -50,7 +51,7 @@ from services.user_puzzle_extract import (
     get_user_puzzle_job,
     run_user_puzzle_job,
 )
-from services.puzzle_quality import FORCING_MIN, forcing_flags
+from services.puzzle_quality import SOLUTION_MAX_PLIES, build_solution_line
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -60,15 +61,7 @@ _DUE_PREDICATE = (
     "AND p.excluded = FALSE"
 )
 
-_MAX_SOLUTION_PLIES = 6
-_PAWN_VALUE = 1.0
-_PIECE_VALUES = {
-    chess.PAWN: 1.0,
-    chess.KNIGHT: 3.0,
-    chess.BISHOP: 3.0,
-    chess.ROOK: 5.0,
-    chess.QUEEN: 9.0,
-}
+_MAX_SOLUTION_PLIES = SOLUTION_MAX_PLIES
 
 _ENTRY_SELECT = """
     SELECT e.id,
@@ -110,71 +103,20 @@ def _clerk_id(request: Request) -> str:
     return user_id
 
 
-def _material_for(board: chess.Board, color: chess.Color) -> float:
-    score = 0.0
-    for piece_type, value in _PIECE_VALUES.items():
-        score += value * len(board.pieces(piece_type, color))
-        score -= value * len(board.pieces(piece_type, not color))
-    return score
-
-
 def _solution_line(entry) -> list[str]:
     """Return a short forcing line, or just the best move for quiet positions.
 
-    Stage 2 already stores the engine PV. Keep at most three player decisions
-    and extend only when the line reaches mate or leaves the player up at
-    least a pawn after the opponent's reply. This avoids turning a positional
-    best move into an arbitrary engine-PV quiz.
+    Delegates to services/puzzle_quality.build_solution_line so the served
+    quiz is exactly the line extraction accepted: mate / material stop,
+    else forcing-only up to three player decisions.
     """
-    best_move_uci = (entry["best_move_uci"] or "").strip().lower()
-    if not best_move_uci:
-        return []
-
-    try:
-        board = chess.Board(entry["fen_before"])
-        best_move = chess.Move.from_uci(best_move_uci)
-    except (ValueError, TypeError):
-        return [best_move_uci]
-    if best_move not in board.legal_moves:
-        return [best_move_uci]
-
+    best_move_uci = (entry.get("best_move_uci") or "").strip()
     raw_pv = (entry.get("best_pv_uci") or "").split()
-    if not raw_pv or raw_pv[0].lower() != best_move_uci:
-        raw_pv = [best_move_uci]
-
-    solver_color = board.turn
-    initial_material = _material_for(board, solver_color)
-    line: list[str] = []
-    for token in raw_pv[:_MAX_SOLUTION_PLIES]:
-        uci = token.lower()
-        try:
-            move = chess.Move.from_uci(uci)
-        except ValueError:
-            break
-        if move not in board.legal_moves:
-            break
-
-        board.push(move)
-        line.append(uci)
-        if board.is_checkmate():
-            if board.turn != solver_color:
-                return line
-            break
-        if board.is_game_over(claim_draw=False):
-            break
-
-        # Check material only after a complete opponent reply, so a temporary
-        # capture that can immediately be recaptured does not end the puzzle.
-        if len(line) >= 2 and len(line) % 2 == 0:
-            if _material_for(board, solver_color) - initial_material >= _PAWN_VALUE:
-                return line
-
-    # No mate / material stop was hit: keep the multi-ply line only while it
-    # stays forcing (checks/captures), otherwise collapse to the single
-    # best move rather than quizzing a quiet engine-PV continuation.
-    if len(line) > 1 and sum(forcing_flags(entry["fen_before"], line)) >= FORCING_MIN:
-        return line
-    return [best_move_uci]
+    try:
+        fen_before = entry["fen_before"]
+    except (KeyError, TypeError):
+        return [best_move_uci] if best_move_uci else []
+    return build_solution_line(fen_before, best_move_uci, raw_pv)
 
 
 def _expected_move_san(
@@ -521,3 +463,53 @@ def report_bad_puzzle(body: UserPuzzleFeedbackRequest, request: Request, conn=De
     conn.commit()
     log.info("bad-puzzle feedback entry=%s puzzle=%s", body.entry_id, entry["puzzle_id"])
     return UserPuzzleFeedbackResponse(entry_id=body.entry_id, excluded=True)
+
+
+@router.delete("/puzzles", response_model=UserPuzzleClearResponse)
+def clear_puzzles(
+    request: Request,
+    conn=Depends(get_db),
+    _: None = Depends(limit_by_clerk_user_id(limit=5, window=60)),
+):
+    """Clear button: delete every extractor artefact for the user.
+
+    Removes queue entries, attempts, feedback, puzzles, and jobs.
+    Imported games are kept, so a re-extract does not lose its corpus.
+    """
+    clerk_id = _clerk_id(request)
+    with conn.cursor() as cur:
+        cur.execute(
+            "DELETE FROM user_puzzle_attempts WHERE user_id = %s",
+            (clerk_id,),
+        )
+        attempts = cur.rowcount
+        cur.execute(
+            "DELETE FROM user_puzzle_entries WHERE user_id = %s",
+            (clerk_id,),
+        )
+        entries = cur.rowcount
+        cur.execute(
+            "DELETE FROM user_puzzle_feedback WHERE user_id = %s",
+            (clerk_id,),
+        )
+        cur.execute(
+            "DELETE FROM user_puzzles WHERE requested_by_user_id = %s",
+            (clerk_id,),
+        )
+        puzzles = cur.rowcount
+        cur.execute(
+            "DELETE FROM user_puzzle_jobs WHERE requested_by_user_id = %s",
+            (clerk_id,),
+        )
+        jobs = cur.rowcount
+    conn.commit()
+    log.info(
+        "cleared puzzles for user %s: %s puzzles, %s entries, %s attempts, %s jobs",
+        clerk_id, puzzles, entries, attempts, jobs,
+    )
+    return UserPuzzleClearResponse(
+        cleared_puzzles=puzzles,
+        cleared_entries=entries,
+        cleared_attempts=attempts,
+        cleared_jobs=jobs,
+    )
