@@ -18,6 +18,7 @@ FSRS scheduling mirrors routers/woodpecker.py; reviews never touch ratings.
 """
 
 import logging
+from typing import Optional
 
 import chess
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Request
@@ -49,6 +50,7 @@ from services.user_puzzle_extract import (
     get_user_puzzle_job,
     run_user_puzzle_job,
 )
+from services.puzzle_quality import FORCING_MIN, forcing_flags
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -89,12 +91,15 @@ _ENTRY_SELECT = """
            p.best_move_uci,
            p.best_move_san,
            p.best_pv_uci,
-           p.played_move_san,
-           p.game_url,
-           p.move_number,
-           p.color
-    FROM user_puzzle_entries e
-    JOIN user_puzzles p ON p.id = e.puzzle_id
+            p.played_move_san,
+            p.game_url,
+            p.move_number,
+            p.color,
+            COALESCE(g.source_username, '') AS source_username,
+            COALESCE(g.provider, '') AS source_provider
+     FROM user_puzzle_entries e
+     JOIN user_puzzles p ON p.id = e.puzzle_id
+     LEFT JOIN user_games g ON g.id = p.source_game_id
 """
 
 
@@ -164,6 +169,11 @@ def _solution_line(entry) -> list[str]:
             if _material_for(board, solver_color) - initial_material >= _PAWN_VALUE:
                 return line
 
+    # No mate / material stop was hit: keep the multi-ply line only while it
+    # stays forcing (checks/captures), otherwise collapse to the single
+    # best move rather than quizzing a quiet engine-PV continuation.
+    if len(line) > 1 and sum(forcing_flags(entry["fen_before"], line)) >= FORCING_MIN:
+        return line
     return [best_move_uci]
 
 
@@ -274,16 +284,26 @@ def extract_status(
 
 
 @router.get("/queue", response_model=list[UserPuzzleQueueEntry])
-def get_queue(request: Request, conn=Depends(get_db)):
+def get_queue(
+    request: Request,
+    conn=Depends(get_db),
+    source_provider: Optional[str] = None,
+    source_username: Optional[str] = None,
+):
     clerk_id = _clerk_id(request)
+    predicate = _DUE_PREDICATE
+    params: list = [clerk_id]
+    if source_provider and source_username:
+        predicate += "AND COALESCE(g.provider, '') = %s AND COALESCE(g.source_username, '') = %s "
+        params.extend([source_provider, source_username])
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             f"""
             {_ENTRY_SELECT}
-            WHERE {_DUE_PREDICATE}
+            WHERE {predicate}
             ORDER BY e.due ASC
             """,
-            (clerk_id,),
+            tuple(params),
         )
         rows = cur.fetchall()
     out = []
@@ -297,6 +317,7 @@ def get_queue(request: Request, conn=Depends(get_db)):
                 state=row["state"],
                 reps=row["reps"],
                 lapses=row["lapses"],
+                theme=row.get("theme"),
                 puzzle={
                     "id": row["puzzle_id"],
                     "fen_before": row["fen_before"],
@@ -308,6 +329,8 @@ def get_queue(request: Request, conn=Depends(get_db)):
                     "move_number": row["move_number"],
                     "color": row["color"],
                     "side_to_move": side,
+                    "source_username": row.get("source_username") or "",
+                    "source_provider": row.get("source_provider") or "",
                 },
             )
         )
