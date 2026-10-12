@@ -155,31 +155,10 @@ export default function BoardPanel({
       ? (applyUciMove(boardPosition, suggestionUci) ?? null)
       : null;
 
-  // Persistent suggestion arrow. Outside explore mode it is the analyzed
-  // move's "better move" (best_move_uci). In explore mode the board shows a
-  // position the user is deciding on, so the arrow must be the best move for
-  // the side to move at that position (suggestionUci), never the pre-move
-  // line of the move just played. Hidden during the best-move animation.
-  const arrowUci = exploreMode ? suggestionUci : bestMoveUci;
-  const suggestionArrows = useMemo(() => {
-    if (!hasGame || !arrowUci || arrowUci.length < 4) {
-      return [];
-    }
-    // Review mode animates via bestStep; explore mode previews the
-    // suggestion directly, so hide the arrow while that preview is up.
-    if (!exploreMode && bestStep !== 'off') {
-      return [];
-    }
-    if (exploreMode && showBestMove) {
-      return [];
-    }
-    const from = arrowUci.slice(0, 2);
-    const to = arrowUci.slice(2, 4);
-    if (from === to) {
-      return [];
-    }
-    return [{ startSquare: from, endSquare: to, color: '#10b981' }];
-  }, [hasGame, bestStep, arrowUci, exploreMode, showBestMove]);
+  // Persistent suggestion arrow removed: no automatic "should have played"
+  // arrow is drawn in review or explore mode. The board only shows the best
+  // move when the user explicitly toggles it (bestStep animation / preview).
+  const suggestionArrows = useMemo(() => [], []);
 
   // Adjust the animation step during render whenever the toggle flips, so the
   // board immediately shows the played move being taken back (undo) and then
