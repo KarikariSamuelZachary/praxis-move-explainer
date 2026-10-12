@@ -187,12 +187,19 @@ export default function ChessBoardComponent({
 
   /* eslint-disable react-hooks/set-state-in-effect */
   useEffect(() => {
+    // Same puzzle object identity can recur across parent re-renders
+    // (grading toggles, timers). Only a new puzzle resets the board;
+    // otherwise a scheduled opponent reply would be cancelled mid-line.
+    const nextPuzzleKey = `${puzzle.id}:${puzzle.fen}:${puzzle.moves.join(' ')}`;
+    if (puzzleKeyRef.current === nextPuzzleKey) {
+      return;
+    }
+    puzzleKeyRef.current = nextPuzzleKey;
     clearOpponentMoveTimeout();
     clearWrongFlashTimeout();
     clearHintTimeout();
     clearSnapbackTimeout();
     clearInitialMoveTimeout();
-    puzzleKeyRef.current = `${puzzle.id}:${puzzle.fen}:${puzzle.moves.join(' ')}`;
     setHintSquare(null);
     setMoveToPromote(null);
     setSelectedSquare(null);
