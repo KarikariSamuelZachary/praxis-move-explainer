@@ -82,3 +82,10 @@ class UserPuzzleFeedbackRequest(BaseModel):
 class UserPuzzleFeedbackResponse(BaseModel):
     entry_id: UUID
     excluded: bool = True
+
+
+class UserPuzzleClearResponse(BaseModel):
+    cleared_puzzles: int = 0
+    cleared_entries: int = 0
+    cleared_attempts: int = 0
+    cleared_jobs: int = 0
