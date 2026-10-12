@@ -66,16 +66,6 @@ type WoodpeckerEntry = {
 
 type Feedback = 'idle' | 'correct' | 'mistake';
 
-function ExitIcon() {
-  return (
-    <svg className="h-5 w-5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.6" viewBox="0 0 24 24">
-      <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
-      <path d="m16 17 5-5-5-5" />
-      <path d="M21 12H9" />
-    </svg>
-  );
-}
-
 function SettingsIcon() {
   return (
     <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24">
@@ -694,14 +684,12 @@ export default function WoodpeckerPage() {
 
   const total = queue?.length ?? 0;
   const remaining = Math.max(total - completedCount, 0);
-  const estimatedMinutes = Math.max(1, Math.ceil(remaining * 0.75));
   const cellTotal = Math.max(total, 1);
 
   const currentEndgameEntry = endgameQueue?.[endgameIndex] ?? null;
   const endgamePosition = currentEndgameEntry?.position ?? null;
   const endgameTotal = endgameQueue?.length ?? 0;
   const endgameRemaining = Math.max(endgameTotal - endgameCompletedCount, 0);
-  const endgameEstimatedMinutes = Math.max(1, Math.ceil(endgameRemaining * 1.5));
   const endgameCellTotal = Math.max(endgameTotal, 1);
 
   // Tab badges: what is still left in each due queue, derived from the same
@@ -995,10 +983,6 @@ export default function WoodpeckerPage() {
     }
   }, [advanceToNext, clearAdvanceTimeout, feedback]);
 
-  const handleExit = useCallback(() => {
-    clearAdvanceTimeout();
-  }, [clearAdvanceTimeout]);
-
   // --- Endgame review handlers -------------------------------------------
 
   const advanceEndgame = useCallback(() => {
@@ -1062,10 +1046,6 @@ export default function WoodpeckerPage() {
   const handleEndgameThinkingChange = useCallback((thinking: boolean) => {
     setEndgameIsThinking(thinking);
   }, []);
-
-  const handleEndgameExit = useCallback(() => {
-    clearEndgameAdvanceTimeout();
-  }, [clearEndgameAdvanceTimeout]);
 
   // Leaving the endgames tab abandons whatever the board was showing. The
   // board remounts on return, so keeping a resolved result (or an active
@@ -1208,8 +1188,8 @@ export default function WoodpeckerPage() {
     return (
       <div className="grid h-full grid-cols-1 gap-6 lg:grid-cols-[18rem_minmax(0,1fr)_22rem] xl:grid-cols-[20rem_minmax(0,1fr)_22rem]">
         {/* ============== LEFT CARD ============== */}
-        <section className="hidden min-h-0 min-w-0 lg:block xl:h-[min(calc(100vw-800px),calc(100vh-70px))]">
-          <div className={`${CARD_CLASS} flex h-full w-full flex-col justify-between p-6 shadow-2xl shadow-black/25`}>
+        <section className="hidden min-h-0 min-w-0 lg:block xl:self-start">
+          <div className={`${CARD_CLASS} flex w-full flex-col p-6 shadow-2xl shadow-black/25`}>
             {/* Top: identity & progress */}
             <div className="flex flex-col items-center">
               <Image
@@ -1229,27 +1209,6 @@ export default function WoodpeckerPage() {
               <div className="mt-6 w-full">
                 <ProgressCells completed={currentIndex} total={cellTotal} />
               </div>
-            </div>
-
-            {/* Middle: remaining stats (centered) */}
-            <div className="flex flex-col items-center text-center">
-              <div className="text-[11px] uppercase tracking-[0.2em] text-white/50">Remaining</div>
-              <div className="mt-2 text-6xl font-bold leading-none text-[#f7e5c6]">{remaining}</div>
-              <div className="mt-3 text-sm text-white/50">
-                Estimated time: {estimatedMinutes} min
-              </div>
-            </div>
-
-            {/* Bottom: exit */}
-            <div>
-              <Link
-                href="/puzzles"
-                onClick={handleExit}
-                className="flex w-full items-center justify-center gap-2 rounded-lg border border-[#f7e5c6]/30 bg-transparent px-4 py-3 text-sm font-semibold text-[#f7e5c6] transition hover:border-[#f7e5c6]/60 hover:bg-[#f7e5c6]/5"
-              >
-                <ExitIcon />
-                Exit Review
-              </Link>
             </div>
           </div>
         </section>
@@ -1437,8 +1396,8 @@ export default function WoodpeckerPage() {
     return (
       <div className="grid h-full grid-cols-1 gap-6 lg:grid-cols-[18rem_minmax(0,1fr)_22rem] xl:grid-cols-[20rem_minmax(0,1fr)_22rem]">
         {/* ============== LEFT CARD ============== */}
-        <section className="hidden min-h-0 min-w-0 lg:block xl:h-[min(calc(100vw-800px),calc(100vh-70px))]">
-          <div className={`${CARD_CLASS} flex h-full w-full flex-col justify-between p-6 shadow-2xl shadow-black/25`}>
+        <section className="hidden min-h-0 min-w-0 lg:block xl:self-start">
+          <div className={`${CARD_CLASS} flex w-full flex-col p-6 shadow-2xl shadow-black/25`}>
             {/* Top: identity & progress */}
             <div className="flex flex-col items-center">
               <Image
@@ -1458,27 +1417,6 @@ export default function WoodpeckerPage() {
               <div className="mt-6 w-full">
                 <ProgressCells completed={endgameIndex} total={endgameCellTotal} />
               </div>
-            </div>
-
-            {/* Middle: remaining stats (centered) */}
-            <div className="flex flex-col items-center text-center">
-              <div className="text-[11px] uppercase tracking-[0.2em] text-white/50">Remaining</div>
-              <div className="mt-2 text-6xl font-bold leading-none text-[#f7e5c6]">{endgameRemaining}</div>
-              <div className="mt-3 text-sm text-white/50">
-                Estimated time: {endgameEstimatedMinutes} min
-              </div>
-            </div>
-
-            {/* Bottom: exit */}
-            <div>
-              <Link
-                href="/train/endgametrainer"
-                onClick={handleEndgameExit}
-                className="flex w-full items-center justify-center gap-2 rounded-lg border border-[#f7e5c6]/30 bg-transparent px-4 py-3 text-sm font-semibold text-[#f7e5c6] transition hover:border-[#f7e5c6]/60 hover:bg-[#f7e5c6]/5"
-              >
-                <ExitIcon />
-                Exit Review
-              </Link>
             </div>
           </div>
         </section>
