@@ -8,7 +8,8 @@ Pipeline (valided by scripts/puzzle_extract_pilot/ against SF19):
   Stage-2 verification on a nodes-only fresh-token engine
   (MultiPV=4 @500k, Threads=1 Hash=16) + uniqueness (mate, or EP margin
   over the second line) -> quality layer (services/puzzle_quality:
-  mate/material/trap/promotion theme tags + acceptance policy) ->
+  short solution line from the PV; accept only when the solver's last
+  move mates, promotes, or captures) ->
   user_puzzles + user_puzzle_entries.
 
 Runs in a FastAPI BackgroundTasks thread like the opponent import worker:
@@ -32,14 +33,15 @@ from core import database
 from core.game_analyzer import GameAnalyzer, expected_points
 from engines.stockfish_engine import StockfishEngine
 from llms.mock_explainer import MockExplainer
-from services.puzzle_quality import classify_quality, decide
+from services.puzzle_quality import classify_quality, decide, solution_ending
 
 log = logging.getLogger(__name__)
 
 # Quality gates live in services/puzzle_quality (pure board/PV analysis, no
 # engine calls). The margin constant below is only the Stage-1 candidate
 # precedent; Stage-2 acceptance is the quality layer's decide() policy
-# (mate / material / trap / promotion / high-margin-forcing).
+# (the solver's last move in the solution line must mate, promote, or
+# capture).
 SCREEN_NODES = 50_000
 STAGE2_NODES = 500_000
 CAND_EP = 0.15
@@ -646,16 +648,21 @@ def _verify_and_store(conn, clerk_id: str, job_id: str, stage2: _Stage2Engine,
         return "no_second_line", None
     else:
         margin = max(0.0, expected_points(best_cp, rating) - expected_points(second_cp, rating))
-    # Quality layer: theme tags + acceptance policy (mate / material /
-    # trap / promotion / high-margin-forcing). Quiet positional squeezes
-    # fall out here even when the margin is comfortable.
+    # Quality layer: a position only counts as a puzzle when the solver's
+    # last move in the solution line mates, promotes, or captures. Theme
+    # follows the ending (capture keeps the trap tag when the best move
+    # also sets one); quiet positional squeezes fall out here even when
+    # the margin is comfortable.
     quality = classify_quality(
         r["fen_before"], best["move"], best.get("pv_uci") or [],
         best.get("mate"),
     )
-    accept, theme, reason = decide(quality, margin)
+    ending = solution_ending(
+        r["fen_before"], best["move"], best.get("pv_uci") or []
+    )
+    accept, theme, reason = decide(quality, ending)
     if not accept:
-        return reason or "quiet_positional", None
+        return reason or "no_concrete_ending", None
     try:
         best_san = board.san(chess.Move.from_uci(best["move"]))
     except ValueError:
