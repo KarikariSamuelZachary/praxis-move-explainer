@@ -25,7 +25,7 @@ const NAV_ITEMS: NavItem[] = [
     // Lichess-style submenu: hovering Puzzles reveals its modes.
     children: [
       { href: '/puzzles', label: 'Puzzles' },
-      { href: '/my-puzzles', label: 'My Puzzles' },
+      { href: '/puzzle-extractor', label: 'Puzzle Extractor' },
     ],
   },
   { href: '/train', label: 'Train' },
@@ -46,7 +46,7 @@ function NavLinks({
   const pathname = usePathname();
   // Most-specific match wins: /train/endgametrainer lives under /train, so a
   // plain startsWith would light up both the Train and Endgames tabs. Child
-  // hrefs (e.g. /my-puzzles) participate so the parent highlights too.
+  // hrefs (e.g. /puzzle-extractor) participate so the parent highlights too.
   const allHrefs = NAV_ITEMS.flatMap((item) => [
     item.href,
     ...(item.children ?? []).map((child) => child.href),
