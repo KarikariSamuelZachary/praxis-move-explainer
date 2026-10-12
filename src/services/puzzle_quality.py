@@ -6,14 +6,14 @@ the synchronous extraction worker for every Stage-2 survivor.
 Stage-2 (500k nodes, MultiPV=4) has already established that the best move
 is unique (EP margin over the second line) and that the played move was a
 real mistake. This layer answers the next question: is the best move
-*instructive*? It measures material/mate consequences over the stored PV,
+*instructive*? It builds the short solution line from the stored PV,
 detects piece traps, scores how forcing the line is, tags a theme, and
 applies the acceptance policy:
 
-  accept mate in <= MATE_IN_MAX, net material >= MATERIAL_GAIN_ACCEPT
-  within MATERIAL_GAIN_PLIES, a clean piece trap, a forced/winning
-  promotion, or high margin (>= MARGIN_HIGH) with a forcing line.
-  Pure quiet positional squeezes are rejected as "quiet_positional".
+  a position only counts as a puzzle when the solver's last move in the
+  solution line ends in checkmate, a promotion, or a capture. Theme tags
+  (mate / promotion / trap / material / forcing / quiet) stay descriptive;
+  trap and forcing lines on their own no longer accept.
 
 Limitations (deliberate, documented):
   - Attack/defence counting is static plus a 1-ply trade check. It does
@@ -48,6 +48,16 @@ MARGIN_HIGH = 0.12
 FORCING_MIN = 2  # forcing plies (check/capture) within FORCING_WINDOW
 FORCING_WINDOW = 4
 TRAP_MIN_VALUE = 300  # only minor pieces and up count as "trapped"
+# Solution lines keep at most this many plies (3 solver moves + replies).
+SOLUTION_MAX_PLIES = 6
+# The solver is "up enough" to stop the line once ahead by a pawn after a
+# full opponent reply. Checked only on even plies so a hanging capture that
+# is immediately recaptured does not end the puzzle.
+SOLUTION_MATERIAL_STOP_CP = 100
+
+ENDING_MATE = "mate"
+ENDING_PROMOTION = "promotion"
+ENDING_CAPTURE = "capture"
 
 THEME_MATE = "mate"
 THEME_PROMOTION = "promotion"
@@ -127,6 +137,105 @@ def forcing_flags(
         board.push(move)
         flags.append(bool(is_capture or board.is_check()))
     return flags
+
+
+def build_solution_line(
+    fen_before: str,
+    best_uci: str,
+    pv_uci: List[str],
+    max_plies: int = SOLUTION_MAX_PLIES,
+) -> List[str]:
+    """Short forcing quiz line from the stored engine PV.
+
+    Stops at mate or once the solver is up SOLUTION_MATERIAL_STOP_CP after
+    a full opponent reply. A line that reaches neither is kept (capped at
+    `max_plies`) only while it stays forcing; otherwise it collapses to the
+    single best move rather than quizzing a quiet engine-PV continuation.
+    Served to the frontend as solution_moves_uci (routers/user_puzzles.py
+    reuses this, so extraction and grading agree on the line).
+    """
+    best_move_uci = (best_uci or "").strip().lower()
+    if not best_move_uci:
+        return []
+    try:
+        board = chess.Board(fen_before)
+        best_move = chess.Move.from_uci(best_move_uci)
+    except (ValueError, TypeError):
+        return [best_move_uci]
+    if best_move not in board.legal_moves:
+        return [best_move_uci]
+
+    raw_pv = [t.strip().lower() for t in (pv_uci or [])]
+    if not raw_pv or raw_pv[0] != best_move_uci:
+        raw_pv = [best_move_uci]
+
+    solver_color = board.turn
+    initial_material = material_balance(board, solver_color)
+    line: List[str] = []
+    for token in raw_pv[:max_plies]:
+        try:
+            move = chess.Move.from_uci(token)
+        except ValueError:
+            break
+        if move not in board.legal_moves:
+            break
+        board.push(move)
+        line.append(token)
+        if board.is_checkmate():
+            if board.turn != solver_color:
+                return line
+            break
+        if board.is_game_over(claim_draw=False):
+            break
+        # Check material only after a complete opponent reply, so a
+        # temporary capture that can immediately be recaptured does not
+        # end the puzzle.
+        if len(line) >= 2 and len(line) % 2 == 0:
+            if material_balance(board, solver_color) - initial_material >= SOLUTION_MATERIAL_STOP_CP:
+                return line
+
+    if len(line) > 1 and sum(forcing_flags(fen_before, line)) >= FORCING_MIN:
+        return line
+    return [best_move_uci]
+
+
+def solution_ending(
+    fen_before: str, best_uci: str, pv_uci: List[str]
+) -> Optional[str]:
+    """How the solution line concludes for the solver.
+
+    Returns ENDING_MATE / ENDING_PROMOTION / ENDING_CAPTURE when the
+    solver's last move in the built line mates, promotes, or captures;
+    otherwise None. Only the first three count as a puzzle.
+    """
+    line = build_solution_line(fen_before, best_uci, pv_uci)
+    if not line:
+        return None
+    try:
+        board = chess.Board(fen_before)
+    except ValueError:
+        return None
+    solver_color = board.turn
+    last_capture = False
+    last_promotion = False
+    for index, token in enumerate(line):
+        try:
+            move = chess.Move.from_uci(token)
+        except ValueError:
+            return None
+        if move not in board.legal_moves:
+            return None
+        if index % 2 == 0:
+            last_capture = board.is_capture(move)
+            last_promotion = move.promotion is not None
+        board.push(move)
+        if board.is_checkmate():
+            return ENDING_MATE if board.turn != solver_color else None
+    if last_promotion:
+        return ENDING_PROMOTION
+    if last_capture:
+        return ENDING_CAPTURE
+    return None
 
 
 @dataclass
@@ -286,31 +395,26 @@ def classify_quality(
 
 
 def decide(
-    quality: QualityReport, margin_ep: Optional[float]
+    quality: QualityReport, ending: Optional[str]
 ) -> Tuple[bool, Optional[str], Optional[str]]:
     """Acceptance policy. Returns (accept, theme, reject_reason).
 
-    Keeps mate-in-N, material winners, clean traps, and forced/winning
-    promotions outright; otherwise requires a high EP margin on a forcing
-    line (stored under the "forcing" theme) so quiet positional squeezes
-    fall out as "quiet_positional".
+    A position only counts as a puzzle when the solver's last move in the
+    solution line mates, promotes, or captures. Mate and promotion endings
+    keep their theme; a capture keeps the trap theme when the best move
+    also sets a clean trap, else material. Anything else falls out as
+    "no_concrete_ending" -- quiet squeezes included. An announced mate the
+    stored line cannot deliver is "mate_too_deep".
     """
-    if THEME_MATE in quality.themes:
-        return True, quality.primary, None
-    if quality.mate_in is not None:
-        # Announced mate beyond MATE_IN_MAX: the stored 6-ply line cannot
-        # represent it, so it is not a usable puzzle.
+    if quality.mate_in is not None and ending != ENDING_MATE:
+        # Announced mate beyond the stored line: not a usable puzzle.
         return False, None, "mate_too_deep"
-    if (
-        THEME_PROMOTION in quality.themes
-        or THEME_TRAP in quality.themes
-        or THEME_MATERIAL in quality.themes
-    ):
-        return True, quality.primary, None
-    if (
-        margin_ep is not None
-        and margin_ep >= MARGIN_HIGH
-        and quality.forcing >= FORCING_MIN
-    ):
-        return True, THEME_FORCING, None
-    return False, None, "quiet_positional"
+    if ending == ENDING_MATE:
+        return True, THEME_MATE, None
+    if ending == ENDING_PROMOTION:
+        return True, THEME_PROMOTION, None
+    if ending == ENDING_CAPTURE:
+        if quality.trap is not None:
+            return True, THEME_TRAP, None
+        return True, THEME_MATERIAL, None
+    return False, None, "no_concrete_ending"
