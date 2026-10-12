@@ -3,22 +3,25 @@
 Pipeline (valided by scripts/puzzle_extract_pilot/ against SF19):
   fetch (read-only integrations; Lichess with clocks=true) ->
   persist user_games -> Review per-ply screen on a PRIVATE deterministic
-  engine (MultiPV=2 @150k nodes) -> exclusions -> candidates
+  engine (MultiPV=2 @50k nodes) -> exclusions -> candidates
   (ep>=0.15, cp>=100, no label gate) -> dedupe + top-3/game cap ->
   Stage-2 verification on a nodes-only fresh-token engine
-  (MultiPV=4 @500k, Threads=1 Hash=16) + EP-margin uniqueness (>=0.10) ->
+  (MultiPV=4 @500k, Threads=1 Hash=16) + uniqueness (mate, or EP margin
+  over the second line) -> quality layer (services/puzzle_quality:
+  mate/material/trap/promotion theme tags + acceptance policy) ->
   user_puzzles + user_puzzle_entries.
 
 Runs in a FastAPI BackgroundTasks thread like the opponent import worker:
 own pool connection, per-game commits, heartbeat counters on the job row,
-private engines (never the Review singleton). Single-move puzzles only.
+private engines (never the Review singleton). Solutions use the stored
+engine PV, up to 3 player moves while the line stays forcing.
 """
 
 import logging
 import os
 import re
 from io import StringIO
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import chess
 import chess.engine
@@ -29,19 +32,18 @@ from core import database
 from core.game_analyzer import GameAnalyzer, expected_points
 from engines.stockfish_engine import StockfishEngine
 from llms.mock_explainer import MockExplainer
+from services.puzzle_quality import classify_quality, decide
 
 log = logging.getLogger(__name__)
 
-# Pilot placeholders (no labeling data yet; see the skipped-labeling note).
-# Screen budget follows the pilot's Stage-1 precedent (MultiPV=2 @50k):
-# screening only generates candidates, Stage-2 verifies. Margin follows the
-# pilot's margin-yield grids (0.05 keeps ~2-3x the candidates of 0.10 on
-# real-game mistakes); the bad-puzzle button is the quality backstop.
+# Quality gates live in services/puzzle_quality (pure board/PV analysis, no
+# engine calls). The margin constant below is only the Stage-1 candidate
+# precedent; Stage-2 acceptance is the quality layer's decide() policy
+# (mate / material / trap / promotion / high-margin-forcing).
 SCREEN_NODES = 50_000
 STAGE2_NODES = 500_000
 CAND_EP = 0.15
 CAND_CP = 100
-MARGIN_M = 0.05
 PER_GAME_CAP = 3
 MIN_MOVE = 8
 CLOCK_FRAC = 0.10
@@ -57,10 +59,6 @@ BULLET_TIME_CLASSES = frozenset(
 )
 _CLK_RE = re.compile(r"\[%clk\s+([0-9:.]+)\]")
 _TC_RE = re.compile(r"^\s*(\d+)(?:\+\d+)?\s*$")
-_PIECE_VALUES = {
-    chess.PAWN: 100, chess.KNIGHT: 320, chess.BISHOP: 330,
-    chess.ROOK: 500, chess.QUEEN: 900, chess.KING: 0,
-}
 
 
 def parse_clk_seconds(comment: str) -> Optional[float]:
@@ -388,11 +386,13 @@ def run_user_puzzle_job(job_id: str) -> None:
 
         kept = 0
         reject_counts: Dict[str, int] = {}
+        kept_by_theme: Dict[str, int] = {}
         for r in capped:
             try:
-                reason = _verify_and_store(conn, clerk_id, job_id, stage2, r, mode_str)
+                reason, theme = _verify_and_store(conn, clerk_id, job_id, stage2, r, mode_str)
                 if reason == "":
                     kept += 1
+                    kept_by_theme[theme or "myGame"] = kept_by_theme.get(theme or "myGame", 0) + 1
                 else:
                     reject_counts[reason] = reject_counts.get(reason, 0) + 1
                 with conn.cursor() as cur:
@@ -409,7 +409,11 @@ def run_user_puzzle_job(job_id: str) -> None:
 
         import json as _json
 
-        summary = {"exclusions": exclusion_counts, "rejects": reject_counts}
+        summary = {
+            "exclusions": exclusion_counts,
+            "rejects": reject_counts,
+            "kept_by_theme": kept_by_theme,
+        }
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE user_puzzle_jobs SET status='completed', completed_at=NOW(), "
@@ -597,19 +601,20 @@ def _screen_game(conn, analyzer: GameAnalyzer, book_lookup, g: Dict[str, Any], c
 
 
 def _verify_and_store(conn, clerk_id: str, job_id: str, stage2: _Stage2Engine,
-                      r: Dict[str, Any], mode_str: str) -> str:
-    """Stage-2 uniqueness check; stores puzzle + queue entry.
+                      r: Dict[str, Any], mode_str: str) -> Tuple[str, Optional[str]]:
+    """Stage-2 uniqueness + quality check; stores puzzle + queue entry.
 
-    Returns "" when kept, otherwise a short reject reason for the job
-    summary (so a 0-kept run explains itself).
+    Returns (reason, theme): ("", theme) when kept, otherwise a short
+    reject reason for the job summary (so a 0-kept run explains itself)
+    and None for the theme.
     """
     board = chess.Board(r["fen_before"])
     if sum(1 for _ in board.legal_moves) <= 1:
-        return "single_legal"
+        return "single_legal", None
     pvs = stage2.analyse_before(r["fen_before"], STAGE2_NODES)
     after = stage2.analyse_after(r["fen_after"], STAGE2_NODES)
     if not pvs or not pvs[0].get("move"):
-        return "no_engine_line"
+        return "no_engine_line", None
     rating = int(r["player_rating"] or 1500)
     best, second = pvs[0], (pvs[1] if len(pvs) > 1 else None)
     best_cp = best["cp"] if best["cp"] is not None else _mate_equiv(best["mate"])
@@ -619,34 +624,42 @@ def _verify_and_store(conn, clerk_id: str, job_id: str, stage2: _Stage2Engine,
     opp_cp = after["cp"] if after["cp"] is not None else _mate_equiv(after["mate"])
     played_cp = -opp_cp if opp_cp is not None else None
     if best_cp is None or played_cp is None:
-        return "no_engine_line"
+        return "no_engine_line", None
     # Stage 1 is a low-budget candidate screen. Recheck at Stage 2 that the
     # played move is still a meaningful mistake; a unique best move alone
     # does not make this position a puzzle. This also rejects candidates
     # where the deeper search now prefers the move the user actually played.
     if best.get("move") == r["played_uci"]:
-        return "played_is_best"
+        return "played_is_best", None
     verified_ep_loss = max(
         0.0,
         expected_points(best_cp, rating) - expected_points(played_cp, rating),
     )
     verified_cp_loss = max(0, int(round(best_cp - played_cp)))
     if verified_ep_loss < CAND_EP or verified_cp_loss < CAND_CP:
-        return "loss_below_threshold"
+        return "loss_below_threshold", None
     if best.get("mate") and best["mate"] > 0 and second is not None and (second.get("mate") or 0) > 0:
-        return "mate_mate"
+        return "mate_mate", None
     if best.get("mate") and best["mate"] > 0:
         margin = None
     elif second_cp is None:
-        return "no_second_line"
+        return "no_second_line", None
     else:
         margin = max(0.0, expected_points(best_cp, rating) - expected_points(second_cp, rating))
-        if margin < MARGIN_M:
-            return "margin_lt_%.2f" % MARGIN_M
+    # Quality layer: theme tags + acceptance policy (mate / material /
+    # trap / promotion / high-margin-forcing). Quiet positional squeezes
+    # fall out here even when the margin is comfortable.
+    quality = classify_quality(
+        r["fen_before"], best["move"], best.get("pv_uci") or [],
+        best.get("mate"),
+    )
+    accept, theme, reason = decide(quality, margin)
+    if not accept:
+        return reason or "quiet_positional", None
     try:
         best_san = board.san(chess.Move.from_uci(best["move"]))
     except ValueError:
-        return "no_engine_line"
+        return "no_engine_line", None
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute(
             """
@@ -683,10 +696,10 @@ def _verify_and_store(conn, clerk_id: str, job_id: str, stage2: _Stage2Engine,
             puzzle_id = row["id"]
         cur.execute(
             """
-            INSERT INTO user_puzzle_entries (user_id, puzzle_id)
-            VALUES (%s, %s)
+            INSERT INTO user_puzzle_entries (user_id, puzzle_id, theme)
+            VALUES (%s, %s, %s)
             ON CONFLICT DO NOTHING
             """,
-            (clerk_id, str(puzzle_id)),
+            (clerk_id, str(puzzle_id), theme or "myGame"),
         )
-    return ""
+    return "", theme
