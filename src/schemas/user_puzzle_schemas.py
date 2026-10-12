@@ -40,6 +40,8 @@ class UserPuzzleQueuePuzzle(BaseModel):
     move_number: int
     color: str
     side_to_move: str
+    source_username: str = ""
+    source_provider: str = ""
 
 
 class UserPuzzleQueueEntry(BaseModel):
@@ -49,6 +51,7 @@ class UserPuzzleQueueEntry(BaseModel):
     state: int = 1
     reps: int = 0
     lapses: int = 0
+    theme: Optional[str] = None
     puzzle: UserPuzzleQueuePuzzle
 
 
