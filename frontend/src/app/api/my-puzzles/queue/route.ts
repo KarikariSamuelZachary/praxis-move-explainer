@@ -5,6 +5,11 @@ import { getBackendConfig } from '@/lib/backend';
 export async function GET(request: NextRequest) {
   const { backendApiUrl, internalSecret } = getBackendConfig();
   const backendUrl = new URL('/api/my-puzzles/queue', backendApiUrl);
+  const incoming = request.nextUrl.searchParams;
+  for (const key of ['source_provider', 'source_username']) {
+    const value = incoming.get(key);
+    if (value) backendUrl.searchParams.set(key, value);
+  }
 
   try {
     const { userId } = await auth();
