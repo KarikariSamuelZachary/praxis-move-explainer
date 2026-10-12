@@ -377,6 +377,9 @@ export default function PuzzleExtractorPage() {
   // Last completed extraction, so a 0-kept run can explain itself.
   const [lastRun, setLastRun] = useState<ExtractJob | null>(null);
   const [deckKey, setDeckKey] = useState<string | null>(null);
+  const [confirmClear, setConfirmClear] = useState(false);
+  const [clearing, setClearing] = useState(false);
+  const [clearError, setClearError] = useState<string | null>(null);
   const [index, setIndex] = useState(0);
   const [completed, setCompleted] = useState(0);
   const [feedback, setFeedback] = useState<'idle' | 'correct' | 'mistake'>(
@@ -528,18 +531,46 @@ export default function PuzzleExtractorPage() {
     advance();
   }, [advance]);
 
-  const boardPuzzle: Puzzle | null = current
-    ? {
-        id: current.puzzle.id,
-        fen: current.puzzle.fen_before,
-        moves: current.puzzle.solution_moves_uci.length
-          ? current.puzzle.solution_moves_uci
-          : [current.puzzle.best_move_uci],
-        rating: 1500,
-        themes: [current.theme ?? 'myGame'],
-        gameUrl: current.puzzle.game_url,
-      }
-    : null;
+  const handleClear = useCallback(async () => {
+    if (clearing) return;
+    if (!confirmClear) {
+      setConfirmClear(true);
+      setClearError(null);
+      window.setTimeout(() => setConfirmClear(false), 5000);
+      return;
+    }
+    setConfirmClear(false);
+    setClearing(true);
+    try {
+      await api('/api/my-puzzles/puzzles', { method: 'DELETE' });
+      setDeckKey(null);
+      await loadQueue();
+    } catch (e) {
+      setClearError(e instanceof Error ? e.message : 'Clear failed.');
+    } finally {
+      setClearing(false);
+    }
+  }, [clearing, confirmClear, loadQueue]);
+
+  // Memoized on the active entry: rebuilding this object every render
+  // would retrigger the board's setup effect and snap back solution moves.
+  const boardPuzzle: Puzzle | null = useMemo(
+    () =>
+      current
+        ? {
+            id: current.puzzle.id,
+            fen: current.puzzle.fen_before,
+            moves:
+              current.puzzle.solution_moves_uci.length
+                ? current.puzzle.solution_moves_uci
+                : [current.puzzle.best_move_uci],
+            rating: 1500,
+            themes: [current.theme ?? 'myGame'],
+            gameUrl: current.puzzle.game_url,
+          }
+        : null,
+    [current]
+  );
   const themeLabel = current?.theme ?? null;
 
   const total = visible?.length ?? 0;
@@ -640,14 +671,31 @@ export default function PuzzleExtractorPage() {
             <h2 className="font-display text-2xl font-semibold text-[#f7e5c6]">
               Puzzle decks
             </h2>
-            <button
-              type="button"
-              onClick={() => setDialogOpen(true)}
-              className="rounded-lg border border-white/20 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
-            >
-              Extract more
-            </button>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleClear}
+                disabled={clearing || decks.length === 0}
+                className={`rounded-lg border px-4 py-2 text-sm font-semibold transition disabled:pointer-events-none disabled:opacity-40 ${
+                  confirmClear
+                    ? 'border-red-400/50 bg-red-500/15 text-red-300 hover:bg-red-500/25'
+                    : 'border-white/20 bg-white/5 text-white hover:bg-white/10'
+                }`}
+              >
+                {clearing ? 'Clearing' : confirmClear ? 'Confirm clear' : 'Clear'}
+              </button>
+              <button
+                type="button"
+                onClick={() => setDialogOpen(true)}
+                className="rounded-lg border border-white/20 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
+              >
+                Extract more
+              </button>
+            </div>
           </div>
+          {clearError && (
+            <p className="mt-2 text-sm text-red-400">{clearError}</p>
+          )}
           <div className="mt-4 grid gap-4 pb-8 md:grid-cols-2">
             {decks.map(({ deck, due }) => (
               <DeckCard
