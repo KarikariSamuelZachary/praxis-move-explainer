@@ -1514,6 +1514,79 @@ def run_migrations():
                     ON opening_book_moves (position_key)
                 """
             )
+            # --- calc trainer -------------------------------------------------
+            # Static content library for the Blind Calculation trainer: clean
+            # forced segments mined offline by scripts/calc_probe/corpus.py
+            # (Stockfish 19, MultiPV 2@50k / 4@500k, 150 cp margin) and loaded
+            # by scripts/load_calc_segments.py. Same DATA-not-schema policy as
+            # the endgame library and puzzles: migrations create the empty
+            # table, the loader fills it out-of-band, no per-user state here.
+            #
+            # segment_fen is the position before the first solver move (serve-
+            # time code must NOT replay moves to find it); line_uci is the
+            # full interleaved solver/defender line, solver move first, ending
+            # on a solver move (2N-1 plies for N solver moves), space-joined.
+            # source_puzzle_id carries no FK (same rationale as puzzles, which
+            # is seeded out-of-band): UNIQUE (source_puzzle_id,
+            # start_solver_index) is the natural key and the loader's
+            # ON CONFLICT target.
+            #
+            # trivially_forced rows (every internal reply single-legal, zero
+            # engine verification) are loaded but flagged; serving excludes
+            # them by default. engine_verified_replies + forced_reply_count
+            # always sum to solver_move_count - 1, so "non-trivial" is a cheap
+            # engine_verified_replies > 0 filter (see the partial index).
+            # verified_level=1 means Stage 2 @ 500k; a later job may upgrade
+            # rows to 2M-node verification (verified_level=2) without
+            # re-mining. status uses the TEXT + CHECK style of
+            # endgame_topics.category (this schema has no native PG enums).
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS calc_segments (
+                    id                      UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    source_puzzle_id        TEXT NOT NULL,
+                    segment_fen             TEXT NOT NULL,
+                    line_uci                TEXT NOT NULL,
+                    solver_move_count       INTEGER NOT NULL CHECK (solver_move_count >= 2),
+                    start_solver_index      INTEGER NOT NULL,
+                    band                    TEXT,
+                    family                  TEXT,
+                    rating                  INTEGER,
+                    themes                  TEXT[] NOT NULL DEFAULT '{}',
+                    trivially_forced        BOOLEAN NOT NULL DEFAULT FALSE,
+                    engine_verified_replies INTEGER NOT NULL DEFAULT 0,
+                    min_cp_margin           INTEGER,
+                    mate_involved           BOOLEAN NOT NULL DEFAULT FALSE,
+                    checks                  INTEGER NOT NULL DEFAULT 0,
+                    captures                INTEGER NOT NULL DEFAULT 0,
+                    quiet                   INTEGER NOT NULL DEFAULT 0,
+                    promotions              INTEGER NOT NULL DEFAULT 0,
+                    verified_level          INTEGER NOT NULL DEFAULT 1,
+                    status                  TEXT NOT NULL DEFAULT 'active'
+                        CHECK (status IN ('active', 'retired')),
+                    engine_version          TEXT,
+                    created_at              TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    UNIQUE (source_puzzle_id, start_solver_index)
+                )
+                """
+            )
+            # Selection path: active non-trivial segments by length and
+            # rating band. Partial index keeps trivially_forced/retired rows
+            # (loaded but unserved) out of the index.
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_calc_segments_select
+                    ON calc_segments (status, solver_move_count, rating)
+                    WHERE trivially_forced = false AND status = 'active'
+                """
+            )
+            # Rating-ordered browsing/fallback path.
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_calc_segments_rating
+                    ON calc_segments (status, rating)
+                """
+            )
         conn.commit()
         log.info("Database migrations completed successfully")
     except Exception:
