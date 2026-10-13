@@ -586,11 +586,6 @@ export default function PuzzleExtractorPage() {
     void scoreAttempt(attemptedMovesRef.current);
   }, [scoreAttempt]);
 
-  const handleSkip = useCallback(() => {
-    scoredRef.current = true;
-    advance();
-  }, [advance]);
-
   const handleClear = useCallback(async () => {
     if (clearing) return;
     if (!confirmClear) {
@@ -853,15 +848,6 @@ export default function PuzzleExtractorPage() {
                 className={`${PUZZLE_CARD_CLASS} flex h-14 w-full shrink-0 items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5`}
               >
                 Next Puzzle
-              </button>
-            )}
-            {!result && (
-              <button
-                type="button"
-                onClick={handleSkip}
-                className={`${PUZZLE_CARD_CLASS} flex h-14 w-full shrink-0 items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5`}
-              >
-                Skip
               </button>
             )}
           </section>
