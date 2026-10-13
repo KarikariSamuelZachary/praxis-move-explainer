@@ -964,6 +964,16 @@ def run_migrations():
                     ADD COLUMN IF NOT EXISTS summary JSONB NOT NULL DEFAULT '{}'::jsonb
                 """
             )
+            # Alternate accepted root lines (Stage-2 MultiPV 2-4) as PV
+            # strings, so grading can accept near-equivalent moves without
+            # any engine call at attempt time. Rebuilt into quiz lines at
+            # serve time with the same helper extraction uses.
+            cur.execute(
+                """
+                ALTER TABLE user_puzzles
+                    ADD COLUMN IF NOT EXISTS alt_pvs JSONB NOT NULL DEFAULT '[]'::jsonb
+                """
+            )
 
             # A Clerk account can be deleted and recreated with the same
             # email address. The onboarding reconciliation path then renames
