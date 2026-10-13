@@ -137,13 +137,6 @@ function providerLabel(provider: string): string {
   return '';
 }
 
-function countSummary(record?: Record<string, number> | null): string {
-  const entries = Object.entries(record ?? {});
-  return entries.length
-    ? entries.map(([k, v]) => `${v} ${k}`).join(', ')
-    : '';
-}
-
 function ExternalLinkIcon() {
   return (
     <svg className="h-3.5 w-3.5" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" viewBox="0 0 24 24" aria-hidden="true">
@@ -383,8 +376,6 @@ export default function PuzzleExtractorPage() {
   const [queue, setQueue] = useState<QueueEntry[] | null>(null);
   const [queueError, setQueueError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
-  // Last completed extraction, so a 0-kept run can explain itself.
-  const [lastRun, setLastRun] = useState<ExtractJob | null>(null);
   const [deckKey, setDeckKey] = useState<string | null>(null);
   const [confirmClear, setConfirmClear] = useState(false);
   const [clearing, setClearing] = useState(false);
@@ -482,8 +473,9 @@ export default function PuzzleExtractorPage() {
     hintsUsedRef.current = 0;
     startTimeRef.current = Date.now();
     if (index + 1 >= visible.length) {
-      setCompleted(visible.length);
-      setIndex(visible.length);
+      setDeckKey(null);
+      setIndex(0);
+      setCompleted(0);
       return;
     }
     setCompleted((c) => c + 1);
@@ -597,8 +589,7 @@ export default function PuzzleExtractorPage() {
         {dialogOpen && (
           <ExtractDialog
             onClose={() => setDialogOpen(false)}
-            onDone={async (status) => {
-              setLastRun(status);
+            onDone={async () => {
               await loadQueue();
             }}
           />
@@ -696,36 +687,6 @@ export default function PuzzleExtractorPage() {
                       : `${completed} of ${total} done`}
                   </span>
                 </div>
-                {!current && (
-                  <p className="mt-2 text-[11px] leading-4 text-white/40">
-                    {lastRun && lastRun.status === 'completed' && lastRun.puzzles_kept === 0 ? (
-                      <>
-                        No keepers this time. Screened {lastRun.screened_games}{' '}
-                        games, found {lastRun.candidates} candidate mistakes,
-                        but none had a single clear best move
-                        {countSummary(lastRun.summary?.rejects)
-                          ? ` (${countSummary(lastRun.summary?.rejects)})`
-                          : ''}
-                        {countSummary(lastRun.summary?.exclusions)
-                          ? `; excluded ${countSummary(lastRun.summary?.exclusions)}`
-                          : ''}
-                        . Try more games or longer time controls.
-                      </>
-                    ) : (
-                      <>
-                        Queue clear. Extract more games to keep practicing.
-                        {lastRun?.status === 'completed' &&
-                        countSummary(lastRun.summary?.kept_by_theme)
-                          ? ` Last run kept by theme: ${countSummary(lastRun.summary?.kept_by_theme)}.`
-                          : ''}
-                        {lastRun?.status === 'completed' &&
-                        countSummary(lastRun.summary?.rejects)
-                          ? ` Rejected: ${countSummary(lastRun.summary?.rejects)}.`
-                          : ''}
-                      </>
-                    )}
-                  </p>
-                )}
                 <button
                   type="button"
                   onClick={() => setDialogOpen(true)}
