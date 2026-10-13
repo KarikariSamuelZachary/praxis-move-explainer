@@ -236,6 +236,13 @@ data/processed/endgame_candidates/
 #Database backups (pg_dump output, never commit dump files)
 backups/
 
+# Local SQLite databases and their journal/WAL/SHM sidecars
+*.sqlite*
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
 #Database url
 url
 
