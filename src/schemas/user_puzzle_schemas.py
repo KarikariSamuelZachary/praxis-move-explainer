@@ -35,7 +35,6 @@ class UserPuzzleQueuePuzzle(BaseModel):
     best_move_uci: str
     best_move_san: str
     solution_moves_uci: List[str] = Field(default_factory=list)
-    alt_lines: List[List[str]] = Field(default_factory=list)
     played_move_san: str
     game_url: str
     move_number: int

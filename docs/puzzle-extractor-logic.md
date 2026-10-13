@@ -19,9 +19,7 @@ a 20-game pull, so current yield is roughly 0.1 puzzles per game.
 ## 2. Stage-1 screen (cheap, per ply)
 
 Private deterministic Stockfish, MultiPV=2 at 50k nodes, only the user's
-own moves reviewed (screen budget overridable via USER_PUZZLE_SCREEN_NODES
-for experiments, e.g. 3x nodes to check for tactics the cheap screen
-misses). Exclusions before any search: non-standard variants,
+own moves reviewed. Exclusions before any search: non-standard variants,
 bullet time controls, opening-book moves (or move number <= 8 fallback),
 positions played with under 10% of base time left (10s floor).
 Candidate gates: expected-points loss >= 0.15 AND centipawn loss >= 100,
@@ -35,11 +33,8 @@ Position re-analysed before the mistake and after it. Rejects:
 - only one legal move, no engine line
 - deeper search now prefers the move the user actually played
 - mistake rechecked below 0.15 EP / 100 cp at depth
+- best and second lines both mate for the solver
 - no second line to compare against
-Two mating moves are both kept (best plus a mating alternate): with
-alternate-line grading either one solves, so non-uniqueness of mates is
-no longer a reject. Depth is still bounded because an alternate only
-qualifies when its mate is delivered inside the quiz line.
 EP margin of best over second line is computed and stored but has NO
 accept threshold anymore (informational only).
 
@@ -71,18 +66,12 @@ the promoted piece is recaptured immediately.
 ## 5. Storage, serving, practice
 
 Kept puzzles store FEN, mistake, best move, full PV, losses, margin,
-theme, game link, and qualifying alternate root PVs (Stage-2 MultiPV 2-4
-lines meeting the same loud/decisive bar that mate or sit within 0.05 EP
-of best), plus source account and provider joined from `user_games`. One queue entry per user per puzzle; re-extraction reuses
+theme, and game link (source account + provider joined from
+`user_games`). One queue entry per user per puzzle; re-extraction reuses
 rows. The frontend groups due cards into per-source deck cards
 (repertoire-style, heading + due count only) and solves one deck at a
-time against every stored line: the board follows whichever accepted
-line the user actually plays (opponent replies included), and completing
-any accepted line solves, so mating or near-equivalent alternatives pass
-instead of failing. Any solver move that delivers checkmate on the
-played path also solves, even if no stored line contains it (stalemates
-do not). A genuinely wrong move still fails the card (FSRS
-scheduling, bad-puzzle feedback excludes). A Clear button
+time against the stored line (server-side grading, one wrong move fails
+the card, FSRS scheduling, bad-puzzle feedback excludes). A Clear button
 wipes all extractor artefacts for the user; imported games are kept.
 
 ## 6. Where good puzzles currently die (levers for more yield)
@@ -100,6 +89,5 @@ wipes all extractor artefacts for the user; imported games are kept.
    a trap set up mid-line is invisible to the theme.
 7. Margin over the second line is stored but not enforced; uniqueness
    beyond "best != played" is unexploited.
-8. Grading is all-or-nothing per accepted line: near-misses retire cards
-   the same as blunders. (Alternates within 0.05 EP or mating are
-   accepted; anything further off still fails.)
+8. Grading is all-or-nothing on the full line; near-misses retire cards
+   the same as blunders.

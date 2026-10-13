@@ -15,9 +15,6 @@ export interface Puzzle {
   fen: string;
   initialFen?: string;
   moves: string[];
-  /** Near-equivalent alternate quiz lines (same quiz shape). The board
-   * follows whichever line the user actually plays; grading accepts any. */
-  altLines?: string[][];
   rating: number;
   themes: string[];
   gameUrl?: string;

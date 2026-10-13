@@ -25,7 +25,6 @@ type ExtractJob = {
   summary?: {
     exclusions?: Record<string, number>;
     rejects?: Record<string, number>;
-    kept_by_theme?: Record<string, number>;
   } | null;
 };
 
@@ -43,7 +42,6 @@ type QueueEntry = {
     best_move_uci: string;
     best_move_san: string;
     solution_moves_uci: string[];
-    alt_lines: string[][];
     played_move_san: string;
     game_url: string;
     move_number: number;
@@ -565,7 +563,6 @@ export default function PuzzleExtractorPage() {
               current.puzzle.solution_moves_uci.length
                 ? current.puzzle.solution_moves_uci
                 : [current.puzzle.best_move_uci],
-            altLines: current.puzzle.alt_lines ?? [],
             rating: 1500,
             themes: [current.theme ?? 'myGame'],
             gameUrl: current.puzzle.game_url,

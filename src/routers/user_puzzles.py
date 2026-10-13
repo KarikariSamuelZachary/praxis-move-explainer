@@ -19,7 +19,6 @@ FSRS scheduling mirrors routers/woodpecker.py; reviews never touch ratings.
 
 import logging
 from typing import Optional
-import json
 
 import chess
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Path, Request
@@ -89,7 +88,6 @@ _ENTRY_SELECT = """
             p.game_url,
             p.move_number,
             p.color,
-            p.alt_pvs,
             COALESCE(g.source_username, '') AS source_username,
             COALESCE(g.provider, '') AS source_provider
      FROM user_puzzle_entries e
@@ -110,65 +108,15 @@ def _solution_line(entry) -> list[str]:
     opponent reply. Built with the same helper extraction accepts, so the
     served quiz is exactly the accepted line.
     """
-    lines = _accepted_lines(entry)
-    return lines[0] if lines else []
-
-
-def _accepted_lines(entry) -> list[list[str]]:
-    """Best quiz line plus near-equivalent alternate lines.
-
-    Alternates were qualified at extraction (same loud/decisive bar, mate
-    or within ALT_EP_TOL of best) and are rebuilt here with the same
-    helper, so serving and grading agree without any engine call.
-    """
-    lines: list[list[str]] = []
     best_move_uci = (entry.get("best_move_uci") or "").strip()
     raw_pv = (entry.get("best_pv_uci") or "").split()
     try:
         fen_before = entry["fen_before"]
     except (KeyError, TypeError):
         lowered = best_move_uci.lower()
-        return [[lowered]] if lowered else []
+        return [lowered] if lowered else []
     line, _, _ = build_quiz_line(fen_before, best_move_uci, raw_pv)
-    if line:
-        lines.append(line)
-    seen = {tuple(line[::2])}
-    raw_alts = entry.get("alt_pvs") or []
-    if isinstance(raw_alts, str):
-        try:
-            raw_alts = json.loads(raw_alts)
-        except (ValueError, TypeError):
-            raw_alts = []
-    for pv_str in raw_alts if isinstance(raw_alts, list) else []:
-        alt_pv = pv_str.split() if isinstance(pv_str, str) else []
-        if not alt_pv:
-            continue
-        alt_line, ending, loud = build_quiz_line(fen_before, alt_pv[0], alt_pv)
-        if alt_line and ending and loud and tuple(alt_line[::2]) not in seen:
-            seen.add(tuple(alt_line[::2]))
-            lines.append(alt_line)
-    return lines
-
-
-def _replay_to(board: chess.Board, line: list[str], upto: int) -> None:
-    """Push the first `upto` solver moves of `line` with replies between,
-    landing on the position before solver move number `upto`."""
-    for index in range(upto):
-        board.push_uci(line[index * 2])
-        opponent_index = index * 2 + 1
-        if opponent_index < len(line):
-            board.push_uci(line[opponent_index])
-
-
-def _delivers_mate(base: chess.Board, line: list[str], index: int, move: chess.Move) -> bool:
-    """True when this solver move checkmates on the line's path, even if
-    the stored line expected something else later. A mate is a mate."""
-    board = base.copy()
-    _replay_to(board, line, index)
-    if move not in board.legal_moves:
-        return False
-    board.push(move)
-    return board.is_checkmate()
+    return line
 
 
 def _expected_move_san(
@@ -195,67 +143,47 @@ def _expected_move_san(
 
 
 def _validate_user_line(
-    entry, lines: list[list[str]], user_moves: list[str]
+    entry, solution_line: list[str], user_moves: list[str]
 ) -> tuple[bool, str | None]:
-    """Grade against every accepted line; the user solves by completing any.
+    """Validate legality and return whether the complete player line is right."""
+    try:
+        board = chess.Board(entry["fen_before"])
+        expected_user_moves = solution_line[::2]
+        if len(user_moves) > len(expected_user_moves):
+            raise HTTPException(status_code=400, detail="Too many moves in puzzle attempt")
 
-    A line claims the attempt while the played moves match its solver
-    prefix. The first divergence fails against the claimed line (best
-    wins ties); a fully matched but short prefix is incomplete, not
-    wrong. Raises 400 on malformed UCI, illegal moves, or moves past the
-    end of every claimed line.
-    """
-    if not lines or not lines[0]:
-        raise HTTPException(status_code=500, detail="Stored puzzle has no legal solution move")
-    try:
-        parsed = [chess.Move.from_uci(uci) for uci in user_moves]
-    except (ValueError, TypeError):
-        raise HTTPException(status_code=400, detail="Malformed move in moves_uci")
-    try:
-        base = chess.Board(entry["fen_before"])
+        all_match = True
+        for index, uci in enumerate(user_moves):
+            if index >= len(expected_user_moves):
+                raise HTTPException(status_code=400, detail="Too many moves in puzzle attempt")
+            try:
+                move = chess.Move.from_uci(uci)
+            except ValueError:
+                raise HTTPException(status_code=400, detail="Malformed move in moves_uci")
+            if move not in board.legal_moves:
+                raise HTTPException(status_code=400, detail="Illegal move in puzzle attempt")
+
+            expected_uci = expected_user_moves[index]
+            if uci != expected_uci:
+                all_match = False
+                if index != len(user_moves) - 1:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="Moves after the first incorrect move are not accepted",
+                    )
+                break
+
+            board.push(move)
+            opponent_index = index * 2 + 1
+            if index + 1 < len(user_moves) and opponent_index < len(solution_line):
+                board.push_uci(solution_line[opponent_index])
+
+        solved = all_match and len(user_moves) == len(expected_user_moves)
+        return solved, _expected_move_san(entry, solution_line, user_moves)
+    except HTTPException:
+        raise
     except (ValueError, TypeError) as exc:
         raise HTTPException(status_code=500, detail="Stored puzzle line is invalid") from exc
-
-    active: list[str] | None = None
-    for index, uci in enumerate(user_moves):
-        claiming = [
-            line for line in lines
-            if len(line[::2]) > index and line[::2][: index + 1] == user_moves[: index + 1]
-        ]
-        if claiming:
-            active = claiming[0]
-            board = base.copy()
-            try:
-                _replay_to(board, active, index)
-            except (ValueError, TypeError) as exc:
-                raise HTTPException(status_code=500, detail="Stored puzzle line is invalid") from exc
-            if parsed[index] not in board.legal_moves:
-                raise HTTPException(status_code=400, detail="Illegal move in puzzle attempt")
-            if index == len(user_moves) - 1 and _delivers_mate(base, active, index, parsed[index]):
-                return True, None
-            continue
-        ref = active or lines[0]
-        if index > 0 and any(line[::2] == user_moves[:index] for line in lines):
-            raise HTTPException(status_code=400, detail="Too many moves in puzzle attempt")
-        if index != len(user_moves) - 1:
-            raise HTTPException(
-                status_code=400,
-                detail="Moves after the first incorrect move are not accepted",
-            )
-        try:
-            ref_board = base.copy()
-            _replay_to(ref_board, ref, index)
-        except (ValueError, TypeError) as exc:
-            raise HTTPException(status_code=500, detail="Stored puzzle line is invalid") from exc
-        if parsed[index] not in ref_board.legal_moves:
-            raise HTTPException(status_code=400, detail="Illegal move in puzzle attempt")
-        if _delivers_mate(base, ref, index, parsed[index]):
-            return True, None
-        return False, _expected_move_san(entry, ref, user_moves)
-
-    if active is not None and len(user_moves) == len(active[::2]):
-        return True, None
-    return False, None
 
 
 @router.post("/extract", response_model=UserPuzzleExtractStartResponse, status_code=202)
@@ -323,7 +251,6 @@ def get_queue(
     out = []
     for row in rows:
         side = "black" if row["fen_before"].split(" ")[1:2] == ["b"] else "white"
-        accepted = _accepted_lines(row)
         out.append(
             UserPuzzleQueueEntry(
                 id=row["id"],
@@ -338,8 +265,7 @@ def get_queue(
                     "fen_before": row["fen_before"],
                     "best_move_uci": row["best_move_uci"],
                     "best_move_san": row["best_move_san"],
-                    "solution_moves_uci": accepted[0] if accepted else [],
-                    "alt_lines": accepted[1:],
+                    "solution_moves_uci": _solution_line(row),
                     "played_move_san": row["played_move_san"],
                     "game_url": row["game_url"],
                     "move_number": row["move_number"],
@@ -404,21 +330,19 @@ def record_attempt(body: UserPuzzleAttemptRequest, request: Request, conn=Depend
     except (ValueError, TypeError):
         conn.rollback()
         raise HTTPException(status_code=500, detail="Stored puzzle position is invalid")
-    solution_lines = _accepted_lines(entry)
-    if not solution_lines:
+    solution_line = _solution_line(entry)
+    if not solution_line:
         conn.rollback()
         raise HTTPException(status_code=500, detail="Stored puzzle has no legal solution move")
-    solution_line = solution_lines[0]
     try:
-        solved, expected_move_san = _validate_user_line(entry, solution_lines, user_moves)
+        solved, expected_move_san = _validate_user_line(entry, solution_line, user_moves)
     except HTTPException:
         conn.rollback()
         raise
     if not solved and not body.hints_used:
-        if any(
-            user_moves == line[::2][: len(user_moves)]
-            for line in solution_lines
-        ):
+        expected_user_moves = solution_line[::2]
+        prefix_is_correct = user_moves == expected_user_moves[: len(user_moves)]
+        if prefix_is_correct:
             conn.rollback()
             raise HTTPException(status_code=400, detail="Puzzle line is incomplete")
 
