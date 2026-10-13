@@ -62,6 +62,9 @@ def parse_args(argv=None):
     ap.add_argument("--chunk", type=int, default=100)
     ap.add_argument("--fetch0", type=int, default=3000)
     ap.add_argument("--max-hours", type=float, default=None)
+    ap.add_argument("--backup-every", type=int, default=10,
+                    help="SQLite backup to <out>.bak every N chunks "
+                         "(box already ate one DB to corruption)")
     ap.add_argument("--report", default=None)
     return ap.parse_args(argv)
 
@@ -312,6 +315,22 @@ def main(argv=None) -> int:
                 probe_mod.write_call_log(con, run_id, new)
                 dumped[id(e)] = have + len(new)
 
+    chunks_since_backup = [0]
+
+    def maybe_backup() -> None:
+        chunks_since_backup[0] += 1
+        if chunks_since_backup[0] < args.backup_every:
+            return
+        chunks_since_backup[0] = 0
+        try:
+            bak = sqlite3.connect(args.out + ".bak")
+            with bak:
+                con.backup(bak)
+            bak.close()
+            print(f"[corpus] backup written ({args.out}.bak)", flush=True)
+        except Exception as e:
+            print(f"[corpus] BACKUP FAILED: {e}", flush=True)
+
     def work(cand):
         try:
             res = probe_mod.analyse_puzzle(vargs, pool, cand)
@@ -426,6 +445,7 @@ def main(argv=None) -> int:
                 con.commit()  # chunk boundary
                 dump_calls()
                 con.commit()
+                maybe_backup()
                 total_done += len(chunk)
                 cell_state[cell]["processed"] += len(chunk)
                 cell_state[cell]["status"] = "active"
