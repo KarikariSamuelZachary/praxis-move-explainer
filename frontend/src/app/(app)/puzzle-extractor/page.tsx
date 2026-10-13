@@ -25,6 +25,7 @@ type ExtractJob = {
   summary?: {
     exclusions?: Record<string, number>;
     rejects?: Record<string, number>;
+    kept_by_theme?: Record<string, number>;
   } | null;
 };
 
@@ -42,6 +43,7 @@ type QueueEntry = {
     best_move_uci: string;
     best_move_san: string;
     solution_moves_uci: string[];
+    alt_lines: string[][];
     played_move_san: string;
     game_url: string;
     move_number: number;
@@ -133,6 +135,13 @@ function providerLabel(provider: string): string {
   if (provider === 'lichess') return 'Lichess';
   if (provider === 'chesscom') return 'Chess.com';
   return '';
+}
+
+function countSummary(record?: Record<string, number> | null): string {
+  const entries = Object.entries(record ?? {});
+  return entries.length
+    ? entries.map(([k, v]) => `${v} ${k}`).join(', ')
+    : '';
 }
 
 function ExternalLinkIcon() {
@@ -564,6 +573,7 @@ export default function PuzzleExtractorPage() {
               current.puzzle.solution_moves_uci.length
                 ? current.puzzle.solution_moves_uci
                 : [current.puzzle.best_move_uci],
+            altLines: current.puzzle.alt_lines ?? [],
             rating: 1500,
             themes: [current.theme ?? 'myGame'],
             gameUrl: current.puzzle.game_url,
@@ -614,58 +624,7 @@ export default function PuzzleExtractorPage() {
               </button>
             </div>
           </div>
-        ) : (
-        <div className="grid gap-6 xl:min-h-0 xl:flex-1 xl:grid-cols-[20rem_minmax(0,1fr)_22rem] xl:pt-5">
-          {/* ============ LEFT: QUEUE INFO ============ */}
-          <section className="order-2 mt-6 flex min-h-0 flex-col gap-5 xl:order-none xl:mt-0 xl:h-[min(calc(100vw-800px),calc(100vh-70px))]">
-            <button
-              type="button"
-              onClick={() => setDeckKey(null)}
-              className="inline-flex shrink-0 items-center gap-1 self-start text-sm font-semibold text-white/60 transition hover:text-white"
-            >
-              <BackIcon />
-              {activeDeck?.username ?? 'Decks'}
-            </button>
-            <div
-              className={`${WOOD_PANEL_CLASS} flex shrink-0 items-center gap-4 p-5`}
-              style={WOOD_PANEL_STYLE}
-            >
-              <div className="min-w-0 flex-1">
-                <div className="text-[11px] font-bold uppercase tracking-[0.25em] text-white/40">
-                  Puzzles due
-                </div>
-                <div className="mt-1.5 flex items-end gap-2.5">
-                  <span className="font-display text-[34px] font-semibold leading-none text-[#f7e5c6]">
-                    {total - completed}
-                  </span>
-                  <span className="mb-0.5 rounded-full bg-white/10 px-2 py-0.5 text-xs font-bold text-white/60">
-                    {total === 0
-                      ? 'queue empty'
-                      : `${completed} of ${total} done`}
-                  </span>
-                </div>
-                {!current && (
-                  <p className="mt-2 text-[11px] leading-4 text-white/40">
-                    {lastRun && lastRun.status === 'completed' && lastRun.puzzles_kept === 0 ? (
-                      <>
-                        No keepers this time. Screened {lastRun.screened_games}{' '}
-                        games, found {lastRun.candidates} candidate mistakes,
-                        but none had a single clear best move
-                        {lastRun.summary?.rejects
-                          ? ` (${Object.entries(lastRun.summary.rejects)
-                              .map(([k, v]) => `${v} ${k}`)
-                              .join(', ')})`
-                          : ''}
-                        {lastRun.summary?.exclusions
-                          ? `; excluded ${Object.entries(
-                              lastRun.summary.exclusions
-                            )
-                              .map(([k, v]) => `${v} ${k}`)
-                              .join(', ')}`
-                          : ''}
-                        . Try more games or longer time controls.
-                      </>
-        ) : deckKey === null ? (
+        ) : deckKey === null && decks.length > 0 ? (
         <div className="mx-auto w-full max-w-3xl px-1 pt-6">
           <div className="flex items-center justify-between gap-4">
             <h2 className="font-display text-2xl font-semibold text-[#f7e5c6]">
@@ -708,7 +667,62 @@ export default function PuzzleExtractorPage() {
           </div>
         </div>
         ) : (
-                      'Queue clear. Extract more games to keep practicing.'
+        <div className="grid gap-6 xl:min-h-0 xl:flex-1 xl:grid-cols-[20rem_minmax(0,1fr)_22rem] xl:pt-5">
+          {/* ============ LEFT: QUEUE INFO ============ */}
+          <section className="order-2 mt-6 flex min-h-0 flex-col gap-5 xl:order-none xl:mt-0 xl:h-[min(calc(100vw-800px),calc(100vh-70px))]">
+            <button
+              type="button"
+              onClick={() => setDeckKey(null)}
+              className="inline-flex shrink-0 items-center gap-1 self-start text-sm font-semibold text-white/60 transition hover:text-white"
+            >
+              <BackIcon />
+              {activeDeck?.username ?? 'Decks'}
+            </button>
+            <div
+              className={`${WOOD_PANEL_CLASS} flex shrink-0 items-center gap-4 p-5`}
+              style={WOOD_PANEL_STYLE}
+            >
+              <div className="min-w-0 flex-1">
+                <div className="text-[11px] font-bold uppercase tracking-[0.25em] text-white/40">
+                  Puzzles due
+                </div>
+                <div className="mt-1.5 flex items-end gap-2.5">
+                  <span className="font-display text-[34px] font-semibold leading-none text-[#f7e5c6]">
+                    {total - completed}
+                  </span>
+                  <span className="mb-0.5 rounded-full bg-white/10 px-2 py-0.5 text-xs font-bold text-white/60">
+                    {total === 0
+                      ? 'queue empty'
+                      : `${completed} of ${total} done`}
+                  </span>
+                </div>
+                {!current && (
+                  <p className="mt-2 text-[11px] leading-4 text-white/40">
+                    {lastRun && lastRun.status === 'completed' && lastRun.puzzles_kept === 0 ? (
+                      <>
+                        No keepers this time. Screened {lastRun.screened_games}{' '}
+                        games, found {lastRun.candidates} candidate mistakes,
+                        but none had a single clear best move
+                        {countSummary(lastRun.summary?.rejects)
+                          ? ` (${countSummary(lastRun.summary?.rejects)})`
+                          : ''}
+                        {countSummary(lastRun.summary?.exclusions)
+                          ? `; excluded ${countSummary(lastRun.summary?.exclusions)}`
+                          : ''}
+                        . Try more games or longer time controls.
+                      </>
+                    ) : (
+                      <>
+                        Queue clear. Extract more games to keep practicing.
+                        {lastRun?.status === 'completed' &&
+                        countSummary(lastRun.summary?.kept_by_theme)
+                          ? ` Last run kept by theme: ${countSummary(lastRun.summary?.kept_by_theme)}.`
+                          : ''}
+                        {lastRun?.status === 'completed' &&
+                        countSummary(lastRun.summary?.rejects)
+                          ? ` Rejected: ${countSummary(lastRun.summary?.rejects)}.`
+                          : ''}
+                      </>
                     )}
                   </p>
                 )}
