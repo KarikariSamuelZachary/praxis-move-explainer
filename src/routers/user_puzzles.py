@@ -470,42 +470,100 @@ def clear_puzzles(
     request: Request,
     conn=Depends(get_db),
     _: None = Depends(limit_by_clerk_user_id(limit=5, window=60)),
+    source_provider: Optional[str] = None,
+    source_username: Optional[str] = None,
 ):
-    """Clear button: delete every extractor artefact for the user.
+    """Clear button: delete extractor artefacts for the user.
 
-    Removes queue entries, attempts, feedback, puzzles, and jobs.
-    Imported games are kept, so a re-extract does not lose its corpus.
+    Without source params this removes everything (queue entries,
+    attempts, feedback, puzzles, jobs). With both source params only the
+    matching source deck is removed (entries, attempts, feedback, and
+    puzzles for it; jobs stay as extraction history). Imported games are
+    always kept, so a re-extract does not lose its corpus.
     """
     clerk_id = _clerk_id(request)
+    scoped = source_provider is not None and source_username is not None
     with conn.cursor() as cur:
-        cur.execute(
-            "DELETE FROM user_puzzle_attempts WHERE user_id = %s",
-            (clerk_id,),
-        )
-        attempts = cur.rowcount
-        cur.execute(
-            "DELETE FROM user_puzzle_entries WHERE user_id = %s",
-            (clerk_id,),
-        )
-        entries = cur.rowcount
-        cur.execute(
-            "DELETE FROM user_puzzle_feedback WHERE user_id = %s",
-            (clerk_id,),
-        )
-        cur.execute(
-            "DELETE FROM user_puzzles WHERE requested_by_user_id = %s",
-            (clerk_id,),
-        )
-        puzzles = cur.rowcount
-        cur.execute(
-            "DELETE FROM user_puzzle_jobs WHERE requested_by_user_id = %s",
-            (clerk_id,),
-        )
-        jobs = cur.rowcount
+        if scoped:
+            cur.execute(
+                """
+                WITH doomed AS (
+                    SELECT p.id FROM user_puzzles p
+                    LEFT JOIN user_games g ON g.id = p.source_game_id
+                    WHERE p.requested_by_user_id = %s
+                      AND COALESCE(g.provider, '') = %s
+                      AND COALESCE(g.source_username, '') = %s
+                )
+                SELECT COUNT(*) FROM user_puzzle_attempts
+                WHERE user_id = %s AND entry_id IN (
+                    SELECT e.id FROM user_puzzle_entries e
+                    WHERE e.user_id = %s AND e.puzzle_id IN (SELECT id FROM doomed)
+                )
+                """,
+                (clerk_id, source_provider, source_username,
+                 clerk_id, clerk_id),
+            )
+            attempts = cur.fetchone()[0]
+            cur.execute(
+                """
+                WITH doomed AS (
+                    SELECT p.id FROM user_puzzles p
+                    LEFT JOIN user_games g ON g.id = p.source_game_id
+                    WHERE p.requested_by_user_id = %s
+                      AND COALESCE(g.provider, '') = %s
+                      AND COALESCE(g.source_username, '') = %s
+                )
+                DELETE FROM user_puzzle_entries e
+                USING doomed WHERE e.user_id = %s AND e.puzzle_id = doomed.id
+                """,
+                (clerk_id, source_provider, source_username, clerk_id),
+            )
+            entries = cur.rowcount
+            cur.execute(
+                """
+                WITH doomed AS (
+                    SELECT p.id FROM user_puzzles p
+                    LEFT JOIN user_games g ON g.id = p.source_game_id
+                    WHERE p.requested_by_user_id = %s
+                      AND COALESCE(g.provider, '') = %s
+                      AND COALESCE(g.source_username, '') = %s
+                )
+                DELETE FROM user_puzzles p USING doomed WHERE p.id = doomed.id
+                """,
+                (clerk_id, source_provider, source_username),
+            )
+            puzzles = cur.rowcount
+            jobs = 0
+        else:
+            cur.execute(
+                "DELETE FROM user_puzzle_attempts WHERE user_id = %s",
+                (clerk_id,),
+            )
+            attempts = cur.rowcount
+            cur.execute(
+                "DELETE FROM user_puzzle_entries WHERE user_id = %s",
+                (clerk_id,),
+            )
+            entries = cur.rowcount
+            cur.execute(
+                "DELETE FROM user_puzzle_feedback WHERE user_id = %s",
+                (clerk_id,),
+            )
+            cur.execute(
+                "DELETE FROM user_puzzles WHERE requested_by_user_id = %s",
+                (clerk_id,),
+            )
+            puzzles = cur.rowcount
+            cur.execute(
+                "DELETE FROM user_puzzle_jobs WHERE requested_by_user_id = %s",
+                (clerk_id,),
+            )
+            jobs = cur.rowcount
     conn.commit()
     log.info(
-        "cleared puzzles for user %s: %s puzzles, %s entries, %s attempts, %s jobs",
+        "cleared puzzles for user %s: %s puzzles, %s entries, %s attempts, %s jobs (source=%s/%s)",
         clerk_id, puzzles, entries, attempts, jobs,
+        source_provider, source_username,
     )
     return UserPuzzleClearResponse(
         cleared_puzzles=puzzles,

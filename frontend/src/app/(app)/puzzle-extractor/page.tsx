@@ -121,12 +121,14 @@ type Deck = {
   key: string;
   username: string;
   provider: string;
+  sourceUsername: string;
 };
 
 function deckOf(entry: QueueEntry): Deck {
-  const username = entry.puzzle.source_username || 'Imported games';
+  const sourceUsername = entry.puzzle.source_username || '';
   const provider = entry.puzzle.source_provider || '';
-  return { key: `${provider} ${username}`, username, provider };
+  const username = sourceUsername || 'Imported games';
+  return { key: `${provider} ${username}`, username, provider, sourceUsername };
 }
 
 function providerLabel(provider: string): string {
@@ -153,16 +155,62 @@ function BackIcon() {
   );
 }
 
+function TrashIcon() {
+  return (
+    <svg
+      className="h-5 w-5"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.6"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+    >
+      <path d="M3 6h18" />
+      <path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2" />
+      <path d="M19 6 18 20a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6" />
+      <path d="M10 11v6" />
+      <path d="M14 11v6" />
+    </svg>
+  );
+}
+
 function DeckCard({
   deck,
   due,
   onOpen,
+  onDelete,
 }: {
   deck: Deck;
   due: number;
   onOpen: () => void;
+  onDelete: () => void;
 }) {
   const site = providerLabel(deck.provider);
+  const [confirming, setConfirming] = useState(false);
+  const timer = useRef<number | null>(null);
+
+  useEffect(
+    () => () => {
+      if (timer.current !== null) window.clearTimeout(timer.current);
+    },
+    []
+  );
+
+  function handleDelete(event: React.MouseEvent) {
+    event.stopPropagation();
+    if (!confirming) {
+      setConfirming(true);
+      if (timer.current !== null) window.clearTimeout(timer.current);
+      timer.current = window.setTimeout(() => setConfirming(false), 4000);
+      return;
+    }
+    if (timer.current !== null) window.clearTimeout(timer.current);
+    setConfirming(false);
+    onDelete();
+  }
+
   return (
     <article className={`${DECK_CARD_CLASS} relative flex items-stretch gap-4 p-4 transition hover:bg-[#241610]/60`}>
       <button
@@ -174,7 +222,7 @@ function DeckCard({
       <div className="relative z-10 pointer-events-none shrink-0">
         <BoardThumb />
       </div>
-      <div className="relative z-10 pointer-events-none flex min-w-0 flex-1 flex-col justify-center py-1">
+      <div className="relative z-10 pointer-events-none flex min-w-0 flex-1 flex-col justify-center py-1 pr-10">
         <h3 className="truncate font-display text-xl font-semibold text-[#f7e5c6]">
           {deck.username}
         </h3>
@@ -189,6 +237,19 @@ function DeckCard({
           </span>
         </div>
       </div>
+      <button
+        type="button"
+        onClick={handleDelete}
+        aria-label={confirming ? `Confirm remove ${deck.username}` : `Remove ${deck.username}`}
+        title={confirming ? 'Tap again to remove' : 'Remove deck'}
+        className={`absolute right-3 top-1/2 z-20 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-lg transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d97757] ${
+          confirming
+            ? 'bg-[#d97757]/20 text-[#f5b39a]'
+            : 'text-[#d97757] hover:bg-[#d97757]/10 hover:text-[#f5b39a]'
+        }`}
+      >
+        <TrashIcon />
+      </button>
     </article>
   );
 }
@@ -551,6 +612,29 @@ export default function PuzzleExtractorPage() {
     }
   }, [clearing, confirmClear, loadQueue]);
 
+  const handleDeleteDeck = useCallback(
+    async (deck: Deck) => {
+      if (clearing) return;
+      setClearing(true);
+      try {
+        const params = new URLSearchParams({
+          source_provider: deck.provider,
+          source_username: deck.sourceUsername,
+        });
+        await api(`/api/my-puzzles/puzzles?${params.toString()}`, {
+          method: 'DELETE',
+        });
+        setDeckKey(null);
+        await loadQueue();
+      } catch (e) {
+        setClearError(e instanceof Error ? e.message : 'Delete failed.');
+      } finally {
+        setClearing(false);
+      }
+    },
+    [clearing, loadQueue]
+  );
+
   // Memoized on the active entry: rebuilding this object every render
   // would retrigger the board's setup effect and snap back solution moves.
   const boardPuzzle: Puzzle | null = useMemo(
@@ -612,7 +696,7 @@ export default function PuzzleExtractorPage() {
               </button>
             </div>
           </div>
-        ) : deckKey === null && decks.length > 0 ? (
+        ) : deckKey === null ? (
         <div className="mx-auto w-full max-w-3xl px-1 pt-6">
           <div className="flex items-center justify-between gap-4">
             <h2 className="font-display text-2xl font-semibold text-[#f7e5c6]">
@@ -650,9 +734,19 @@ export default function PuzzleExtractorPage() {
                 deck={deck}
                 due={due}
                 onOpen={() => openDeck(deck.key)}
+                onDelete={() => handleDeleteDeck(deck)}
               />
             ))}
           </div>
+          {decks.length === 0 && (
+            <button
+              type="button"
+              onClick={() => setDialogOpen(true)}
+              className="mt-2 w-full rounded-lg border border-white/20 bg-white/5 px-4 py-3 text-sm font-semibold text-white transition hover:bg-white/10"
+            >
+              Extract puzzles
+            </button>
+          )}
         </div>
         ) : (
         <div className="grid gap-6 xl:min-h-0 xl:flex-1 xl:grid-cols-[20rem_minmax(0,1fr)_22rem] xl:pt-5">

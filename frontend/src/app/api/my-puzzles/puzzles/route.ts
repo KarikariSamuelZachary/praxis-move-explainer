@@ -2,9 +2,14 @@ import { NextRequest, NextResponse } from 'next/server';
 import { auth } from '@clerk/nextjs/server';
 import { getBackendConfig } from '@/lib/backend';
 
-export async function DELETE(_request: NextRequest) {
+export async function DELETE(request: NextRequest) {
   const { backendApiUrl, internalSecret } = getBackendConfig();
   const backendUrl = new URL('/api/my-puzzles/puzzles', backendApiUrl);
+  const incoming = request.nextUrl.searchParams;
+  for (const key of ['source_provider', 'source_username']) {
+    const value = incoming.get(key);
+    if (value !== null) backendUrl.searchParams.set(key, value);
+  }
 
   try {
     const { userId } = await auth();
