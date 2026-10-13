@@ -40,10 +40,13 @@ log = logging.getLogger(__name__)
 # engine calls). The margin constant below is only the Stage-1 candidate
 # precedent; Stage-2 acceptance is the quality layer's decide() policy
 # (the quiz must open loud and end decisive).
-SCREEN_NODES = 50_000
+SCREEN_NODES = int(os.environ.get("USER_PUZZLE_SCREEN_NODES", "50000"))
 STAGE2_NODES = 500_000
 CAND_EP = 0.15
 CAND_CP = 100
+# Alternate root lines (Stage-2 MultiPV 2-4) within this EP of best also
+# solve the card, so a near-equivalent move is not failed.
+ALT_EP_TOL = 0.05
 PER_GAME_CAP = 3
 MIN_MOVE = 8
 CLOCK_FRAC = 0.10
@@ -253,6 +256,42 @@ def _mate_equiv(mate: Optional[int]) -> Optional[float]:
     if mate is None:
         return None
     return 10000.0 if mate > 0 else -10000.0
+
+
+def _qualifying_alt_pvs(
+    pvs: List[Dict[str, Any]],
+    best: Dict[str, Any],
+    best_cp: float,
+    best_quiz_solver_moves: List[str],
+    fen_before: str,
+    rating: int,
+) -> List[str]:
+    """PV strings for near-equivalent root lines (Stage-2 MultiPV 2-4).
+
+    Pure board/PV math plus the stored evals: no engine calls, so it is
+    unit-testable. An alternate solves the card only if it meets the same
+    bar as best (loud opener, decisive ending) and it mates or sits within
+    ALT_EP_TOL of best. Stored on the puzzle so grading needs no engine.
+    """
+    out: List[str] = []
+    for alt in (pvs or [])[1:4]:
+        if not alt.get("move") or alt["move"] == best.get("move"):
+            continue
+        alt_pv = alt.get("pv_uci") or []
+        if not alt_pv or alt_pv[0] != alt["move"]:
+            continue
+        line, ending, loud = build_quiz_line(fen_before, alt["move"], alt_pv)
+        if not ending or not loud:
+            continue
+        if line[::2] == best_quiz_solver_moves:
+            continue
+        alt_cp = alt["cp"] if alt["cp"] is not None else _mate_equiv(alt["mate"])
+        if alt_cp is None:
+            continue
+        if (alt.get("mate") or 0) <= 0 and expected_points(alt_cp, rating) < expected_points(best_cp, rating) - ALT_EP_TOL:
+            continue
+        out.append(" ".join(alt_pv))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -638,8 +677,9 @@ def _verify_and_store(conn, clerk_id: str, job_id: str, stage2: _Stage2Engine,
     verified_cp_loss = max(0, int(round(best_cp - played_cp)))
     if verified_ep_loss < CAND_EP or verified_cp_loss < CAND_CP:
         return "loss_below_threshold", None
-    if best.get("mate") and best["mate"] > 0 and second is not None and (second.get("mate") or 0) > 0:
-        return "mate_mate", None
+    # Two mating moves are both accepted (best plus a mating alternate):
+    # whichever the user plays solves the card, and alternates only
+    # qualify when the mate is delivered inside the quiz line.
     if best.get("mate") and best["mate"] > 0:
         margin = None
     elif second_cp is None:
@@ -657,12 +697,21 @@ def _verify_and_store(conn, clerk_id: str, job_id: str, stage2: _Stage2Engine,
         r["fen_before"], best["move"], best.get("pv_uci") or [],
         best.get("mate"),
     )
-    _, ending, loud_first = build_quiz_line(
+    best_quiz, ending, loud_first = build_quiz_line(
         r["fen_before"], best["move"], best.get("pv_uci") or []
     )
     accept, theme, reason = decide(quality, ending, loud_first)
     if not accept:
         return reason or "no_concrete_ending", None
+    alt_pv_strs: List[str] = []
+    try:
+        # Alternates never affect acceptance: a weird PV here must not
+        # fail an already-accepted puzzle.
+        alt_pv_strs = _qualifying_alt_pvs(
+            pvs, best, best_cp, best_quiz[::2], r["fen_before"], rating
+        )
+    except Exception:  # noqa: BLE001
+        log.exception("alt-line picker failed for a candidate in job %s", job_id)
     try:
         best_san = board.san(chess.Move.from_uci(best["move"]))
     except ValueError:
@@ -674,10 +723,10 @@ def _verify_and_store(conn, clerk_id: str, job_id: str, stage2: _Stage2Engine,
                 requested_by_user_id, job_id, source_game_id, game_url,
                 ply_index, move_number, color, fen_before, position_key,
                 played_move_san, played_move_uci, best_move_san, best_move_uci,
-                best_pv_uci, ep_loss, cp_loss, margin_ep, player_rating, mode
+                best_pv_uci, alt_pvs, ep_loss, cp_loss, margin_ep, player_rating, mode
             )
             VALUES (%s, %s::uuid, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s, %s, %s)
+                    %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (requested_by_user_id, game_url, ply_index) DO NOTHING
             RETURNING id
             """,
@@ -685,18 +734,23 @@ def _verify_and_store(conn, clerk_id: str, job_id: str, stage2: _Stage2Engine,
              r.get("ply_index", r["move_number"]), r["move_number"], r["color"],
              r["fen_before"], r["position_key"], r["played_san"], r["played_uci"],
              best_san, best["move"],
-             " ".join(best.get("pv_uci") or []),
+             " ".join(best.get("pv_uci") or []), Json(alt_pv_strs),
              max(0.0, expected_points(best_cp, rating) - expected_points(played_cp, rating)),
              max(0, int(round(best_cp - played_cp))),
              margin, rating, mode_str),
         )
         row = cur.fetchone()
         if row is None:
-            # Re-extraction of an already-stored position: reuse, don't duplicate.
+            # Re-extraction of an already-stored position: reuse, don't
+            # duplicate. Refresh alt_pvs so rows kept before alternates
+            # existed get them as a backfill. Queue entries are only ever
+            # inserted (never updated), so FSRS state is untouched.
             cur.execute(
-                "SELECT id FROM user_puzzles WHERE requested_by_user_id=%s "
-                "AND game_url=%s AND ply_index=%s",
-                (clerk_id, r["game_url"], r.get("ply_index", r["move_number"])),
+                "UPDATE user_puzzles SET alt_pvs = %s "
+                "WHERE requested_by_user_id=%s AND game_url=%s AND ply_index=%s "
+                "RETURNING id",
+                (Json(alt_pv_strs), clerk_id, r["game_url"],
+                 r.get("ply_index", r["move_number"])),
             )
             puzzle_id = cur.fetchone()["id"]
         else:
