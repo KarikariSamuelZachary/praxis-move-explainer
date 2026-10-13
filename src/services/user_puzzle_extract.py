@@ -8,14 +8,13 @@ Pipeline (valided by scripts/puzzle_extract_pilot/ against SF19):
   Stage-2 verification on a nodes-only fresh-token engine
   (MultiPV=4 @500k, Threads=1 Hash=16) + uniqueness (mate, or EP margin
   over the second line) -> quality layer (services/puzzle_quality:
-  short solution line from the PV; accept only when the solver's last
-  move mates, promotes, or captures) ->
-  user_puzzles + user_puzzle_entries.
+  the quiz must open loud and end decisive; verifying replies are never
+  served) -> user_puzzles + user_puzzle_entries.
 
 Runs in a FastAPI BackgroundTasks thread like the opponent import worker:
 own pool connection, per-game commits, heartbeat counters on the job row,
 private engines (never the Review singleton). Solutions use the stored
-engine PV, up to 3 player moves while the line stays forcing.
+engine PV, truncated at the first decisive solver move.
 """
 
 import logging
@@ -33,15 +32,14 @@ from core import database
 from core.game_analyzer import GameAnalyzer, expected_points
 from engines.stockfish_engine import StockfishEngine
 from llms.mock_explainer import MockExplainer
-from services.puzzle_quality import classify_quality, decide, solution_ending
+from services.puzzle_quality import build_quiz_line, classify_quality, decide
 
 log = logging.getLogger(__name__)
 
 # Quality gates live in services/puzzle_quality (pure board/PV analysis, no
 # engine calls). The margin constant below is only the Stage-1 candidate
 # precedent; Stage-2 acceptance is the quality layer's decide() policy
-# (the solver's last move in the solution line must mate, promote, or
-# capture).
+# (the quiz must open loud and end decisive).
 SCREEN_NODES = 50_000
 STAGE2_NODES = 500_000
 CAND_EP = 0.15
@@ -648,19 +646,21 @@ def _verify_and_store(conn, clerk_id: str, job_id: str, stage2: _Stage2Engine,
         return "no_second_line", None
     else:
         margin = max(0.0, expected_points(best_cp, rating) - expected_points(second_cp, rating))
-    # Quality layer: a position only counts as a puzzle when the solver's
-    # last move in the solution line mates, promotes, or captures. Theme
+    # Quality layer: the quiz must open loud (best move gives check,
+    # captures, mates, or promotes) and end decisive (mate, promotion, or
+    # advantage-confirmed capture). The verifying replies are never
+    # quizzed, so the stored line always ends on the solver's move. Theme
     # follows the ending (capture keeps the trap tag when the best move
-    # also sets one); quiet positional squeezes fall out here even when
-    # the margin is comfortable.
+    # also sets one); quiet buildup falls out here even when the margin
+    # is comfortable.
     quality = classify_quality(
         r["fen_before"], best["move"], best.get("pv_uci") or [],
         best.get("mate"),
     )
-    ending = solution_ending(
+    _, ending, loud_first = build_quiz_line(
         r["fen_before"], best["move"], best.get("pv_uci") or []
     )
-    accept, theme, reason = decide(quality, ending)
+    accept, theme, reason = decide(quality, ending, loud_first)
     if not accept:
         return reason or "no_concrete_ending", None
     try:
