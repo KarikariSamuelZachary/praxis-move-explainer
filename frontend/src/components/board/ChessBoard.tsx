@@ -106,6 +106,12 @@ export default function ChessBoardComponent({
   const [hintSquare, setHintSquare] = useState<string | null>(null);
   const [moveToPromote, setMoveToPromote] = useState<PendingPromotionMove | null>(null);
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
+  // When the user plays the first move of a near-equivalent alternate
+  // line, the board follows that line (opponent replies included) instead
+  // of the best line. Grading accepts any accepted line server-side.
+  const [lineOverride, setLineOverride] = useState<string[] | null>(null);
+  const moves = lineOverride ?? puzzle.moves;
+  const attemptedCorrectRef = useRef<string[]>([]);
 
   const startTimeRef = useRef<number>(0);
   const gameRef = useRef<Chess>(game);
@@ -172,6 +178,8 @@ export default function ChessBoardComponent({
     gameRef.current = freshGame;
     setGame(freshGame);
     currentMoveIndexRef.current = 0;
+    setLineOverride(null);
+    attemptedCorrectRef.current = [];
     setPuzzleState('playing');
     setHintSquare(null);
     setMoveToPromote(null);
@@ -190,11 +198,13 @@ export default function ChessBoardComponent({
     // Same puzzle object identity can recur across parent re-renders
     // (grading toggles, timers). Only a new puzzle resets the board;
     // otherwise a scheduled opponent reply would be cancelled mid-line.
-    const nextPuzzleKey = `${puzzle.id}:${puzzle.fen}:${puzzle.moves.join(' ')}`;
+    const nextPuzzleKey = `${puzzle.id}:${puzzle.fen}:${puzzle.moves.join(' ')}:${(puzzle.altLines ?? []).map((line) => line.join(' ')).join('|')}`;
     if (puzzleKeyRef.current === nextPuzzleKey) {
       return;
     }
     puzzleKeyRef.current = nextPuzzleKey;
+    setLineOverride(null);
+    attemptedCorrectRef.current = [];
     clearOpponentMoveTimeout();
     clearWrongFlashTimeout();
     clearHintTimeout();
@@ -266,7 +276,7 @@ export default function ChessBoardComponent({
   /* eslint-enable react-hooks/set-state-in-effect */
 
   const scheduleOpponentMove = useCallback((baseGame: Chess, moveIndex: number) => {
-    const opponentMove = puzzle.moves[moveIndex];
+    const opponentMove = moves[moveIndex];
     if (!opponentMove) {
       setPuzzleState('solved');
       onPuzzleEnd?.();
@@ -302,7 +312,7 @@ export default function ChessBoardComponent({
         )
       );
 
-      if (nextPlayerMoveIndex >= puzzle.moves.length) {
+      if (nextPlayerMoveIndex >= moves.length) {
         setPuzzleState('solved');
         onPuzzleEnd?.();
         return;
@@ -310,7 +320,7 @@ export default function ChessBoardComponent({
 
       setPuzzleState('playing');
     }, 600);
-  }, [clearOpponentMoveTimeout, onPuzzleEnd, puzzle.moves, setBoardState]);
+  }, [clearOpponentMoveTimeout, moves, onPuzzleEnd, setBoardState]);
 
   const validateAndMakeMove = useCallback((
     sourceSquare: string,
@@ -322,19 +332,44 @@ export default function ChessBoardComponent({
     setHintSquare(null);
     clearHintTimeout();
 
-    const expectedMove = puzzle.moves[currentMoveIndexRef.current];
+    const expectedMove = moves[currentMoveIndexRef.current];
     if (!expectedMove) {
       return false;
     }
 
+    const attemptedUci = sourceSquare + targetSquare + (promotionChoice ?? '');
     const expectedFrom = expectedMove.slice(0, 2);
     const expectedTo = expectedMove.slice(2, 4);
     const expectedPromotion = expectedMove.length > 4 ? expectedMove[4] : undefined;
 
-    const isCorrectMove =
+    let line = moves;
+    let isCorrectMove =
       sourceSquare === expectedFrom &&
       targetSquare === expectedTo &&
       (promotionChoice ? promotionChoice === expectedPromotion : !expectedPromotion);
+
+    if (!isCorrectMove) {
+      // The user may have opened a near-equivalent alternate line instead.
+      // Follow whichever accepted line matches everything played so far;
+      // grading accepts any of them server-side.
+      const prefix = [...attemptedCorrectRef.current, attemptedUci];
+      const candidates = [puzzle.moves, ...(puzzle.altLines ?? [])];
+      const hit = candidates.find((candidate) => {
+        const solver = candidate.filter((_, i) => i % 2 === 0);
+        return (
+          solver.length >= prefix.length &&
+          solver.slice(0, prefix.length).every((move, i) => move === prefix[i])
+        );
+      });
+      if (hit && hit !== line) {
+        setLineOverride(hit === puzzle.moves ? null : hit);
+        line = hit;
+        isCorrectMove = true;
+      }
+    }
+    if (isCorrectMove) {
+      attemptedCorrectRef.current = [...attemptedCorrectRef.current, attemptedUci];
+    }
 
     if (!isCorrectMove) {
       onPuzzleFailed();
@@ -392,11 +427,11 @@ export default function ChessBoardComponent({
     }
 
     const opponentReplyIndex = currentMoveIndexRef.current + 1;
-    onMoveAttempted?.(sourceSquare + targetSquare + (promotionChoice ?? ''), true);
+    onMoveAttempted?.(attemptedUci, true);
     setBoardState(nextGame, opponentReplyIndex);
     clearWrongFlashTimeout();
 
-    if (opponentReplyIndex >= puzzle.moves.length) {
+    if (opponentReplyIndex >= line.length) {
       setPuzzleState('solved');
       const timeSeconds = Math.floor((Date.now() - startTimeRef.current) / 1000);
       onPuzzleSolved(timeSeconds);
@@ -425,7 +460,7 @@ export default function ChessBoardComponent({
     setPuzzleState('playing');
     scheduleOpponentMove(nextGame, opponentReplyIndex);
     return true;
-  }, [clearHintTimeout, clearSnapbackTimeout, clearWrongFlashTimeout, onPuzzleEnd, onPuzzleFailed, onPuzzleWrongMove, onPuzzleSolved, onMoveAttempted, puzzle, scheduleOpponentMove, setBoardState]);
+  }, [clearHintTimeout, clearSnapbackTimeout, clearWrongFlashTimeout, moves, onPuzzleEnd, onPuzzleFailed, onPuzzleWrongMove, onPuzzleSolved, onMoveAttempted, puzzle, scheduleOpponentMove, setBoardState]);
 
   const onDrop = useCallback((sourceSquare: string, targetSquare: string, pieceType: string) => {
     setSelectedSquare(null);
@@ -565,7 +600,7 @@ export default function ChessBoardComponent({
       return;
     }
 
-    const moveToShow = puzzle.moves[currentMoveIndexRef.current];
+    const moveToShow = moves[currentMoveIndexRef.current];
     if (!moveToShow) {
       return;
     }
@@ -595,7 +630,7 @@ export default function ChessBoardComponent({
       )
     );
 
-    if (nextIndex >= puzzle.moves.length) {
+    if (nextIndex >= moves.length) {
       setPuzzleState('solved');
       onPuzzleEnd?.();
       return;
@@ -603,14 +638,14 @@ export default function ChessBoardComponent({
 
     setPuzzleState('showing_solution');
     scheduleOpponentMove(nextGame, nextIndex);
-  }, [clearHintTimeout, clearWrongFlashTimeout, onPuzzleEnd, puzzle.moves, puzzleState, scheduleOpponentMove, setBoardState]);
+  }, [clearHintTimeout, clearWrongFlashTimeout, moves, onPuzzleEnd, puzzleState, scheduleOpponentMove, setBoardState]);
 
   const showHint = useCallback(() => {
     if (puzzleState !== 'playing') {
       return;
     }
 
-    const moveToShow = puzzle.moves[currentMoveIndexRef.current];
+    const moveToShow = moves[currentMoveIndexRef.current];
     if (!moveToShow) {
       return;
     }
@@ -623,7 +658,7 @@ export default function ChessBoardComponent({
       hintTimeoutRef.current = null;
     }, 4000);
     onHintRevealedRef.current?.();
-  }, [clearHintTimeout, puzzle.moves, puzzleState]);
+  }, [clearHintTimeout, moves, puzzleState]);
 
   useEffect(() => {
     if (apiRef) {
