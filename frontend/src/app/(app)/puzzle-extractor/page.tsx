@@ -155,6 +155,15 @@ function BackIcon() {
   );
 }
 
+function SettingsIcon() {
+  return (
+    <svg className="h-4 w-4" fill="none" stroke="currentColor" strokeLinecap="round" strokeLinejoin="round" strokeWidth="1.8" viewBox="0 0 24 24">
+      <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0L6.2 6.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.09a2 2 0 0 1 1 1.74v.5a2 2 0 0 1-1 1.74l-.15.09a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.09a2 2 0 0 1-1-1.74v-.5a2 2 0 0 1 1-1.74l.15-.09a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2Z" />
+      <circle cx="12" cy="12" r="3" />
+    </svg>
+  );
+}
+
 function TrashIcon() {
   return (
     <svg
@@ -445,8 +454,11 @@ export default function PuzzleExtractorPage() {
     'idle'
   );
   const [busy, setBusy] = useState(false);
+  const [autoAdvance, setAutoAdvance] = useState(true);
+  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
 
   const boardApi = useRef<BoardApi | null>(null);
+  const settingsRef = useRef<HTMLDivElement>(null);
   const scoredRef = useRef(false);
   const attemptedMovesRef = useRef<string[]>([]);
   const hintsUsedRef = useRef(0);
@@ -511,6 +523,33 @@ export default function PuzzleExtractorPage() {
     loadQueue();
   }, [loadQueue]);
 
+  useEffect(() => {
+    if (!isSettingsOpen) return;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      if (settingsRef.current && !settingsRef.current.contains(event.target as Node)) {
+        setIsSettingsOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setIsSettingsOpen(false);
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [isSettingsOpen]);
+
+  useEffect(() => {
+    if (!autoAdvance && advanceTimerRef.current !== null) {
+      window.clearTimeout(advanceTimerRef.current);
+      advanceTimerRef.current = null;
+    }
+  }, [autoAdvance]);
+
   useEffect(
     () => () => {
       if (advanceTimerRef.current !== null) {
@@ -562,7 +601,9 @@ export default function PuzzleExtractorPage() {
         });
         if (res.solved) {
           setFeedback('correct');
-          advanceTimerRef.current = window.setTimeout(advance, 1500);
+          if (autoAdvance) {
+            advanceTimerRef.current = window.setTimeout(advance, 1500);
+          }
         } else {
           setFeedback('mistake');
         }
@@ -572,7 +613,7 @@ export default function PuzzleExtractorPage() {
         setBusy(false);
       }
     },
-    [advance, busy, current]
+    [advance, autoAdvance, busy, current]
   );
 
   const handleMoveAttempted = useCallback((uci: string, isCorrect: boolean) => {
@@ -807,6 +848,79 @@ export default function PuzzleExtractorPage() {
                   />
                 </div>
               )}
+              <div ref={settingsRef} className="absolute right-2 top-2 z-30 xl:left-full xl:right-auto xl:top-0 xl:ml-[2px]">
+                <button
+                  type="button"
+                  onClick={() => setIsSettingsOpen((open) => !open)}
+                  className={`relative flex h-7 w-7 items-center justify-center rounded-md border text-[#f0e0c0] transition hover:scale-105 active:scale-95 ${
+                    isSettingsOpen
+                      ? 'border-[#d9b87c]/70 text-[#f7e5c6]'
+                      : 'border-black/60 hover:border-[#d9b87c]/45'
+                  }`}
+                  style={{
+                    borderRadius: '4px',
+                    background:
+                      'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.webp)',
+                    backgroundSize: 'cover',
+                    backgroundPosition: 'center',
+                    boxShadow:
+                      '0 0 0 2px #1a0a02, inset 0 2px 0 rgba(255,200,100,0.12), inset 0 -2px 0 rgba(0,0,0,0.5), 0 4px 12px rgba(0,0,0,0.5)',
+                  }}
+                  aria-label="Puzzle settings"
+                  aria-haspopup="dialog"
+                  aria-expanded={isSettingsOpen}
+                  title="Puzzle settings"
+                >
+                  <SettingsIcon />
+                </button>
+
+                {isSettingsOpen && (
+                  <div
+                    role="dialog"
+                    aria-label="Puzzle settings"
+                    className="absolute right-0 top-full mt-2 w-60 rounded-xl border border-[#d9b87c]/30 bg-[#1b120d]/95 p-3 text-white shadow-[0_18px_42px_rgba(0,0,0,0.52),inset_0_1px_0_rgba(255,255,255,0.08)] backdrop-blur-xl"
+                  >
+                    <div className="flex items-center justify-between border-b border-white/10 pb-2">
+                      <span className="text-[10px] font-bold uppercase tracking-[0.24em] text-[#f7e5c6]/65">
+                        Puzzle settings
+                      </span>
+                      <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-[#37be7e]">
+                        {autoAdvance ? 'Auto' : 'Manual'}
+                      </span>
+                    </div>
+
+                    <div className="mt-3 flex items-center justify-between gap-4">
+                      <div>
+                        <div className="text-sm font-semibold text-[#f7e5c6]">Auto-advance</div>
+                        <div className="mt-1 text-[11px] leading-4 text-white/45">
+                          Continue after the puzzle ends
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setAutoAdvance((enabled) => !enabled)}
+                        className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                          autoAdvance ? 'bg-[#10b981]' : 'bg-white/15'
+                        }`}
+                        aria-pressed={autoAdvance}
+                        aria-label="Toggle auto-advance"
+                      >
+                        <span
+                          className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                            autoAdvance ? 'translate-x-5' : 'translate-x-0.5'
+                          }`}
+                        />
+                      </button>
+                    </div>
+
+                    <div className="mt-3 border-t border-white/10 pt-2 text-[10px] text-white/40">
+                      {autoAdvance
+                        ? 'Next puzzle loads after a short pause.'
+                        : 'Use Next Puzzle when you are ready.'}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
             {current && (
               <div className="mx-auto mt-3 flex w-full max-w-[calc(100vh-70px)] items-center justify-between text-xs text-white/50">
@@ -841,15 +955,13 @@ export default function PuzzleExtractorPage() {
               )}
             </div>
 
-            {result && (
-              <button
-                type="button"
-                onClick={advance}
-                className={`${PUZZLE_CARD_CLASS} flex h-14 w-full shrink-0 items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5`}
-              >
-                Next Puzzle
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={advance}
+              className={`${PUZZLE_CARD_CLASS} flex h-14 w-full shrink-0 items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5`}
+            >
+              Next Puzzle
+            </button>
           </section>
         </div>
         )}
