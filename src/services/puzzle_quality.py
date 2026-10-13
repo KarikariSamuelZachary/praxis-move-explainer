@@ -6,14 +6,16 @@ the synchronous extraction worker for every Stage-2 survivor.
 Stage-2 (500k nodes, MultiPV=4) has already established that the best move
 is unique (EP margin over the second line) and that the played move was a
 real mistake. This layer answers the next question: is the best move
-*instructive*? It builds the short solution line from the stored PV,
-detects piece traps, scores how forcing the line is, tags a theme, and
-applies the acceptance policy:
+*instructive*? It builds the quiz line from the stored PV, detects piece
+traps, scores how forcing the line is, tags a theme, and applies the
+acceptance policy:
 
-  a position only counts as a puzzle when the solver's last move in the
-  solution line ends in checkmate, a promotion, or a capture. Theme tags
-  (mate / promotion / trap / material / forcing / quiet) stay descriptive;
-  trap and forcing lines on their own no longer accept.
+  the quiz must open loud (best move gives check, captures, mates, or
+  promotes) and end decisive (mate, promotion, or advantage-confirmed
+  capture). Replies are verification only and are never served, so every
+  quiz ends on the solver's move. Theme tags (mate / promotion / trap /
+  material / forcing / quiet) stay descriptive; trap and forcing lines on
+  their own no longer accept.
 
 Limitations (deliberate, documented):
   - Attack/defence counting is static plus a 1-ply trade check. It does
@@ -48,12 +50,13 @@ MARGIN_HIGH = 0.12
 FORCING_MIN = 2  # forcing plies (check/capture) within FORCING_WINDOW
 FORCING_WINDOW = 4
 TRAP_MIN_VALUE = 300  # only minor pieces and up count as "trapped"
-# Solution lines keep at most this many plies (3 solver moves + replies).
+# A capture counts as "to our advantage" once we are ahead by a pawn with
+# the reply on the board. Replies are verification only: they prove a
+# hanging capture is not immediately recaptured for nothing, and they are
+# never served or auto-played, so every quiz ends on the solver's move.
+CAPTURE_ADVANTAGE_CP = 100
+# Quiz lines keep at most this many plies.
 SOLUTION_MAX_PLIES = 6
-# The solver is "up enough" to stop the line once ahead by a pawn after a
-# full opponent reply. Checked only on even plies so a hanging capture that
-# is immediately recaptured does not end the puzzle.
-SOLUTION_MATERIAL_STOP_CP = 100
 
 ENDING_MATE = "mate"
 ENDING_PROMOTION = "promotion"
@@ -139,86 +142,25 @@ def forcing_flags(
     return flags
 
 
-def build_solution_line(
-    fen_before: str,
-    best_uci: str,
-    pv_uci: List[str],
-    max_plies: int = SOLUTION_MAX_PLIES,
-) -> List[str]:
-    """Short forcing quiz line from the stored engine PV.
-
-    Stops at mate or once the solver is up SOLUTION_MATERIAL_STOP_CP after
-    a full opponent reply. A line that reaches neither is kept (capped at
-    `max_plies`) only while it stays forcing; otherwise it collapses to the
-    single best move rather than quizzing a quiet engine-PV continuation.
-    Served to the frontend as solution_moves_uci (routers/user_puzzles.py
-    reuses this, so extraction and grading agree on the line).
-    """
-    best_move_uci = (best_uci or "").strip().lower()
-    if not best_move_uci:
-        return []
-    try:
-        board = chess.Board(fen_before)
-        best_move = chess.Move.from_uci(best_move_uci)
-    except (ValueError, TypeError):
-        return [best_move_uci]
-    if best_move not in board.legal_moves:
-        return [best_move_uci]
-
-    raw_pv = [t.strip().lower() for t in (pv_uci or [])]
-    if not raw_pv or raw_pv[0] != best_move_uci:
-        raw_pv = [best_move_uci]
-
-    solver_color = board.turn
-    initial_material = material_balance(board, solver_color)
-    line: List[str] = []
-    for token in raw_pv[:max_plies]:
-        try:
-            move = chess.Move.from_uci(token)
-        except ValueError:
-            break
-        if move not in board.legal_moves:
-            break
-        board.push(move)
-        line.append(token)
-        if board.is_checkmate():
-            if board.turn != solver_color:
-                return line
-            break
-        if board.is_game_over(claim_draw=False):
-            break
-        # Check material only after a complete opponent reply, so a
-        # temporary capture that can immediately be recaptured does not
-        # end the puzzle.
-        if len(line) >= 2 and len(line) % 2 == 0:
-            if material_balance(board, solver_color) - initial_material >= SOLUTION_MATERIAL_STOP_CP:
-                return line
-
-    if len(line) > 1 and sum(forcing_flags(fen_before, line)) >= FORCING_MIN:
-        return line
-    return [best_move_uci]
-
-
-def solution_ending(
-    fen_before: str, best_uci: str, pv_uci: List[str]
+def _quiz_ending(
+    fen_before: str, quiz: List[str], pv_uci: List[str]
 ) -> Optional[str]:
-    """How the solution line concludes for the solver.
+    """Ending of a quiz line that already ends on a solver ply.
 
-    Returns ENDING_MATE / ENDING_PROMOTION / ENDING_CAPTURE when the
-    solver's last move in the built line mates, promotes, or captures;
-    otherwise None. Only the first three count as a puzzle.
+    Mate or promotion at the end counts outright. A final capture counts
+    only when the next PV ply is a legal reply that still leaves the
+    solver ahead by CAPTURE_ADVANTAGE_CP. Anything else is None.
     """
-    line = build_solution_line(fen_before, best_uci, pv_uci)
-    if not line:
+    if not quiz:
         return None
     try:
         board = chess.Board(fen_before)
     except ValueError:
         return None
-    solver_color = board.turn
+    solver = board.turn
     last_capture = False
     last_promotion = False
-    for index, token in enumerate(line):
+    for index, token in enumerate(quiz):
         try:
             move = chess.Move.from_uci(token)
         except ValueError:
@@ -230,12 +172,120 @@ def solution_ending(
             last_promotion = move.promotion is not None
         board.push(move)
         if board.is_checkmate():
-            return ENDING_MATE if board.turn != solver_color else None
+            return ENDING_MATE if board.turn != solver else None
     if last_promotion:
         return ENDING_PROMOTION
-    if last_capture:
+    if not last_capture:
+        return None
+    pv = [t.strip().lower() for t in (pv_uci or [])]
+    if len(pv) <= len(quiz):
+        return None
+    try:
+        reply = chess.Move.from_uci(pv[len(quiz)])
+    except ValueError:
+        return None
+    if reply not in board.legal_moves:
+        return None
+    start = material_balance(chess.Board(fen_before), solver)
+    board.push(reply)
+    if board.is_checkmate():
+        return None
+    if material_balance(board, solver) - start >= CAPTURE_ADVANTAGE_CP:
         return ENDING_CAPTURE
     return None
+
+
+def immediate_ending(
+    fen_before: str, best_uci: str, pv_uci: List[str]
+) -> Optional[str]:
+    """Decisive content of the best move itself: mate, promotion, or a
+    capture confirmed to advantage by the stored reply. Otherwise None.
+    """
+    try:
+        board = chess.Board(fen_before)
+        best = chess.Move.from_uci((best_uci or "").strip().lower())
+    except (ValueError, TypeError):
+        return None
+    if best not in board.legal_moves:
+        return None
+    return _quiz_ending(fen_before, [best.uci()], pv_uci)
+
+
+def _first_move_loud(fen_before: str, best_uci: str) -> bool:
+    """The quiz must open with a purposeful move: check, capture, mate,
+    or promotion. A quiet best move is never quizzed, no matter what the
+    PV finds later -- that tactic belongs to a later position.
+    """
+    try:
+        board = chess.Board(fen_before)
+        best = chess.Move.from_uci((best_uci or "").strip().lower())
+    except (ValueError, TypeError):
+        return False
+    if best not in board.legal_moves:
+        return False
+    loud = board.is_capture(best) or best.promotion is not None
+    board.push(best)
+    return loud or board.is_check()
+
+
+def build_quiz_line(
+    fen_before: str, best_uci: str, pv_uci: List[str],
+    max_plies: int = SOLUTION_MAX_PLIES,
+) -> Tuple[List[str], Optional[str], bool]:
+    """Quiz line, its ending, and whether it opens loud.
+
+    Walks the stored PV and truncates at the first decisive solver move
+    (mate, promotion, or advantage-confirmed capture), so the quiz always
+    ends on the solver's move and no verifying reply is ever served.
+    Without an early payoff the line continues only while forcing
+    (capped), collapses to the single best move otherwise, and the ending
+    is whatever that single move holds.
+    """
+    best_move_uci = (best_uci or "").strip().lower()
+    if not best_move_uci:
+        return [], None, False
+    try:
+        board = chess.Board(fen_before)
+        best_move = chess.Move.from_uci(best_move_uci)
+    except (ValueError, TypeError):
+        return [best_move_uci], None, False
+    if best_move not in board.legal_moves:
+        return [best_move_uci], None, False
+    loud_first = _first_move_loud(fen_before, best_move_uci)
+
+    raw_pv = [t.strip().lower() for t in (pv_uci or [])]
+    if not raw_pv or raw_pv[0] != best_move_uci:
+        raw_pv = [best_move_uci]
+
+    solver = board.turn
+    line: List[str] = []
+    for token in raw_pv[:max_plies]:
+        try:
+            move = chess.Move.from_uci(token)
+        except ValueError:
+            break
+        if move not in board.legal_moves:
+            break
+        solver_ply = len(line) % 2 == 0
+        pre_capture = board.is_capture(move) if solver_ply else False
+        pre_promotion = move.promotion is not None if solver_ply else False
+        board.push(move)
+        line.append(token)
+        if board.is_checkmate():
+            if board.turn != solver:
+                return line, ENDING_MATE, loud_first
+            break
+        if board.is_game_over(claim_draw=False):
+            break
+        if solver_ply and (pre_promotion or pre_capture):
+            ending = _quiz_ending(fen_before, list(line), raw_pv)
+            if ending in (ENDING_PROMOTION, ENDING_CAPTURE):
+                return line, ending, loud_first
+
+    quiz = line if len(line) % 2 == 1 else line[:-1]
+    if len(quiz) > 1 and sum(forcing_flags(fen_before, quiz)) < FORCING_MIN:
+        quiz = [best_move_uci]
+    return quiz, _quiz_ending(fen_before, quiz, raw_pv), loud_first
 
 
 @dataclass
@@ -395,20 +445,24 @@ def classify_quality(
 
 
 def decide(
-    quality: QualityReport, ending: Optional[str]
+    quality: QualityReport, ending: Optional[str], loud_first: bool
 ) -> Tuple[bool, Optional[str], Optional[str]]:
     """Acceptance policy. Returns (accept, theme, reject_reason).
 
-    A position only counts as a puzzle when the solver's last move in the
-    solution line mates, promotes, or captures. Mate and promotion endings
-    keep their theme; a capture keeps the trap theme when the best move
-    also sets a clean trap, else material. Anything else falls out as
-    "no_concrete_ending" -- quiet squeezes included. An announced mate the
-    stored line cannot deliver is "mate_too_deep".
+    The quiz must open loud (best move gives check, captures, mates, or
+    promotes) and end decisive (mate / promotion / advantage-confirmed
+    capture). Mate and promotion endings keep their theme; a capture keeps
+    the trap theme when the best move also sets a clean trap, else
+    material. A quiet opener falls out as "quiet_first_move" even when the
+    PV finds a tactic later; anything else without a payoff is
+    "no_concrete_ending". An announced mate the quiz cannot deliver is
+    "mate_too_deep".
     """
     if quality.mate_in is not None and ending != ENDING_MATE:
-        # Announced mate beyond the stored line: not a usable puzzle.
+        # Announced mate beyond the quiz line: not a usable puzzle.
         return False, None, "mate_too_deep"
+    if not loud_first:
+        return False, None, "quiet_first_move"
     if ending == ENDING_MATE:
         return True, THEME_MATE, None
     if ending == ENDING_PROMOTION:
