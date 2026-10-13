@@ -51,7 +51,7 @@ from services.user_puzzle_extract import (
     get_user_puzzle_job,
     run_user_puzzle_job,
 )
-from services.puzzle_quality import SOLUTION_MAX_PLIES, build_solution_line
+from services.puzzle_quality import SOLUTION_MAX_PLIES, build_quiz_line
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -104,19 +104,19 @@ def _clerk_id(request: Request) -> str:
 
 
 def _solution_line(entry) -> list[str]:
-    """Return a short forcing line, or just the best move for quiet positions.
-
-    Delegates to services/puzzle_quality.build_solution_line so the served
-    quiz is exactly the line extraction accepted: mate / material stop,
-    else forcing-only up to three player decisions.
+    """Serve the quiz line: opens loud, ends decisive, never a trailing
+    opponent reply. Built with the same helper extraction accepts, so the
+    served quiz is exactly the accepted line.
     """
     best_move_uci = (entry.get("best_move_uci") or "").strip()
     raw_pv = (entry.get("best_pv_uci") or "").split()
     try:
         fen_before = entry["fen_before"]
     except (KeyError, TypeError):
-        return [best_move_uci] if best_move_uci else []
-    return build_solution_line(fen_before, best_move_uci, raw_pv)
+        lowered = best_move_uci.lower()
+        return [lowered] if lowered else []
+    line, _, _ = build_quiz_line(fen_before, best_move_uci, raw_pv)
+    return line
 
 
 def _expected_move_san(
