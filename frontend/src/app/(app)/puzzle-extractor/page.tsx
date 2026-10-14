@@ -296,9 +296,11 @@ function ConfirmDeleteDeckDialog({
 function ExtractDialog({
   onClose,
   onDone,
+  onStarted,
 }: {
   onClose: () => void;
   onDone: (status: ExtractJob) => Promise<void>;
+  onStarted: (jobId: string, limit: number) => void;
 }) {
   const [provider, setProvider] = useState<Provider>('lichess');
   const [lichess, setLichess] = useState('');
@@ -307,6 +309,14 @@ function ExtractDialog({
   const [phase, setPhase] = useState<'idle' | 'working' | 'error'>('idle');
   const [error, setError] = useState<string | null>(null);
   const [statusLine, setStatusLine] = useState('');
+  const cancelledRef = useRef(false);
+
+  useEffect(
+    () => () => {
+      cancelledRef.current = true;
+    },
+    []
+  );
 
   const username = (provider === 'lichess' ? lichess : chesscom).trim();
   const working = phase === 'working';
@@ -333,8 +343,11 @@ function ExtractDialog({
         }),
       });
       const jobId = started.job_id as string;
+      onStarted(jobId, parsedLimit());
       for (let attempt = 0; attempt < 600; attempt += 1) {
+        if (cancelledRef.current) return;
         await new Promise((r) => setTimeout(r, 2000));
+        if (cancelledRef.current) return;
         let status: ExtractJob;
         try {
           status = await api(
@@ -347,6 +360,7 @@ function ExtractDialog({
           }
           throw e;
         }
+        if (cancelledRef.current) return;
         setStatusLine(
           `Fetched ${status.fetched_games}, screened ${status.screened_games}, kept ${status.puzzles_kept}…`
         );
@@ -359,15 +373,16 @@ function ExtractDialog({
           throw new Error(status.error_message || 'Extraction failed.');
         }
       }
+      if (cancelledRef.current) return;
       throw new Error('Extraction is taking a while. Check back shortly.');
     } catch (e) {
+      if (cancelledRef.current) return;
       setPhase('error');
       setError(e instanceof Error ? e.message : 'Extraction failed.');
     }
   }
 
   function handleClose() {
-    if (working) return;
     onClose();
   }
 
@@ -386,9 +401,8 @@ function ExtractDialog({
         <button
           type="button"
           onClick={handleClose}
-          disabled={working}
           aria-label="Close"
-          className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-lg text-[#f7e5c6]/70 transition hover:bg-white/10 hover:text-[#f7e5c6] disabled:opacity-40 disabled:pointer-events-none"
+          className="absolute right-3 top-3 flex h-8 w-8 items-center justify-center rounded-lg text-[#f7e5c6]/70 transition hover:bg-white/10 hover:text-[#f7e5c6]"
         >
           <CloseIcon />
         </button>
@@ -396,7 +410,8 @@ function ExtractDialog({
         <h2 className="text-xl font-semibold text-[#f7e5c6]">Puzzle Extractor</h2>
         <p className="mt-1 text-sm text-[#f7e5c6]/60">
           Fetch your recent games. We&apos;ll mine the positions where you
-          missed the best move into practice puzzles.
+          missed the best move into practice puzzles. You can close this
+          and come back later.
         </p>
 
         <div className="mt-4 grid grid-cols-2 overflow-hidden rounded-lg border border-black/50 bg-black/50 p-1">
@@ -494,6 +509,7 @@ export default function PuzzleExtractorPage() {
   const [busy, setBusy] = useState(false);
   const [autoAdvance, setAutoAdvance] = useState(true);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  const [activeJob, setActiveJob] = useState<ExtractJob | null>(null);
 
   const boardApi = useRef<BoardApi | null>(null);
   const settingsRef = useRef<HTMLDivElement>(null);
@@ -559,7 +575,45 @@ export default function PuzzleExtractorPage() {
 
   useEffect(() => {
     loadQueue();
+    (async () => {
+      try {
+        const jobs: ExtractJob[] = await api('/api/my-puzzles/jobs/recent?limit=5');
+        const live = jobs.find(
+          (job) => job.status === 'queued' || job.status === 'running'
+        );
+        if (live) setActiveJob(live);
+      } catch {
+        // Queue still loads; background progress is a bonus.
+      }
+    })();
   }, [loadQueue]);
+
+  const activeJobId = activeJob?.job_id ?? null;
+  useEffect(() => {
+    if (!activeJobId) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const status: ExtractJob = await api(
+          `/api/my-puzzles/extract/${encodeURIComponent(activeJobId)}`
+        );
+        if (cancelled) return;
+        if (status.status === 'completed' || status.status === 'failed') {
+          setActiveJob(null);
+          await loadQueue();
+        } else {
+          setActiveJob(status);
+        }
+      } catch {
+        // Keep polling; a transient fetch error is not a job failure.
+      }
+    };
+    const id = window.setInterval(tick, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [activeJobId, loadQueue]);
 
   useEffect(() => {
     if (!isSettingsOpen) return;
@@ -721,10 +775,49 @@ export default function PuzzleExtractorPage() {
         {dialogOpen && (
           <ExtractDialog
             onClose={() => setDialogOpen(false)}
+            onStarted={(jobId, limit) => {
+              setActiveJob({
+                job_id: jobId,
+                status: 'queued',
+                requested_limit: limit,
+                fetched_games: 0,
+                screened_games: 0,
+                candidates: 0,
+                puzzles_kept: 0,
+              });
+            }}
             onDone={async () => {
+              setActiveJob(null);
               await loadQueue();
             }}
           />
+        )}
+        {activeJob && !dialogOpen && (
+          <div className="mx-auto mt-4 flex w-full max-w-3xl items-center gap-3 rounded-xl border border-white/10 bg-black/50 px-4 py-2.5 text-sm text-white/70">
+            {activeJob.status === 'failed' ? (
+              <>
+                <span className="min-w-0 flex-1 truncate">
+                  {activeJob.error_message || 'Extraction failed.'}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setActiveJob(null)}
+                  aria-label="Dismiss"
+                  className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-white/60 transition hover:bg-white/10 hover:text-white"
+                >
+                  <CloseIcon />
+                </button>
+              </>
+            ) : (
+              <>
+                <span className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-[#10b981] border-t-transparent" />
+                <span className="min-w-0 flex-1 truncate">
+                  Extracting puzzles… {activeJob.fetched_games} fetched,{' '}
+                  {activeJob.puzzles_kept} kept
+                </span>
+              </>
+            )}
+          </div>
         )}
         {deleting && (
           <ConfirmDeleteDeckDialog

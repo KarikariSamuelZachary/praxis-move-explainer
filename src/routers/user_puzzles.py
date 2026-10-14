@@ -49,6 +49,7 @@ from schemas.user_puzzle_schemas import (
 from services.user_puzzle_extract import (
     create_user_puzzle_job,
     get_user_puzzle_job,
+    list_recent_user_puzzle_jobs,
     run_user_puzzle_job,
 )
 from services.puzzle_quality import SOLUTION_MAX_PLIES, build_quiz_line
@@ -269,6 +270,18 @@ def extract_status(
         log.warning("extract job %s not found for user %s", job_id, clerk_id)
         raise HTTPException(status_code=404, detail="Extract job not found")
     return UserPuzzleJobResponse(**job)
+
+
+@router.get("/jobs/recent")
+def recent_jobs(
+    request: Request,
+    limit: int = 5,
+    _: None = Depends(limit_by_clerk_user_id(limit=30, window=60)),
+):
+    clerk_id = _clerk_id(request)
+    return list_recent_user_puzzle_jobs(
+        requested_by_user_id=clerk_id, limit=limit
+    )
 
 
 @router.get("/queue", response_model=list[UserPuzzleQueueEntry])

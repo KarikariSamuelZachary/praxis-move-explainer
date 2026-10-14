@@ -174,6 +174,41 @@ def get_user_puzzle_job(*, job_id: str, requested_by_user_id: str) -> Optional[D
         database.connection_pool.putconn(conn)
 
 
+def list_recent_user_puzzle_jobs(
+    *, requested_by_user_id: str, limit: int = 5
+) -> List[Dict[str, Any]]:
+    """Newest extraction jobs for the user, so the UI can resume watching
+    a job that outlived its dialog (navigation, reload, second device)."""
+    conn = database.connection_pool.getconn()
+    try:
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(
+                """
+                SELECT id AS job_id, status, lichess_username, chesscom_username,
+                       requested_limit, fetched_games, screened_games,
+                       candidates, puzzles_kept, error_message, summary,
+                       created_at, started_at, completed_at
+                FROM user_puzzle_jobs
+                WHERE requested_by_user_id = %s
+                ORDER BY created_at DESC
+                LIMIT %s
+                """,
+                (requested_by_user_id, max(1, min(limit, 20))),
+            )
+            out = []
+            for row in cur.fetchall():
+                row["job_id"] = str(row["job_id"])
+                row = dict(row)
+                for stamp in ("created_at", "started_at", "completed_at"):
+                    if row.get(stamp) is not None:
+                        row[stamp] = row[stamp].isoformat()
+                row["up_to_date"] = bool((row.get("summary") or {}).get("up_to_date"))
+                out.append(row)
+            return out
+    finally:
+        database.connection_pool.putconn(conn)
+
+
 # ---------------------------------------------------------------------------
 # Fetch (read-only; Lichess with clocks=true, src/integrations untouched)
 # ---------------------------------------------------------------------------
