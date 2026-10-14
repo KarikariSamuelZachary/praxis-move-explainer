@@ -64,11 +64,11 @@ const TRAINING_MODES: TrainingMode[] = [
     href: '/train/endgametrainer',
   },
   {
-    key: 'scenario-trainer',
-    title: 'Scenario\nTrainer',
-    description: 'Practice critical positions, converts, defenses, traps and more game situations.',
+    key: 'calculation-trainer',
+    title: 'Calculation\nTrainer',
+    description: 'Calculate forced lines blind, enter the full sequence with no feedback, and get graded.',
     illustration: '/scenario-trainer-illustration.webp',
-    cta: 'Browse Scenarios',
+    cta: 'Start Calculating',
     tone: 'blue',
   },
 ];
