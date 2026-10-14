@@ -32,10 +32,10 @@ const MODES: ModeCard[] = [
     cta: 'Explore Endgames',
   },
   {
-    title: 'Scenario Trainer',
-    description: 'Practice critical positions, converts, defenses, traps and more game situations.',
+    title: 'Calculation Trainer',
+    description: 'Calculate forced lines blind, enter the full sequence with no feedback, and get graded.',
     illustration: '/scenario-trainer-illustration.webp',
-    cta: 'Browse Scenarios',
+    cta: 'Start Calculating',
   },
 ];
 
