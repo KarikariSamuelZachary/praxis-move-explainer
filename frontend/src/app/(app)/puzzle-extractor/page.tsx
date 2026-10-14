@@ -197,29 +197,6 @@ function DeckCard({
   onDelete: () => void;
 }) {
   const site = providerLabel(deck.provider);
-  const [confirming, setConfirming] = useState(false);
-  const timer = useRef<number | null>(null);
-
-  useEffect(
-    () => () => {
-      if (timer.current !== null) window.clearTimeout(timer.current);
-    },
-    []
-  );
-
-  function handleDelete(event: React.MouseEvent) {
-    event.stopPropagation();
-    if (!confirming) {
-      setConfirming(true);
-      if (timer.current !== null) window.clearTimeout(timer.current);
-      timer.current = window.setTimeout(() => setConfirming(false), 4000);
-      return;
-    }
-    if (timer.current !== null) window.clearTimeout(timer.current);
-    setConfirming(false);
-    onDelete();
-  }
-
   return (
     <article className={`${DECK_CARD_CLASS} relative flex items-stretch gap-4 p-4 transition hover:bg-[#241610]/60`}>
       <button
@@ -248,18 +225,69 @@ function DeckCard({
       </div>
       <button
         type="button"
-        onClick={handleDelete}
-        aria-label={confirming ? `Confirm remove ${deck.username}` : `Remove ${deck.username}`}
-        title={confirming ? 'Tap again to remove' : 'Remove deck'}
-        className={`absolute right-3 top-1/2 z-20 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-lg transition focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d97757] ${
-          confirming
-            ? 'bg-[#d97757]/20 text-[#f5b39a]'
-            : 'text-[#d97757] hover:bg-[#d97757]/10 hover:text-[#f5b39a]'
-        }`}
+        onClick={(event) => {
+          event.stopPropagation();
+          onDelete();
+        }}
+        aria-label={`Remove ${deck.username}`}
+        title="Remove deck"
+        className="absolute right-3 top-1/2 z-20 flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-lg text-[#d97757] transition hover:bg-[#d97757]/10 hover:text-[#f5b39a] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#d97757]"
       >
         <TrashIcon />
       </button>
     </article>
+  );
+}
+
+function ConfirmDeleteDeckDialog({
+  deck,
+  onCancel,
+  onConfirm,
+  pending,
+}: {
+  deck: Deck;
+  onCancel: () => void;
+  onConfirm: () => void;
+  pending: boolean;
+}) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm px-4"
+      onClick={pending ? undefined : onCancel}
+      role="dialog"
+      aria-modal="true"
+      aria-label={`Remove ${deck.username}`}
+    >
+      <div
+        className={`${PUZZLE_CARD_CLASS} relative w-full max-w-sm rounded-2xl p-5`}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <h2 className="font-display text-lg font-semibold text-[#f7e5c6]">
+          Remove &ldquo;{deck.username}&rdquo;?
+        </h2>
+        <p className="mt-2 text-sm text-[#f7e5c6]/60">
+          This permanently removes every puzzle in this deck.
+        </p>
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={pending}
+            className="h-9 rounded-lg border border-black/50 bg-black/40 px-4 text-sm font-semibold text-[#f7e5c6]/70 transition hover:bg-black/60 hover:text-[#f7e5c6] disabled:opacity-40 disabled:pointer-events-none"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={onConfirm}
+            disabled={pending}
+            className="h-9 rounded-lg bg-[#d97757] px-4 text-sm font-semibold text-white shadow-lg shadow-orange-950/40 transition hover:bg-[#c6654a] disabled:pointer-events-none disabled:opacity-40"
+          >
+            {pending ? 'Removing…' : 'Remove'}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -445,9 +473,9 @@ export default function PuzzleExtractorPage() {
   const [queueError, setQueueError] = useState<string | null>(null);
   const [dialogOpen, setDialogOpen] = useState(false);
   const [deckKey, setDeckKey] = useState<string | null>(null);
-  const [confirmClear, setConfirmClear] = useState(false);
-  const [clearing, setClearing] = useState(false);
   const [clearError, setClearError] = useState<string | null>(null);
+  const [deleting, setDeleting] = useState<Deck | null>(null);
+  const [deletePending, setDeletePending] = useState(false);
   const [index, setIndex] = useState(0);
   const [completed, setCompleted] = useState(0);
   const [feedback, setFeedback] = useState<'idle' | 'correct' | 'mistake'>(
@@ -627,49 +655,26 @@ export default function PuzzleExtractorPage() {
     void scoreAttempt(attemptedMovesRef.current);
   }, [scoreAttempt]);
 
-  const handleClear = useCallback(async () => {
-    if (clearing) return;
-    if (!confirmClear) {
-      setConfirmClear(true);
-      setClearError(null);
-      window.setTimeout(() => setConfirmClear(false), 5000);
-      return;
-    }
-    setConfirmClear(false);
-    setClearing(true);
+  const handleDeleteDeckConfirm = useCallback(async () => {
+    if (!deleting || deletePending) return;
+    setDeletePending(true);
     try {
-      await api('/api/my-puzzles/puzzles', { method: 'DELETE' });
+      const params = new URLSearchParams({
+        source_provider: deleting.provider,
+        source_username: deleting.sourceUsername,
+      });
+      await api(`/api/my-puzzles/puzzles?${params.toString()}`, {
+        method: 'DELETE',
+      });
+      setDeleting(null);
       setDeckKey(null);
       await loadQueue();
     } catch (e) {
-      setClearError(e instanceof Error ? e.message : 'Clear failed.');
+      setClearError(e instanceof Error ? e.message : 'Delete failed.');
     } finally {
-      setClearing(false);
+      setDeletePending(false);
     }
-  }, [clearing, confirmClear, loadQueue]);
-
-  const handleDeleteDeck = useCallback(
-    async (deck: Deck) => {
-      if (clearing) return;
-      setClearing(true);
-      try {
-        const params = new URLSearchParams({
-          source_provider: deck.provider,
-          source_username: deck.sourceUsername,
-        });
-        await api(`/api/my-puzzles/puzzles?${params.toString()}`, {
-          method: 'DELETE',
-        });
-        setDeckKey(null);
-        await loadQueue();
-      } catch (e) {
-        setClearError(e instanceof Error ? e.message : 'Delete failed.');
-      } finally {
-        setClearing(false);
-      }
-    },
-    [clearing, loadQueue]
-  );
+  }, [deleting, deletePending, loadQueue]);
 
   // Memoized on the active entry: rebuilding this object every render
   // would retrigger the board's setup effect and snap back solution moves.
@@ -711,6 +716,16 @@ export default function PuzzleExtractorPage() {
             }}
           />
         )}
+        {deleting && (
+          <ConfirmDeleteDeckDialog
+            deck={deleting}
+            onCancel={() => {
+              if (!deletePending) setDeleting(null);
+            }}
+            onConfirm={handleDeleteDeckConfirm}
+            pending={deletePending}
+          />
+        )}
 
         {queue === null && !queueError ? (
           <div className="flex h-[70vh] items-center justify-center">
@@ -738,27 +753,13 @@ export default function PuzzleExtractorPage() {
             <h2 className="font-display text-2xl font-semibold text-[#f7e5c6]">
               Puzzle decks
             </h2>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={handleClear}
-                disabled={clearing || decks.length === 0}
-                className={`rounded-lg border px-4 py-2 text-sm font-semibold transition disabled:pointer-events-none disabled:opacity-40 ${
-                  confirmClear
-                    ? 'border-red-400/50 bg-red-500/15 text-red-300 hover:bg-red-500/25'
-                    : 'border-white/20 bg-white/5 text-white hover:bg-white/10'
-                }`}
-              >
-                {clearing ? 'Clearing' : confirmClear ? 'Confirm clear' : 'Clear'}
-              </button>
-              <button
-                type="button"
-                onClick={() => setDialogOpen(true)}
-                className="rounded-lg border border-white/20 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
-              >
-                Extract more
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => setDialogOpen(true)}
+              className="rounded-lg border border-white/20 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
+            >
+              Extract more
+            </button>
           </div>
           {clearError && (
             <p className="mt-2 text-sm text-red-400">{clearError}</p>
@@ -770,7 +771,10 @@ export default function PuzzleExtractorPage() {
                 deck={deck}
                 due={due}
                 onOpen={() => openDeck(deck.key)}
-                onDelete={() => handleDeleteDeck(deck)}
+                onDelete={() => {
+                  setClearError(null);
+                  setDeleting(deck);
+                }}
               />
             ))}
           </div>
