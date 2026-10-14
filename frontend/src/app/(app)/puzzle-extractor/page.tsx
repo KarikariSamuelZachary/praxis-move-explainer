@@ -410,8 +410,7 @@ function ExtractDialog({
         <h2 className="text-xl font-semibold text-[#f7e5c6]">Puzzle Extractor</h2>
         <p className="mt-1 text-sm text-[#f7e5c6]/60">
           Fetch your recent games. We&apos;ll mine the positions where you
-          missed the best move into practice puzzles. You can close this
-          and come back later.
+          missed the best move into practice puzzles.
         </p>
 
         <div className="mt-4 grid grid-cols-2 overflow-hidden rounded-lg border border-black/50 bg-black/50 p-1">
@@ -861,7 +860,7 @@ export default function PuzzleExtractorPage() {
               onClick={() => setDialogOpen(true)}
               className="rounded-lg border border-white/20 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
             >
-              Extract more
+              Extract
             </button>
           </div>
           {clearError && (
