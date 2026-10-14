@@ -49,6 +49,7 @@ type QueueEntry = {
     side_to_move: string;
     source_username: string;
     source_provider: string;
+    opponent: string;
   };
 };
 
@@ -818,13 +819,19 @@ export default function PuzzleExtractorPage() {
                       : `${completed} of ${total} done`}
                   </span>
                 </div>
-                <button
-                  type="button"
-                  onClick={() => setDialogOpen(true)}
-                  className="mt-4 w-full rounded-lg border border-white/20 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10"
-                >
-                  Extract more
-                </button>
+                {current && (
+                  <div className="mt-3 flex items-center gap-2 border-t border-white/10 pt-3 text-sm">
+                    <span className="min-w-0 flex-1 truncate font-semibold text-[#f7e5c6]">
+                      {current.puzzle.source_username || 'You'}
+                    </span>
+                    <span className="shrink-0 rounded bg-white/10 px-1.5 py-px text-[10px] font-bold uppercase tracking-widest text-white/40">
+                      vs
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-right font-medium text-[#efd9a7]/90">
+                      {current.puzzle.opponent || 'Opponent'}
+                    </span>
+                  </div>
+                )}
               </div>
             </div>
           </section>

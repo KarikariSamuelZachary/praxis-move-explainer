@@ -93,7 +93,9 @@ _ENTRY_SELECT = """
             p.move_number,
             p.color,
             COALESCE(g.source_username, '') AS source_username,
-            COALESCE(g.provider, '') AS source_provider
+            COALESCE(g.provider, '') AS source_provider,
+            COALESCE((CASE WHEN p.color = 'white' THEN g.black_player
+                            ELSE g.white_player END)->>'username', '') AS opponent
      FROM user_puzzle_entries e
      JOIN user_puzzles p ON p.id = e.puzzle_id
      LEFT JOIN user_games g ON g.id = p.source_game_id
@@ -317,6 +319,7 @@ def get_queue(
                     "side_to_move": side,
                     "source_username": row.get("source_username") or "",
                     "source_provider": row.get("source_provider") or "",
+                    "opponent": row.get("opponent") or "",
                 },
             )
         )

@@ -43,6 +43,7 @@ class UserPuzzleQueuePuzzle(BaseModel):
     side_to_move: str
     source_username: str = ""
     source_provider: str = ""
+    opponent: str = ""
 
 
 class UserPuzzleQueueEntry(BaseModel):
