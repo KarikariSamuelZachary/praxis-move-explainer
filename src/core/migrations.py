@@ -1587,6 +1587,151 @@ def run_migrations():
                     ON calc_segments (status, rating)
                 """
             )
+            # Attempts on calc-segment exercises: one row per POST
+            # /api/calc/submit, solved or not (same write-everything policy
+            # as the endgame attempt tables). user_id tracks users(clerk_id)
+            # as TEXT (the convention at line 71); segment_id references
+            # calc_segments(id) with no ON DELETE action, so retiring or
+            # deleting a segment never destroys attempt history.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS calc_attempts (
+                    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    user_id              TEXT NOT NULL REFERENCES users(clerk_id) ON DELETE CASCADE ON UPDATE CASCADE,
+                    segment_id           UUID NOT NULL REFERENCES calc_segments(id),
+                    offset_solver_moves  INTEGER NOT NULL,
+                    n                    INTEGER NOT NULL,
+                    submitted_line       TEXT NOT NULL,
+                    first_divergence_ply INTEGER,
+                    diverged_on          TEXT CHECK (diverged_on IN ('solver', 'defender')),
+                    solved               BOOLEAN NOT NULL,
+                    time_taken_ms        INTEGER,
+                    exercise_nonce       TEXT NOT NULL UNIQUE,
+                    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_calc_attempts_user_created
+                    ON calc_attempts (user_id, created_at DESC)
+                """
+            )
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_calc_attempts_user_exercise
+                    ON calc_attempts (user_id, segment_id, offset_solver_moves, n)
+                """
+            )
+            # exercise_nonce (one attempt per exercise token) and the
+            # user_id ON DELETE CASCADE are part of the fresh CREATE TABLE
+            # above: prod has no calc_attempts table, so there is nothing to
+            # backfill or fix up.
+            #
+            # --- calc ratings ------------------------------------------------
+            # Per-depth Blind Calculation ratings: one row per (user, n).
+            # Created on first use (GET /next ensures the row); attempts
+            # counts rated attempts only. PK (user_id, n) is the upsert
+            # target; user_id cascades like calc_attempts.user_id.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS calc_ratings (
+                    user_id    TEXT NOT NULL REFERENCES users(clerk_id) ON DELETE CASCADE ON UPDATE CASCADE,
+                    n          INTEGER NOT NULL,
+                    rating     INTEGER NOT NULL,
+                    attempts   INTEGER NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (user_id, n)
+                )
+                """
+            )
+            # Rating audit columns on attempts (additive; the table is new but
+            # IF NOT EXISTS keeps re-runs and partial states safe). rated
+            # marks first-ever attempts on a segment — only those move the
+            # rating; later attempts store NULL rating fields.
+            cur.execute(
+                """
+                ALTER TABLE calc_attempts
+                    ADD COLUMN IF NOT EXISTS rating_before INT,
+                    ADD COLUMN IF NOT EXISTS rating_after INT,
+                    ADD COLUMN IF NOT EXISTS expected_score DOUBLE PRECISION,
+                    ADD COLUMN IF NOT EXISTS k_factor INT,
+                    ADD COLUMN IF NOT EXISTS score DOUBLE PRECISION,
+                    ADD COLUMN IF NOT EXISTS rated BOOL NOT NULL DEFAULT FALSE
+                """
+            )
+            # --- calc woodpecker queue ----------------------------------------
+            # Spaced-repetition review for failed Blind Calculation exercises,
+            # mirroring endgame_woodpecker_entries/attempts:
+            # - FSRS column shape copied verbatim (state INTEGER 1/2/3,
+            #   due NOW, stability/difficulty NULL, step NULL, reps/lapses 0,
+            #   last_review NULL, is_mastered FALSE), so card_from_row(),
+            #   rating_for(), is_lapse(), is_mastered() and the shared
+            #   Scheduler work unchanged.
+            # - user_id cascades on user deletion (like woodpecker entries);
+            #   segment_id cascades like endgame position_id (content table,
+            #   queue rows purge with it); source_attempt_id cascades like
+            #   endgame_woodpecker_attempts.entry_id (dependent object).
+            # - Entries are created ONLY by the server on a FAILED /submit
+            #   (routers/calc.py), never by a client endpoint: a miss is a
+            #   server-verified fact, so the queue is not fabricatable.
+            #   Consequently there are no capture caps (same rationale as
+            #   endgames: silently dropping a real failure is worse).
+            # - One ACTIVE card per (user, segment, offset, n): a mastered
+            #   card is excluded, so failing again after mastery opens a
+            #   fresh card (the is_mastered = FALSE guard, mirrored).
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS calc_woodpecker_entries (
+                    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    user_id              TEXT NOT NULL REFERENCES users(clerk_id) ON DELETE CASCADE ON UPDATE CASCADE,
+                    segment_id           UUID NOT NULL REFERENCES calc_segments(id) ON DELETE CASCADE,
+                    offset_solver_moves  INTEGER NOT NULL,
+                    n                    INTEGER NOT NULL,
+                    source_attempt_id    UUID NOT NULL REFERENCES calc_attempts(id) ON DELETE CASCADE,
+                    added_at             TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    mastered_at          TIMESTAMPTZ,
+                    is_mastered          BOOLEAN NOT NULL DEFAULT FALSE,
+                    due                  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    stability            DOUBLE PRECISION,
+                    difficulty           DOUBLE PRECISION,
+                    state                INTEGER NOT NULL DEFAULT 1
+                                             CHECK (state IN (1, 2, 3)),
+                    step                 INTEGER,
+                    reps                 INTEGER NOT NULL DEFAULT 0,
+                    lapses               INTEGER NOT NULL DEFAULT 0,
+                    last_review          TIMESTAMPTZ
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_calc_woodpecker_active_entry
+                    ON calc_woodpecker_entries(user_id, segment_id, offset_solver_moves, n)
+                    WHERE is_mastered = FALSE
+                """
+            )
+            # One row per COMPLETED review replay (mirrors the endgame
+            # attempts table; calc reviews are single-request whole-line
+            # replays, so every row carries the full verdict). review_nonce
+            # makes each review token single-use (409 on replay), the same
+            # pattern as calc_attempts.exercise_nonce.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS calc_woodpecker_attempts (
+                    id                   UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    entry_id             UUID NOT NULL REFERENCES calc_woodpecker_entries(id) ON DELETE CASCADE,
+                    user_id              TEXT NOT NULL,
+                    solved               BOOLEAN NOT NULL,
+                    first_divergence_ply INTEGER,
+                    diverged_on          TEXT CHECK (diverged_on IN ('solver', 'defender')),
+                    score                DOUBLE PRECISION,
+                    elapsed_ms           INTEGER,
+                    review_nonce         TEXT NOT NULL UNIQUE,
+                    attempted_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+                )
+                """
+            )
         conn.commit()
         log.info("Database migrations completed successfully")
     except Exception:
