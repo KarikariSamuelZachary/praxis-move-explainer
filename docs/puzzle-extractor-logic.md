@@ -12,7 +12,13 @@ Tests: `src/services/puzzle_quality_test.py` (26),
 
 Job-based (FastAPI BackgroundTasks, own DB connection, heartbeat on the
 job row so stale `running` jobs are reclaimable). Providers: Lichess
-(with clocks) and Chess.com, read-only. Games persist into `user_games`
+(with clocks, paged via `before`) and Chess.com (monthly archives),
+read-only. Fetching is incremental: pages walk newest-first and only
+game URLs never stored for that user are collected (fully-seen page,
+short page, and unit caps bound the walk), so repeat imports cost
+network only, never engine time; the job limit caps processed games
+newest-first. One running job per user (409 otherwise) plus 10 starts
+per day. Games persist into `user_games`
 (upsert on user + provider + URL). Recent import yielded ~2 puzzles from
 a 20-game pull, so current yield is roughly 0.1 puzzles per game.
 

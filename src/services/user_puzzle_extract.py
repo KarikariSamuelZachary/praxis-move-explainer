@@ -45,6 +45,10 @@ STAGE2_NODES = 500_000
 CAND_EP = 0.15
 CAND_CP = 100
 PER_GAME_CAP = 3
+# Paging bounds for incremental collection (network only; screening still
+# caps at the job limit). Older untouched backlog drains over runs.
+LICHESS_MAX_PAGES = 8
+CHESSCOM_MAX_MONTHS = 24
 MIN_MOVE = 8
 CLOCK_FRAC = 0.10
 CLOCK_FLOOR_S = 10.0
@@ -163,7 +167,9 @@ def get_user_puzzle_job(*, job_id: str, requested_by_user_id: str) -> Optional[D
             if row is None:
                 return None
             row["job_id"] = str(row["job_id"])
-            return dict(row)
+            row = dict(row)
+            row["up_to_date"] = bool((row.get("summary") or {}).get("up_to_date"))
+            return row
     finally:
         database.connection_pool.putconn(conn)
 
@@ -172,7 +178,9 @@ def get_user_puzzle_job(*, job_id: str, requested_by_user_id: str) -> Optional[D
 # Fetch (read-only; Lichess with clocks=true, src/integrations untouched)
 # ---------------------------------------------------------------------------
 
-def fetch_lichess_with_clocks(username: str, limit: int) -> List[Dict[str, Any]]:
+def fetch_lichess_with_clocks(
+    username: str, limit: int, before_ms: Optional[int] = None
+) -> List[Dict[str, Any]]:
     from integrations import lichess as lich_mod
 
     username = (username or "").strip()
@@ -181,10 +189,101 @@ def fetch_lichess_with_clocks(username: str, limit: int) -> List[Dict[str, Any]]
     url = "{base}?max={limit}&pgnInJson=true&opening=true&clocks=true".format(
         base=lich_mod.GAMES_URL.format(username=username), limit=limit
     )
+    if before_ms:
+        url += "&before={ms}".format(ms=int(before_ms))
     records = lich_mod._http_get_ndjson(url, username=username)
     games = [lich_mod._summarize_game(rec) for rec in records]
     games.sort(key=lambda g: g.get("end_time") or 0, reverse=True)
     return games[:limit]
+
+
+def collect_unseen(fetch_page, seen_urls, per_page: int, max_units: int,
+                   short_means_end: bool = True):
+    """Newest-first page walk returning (unseen games, pulled count).
+
+    fetch_page(cursor) -> (page newest-first, next cursor or None).
+    Only games whose URL was never stored are collected, so repeat
+    imports cost network only, never engine time. Stops at the first
+    fully-seen page that already yielded something new (older history
+    was processed before), at end-of-history, or at the unit cap.
+    Pure apart from fetch_page, so unit-testable with a stub.
+    """
+    collected: List[Dict[str, Any]] = []
+    collected_urls = set()
+    seen = set(seen_urls or ())
+    pulled = 0
+    cursor = None
+    for _ in range(max_units):
+        page, cursor = fetch_page(cursor)
+        pulled += len(page)
+        if not page:
+            break
+        for g in page:
+            url = (g or {}).get("url") or ""
+            if not url or url in seen or url in collected_urls:
+                continue
+            collected.append(g)
+            collected_urls.add(url)
+        fully_seen = all(((g or {}).get("url") or "") in seen for g in page)
+        if fully_seen and collected:
+            break
+        if short_means_end and len(page) < per_page:
+            break
+        if cursor is None:
+            break
+    return collected, pulled
+
+
+def _collect_lichess_new(username: str, limit: int, seen_urls) -> Tuple[List[Dict[str, Any]], int]:
+    """Collect unseen Lichess games newest-first via `before` paging."""
+    per_page = max(1, min(limit, 50))
+
+    def fetch_page(cursor):
+        try:
+            page = fetch_lichess_with_clocks(username, per_page, before_ms=cursor)
+        except Exception as exc:  # noqa: BLE001 -- keep what we have
+            log.warning("lichess page fetch failed for %s: %s", username, exc)
+            return [], None
+        nxt = None
+        if len(page) >= per_page:
+            ends_ms = [(g.get("end_time") or 0) * 1000 for g in page]
+            ends_ms = [e for e in ends_ms if e > 0]
+            if ends_ms:
+                nxt = min(ends_ms) - 1
+        return page, nxt
+
+    return collect_unseen(fetch_page, seen_urls, per_page, LICHESS_MAX_PAGES)
+
+
+def _collect_chesscom_new(username: str, limit: int, seen_urls) -> Tuple[List[Dict[str, Any]], int]:
+    """Collect unseen Chess.com games newest-first by walking months."""
+    from integrations import chess_com as chesscom_mod
+
+    try:
+        archives = chesscom_mod._fetch_archive_urls((username or "").strip().lower())
+    except Exception as exc:  # noqa: BLE001 -- caller reports partial corpus
+        raise exc
+    order = list(reversed(archives or []))
+
+    def fetch_page(cursor):
+        idx = 0 if cursor is None else cursor
+        if idx >= len(order):
+            return [], None
+        try:
+            month_data = chesscom_mod._http_get_json(order[idx])
+        except Exception as exc:  # noqa: BLE001 -- skip broken month, keep walking
+            log.warning("chess.com archive %s failed for %s: %s", order[idx], username, exc)
+            nxt = idx + 1 if idx + 1 < len(order) else None
+            return [], nxt
+        month_games = [chesscom_mod._summarize_game(g) for g in month_data.get("games", []) or []]
+        month_games.sort(key=lambda g: g.get("end_time") or 0, reverse=True)
+        nxt = idx + 1 if idx + 1 < len(order) else None
+        return month_games, nxt
+
+    collected, pulled = collect_unseen(
+        fetch_page, seen_urls, limit, CHESSCOM_MAX_MONTHS, short_means_end=False
+    )
+    return collected, pulled
 
 
 def derive_color(summary: Dict[str, Any], username: str) -> Optional[str]:
@@ -292,29 +391,52 @@ def run_user_puzzle_job(job_id: str) -> None:
         limit = job["requested_limit"]
 
         fetched: List[Dict[str, Any]] = []
+        pulled_total = 0
+        # Incremental imports: game URLs already stored for this user were
+        # screened before, so only unseen games cost engine time. A repeat
+        # import of the same account is network only.
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT provider, source_username, game_url FROM user_games "
+                "WHERE user_id = %s",
+                (clerk_id,),
+            )
+            seen_by_source: Dict[Any, Any] = {}
+            for prov, sun, url in cur.fetchall():
+                seen_by_source.setdefault((prov, sun or ""), set()).add(url)
         if job["lichess_username"]:
             try:
-                for g in fetch_lichess_with_clocks(job["lichess_username"], limit):
+                new_games, pulled = _collect_lichess_new(
+                    job["lichess_username"], limit,
+                    seen_by_source.get(("lichess", job["lichess_username"]), set()),
+                )
+                for g in new_games[:limit]:
                     g["provider"] = "lichess"
                     fetched.append(g)
+                pulled_total += pulled
             except Exception as exc:  # noqa: BLE001 -- report partial corpus
                 log.warning("lichess fetch failed for job %s: %s", job_id, exc)
         if job["chesscom_username"]:
             try:
-                from integrations.chess_com import fetch_recent_chesscom_games
-
-                for g in fetch_recent_chesscom_games(job["chesscom_username"], limit=limit):
+                new_games, pulled = _collect_chesscom_new(
+                    job["chesscom_username"], limit,
+                    seen_by_source.get(("chesscom", job["chesscom_username"]), set()),
+                )
+                for g in new_games[:limit]:
                     g["provider"] = "chesscom"
                     fetched.append(g)
+                pulled_total += pulled
             except Exception as exc:  # noqa: BLE001
                 log.warning("chesscom fetch failed for job %s: %s", job_id, exc)
+        skipped_as_seen = max(0, pulled_total - len(fetched))
+        up_to_date = pulled_total > 0 and not fetched
         with conn.cursor() as cur:
             cur.execute(
                 "UPDATE user_puzzle_jobs SET fetched_games=%s WHERE id=%s::uuid",
                 (len(fetched), job_id),
             )
         conn.commit()
-        if not fetched:
+        if not fetched and pulled_total == 0:
             raise RuntimeError("no games fetched from either provider")
 
         try:
@@ -413,6 +535,9 @@ def run_user_puzzle_job(job_id: str) -> None:
             "exclusions": exclusion_counts,
             "rejects": reject_counts,
             "kept_by_theme": kept_by_theme,
+            "pulled_games": pulled_total,
+            "skipped_as_seen": skipped_as_seen,
+            "up_to_date": up_to_date,
         }
         with conn.cursor() as cur:
             cur.execute(

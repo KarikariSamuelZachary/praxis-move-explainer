@@ -27,6 +27,7 @@ class UserPuzzleJobResponse(BaseModel):
     puzzles_kept: int = 0
     error_message: Optional[str] = None
     summary: dict = Field(default_factory=dict)
+    up_to_date: bool = False
 
 
 class UserPuzzleQueuePuzzle(BaseModel):

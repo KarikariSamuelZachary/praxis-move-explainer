@@ -63,6 +63,10 @@ _DUE_PREDICATE = (
 
 _MAX_SOLUTION_PLIES = SOLUTION_MAX_PLIES
 
+# Cost guardrails: repeats are cheap (URL-seen filtering means no engine
+# time), so the quota is generous and mainly bounds worst-case abuse.
+DAILY_EXTRACT_LIMIT = 10
+
 _ENTRY_SELECT = """
     SELECT e.id,
            e.user_id,
@@ -191,6 +195,7 @@ def start_extract(
     body: UserPuzzleExtractRequest,
     background_tasks: BackgroundTasks,
     request: Request,
+    conn=Depends(get_db),
     _: None = Depends(limit_by_clerk_user_id(limit=5, window=60)),
 ):
     clerk_id = _clerk_id(request)
@@ -207,6 +212,45 @@ def start_extract(
         chesscom_username=chesscom,
         limit=body.limit,
     )
+    with conn.cursor() as cur:
+        # create_user_puzzle_job reclaims stale 'running' rows first, so a
+        # leftover here is a genuinely live worker.
+        cur.execute(
+            "SELECT COUNT(*) FROM user_puzzle_jobs "
+            "WHERE requested_by_user_id = %s AND status = 'running' "
+            "AND id != %s::uuid",
+            (clerk_id, job["job_id"]),
+        )
+        if cur.fetchone()[0] > 0:
+            cur.execute(
+                "UPDATE user_puzzle_jobs SET status='failed', "
+                "error_message='superseded: another extraction already running', "
+                "completed_at=NOW() WHERE id = %s::uuid",
+                (job["job_id"],),
+            )
+            conn.commit()
+            raise HTTPException(
+                status_code=409,
+                detail="An extraction is already running. Wait for it to finish.",
+            )
+        cur.execute(
+            "SELECT COUNT(*) FROM user_puzzle_jobs "
+            "WHERE requested_by_user_id = %s AND id != %s::uuid "
+            "AND created_at > NOW() - INTERVAL '24 hours'",
+            (clerk_id, job["job_id"]),
+        )
+        if cur.fetchone()[0] >= DAILY_EXTRACT_LIMIT:
+            cur.execute(
+                "UPDATE user_puzzle_jobs SET status='failed', "
+                "error_message='daily extraction limit reached', "
+                "completed_at=NOW() WHERE id = %s::uuid",
+                (job["job_id"],),
+            )
+            conn.commit()
+            raise HTTPException(
+                status_code=429,
+                detail="Daily extraction limit reached. Try again tomorrow.",
+            )
     background_tasks.add_task(run_user_puzzle_job, job["job_id"])
     return UserPuzzleExtractStartResponse(job_id=job["job_id"], status="queued")
 
