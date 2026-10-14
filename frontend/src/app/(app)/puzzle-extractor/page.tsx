@@ -650,8 +650,7 @@ export default function PuzzleExtractorPage() {
     []
   );
 
-  const advance = useCallback(() => {
-    if (!visible) return;
+  const resetAttemptState = useCallback(() => {
     if (advanceTimerRef.current !== null) {
       window.clearTimeout(advanceTimerRef.current);
       advanceTimerRef.current = null;
@@ -661,16 +660,29 @@ export default function PuzzleExtractorPage() {
     attemptedMovesRef.current = [];
     hintsUsedRef.current = 0;
     startTimeRef.current = Date.now();
+    boardApi.current?.resetPuzzle();
+  }, []);
+
+  const advance = useCallback(() => {
+    if (!visible) return;
     if (index + 1 >= visible.length) {
+      resetAttemptState();
       setDeckKey(null);
       setIndex(0);
       setCompleted(0);
       return;
     }
+    resetAttemptState();
     setCompleted((c) => c + 1);
     setIndex((i) => i + 1);
-    boardApi.current?.resetPuzzle();
-  }, [index, visible]);
+  }, [index, resetAttemptState, visible]);
+
+  const goBack = useCallback(() => {
+    if (index <= 0) return;
+    resetAttemptState();
+    setCompleted((c) => Math.max(0, c - 1));
+    setIndex((i) => i - 1);
+  }, [index, resetAttemptState]);
 
   // A card is graded once, after the whole line is solved or a move is missed.
   // Later retries are free practice, just as they were for single-move cards.
@@ -880,15 +892,6 @@ export default function PuzzleExtractorPage() {
               />
             ))}
           </div>
-          {decks.length === 0 && (
-            <button
-              type="button"
-              onClick={() => setDialogOpen(true)}
-              className="mt-2 w-full rounded-lg border border-white/20 bg-white/5 px-4 py-3 text-sm font-semibold text-white transition hover:bg-white/10"
-            >
-              Extract puzzles
-            </button>
-          )}
         </div>
         ) : (
         <div className="grid gap-6 xl:min-h-0 xl:flex-1 xl:grid-cols-[20rem_minmax(0,1fr)_22rem] xl:pt-5">
@@ -1067,13 +1070,30 @@ export default function PuzzleExtractorPage() {
               )}
             </div>
 
-            <button
-              type="button"
-              onClick={advance}
-              className={`${PUZZLE_CARD_CLASS} flex h-14 w-full shrink-0 items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5`}
-            >
-              Next Puzzle
-            </button>
+            <div className="grid shrink-0 grid-cols-3 gap-2">
+              <button
+                type="button"
+                onClick={goBack}
+                disabled={index <= 0}
+                className={`${PUZZLE_CARD_CLASS} flex h-14 w-full items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5 disabled:pointer-events-none disabled:opacity-40`}
+              >
+                Back
+              </button>
+              <button
+                type="button"
+                onClick={resetAttemptState}
+                className={`${PUZZLE_CARD_CLASS} flex h-14 w-full items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5`}
+              >
+                Retry
+              </button>
+              <button
+                type="button"
+                onClick={advance}
+                className={`${PUZZLE_CARD_CLASS} flex h-14 w-full items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5`}
+              >
+                Next
+              </button>
+            </div>
           </section>
         </div>
         )}
