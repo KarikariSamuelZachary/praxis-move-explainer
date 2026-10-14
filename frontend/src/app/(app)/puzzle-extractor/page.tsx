@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import ChessBoardComponent, {
   type BoardApi,
 } from '@/components/board/ChessBoard';
+import { ProviderIcon } from '@/components/icons/PlatformIcons';
 import { PUZZLE_CARD_CLASS } from '@/components/puzzles/puzzleStyles';
 import PuzzleStatusPanel from '@/components/puzzles/PuzzleStatusPanel';
 import { WOOD_PANEL_CLASS, WOOD_PANEL_STYLE } from '@/lib/woodPanel';
@@ -302,13 +303,19 @@ function ExtractDialog({
   const [provider, setProvider] = useState<Provider>('lichess');
   const [lichess, setLichess] = useState('');
   const [chesscom, setChesscom] = useState('');
-  const [limit, setLimit] = useState(20);
+  const [limitText, setLimitText] = useState('20');
   const [phase, setPhase] = useState<'idle' | 'working' | 'error'>('idle');
   const [error, setError] = useState<string | null>(null);
   const [statusLine, setStatusLine] = useState('');
 
   const username = (provider === 'lichess' ? lichess : chesscom).trim();
   const working = phase === 'working';
+
+  function parsedLimit(): number {
+    const n = parseInt(limitText, 10);
+    if (!Number.isFinite(n)) return 20;
+    return Math.min(50, Math.max(1, n));
+  }
 
   async function handleSubmit() {
     if (!username || working) return;
@@ -322,7 +329,7 @@ function ExtractDialog({
         body: JSON.stringify({
           lichess_username: provider === 'lichess' ? username : null,
           chesscom_username: provider === 'chesscom' ? username : null,
-          limit,
+          limit: parsedLimit(),
         }),
       });
       const jobId = started.job_id as string;
@@ -399,12 +406,13 @@ function ExtractDialog({
               type="button"
               onClick={() => setProvider(key)}
               disabled={working}
-              className={`inline-flex h-10 items-center justify-center rounded-md text-sm font-semibold capitalize transition disabled:opacity-60 ${
+              className={`inline-flex h-10 items-center justify-center gap-2 rounded-md text-sm font-semibold capitalize transition disabled:opacity-60 ${
                 provider === key
                   ? 'bg-[#f7e5c6] text-[#241206]'
                   : 'text-[#f7e5c6]/70 hover:bg-white/10'
               }`}
             >
+              <ProviderIcon provider={key} />
               {key === 'lichess' ? 'Lichess' : 'Chess.com'}
             </button>
           ))}
@@ -437,8 +445,9 @@ function ExtractDialog({
             type="number"
             min={1}
             max={50}
-            value={limit}
-            onChange={(event) => setLimit(Number(event.target.value) || 20)}
+            value={limitText}
+            onChange={(event) => setLimitText(event.target.value)}
+            onBlur={() => setLimitText(String(parsedLimit()))}
             disabled={working}
             className="w-20 rounded-xl border border-black/50 bg-black/60 px-3 py-2 text-sm text-white outline-none disabled:opacity-60"
           />
