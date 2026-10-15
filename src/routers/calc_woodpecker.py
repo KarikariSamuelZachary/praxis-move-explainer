@@ -214,12 +214,15 @@ def review_attempt(
             cur.execute(
                 "INSERT INTO calc_woodpecker_attempts (entry_id, user_id,"
                 " solved, first_divergence_ply, diverged_on, score,"
-                " elapsed_ms, review_nonce)"
-                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+                " elapsed_ms, review_nonce, submitted_line, mode)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+                " RETURNING id",
                 (token["entry_id"], clerk_id, result["solved"],
                  result["first_divergence_ply"], result["diverged_on"],
-                 score, elapsed_ms, token["nonce"]),
+                 score, elapsed_ms, token["nonce"], " ".join(body.moves),
+                 "lines"),
             )
+            review_attempt_id = cur.fetchone()["id"]
             conn.commit()
         except pg_errors.UniqueViolation:
             conn.rollback()
@@ -235,6 +238,7 @@ def review_attempt(
             rating_after=None,
             delta=0,
             rated=False,
+            attempt_id=review_attempt_id,
         )
     finally:
         cur.close()
