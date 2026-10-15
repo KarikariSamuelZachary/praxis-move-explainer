@@ -1715,7 +1715,10 @@ def run_migrations():
             # attempts table; calc reviews are single-request whole-line
             # replays, so every row carries the full verdict). review_nonce
             # makes each review token single-use (409 on replay), the same
-            # pattern as calc_attempts.exercise_nonce.
+            # pattern as calc_attempts.exercise_nonce. submitted_line stores
+            # the user's own entered moves (needed by /why: W is derived
+            # from the review's own line and divergence ply, not the source
+            # attempt's); mode mirrors calc_attempts.mode.
             cur.execute(
                 """
                 CREATE TABLE IF NOT EXISTS calc_woodpecker_attempts (
@@ -1728,8 +1731,116 @@ def run_migrations():
                     score                DOUBLE PRECISION,
                     elapsed_ms           INTEGER,
                     review_nonce         TEXT NOT NULL UNIQUE,
+                    submitted_line       TEXT,
+                    mode                 TEXT NOT NULL DEFAULT 'lines',
                     attempted_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
                 )
+                """
+            )
+            # Additive: installs that created the table before submitted_line
+            # / mode existed (prod has the table with 0 rows) get the columns
+            # without a rebuild. Legacy review rows keep NULL lines and are
+            # answered 409 by /why (nothing to derive W from).
+            cur.execute(
+                """
+                ALTER TABLE calc_woodpecker_attempts
+                    ADD COLUMN IF NOT EXISTS submitted_line TEXT,
+                    ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'lines'
+                """
+            )
+            # --- calc "show why" -------------------------------------------------
+            # Engine-derived consequence of a user's first wrong SOLVER move:
+            # one stored result per attempt of either kind (idempotent
+            # replays), plus a cross-user cache keyed by (position_key, W)
+            # so identical mistakes share one search. Exactly one of
+            # attempt_id / review_attempt_id is set (CHECK), each cascading
+            # to its own attempt table; a partial unique index on each is
+            # the one-row-per-attempt backstop.
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS calc_why (
+                    id                UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    attempt_id        UUID REFERENCES calc_attempts(id) ON DELETE CASCADE,
+                    review_attempt_id UUID REFERENCES calc_woodpecker_attempts(id) ON DELETE CASCADE,
+                    result            JSONB NOT NULL,
+                    engine_version    TEXT,
+                    nodes             INTEGER NOT NULL,
+                    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    CHECK (num_nonnulls(attempt_id, review_attempt_id) = 1)
+                )
+                """
+            )
+            cur.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_calc_why_attempt
+                    ON calc_why (attempt_id) WHERE attempt_id IS NOT NULL
+                """
+            )
+            cur.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_calc_why_review_attempt
+                    ON calc_why (review_attempt_id)
+                    WHERE review_attempt_id IS NOT NULL
+                """
+            )
+            cur.execute(
+                """
+                CREATE TABLE IF NOT EXISTS calc_why_cache (
+                    position_key   TEXT NOT NULL,
+                    w_uci          TEXT NOT NULL,
+                    result         JSONB NOT NULL,
+                    engine_version TEXT,
+                    nodes          INTEGER NOT NULL,
+                    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (position_key, w_uci)
+                )
+                """
+            )
+            # Attempt submission mode: 'lines' (full interleaved line) today;
+            # 'premove' tomorrow (solver moves only). The why-search maps W
+            # per mode; until a premove submission path exists every row is
+            # 'lines' and the endpoint 409s anything else.
+            cur.execute(
+                """
+                ALTER TABLE calc_attempts
+                    ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'lines'
+                """
+            )
+            # (The solve-only FK this table briefly carried never shipped:
+            # calc_why is not on origin/main, so the DDL above is already
+            # the two-FK shape and no upgrade path is needed.)
+            # Legacy key upgrade: rows written before the normalization
+            # carry position_fen. Backfill position_key from them, then swap
+            # the primary key. Skipped entirely on fresh installs (no
+            # position_fen column). The version/nodes bypass in the endpoint
+            # makes any surviving stale rows self-invalidating anyway.
+            cur.execute(
+                """
+                DO $$
+                BEGIN
+                    IF to_regclass('public.calc_why_cache') IS NOT NULL
+                       AND EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_name = 'calc_why_cache'
+                              AND column_name = 'position_fen') THEN
+                        ALTER TABLE calc_why_cache
+                            ADD COLUMN IF NOT EXISTS position_key TEXT;
+                        UPDATE calc_why_cache SET position_key =
+                            array_to_string(
+                                (string_to_array(position_fen, ' '))[1:4],
+                                ' ')
+                            WHERE position_key IS NULL;
+                        ALTER TABLE calc_why_cache
+                            ALTER COLUMN position_key SET NOT NULL;
+                        ALTER TABLE calc_why_cache
+                            DROP CONSTRAINT IF EXISTS calc_why_cache_pkey;
+                        ALTER TABLE calc_why_cache
+                            DROP COLUMN IF EXISTS position_fen;
+                        ALTER TABLE calc_why_cache ADD CONSTRAINT
+                            calc_why_cache_pkey
+                            PRIMARY KEY (position_key, w_uci);
+                    END IF;
+                END $$;
                 """
             )
         conn.commit()
