@@ -403,3 +403,59 @@ export interface UserSettings {
   themes: string[];
   dailyPuzzleGoal: number;
 }
+
+/** A Blind Calculation exercise: calculate n solver moves (2n-1 plies),
+ * entering both your moves and the defender replies you expect. */
+export interface CalcExercise {
+  segment_id: string;
+  offset: number;
+  n: number;
+  fen: string;
+  side_to_move: 'white' | 'black';
+  rating: number | null;
+  exercise_token: string;
+}
+
+export interface CalcSubmitResult {
+  solved: boolean;
+  first_divergence_ply: number | null;
+  diverged_on: 'solver' | 'defender' | null;
+  correct_prefix_plies: number;
+  continuation: string[];
+  rating_before: number | null;
+  rating_after: number | null;
+  delta: number;
+  rated: boolean;
+  attempt_id: string | null;
+}
+
+export interface CalcRatingEntry {
+  n: number;
+  rating: number;
+  attempts: number;
+}
+
+export type CalcWhyType =
+  | 'mate_against'
+  | 'stalemate_or_draw'
+  | 'material_loss'
+  | 'slower_win'
+  | 'also_fine'
+  | 'win_slips'
+  | 'defender_misjudged';
+
+export interface CalcWhyEval {
+  cp: number | null;
+  mate: number | null;
+  win_prob: number | null;
+}
+
+export interface CalcWhyResult {
+  type: CalcWhyType;
+  headline: string;
+  line_uci: string[];
+  eval_before: CalcWhyEval | null;
+  eval_after: CalcWhyEval | null;
+  truncated_at_ply: number | null;
+  params: Record<string, unknown>;
+}
