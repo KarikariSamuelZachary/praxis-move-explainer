@@ -294,6 +294,7 @@ def submit_exercise(
             rating_after=rating_after,
             delta=delta,
             rated=first,
+            attempt_id=attempt_id,
         )
     finally:
         cur.close()
