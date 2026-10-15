@@ -32,6 +32,7 @@ class CalcSubmitResponse(BaseModel):
     rating_after: int | None = None
     delta: int = 0
     rated: bool = False
+    attempt_id: UUID | None = None
 
 
 class CalcRatingEntry(BaseModel):
@@ -59,3 +60,24 @@ class CalcWoodpeckerCountResponse(BaseModel):
 class CalcWoodpeckerAttemptRequest(BaseModel):
     review_token: str = Field(min_length=1)
     moves: list[str] = Field(min_length=1)
+
+
+class CalcWhyRequest(BaseModel):
+    attempt_id: UUID
+    kind: str = Field(default="solve", pattern="^(solve|review)$")
+
+
+class CalcWhyEval(BaseModel):
+    cp: int | None = None
+    mate: int | None = None
+    win_prob: float | None = None
+
+
+class CalcWhyResponse(BaseModel):
+    type: str
+    headline: str
+    line_uci: list[str] = []
+    eval_before: CalcWhyEval | None = None
+    eval_after: CalcWhyEval | None = None
+    truncated_at_ply: int | None = None
+    params: dict = {}
