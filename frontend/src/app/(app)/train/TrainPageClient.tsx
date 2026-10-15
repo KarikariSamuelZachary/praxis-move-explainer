@@ -70,6 +70,7 @@ const TRAINING_MODES: TrainingMode[] = [
     illustration: '/scenario-trainer-illustration.webp',
     cta: 'Start Calculating',
     tone: 'blue',
+    href: '/train/calculation',
   },
 ];
 
