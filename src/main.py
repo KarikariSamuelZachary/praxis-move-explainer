@@ -37,7 +37,7 @@ from engines.stockfish_engine import (
     start_review_stockfish,
     start_stockfish_singleton,
 )
-from routers import calc, calc_woodpecker, endgame_hint, endgame_playout, endgame_practice, endgame_woodpecker, endgames, import_games, maia_debug, onboarding, puzzles, repertoire, review, train, user, user_puzzles, webhooks, woodpecker
+from routers import calc, calc_why, calc_woodpecker, endgame_hint, endgame_playout, endgame_practice, endgame_woodpecker, endgames, import_games, maia_debug, onboarding, puzzles, repertoire, review, train, user, user_puzzles, webhooks, woodpecker
 
 ROOT_DIR = Path(__file__).resolve().parents[1]
 load_dotenv(ROOT_DIR / ".env")
@@ -309,6 +309,7 @@ app.include_router(webhooks.router, prefix="/webhooks")
 app.include_router(woodpecker.router, prefix="/api/woodpecker")
 app.include_router(calc.router, prefix="/api/calc")
 app.include_router(calc_woodpecker.router, prefix="/api/calc/woodpecker")
+app.include_router(calc_why.router, prefix="/api/calc")
 app.include_router(user_puzzles.router, prefix="/api/my-puzzles")
 app.include_router(repertoire.router, prefix="/api/repertoires")
 # Debug-only Maia probe. Nothing in the frontend references it, so a
