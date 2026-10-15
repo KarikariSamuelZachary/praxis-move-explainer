@@ -152,16 +152,42 @@ def main(argv=None) -> int:
                 f"--confirm-host {host!r}")
         print(f"APPLYING to host {host!r} in batches of {args.batch}")
         import psycopg2
-        con = psycopg2.connect(args.db_url)
+        from psycopg2 import InterfaceError, OperationalError
+
+        def _connect():
+            # keepalives so a long batch of per-row round-trips does not
+            # look idle to middleboxes (Azure dropped one such connection).
+            return psycopg2.connect(args.db_url, keepalives=1,
+                                    keepalives_idle=30,
+                                    keepalives_interval=10,
+                                    keepalives_count=3)
+
+        con = _connect()
         try:
             for i in range(0, len(valid), args.batch):
                 batch = valid[i:i + args.batch]
-                with con:  # explicit transaction per batch
-                    with con.cursor() as cur:
-                        for r in batch:
-                            cur.execute(INSERT_SQL, to_row(r))
-                            inserted += cur.rowcount
-                            skipped += 1 - cur.rowcount
+                for attempt in (0, 1):
+                    try:
+                        with con:  # explicit transaction per batch
+                            with con.cursor() as cur:
+                                for r in batch:
+                                    cur.execute(INSERT_SQL, to_row(r))
+                                    inserted += cur.rowcount
+                                    skipped += 1 - cur.rowcount
+                        break
+                    except (InterfaceError, OperationalError) as e:
+                        # One reconnect + retry: the batch transaction
+                        # rolled back with the dead connection, and the
+                        # loader is idempotent, so no partial state.
+                        print(f"  batch {i // args.batch + 1}: connection"
+                              f" lost ({e}); reconnecting", flush=True)
+                        try:
+                            con.close()
+                        except Exception:
+                            pass
+                        if attempt == 1:
+                            raise
+                        con = _connect()
                 print(f"  batch {i // args.batch + 1}: "
                       f"inserted={inserted} skipped={skipped}", flush=True)
         finally:
