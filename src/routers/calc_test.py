@@ -618,6 +618,82 @@ def main():
               and any(e["n"] == 3 for e in rl)
               and "line_uci" not in r.text and "continuation" not in r.text,
               r.text[:300])
+
+        # K: single-ply hint + hinted-submit neutralization -----------------
+        kseg = _pick(min_len=3, exclude=_attempted(TEST_CLERK_ID_2))
+        ktok, _ = _mint(TEST_CLERK_ID_2, kseg["id"], 0, 3)
+        kexp = _expected(kseg, 0, 3)
+        h = client.post("/api/calc/hint", headers=h2, json={
+            "exercise_token": ktok, "plies_entered": 0}).json()
+        check("K1 hint ply 0 is the first expected ply",
+              h.get("uci") == kexp[0] and h.get("ply") == 0, h)
+        h2p = client.post("/api/calc/hint", headers=h2, json={
+            "exercise_token": ktok, "plies_entered": 2}).json()
+        check("K1 hint ply 2, token not consumed",
+              h2p.get("uci") == kexp[2] and h2p.get("ply") == 2, h2p)
+        ro = client.post("/api/calc/hint", headers=h2, json={
+            "exercise_token": ktok, "plies_entered": len(kexp)})
+        check("K2 hint past the line -> 422", ro.status_code == 422,
+              ro.text[:200])
+        rn = client.post("/api/calc/hint", headers=h2, json={
+            "exercise_token": ktok, "plies_entered": -1})
+        check("K2 negative plies_entered -> 422", rn.status_code == 422,
+              rn.text[:200])
+        mid3 = _q("SELECT rating FROM calc_ratings WHERE user_id = %s"
+                  " AND n = 3", (TEST_CLERK_ID_2,))
+        kh = client.post("/api/calc/submit", headers=h2, json={
+            "exercise_token": ktok, "moves": kexp, "hints_used": 2})
+        kb = kh.json()
+        check("K3 hinted solve grades but stores unrated",
+              kh.status_code == 200 and kb["solved"] is True
+              and kb["rated"] is False and kb["rating_before"] is None
+              and kb["rating_after"] is None and kb["delta"] == 0
+              and _q("SELECT rating FROM calc_ratings WHERE user_id = %s"
+                     " AND n = 3", (TEST_CLERK_ID_2,)) == mid3
+              and _q("SELECT rated, rating_before, score FROM calc_attempts"
+                     " WHERE user_id = %s AND segment_id = %s"
+                     " AND offset_solver_moves = 0 AND n = 3",
+                     (TEST_CLERK_ID_2, kseg["id"])) == [(False, None, 1.0)],
+              (kb, mid3))
+        hn = _mint(TEST_CLERK_ID_2, kseg["id"], 0, 3)[0]
+        rh = client.post("/api/calc/submit", headers=h2, json={
+            "exercise_token": hn, "moves": kexp, "hints_used": -1})
+        check("K4 negative hints_used -> 422", rh.status_code == 422,
+              rh.text[:200])
+
+        # T: retry re-issues a submittable token for the same exercise -----
+        tseg = _pick(min_len=3, exclude=_attempted(TEST_CLERK_ID_2))
+        ttok, _ = _mint(TEST_CLERK_ID_2, tseg["id"], 0, 3)
+        texp = _expected(tseg, 0, 3)
+        t0 = client.post("/api/calc/submit", headers=h2, json={
+            "exercise_token": ttok, "moves": texp})
+        check("T0 first submit rated", t0.json()["rated"] is True,
+              t0.text[:200])
+        tr = client.post("/api/calc/retry", headers=h2, json={
+            "exercise_token": ttok})
+        check("T1 retry issues a fresh token for a spent one",
+              tr.status_code == 200
+              and tr.json()["exercise_token"] != ttok,
+              tr.text[:200])
+        t1 = client.post("/api/calc/submit", headers=h2, json={
+            "exercise_token": tr.json()["exercise_token"], "moves": texp})
+        tb = t1.json()
+        check("T1 retry submit grades, stores unrated",
+              t1.status_code == 200 and tb["solved"] is True
+              and tb["rated"] is False
+              and len(_q("SELECT id FROM calc_attempts WHERE user_id = %s"
+                         " AND segment_id = %s",
+                         (TEST_CLERK_ID_2, tseg["id"]))) == 2,
+              (tb, t1.text[:200]))
+        ftok, _ = _mint(TEST_CLERK_ID, tseg["id"], 0, 3)
+        ff = client.post("/api/calc/retry", headers=h2, json={
+            "exercise_token": ftok})
+        check("T2 foreign retry token -> 403", ff.status_code == 403,
+              ff.text[:200])
+        fx = client.post("/api/calc/retry", headers=h2, json={
+            "exercise_token": ttok + "x"})
+        check("T2 tampered retry token -> 400", fx.status_code == 400,
+              fx.text[:200])
     finally:
         teardown()
     print(f"\n{len(PASS)} passed, {len(FAIL)} failed")
