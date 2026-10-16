@@ -39,8 +39,12 @@ from core.rating import (
     rating_window,
 )
 from schemas.calc_schemas import (
+    CalcHintRequest,
+    CalcHintResponse,
     CalcNextResponse,
     CalcRatingsResponse,
+    CalcRetryRequest,
+    CalcRetryResponse,
     CalcSubmitRequest,
     CalcSubmitResponse,
 )
@@ -185,6 +189,10 @@ def submit_exercise(
     n, offset = token["n"], token["offset"]
     if not 3 <= n <= 12:
         raise HTTPException(status_code=400, detail="Invalid exercise token")
+    hints_used = body.hints_used or 0
+    if hints_used < 0:
+        raise HTTPException(status_code=400,
+                            detail="hints_used cannot be negative")
     if len(body.moves) != 2 * n - 1:
         raise HTTPException(
             status_code=422,
@@ -224,17 +232,20 @@ def submit_exercise(
         score = solver_score(n, result["first_divergence_ply"],
                              result["diverged_on"], result["solved"])
         # First-ever attempt on this segment (any offset/n) is rated;
-        # later attempts are stored unrated. The ratings row is locked in
-        # the same transaction as the attempt insert.
+        # later attempts are stored unrated. A hinted attempt never rates
+        # (endgame neutralization): it still grades, stores, and queues.
+        # The ratings row is locked in the same transaction as the attempt
+        # insert.
         cur.execute("SELECT 1 FROM calc_attempts"
                     " WHERE user_id = %s AND segment_id = %s",
                     (clerk_id, token["segment_id"]))
         first = cur.fetchone() is None
+        rated = first and hints_used == 0
         rating_before = rating_after = expected_score = None
         k_factor = CALC_K_FACTOR
         delta = 0
-        if first:
-            rated = _get_or_seed_rating(cur, clerk_id, n)
+        if rated:
+            _get_or_seed_rating(cur, clerk_id, n)
             cur.execute("SELECT rating, attempts FROM calc_ratings"
                         " WHERE user_id = %s AND n = %s FOR UPDATE",
                         (clerk_id, n))
@@ -263,7 +274,7 @@ def submit_exercise(
                  result["diverged_on"], result["solved"],
                  int((time.time() - token["issued_at"]) * 1000),
                  token["nonce"], rating_before, rating_after,
-                 expected_score, k_factor, score, first),
+                 expected_score, k_factor, score, rated),
             )
             attempt_id = cur.fetchone()["id"]
             if not result["solved"]:
@@ -293,8 +304,101 @@ def submit_exercise(
             rating_before=rating_before,
             rating_after=rating_after,
             delta=delta,
-            rated=first,
+            rated=rated,
             attempt_id=attempt_id,
         )
+    finally:
+        cur.close()
+
+
+@router.post("/retry", response_model=CalcRetryResponse)
+def retry_exercise(
+    request: Request,
+    body: CalcRetryRequest,
+    _: None = Depends(limit_by_clerk_user_id(limit=60, window=60)),
+    conn=Depends(get_db),
+):
+    """Re-issue a fresh token for the same exercise (segment/offset/n).
+
+    Powers practice retries: the old token may already be spent (nonce
+    consumption is checked at /submit, not here). The retry submit grades
+    normally but stores unrated — a prior attempt on the segment always
+    exists by then, so the first-ever rule neutralizes it.
+    """
+    clerk_id = _require_clerk_id(request)
+    try:
+        token = verify_token(body.exercise_token, clerk_id)
+    except ForeignTokenError:
+        raise HTTPException(status_code=403, detail="Invalid exercise token")
+    except (BadTokenError, ExpiredTokenError):
+        raise HTTPException(status_code=400, detail="Invalid exercise token")
+    n, offset = token["n"], token["offset"]
+    if not 3 <= n <= 12:
+        raise HTTPException(status_code=400, detail="Invalid exercise token")
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        cur.execute(
+            "SELECT solver_move_count, status FROM calc_segments WHERE id = %s",
+            (token["segment_id"],),
+        )
+        seg = cur.fetchone()
+        if seg is None or seg["status"] != "active":
+            raise HTTPException(status_code=404,
+                                detail="Unknown or retired segment")
+        if offset + n > seg["solver_move_count"]:
+            raise HTTPException(status_code=422,
+                                detail="Exercise out of segment range")
+        issued = issue_token(clerk_id, token["segment_id"], offset, n)
+        return CalcRetryResponse(exercise_token=issued["token"])
+    finally:
+        cur.close()
+
+
+@router.post("/hint", response_model=CalcHintResponse)
+def hint_next_ply(
+    request: Request,
+    body: CalcHintRequest,
+    _: None = Depends(limit_by_clerk_user_id(limit=60, window=60)),
+    conn=Depends(get_db),
+):
+    """Reveal the single next expected ply for an exercise token.
+
+    The client is blind by design (it never holds the line), so even the
+    highlight needs the server. Returns expected[plies_entered]; writes
+    nothing — the client reports hints_used at submit, and any hinted
+    attempt stores unrated (endgame neutralization). Calling hint never
+    consumes the token: grading still happens exactly once at /submit.
+    """
+    clerk_id = _require_clerk_id(request)
+    try:
+        token = verify_token(body.exercise_token, clerk_id)
+    except ForeignTokenError:
+        raise HTTPException(status_code=403, detail="Invalid exercise token")
+    except (BadTokenError, ExpiredTokenError):
+        raise HTTPException(status_code=400, detail="Invalid exercise token")
+    n, offset = token["n"], token["offset"]
+    if not 3 <= n <= 12:
+        raise HTTPException(status_code=400, detail="Invalid exercise token")
+    if not 0 <= body.plies_entered < 2 * n - 1:
+        raise HTTPException(status_code=422,
+                            detail=f"plies_entered must be within"
+                                   f" [0, {2 * n - 2}] for n={n}")
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    try:
+        cur.execute(
+            "SELECT segment_fen, line_uci, solver_move_count, status"
+            " FROM calc_segments WHERE id = %s",
+            (token["segment_id"],),
+        )
+        seg = cur.fetchone()
+        if seg is None or seg["status"] != "active":
+            raise HTTPException(status_code=404,
+                                detail="Unknown or retired segment")
+        if offset + n > seg["solver_move_count"]:
+            raise HTTPException(status_code=422,
+                                detail="Exercise out of segment range")
+        expected = exercise_line_tokens(seg["line_uci"], offset, n)
+        return CalcHintResponse(uci=expected[body.plies_entered],
+                                ply=body.plies_entered)
     finally:
         cur.close()
