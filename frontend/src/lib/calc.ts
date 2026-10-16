@@ -66,14 +66,19 @@ export async function fetchNextCalcExercise(n: number): Promise<CalcExercise> {
 
 export async function submitCalcLine(
   exerciseToken: string,
-  moves: string[]
+  moves: string[],
+  hintsUsed = 0
 ): Promise<CalcSubmitResult> {
   let response: Response;
   try {
     response = await fetch('/api/calc/submit', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ exercise_token: exerciseToken, moves }),
+      body: JSON.stringify({
+        exercise_token: exerciseToken,
+        moves,
+        hints_used: hintsUsed,
+      }),
     });
   } catch {
     throw new CalcFetchError('Could not reach the server.', 0, true);
@@ -86,6 +91,60 @@ export async function submitCalcLine(
     );
   }
   return (await response.json()) as CalcSubmitResult;
+}
+
+export interface CalcHint {
+  uci: string;
+  ply: number;
+}
+
+export async function fetchCalcHint(
+  exerciseToken: string,
+  pliesEntered: number
+): Promise<CalcHint> {  let response: Response;
+  try {
+    response = await fetch('/api/calc/hint', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        exercise_token: exerciseToken,
+        plies_entered: pliesEntered,
+      }),
+    });
+  } catch {
+    throw new CalcFetchError('Could not reach the server.', 0, true);
+  }
+  if (!response.ok) {
+    throw new CalcFetchError(
+      await readError(response, 'Could not get a hint.'),
+      response.status,
+      response.status >= 500
+    );
+  }
+  return (await response.json()) as CalcHint;
+}
+
+export async function fetchRetryToken(
+  exerciseToken: string
+): Promise<{ exercise_token: string }> {
+  let response: Response;
+  try {
+    response = await fetch('/api/calc/retry', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ exercise_token: exerciseToken }),
+    });
+  } catch {
+    throw new CalcFetchError('Could not reach the server.', 0, true);
+  }
+  if (!response.ok) {
+    throw new CalcFetchError(
+      await readError(response, 'Could not start a retry.'),
+      response.status,
+      response.status >= 500
+    );
+  }
+  return (await response.json()) as { exercise_token: string };
 }
 export async function fetchCalcRatings(): Promise<CalcRatingEntry[]> {
   let response: Response;
