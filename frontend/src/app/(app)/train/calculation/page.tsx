@@ -7,14 +7,18 @@ import { Chess } from 'chess.js';
 import {
   CalcFetchError,
   depthForRating,
+  fetchCalcHint,
   fetchCalcRatings,
   fetchNextCalcExercise,
+  fetchRetryToken,
   fetchWhy,
   submitCalcLine,
 } from '@/lib/calc';
 import { type CalcBoardProps } from '@/components/board/CalcBoard';
+import WoodpeckerPromoCard from '@/components/puzzles/WoodpeckerPromoCard';
+import { getPuzzleDifficultyLabel } from '@/lib/lichess';
 import { WOOD_PANEL_CLASS, WOOD_PANEL_STYLE } from '@/lib/woodPanel';
-import type { CalcExercise, CalcSubmitResult, CalcWhyEval, CalcWhyResult } from '@/types';
+import type { CalcExercise, CalcSubmitResult, CalcWhyResult } from '@/types';
 
 // Same dynamic-import contract as the other trainer boards
 // (react-chessboard is client-only).
@@ -40,27 +44,57 @@ const Board = dynamic<CalcBoardProps>(() => import('@/components/board/CalcBoard
 });
 
 /**
- * Backend-driven explanation rendering: only the templated headline, plain
- * eval text, and the engine line on a replay board. No LLM text anywhere.
+ * Failure mark matching the puzzles/endgame panels.
+ */
+function BreakIcon() {
+  return (
+    <svg
+      className="h-5 w-5"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+    >
+      <path d="M12 3 2.5 20h19L12 3Z" />
+      <path d="M12 9v5" />
+      <path d="M12 17.5h.01" />
+    </svg>
+  );
+}
+
+/**
+ * Backend-driven explanation rendering: the templated headline and the
+ * engine line on a replay board. No LLM text anywhere.
  */
 function WhyResult({
   result,
   fenBefore,
-  evalText,
 }: {
   result: CalcWhyResult;
   fenBefore: string;
-  evalText: (e: CalcWhyEval | null) => string;
 }) {
   const mateBefore = result.params['mate_before'];
   const mateAfter = result.params['mate_after'];
+  // Defender divergences need no engine and carry no evals: the headline
+  // names the refutation and the stored replies play on the main board
+  // (started by requestWhy), so there is nothing to render here.
+  if (result.type === 'defender_misjudged') {
+    return (
+      <div className="mt-2">
+        <h3 className="font-display text-[22px] font-semibold leading-[1.25] text-[#f7e5c6]">
+          {result.headline}
+        </h3>
+      </div>
+    );
+  }
   return (
     <div className="mt-2">
-      <p className="text-sm font-semibold text-[#f7e5c6]">{result.headline}</p>
-      <p className="mt-1 text-xs text-white/60">
-        Before (you): {evalText(result.eval_before)}
-        {'  ·  '}After: {evalText(result.eval_after)}
-      </p>
+      <h3 className="font-display text-[22px] font-semibold leading-[1.25] text-[#f7e5c6]">
+        {result.headline}
+      </h3>
       {result.type === 'slower_win' &&
         typeof mateBefore === 'number' &&
         typeof mateAfter === 'number' && (
@@ -74,12 +108,8 @@ function WhyResult({
         </p>
       )}
       {result.line_uci.length > 0 && (
-        <div className="mt-2">
-          <ReplayBoard
-            fenBefore={fenBefore}
-            lineUci={result.line_uci}
-            truncatedAtPly={result.truncated_at_ply}
-          />
+        <div className="mt-3">
+          <ReplayBoard fenBefore={fenBefore} lineUci={result.line_uci} />
         </div>
       )}
     </div>
@@ -119,6 +149,16 @@ export default function CalculationPage() {
   const [rating, setRating] = useState<number | null>(null);
   const [ratingChange, setRatingChange] = useState<number | null>(null);
   const [dueCount, setDueCount] = useState<number | null>(null);
+  const [woodpeckerPeck, setWoodpeckerPeck] = useState(0);
+  // Retry token swap in flight (Retry fetches a fresh token for the same
+  // exercise so the re-entry can be graded again, unrated).
+  const [isRetrying, setIsRetrying] = useState(false);
+  // Two-stage hint: the first press highlights the piece to move, the
+  // second plays that single correct ply. Every revealed ply counts, and a
+  // hinted attempt stores unrated (endgame neutralization).
+  const [hintsUsed, setHintsUsed] = useState(0);
+  const [hintUci, setHintUci] = useState<string | null>(null);
+  const [isHintLoading, setIsHintLoading] = useState(false);
   const [exerciseKey, setExerciseKey] = useState(0);
   const loadTokenRef = useRef(0);
   // "Show why" explanation state. One request per attempt: firing sets
@@ -135,10 +175,22 @@ export default function CalculationPage() {
   const totalPlies = exercise ? 2 * exercise.n - 1 : 0;
   const resolved = result !== null;
 
+  // Full-line playout on the main board: your correct prefix plus the
+  // revealed continuation, stepped through on "Watch the full line".
+  const [playoutPlies, setPlayoutPlies] = useState<string[] | null>(null);
+  const [playoutAt, setPlayoutAt] = useState(0);
+  const playoutPlaying =
+    playoutPlies !== null && playoutAt < playoutPlies.length;
+
   const startExercise = useCallback((next: CalcExercise) => {
     setExercise(next);
     setMoves([]);
     setResult(null);
+    setHintsUsed(0);
+    setHintUci(null);
+    setIsHintLoading(false);
+    setPlayoutPlies(null);
+    setPlayoutAt(0);
     setRatingChange(null);
     setNextError(null);
     setWhyState({ status: 'idle' });
@@ -190,6 +242,9 @@ export default function CalculationPage() {
   const handleMove = useCallback(
     (uci: string) => {
       if (resolved || isSubmitting) return;
+      // Going your own way disarms an armed hint (the count stays: the
+      // move was already revealed).
+      setHintUci(null);
       setMoves((prev) => (prev.length < totalPlies ? [...prev, uci] : prev));
     },
     [resolved, isSubmitting, totalPlies]
@@ -197,15 +252,22 @@ export default function CalculationPage() {
 
   const handleTakeback = useCallback(() => {
     if (resolved || isSubmitting) return;
+    // An armed hint is the newest UI change: the first press clears the
+    // highlight, the next ones walk back entered moves.
+    if (hintUci) {
+      setHintUci(null);
+      return;
+    }
     setMoves((prev) => prev.slice(0, -1));
-  }, [resolved, isSubmitting]);
+  }, [resolved, isSubmitting, hintUci]);
 
   const handleSubmit = useCallback(async () => {
     if (!exercise || moves.length !== totalPlies || isSubmitting) return;
     setIsSubmitting(true);
     try {
-      const graded = await submitCalcLine(exercise.exercise_token, moves);
+      const graded = await submitCalcLine(exercise.exercise_token, moves, hintsUsed);
       setResult(graded);
+      if (!graded.solved) setWoodpeckerPeck((n) => n + 1);
       if (graded.rated && graded.rating_after != null) {
         setRating(graded.rating_after);
         setRatingChange(graded.delta);
@@ -216,66 +278,74 @@ export default function CalculationPage() {
     } finally {
       setIsSubmitting(false);
     }
-  }, [exercise, moves, totalPlies, isSubmitting]);
+  }, [exercise, moves, totalPlies, isSubmitting, hintsUsed]);
 
-  /** Show solution: deliberately fail to reveal the line. The failed
-   * attempt is recorded (and queued for review) -- the auto-fail semantics
-   * agreed for reveals, using only the existing submit path. The spoiler
-   * is the last legal move, which is wrong with overwhelming probability;
-   * even in the freak case it matches, grading simply reveals from later. */
-  const handleShowSolution = useCallback(async () => {
-    if (!exercise || resolved || isSubmitting) return;
-    setIsSubmitting(true);
+  /** Retry: swap in a fresh token for the same exercise, then re-enter
+   * the line on a clean board. The re-entry grades normally but stores
+   * unrated (a prior attempt on the segment always exists by then). */
+  const handleRetry = useCallback(async () => {
+    if (!exercise || !resolved || isRetrying) return;
+    setIsRetrying(true);
     try {
-      const probe = new Chess(exercise.fen);
-      const legal = probe.moves({ verbose: true });
-      const spoiler =
-        legal.length > 0
-          ? (() => {
-              const m = legal[legal.length - 1];
-              return m.from + m.to + (m.promotion ?? '');
-            })()
-          : 'a2a3';
-      const line = [spoiler];
-      // Pad to full length so the shape validates; grading stops at the
-      // first divergence anyway.
-      while (line.length < totalPlies) line.push(spoiler);
-      const graded = await submitCalcLine(exercise.exercise_token, line);
-      setResult(graded);
-      if (graded.rated && graded.rating_after != null) {
-        setRating(graded.rating_after);
-        setRatingChange(graded.delta);
-      }
+      const fresh = await fetchRetryToken(exercise.exercise_token);
+      startExercise({ ...exercise, exercise_token: fresh.exercise_token });
     } catch (error) {
       const fetchError = error as CalcFetchError;
       setNextError(fetchError.message);
     } finally {
-      setIsSubmitting(false);
+      setIsRetrying(false);
     }
-  }, [exercise, resolved, isSubmitting, totalPlies]);
+  }, [exercise, resolved, isRetrying, startExercise]);
 
-  /** Render entered plies and continuations in SAN for readability. */
-  const sanFor = useCallback(
-    (line: string[], fromFen: string): string[] => {
-      const game = new Chess(fromFen);
-      const out: string[] = [];
-      for (const uci of line) {
-        try {
-          out.push(
-            game.move({
-              from: uci.slice(0, 2),
-              to: uci.slice(2, 4),
-              promotion: uci[4] ?? undefined,
-            }).san
-          );
-        } catch {
-          out.push(uci);
-        }
-      }
-      return out;
-    },
-    []
-  );
+  /** Two-stage hint. Stage 1 fetches the single next correct ply and only
+   * highlights its piece; stage 2 plays that one move onto the line. Every
+   * revealed ply counts and neutralizes the rating at submit. */
+  const requestHint = useCallback(async () => {
+    if (!exercise || resolved || isSubmitting || isHintLoading) return;
+    if (hintUci) {
+      const u = hintUci;
+      setHintUci(null);
+      handleMove(u);
+      return;
+    }
+    if (moves.length >= totalPlies) return;
+    setIsHintLoading(true);
+    try {
+      const hint = await fetchCalcHint(exercise.exercise_token, moves.length);
+      setHintUci(hint.uci);
+      setHintsUsed((n) => n + 1);
+    } catch (error) {
+      const fetchError = error as CalcFetchError;
+      setNextError(fetchError.message);
+    } finally {
+      setIsHintLoading(false);
+    }
+  }, [exercise, resolved, isSubmitting, isHintLoading, hintUci, moves.length, totalPlies, handleMove]);
+
+  /** Play the full correct line on the main board: your correct prefix
+   * plus the revealed continuation, from move one. Pressing again
+   * restarts; the final position stays on the board. */
+  const startLinePlayout = useCallback(() => {
+    if (!exercise || !result || result.first_divergence_ply == null) return;
+    setPlayoutPlies([
+      ...moves.slice(0, result.first_divergence_ply),
+      ...result.continuation,
+    ]);
+    setPlayoutAt(0);
+  }, [exercise, result, moves]);
+
+  useEffect(() => {
+    if (!playoutPlies || playoutAt >= playoutPlies.length) return;
+    const timer = setTimeout(
+      () => setPlayoutAt((a) => Math.min(a + 1, playoutPlies.length)),
+      900
+    );
+    return () => clearTimeout(timer);
+  }, [playoutPlies, playoutAt]);
+
+  /** What the main board shows: the playout sequence while watching,
+   * otherwise your entered line. */
+  const shownMoves = playoutPlies ? playoutPlies.slice(0, playoutAt) : moves;
 
   /** FEN at the divergence ply: replay the correct prefix (the entered
    * moves before the divergence matched, so they replay cleanly). */
@@ -295,17 +365,30 @@ export default function CalculationPage() {
   const plyLabel = (i: number) =>
     i % 2 === 0 ? `Your move ${i / 2 + 1}` : `Reply ${(i + 1) / 2}`;
 
-  /** Plain-text eval, always from your side (backend scores are user-POV). */
-  const evalText = useCallback((e: CalcWhyEval | null): string => {
-    if (!e) return '—';
-    if (e.mate != null) {
-      return e.mate > 0 ? `Mate in ${e.mate} for you` : `Mated in ${-e.mate}`;
+  /** Live prompt: whose turn it is at the entry frontier, plus the role of
+   * the next ply (even plies are yours, odd plies the expected reply). */
+  const frontier = useMemo(() => {
+    let turn: 'w' | 'b' = 'w';
+    if (exercise) {
+      try {
+        const game = new Chess(exercise.fen);
+        for (const uci of moves) {
+          game.move({
+            from: uci.slice(0, 2),
+            to: uci.slice(2, 4),
+            promotion: uci[4] ?? undefined,
+          });
+        }
+        turn = game.turn();
+      } catch {
+        turn = 'w';
+      }
     }
-    const parts: string[] = [];
-    if (e.cp != null) parts.push(`${e.cp >= 0 ? '+' : ''}${(e.cp / 100).toFixed(2)}`);
-    if (e.win_prob != null) parts.push(`${Math.round(e.win_prob * 100)}%`);
-    return parts.length > 0 ? parts.join(' · ') : '—';
-  }, []);
+    return {
+      sideLabel: turn === 'b' ? 'Black' : 'White',
+      isSolverPly: moves.length % 2 === 0,
+    };
+  }, [exercise, moves]);
 
   /** Friendly, non-JSON error copy for every why failure mode. */
   const friendlyWhyError = (status: number): string => {
@@ -319,11 +402,22 @@ export default function CalculationPage() {
   };
 
   const requestWhy = useCallback(
-    async (attemptId: string) => {
+    async (attemptId: string, sub: CalcSubmitResult, entered: string[]) => {
       setWhyState({ status: 'loading' });
-      try {
-        const res = await fetchWhy(attemptId);
+      const deliver = (res: CalcWhyResult) => {
         setWhyState({ status: 'done', result: res });
+        // Defender divergences have no engine line: play the stored
+        // replies on the main board through the standard playout.
+        if (res.type === 'defender_misjudged' && sub.first_divergence_ply != null) {
+          setPlayoutPlies([
+            ...entered.slice(0, sub.first_divergence_ply),
+            ...res.line_uci,
+          ]);
+          setPlayoutAt(0);
+        }
+      };
+      try {
+        deliver(await fetchWhy(attemptId));
       } catch (error) {
         const fetchError = error as CalcFetchError;
         if (fetchError.status === 429 && !whyRetriedRef.current) {
@@ -332,8 +426,7 @@ export default function CalculationPage() {
           setTimeout(() => {
             void (async () => {
               try {
-                const res = await fetchWhy(attemptId);
-                setWhyState({ status: 'done', result: res });
+                deliver(await fetchWhy(attemptId));
               } catch (retryError) {
                 const retryFetchError = retryError as CalcFetchError;
                 setWhyState({
@@ -396,12 +489,17 @@ export default function CalculationPage() {
                 />
                 <div className="min-w-0 flex-1">
                   <div className="text-[11px] font-bold uppercase tracking-[0.25em] text-white/40">
-                    Calculation Rating · {exercise.n} moves
+                    Calculation Rating
                   </div>
                   <div className="mt-1.5 flex items-end gap-2.5">
                     <span className="font-display text-[34px] font-semibold leading-none text-[#f7e5c6]">
                       {rating ?? '-'}
                     </span>
+                    {rating != null && (
+                      <span className="mb-0.5 rounded-full bg-white/10 px-2 py-0.5 text-xs font-bold text-white/60">
+                        {getPuzzleDifficultyLabel(rating)}
+                      </span>
+                    )}
                     {rating != null && ratingChange != null && (
                       <span
                         className={`mb-0.5 rounded-full px-2 py-0.5 text-xs font-bold ${
@@ -426,16 +524,27 @@ export default function CalculationPage() {
                 </div>
               </div>
 
-              <div className={`${CARD_CLASS} shrink-0 p-5`}>
-                <div className="text-[11px] font-bold uppercase tracking-[0.25em] text-white/40">
-                  How it works
+              {whyState.status !== 'idle' && (
+                <div className="shrink-0">
+                  {whyState.status === 'loading' && (
+                    <div className="flex items-center gap-2 text-sm text-white/60">
+                      <span className="h-4 w-4 animate-spin rounded-full border-2 border-[#d9b87c] border-t-transparent" />
+                      Analyzing your move…
+                    </div>
+                  )}
+                  {whyState.status === 'error' && (
+                    <p role="alert" className="text-xs text-amber-100/90">
+                      {whyState.message}
+                    </p>
+                  )}
+                  {whyState.status === 'done' && (
+                    <WhyResult
+                      result={whyState.result}
+                      fenBefore={divergenceFen}
+                    />
+                  )}
                 </div>
-                <p className="mt-2 text-[13px] leading-5 text-white/70">
-                  Calculate the full line in your head, then enter your moves
-                  and the replies you expect. Nothing is graded until you
-                  submit.
-                </p>
-              </div>
+              )}
             </section>
 
             {/* ============ CENTER: BOARD ============ */}
@@ -444,14 +553,15 @@ export default function CalculationPage() {
                 <Board
                   key={`${exercise.segment_id}:${exercise.offset}:${exercise.n}:${exerciseKey}`}
                   fen={exercise.fen}
-                  moves={moves}
+                  moves={shownMoves}
                   interactive={!resolved && !isSubmitting}
                   onMove={handleMove}
+                  hintFrom={hintUci ? hintUci.slice(0, 2) : null}
                 />
               </div>
               <p className="mt-3 text-center text-sm text-white/60">
                 Calculate <span className="font-semibold text-white">{exercise.n} moves deep</span>
-                {' '}· ply {Math.min(moves.length + 1, totalPlies)} of {totalPlies}
+                {' '}· ply {Math.min(shownMoves.length + 1, totalPlies)} of {totalPlies}
                 {exercise.side_to_move === 'black' ? ' · Black to move' : ' · White to move'}
               </p>
             </section>
@@ -462,147 +572,170 @@ export default function CalculationPage() {
                 <div className={`${CARD_CLASS} p-5`}>
                   {!resolved ? (
                     <>
-                      <div className="text-[11px] font-bold uppercase tracking-[0.25em] text-white/40">
-                        Your line
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="flex items-center gap-2.5">
+                          <span className="inline-block h-2.5 w-2.5 animate-pulse rounded-full bg-amber-300" />
+                          <span className="text-[11px] font-bold uppercase tracking-[0.3em] text-amber-200/80">
+                            Calculate {exercise.n} deep
+                          </span>
+                        </div>
                       </div>
-                      {moves.length === 0 ? (
-                        <p className="mt-2 text-sm text-white/50">
-                          Play your first move on the board — then the reply
-                          you expect, alternating until the line is complete.
-                        </p>
-                      ) : (
-                        <ol className="mt-2 space-y-1">
-                          {sanFor(moves, exercise.fen).map((san, i) => (
-                            <li key={i} className="flex gap-2 text-sm">
-                              <span className="w-24 shrink-0 text-white/40">
-                                {plyLabel(i)}
-                              </span>
-                              <span className="font-semibold text-white">{san}</span>
-                            </li>
-                          ))}
-                        </ol>
-                      )}
-                      <div className="mt-4 flex gap-2">
+                      <h2 className="mt-3 font-display text-[26px] font-semibold leading-[1.15] text-[#f7e5c6]">
+                        {frontier.sideLabel} to play
+                      </h2>
+                      <div className="mt-2 flex items-center gap-2">
+                        <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs font-bold text-white/60">
+                          {frontier.isSolverPly ? 'your move' : 'expected reply'}
+                        </span>
+                        {hintsUsed > 0 && (
+                          <span className="text-[11px] text-white/40">
+                            {hintsUsed} hint{hintsUsed === 1 ? '' : 's'} · unrated
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-5 grid grid-cols-3 gap-3 border-t border-white/10 pt-4">
                         <button
                           type="button"
                           onClick={handleTakeback}
-                          disabled={moves.length === 0 || isSubmitting}
-                          className="rounded-lg border border-white/20 bg-white/5 px-4 py-2 text-sm font-semibold text-white transition hover:bg-white/10 disabled:opacity-40"
+                          disabled={(moves.length === 0 && !hintUci) || isSubmitting}
+                          className="relative flex items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/5 px-2 py-3 text-sm font-bold text-white/80 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
                         >
-                          Takeback
+                          <span>Takeback</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void requestHint()}
+                          disabled={
+                            isHintLoading ||
+                            isSubmitting ||
+                            moves.length >= totalPlies
+                          }
+                          className="relative flex items-center justify-center gap-2 rounded-xl bg-gradient-to-b from-[#eacb90] to-[#c1954f] px-2 py-3 text-sm font-bold text-[#2a1a06] shadow-[0_10px_22px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.55)] transition hover:from-[#f2d8a4] hover:to-[#cda261] disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          <span>
+                            {hintUci ? 'Solution' : 'Hint'}
+                          </span>
                         </button>
                         <button
                           type="button"
                           onClick={() => void handleSubmit()}
                           disabled={moves.length !== totalPlies || isSubmitting}
-                          className="flex-1 rounded-lg bg-[#10b981]/80 px-4 py-2 text-sm font-bold text-black transition hover:bg-[#10b981] disabled:opacity-40"
+                          title="Submit line"
+                          className="relative flex items-center justify-center gap-2 rounded-xl bg-[#10b981]/80 px-2 py-3 text-sm font-bold text-black transition hover:bg-[#10b981] disabled:cursor-not-allowed disabled:opacity-40"
                         >
-                          {isSubmitting
-                            ? 'Grading…'
-                            : `Submit line (${moves.length}/${totalPlies})`}
+                          <span>
+                            {isSubmitting ? 'Grading…' : 'Submit'}
+                          </span>
                         </button>
                       </div>
-                      <button
-                        type="button"
-                        onClick={() => void handleShowSolution()}
-                        disabled={isSubmitting}
-                        className="mt-2 w-full rounded-lg border border-white/10 px-4 py-2 text-xs font-semibold text-white/50 transition hover:bg-white/5 hover:text-white/80 disabled:opacity-40"
-                      >
-                        Show solution (counts as failed)
-                      </button>
                     </>
+                  ) : result.solved ? (
+                    <div className="flex flex-col items-center justify-center gap-2.5 py-6 text-center">
+                      <span className="text-[#10b981]">
+                        <svg
+                          className="h-10 w-10"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                          strokeWidth="2"
+                          viewBox="0 0 24 24"
+                          aria-hidden="true"
+                        >
+                          <circle cx="12" cy="12" r="9" />
+                          <path d="m8.5 12 2.5 2.5 4.5-5" />
+                        </svg>
+                      </span>
+                      <h2 className="font-display text-[30px] font-semibold leading-[1.15] text-[#f7e5c6]">
+                        Solved.
+                      </h2>
+                    </div>
                   ) : (
                     <>
-                      <div
-                        className={`text-[11px] font-bold uppercase tracking-[0.25em] ${
-                          result.solved ? 'text-[#10b981]' : 'text-red-300'
-                        }`}
-                      >
-                        {result.solved ? 'Correct — full line!' : 'Not quite'}
+                      <div className="flex items-center gap-2">
+                        <span className="text-[#d9b87c]">
+                          <BreakIcon />
+                        </span>
+                        <h2 className="font-display text-[26px] font-semibold leading-[1.15] text-[#f7e5c6]">
+                          Not quite.
+                        </h2>
                       </div>
-                      {!result.solved && result.first_divergence_ply != null && (
+                      {result.first_divergence_ply != null && (
                         <div className="mt-2 text-sm text-white/70">
                           <p>
                             Diverged at {plyLabel(result.first_divergence_ply).toLowerCase()}
                             {' '}({result.diverged_on === 'solver' ? 'your move' : 'the reply'}).
                           </p>
-                          <div className="mt-2 text-[11px] font-bold uppercase tracking-[0.25em] text-white/40">
-                            Correct continuation
-                          </div>
-                          <ol className="mt-1 space-y-1">
-                            {sanFor(result.continuation, divergenceFen).map((san, i) => (
-                              <li key={i} className="flex gap-2 text-sm">
-                                <span className="w-24 shrink-0 text-white/40">
-                                  {plyLabel((result.first_divergence_ply ?? 0) + i)}
+                          <div
+                            className={`mt-4 grid gap-3 ${
+                              result.attempt_id ? 'grid-cols-3' : 'grid-cols-2'
+                            }`}
+                          >
+                            <button
+                              type="button"
+                              onClick={startLinePlayout}
+                              className="relative flex items-center justify-center gap-2 rounded-xl bg-gradient-to-b from-[#eacb90] to-[#c1954f] px-2 py-3 text-sm font-bold text-[#2a1a06] shadow-[0_10px_22px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.55)] transition hover:from-[#f2d8a4] hover:to-[#cda261]"
+                            >
+                              <span>
+                                {playoutPlies
+                                  ? playoutPlaying
+                                    ? 'Playing…'
+                                    : 'Replay'
+                                  : 'Watch line'}
+                              </span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void handleRetry()}
+                              disabled={isRetrying}
+                              className="relative flex items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/5 px-2 py-3 text-sm font-bold text-white/80 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              <span>{isRetrying ? '…' : 'Retry'}</span>
+                            </button>
+                            {result.attempt_id && (
+                              <button
+                                type="button"
+                                onClick={() => void requestWhy(result.attempt_id as string, result, moves)}
+                                disabled={
+                                  whyState.status === 'loading' ||
+                                  whyState.status === 'done'
+                                }
+                                className="relative flex items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/5 px-2 py-3 text-sm font-bold text-white/80 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+                              >
+                                <span>
+                                  {whyState.status === 'loading'
+                                    ? 'Analyzing…'
+                                    : whyState.status === 'done'
+                                      ? 'Explained'
+                                      : whyState.status === 'error'
+                                        ? 'Try again'
+                                        : 'Show why'}
                                 </span>
-                                <span className="font-semibold text-white">{san}</span>
-                              </li>
-                            ))}
-                          </ol>
-                          <p className="mt-2 text-xs text-white/40">
-                            This exercise was queued for review.
-                          </p>
-                          {result.attempt_id && (
-                            <div className="mt-3 border-t border-white/10 pt-3">
-                              {(whyState.status === 'idle' || whyState.status === 'error') && (
-                                <>
-                                  {whyState.status === 'error' && (
-                                    <p role="alert" className="mb-2 text-xs text-amber-100/90">
-                                      {whyState.message}
-                                    </p>
-                                  )}
-                                  <button
-                                    type="button"
-                                    onClick={() => void requestWhy(result.attempt_id as string)}
-                                    className="w-full rounded-lg border border-[#d9b87c]/40 bg-[#d9b87c]/10 px-4 py-2 text-sm font-semibold text-[#f7e5c6] transition hover:bg-[#d9b87c]/20"
-                                  >
-                                    {whyState.status === 'error' ? 'Try again' : 'Show why'}
-                                  </button>
-                                </>
-                              )}
-                              {whyState.status === 'loading' && (
-                                <div className="flex items-center gap-2 py-2 text-sm text-white/60">
-                                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-[#d9b87c] border-t-transparent" />
-                                  Analyzing your move…
-                                </div>
-                              )}
-                              {whyState.status === 'done' && (
-                                <WhyResult
-                                  result={whyState.result}
-                                  fenBefore={divergenceFen}
-                                  evalText={evalText}
-                                />
-                              )}
-                            </div>
-                          )}
+                              </button>
+                            )}
+                          </div>
                         </div>
-                      )}
-                      {result.rated && (
-                        <p className="mt-2 text-sm text-white/70">
-                          Rating: {result.rating_before} → {result.rating_after}{' '}
-                          <span className={result.delta >= 0 ? 'text-[#10b981]' : 'text-red-300'}>
-                            ({result.delta >= 0 ? '+' : ''}{result.delta})
-                          </span>
-                        </p>
                       )}
                     </>
                   )}
                 </div>
               </div>
 
-              <button
-                type="button"
-                onClick={() => {
-                  void loadNext();
-                }}
-                disabled={isAdvancing}
-                className={`${CARD_CLASS} flex h-14 w-full shrink-0 items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5 disabled:opacity-60`}
-              >
-                {isAdvancing && (
-                  <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-transparent" />
-                )}
-                {isAdvancing ? 'Loading…' : resolved ? 'Next Exercise' : 'Skip Exercise'}
-              </button>
+              {resolved && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void loadNext();
+                  }}
+                  disabled={isAdvancing || isRetrying}
+                  className={`${CARD_CLASS} flex h-14 w-full shrink-0 items-center justify-center gap-3 text-sm font-semibold text-white transition hover:bg-white/5 disabled:opacity-60`}
+                >
+                  {isAdvancing && (
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-white/40 border-t-transparent" />
+                  )}
+                  {isAdvancing ? 'Loading…' : 'Next'}
+                </button>
+              )}
               {nextError && (
                 <div
                   role="alert"
@@ -612,25 +745,7 @@ export default function CalculationPage() {
                 </div>
               )}
 
-              <button
-                type="button"
-                onClick={() => { window.location.href = '/woodpecker'; }}
-                className={`${CARD_CLASS} flex w-full shrink-0 items-center justify-between p-4 text-left transition hover:bg-white/5`}
-              >
-                <span>
-                  <span className="block text-[11px] font-bold uppercase tracking-[0.25em] text-white/40">
-                    Reviews due
-                  </span>
-                  <span className="mt-1 block text-sm font-semibold text-white">
-                    {dueCount == null
-                      ? 'Spaced repetition queue'
-                      : dueCount === 0
-                        ? 'Queue clear — nothing due'
-                        : `${dueCount} review${dueCount === 1 ? '' : 's'} due`}
-                  </span>
-                </span>
-                <span aria-hidden="true" className="text-xl text-[#d9b87c]">→</span>
-              </button>
+              <WoodpeckerPromoCard dueCount={dueCount} peckSignal={woodpeckerPeck} />
             </section>
           </div>
         )}
