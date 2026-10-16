@@ -1,10 +1,34 @@
 'use client';
 
-import { useCallback, useMemo, useState } from 'react';
+import { useCallback, useMemo, useState, type CSSProperties } from 'react';
 import { Chess } from 'chess.js';
 import { Chessboard, type SquareRenderer } from 'react-chessboard';
 
 import PromotionPicker, { type PromotionPiece } from '@/components/board/PromotionPicker';
+
+// The walnut frame around every other trainer board (BoardShell.tsx verbatim:
+// 14px walnut-dark padding, layered shadow, 8%-opacity wood overlay), so the
+// calculation board cannot be told apart on screen.
+const FRAME_STYLE: CSSProperties = {
+  padding: '14px',
+  background:
+    'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.webp)',
+  backgroundSize: 'cover',
+  backgroundPosition: 'center',
+  borderRadius: '6px',
+  boxShadow:
+    '0 0 0 2px #1a0a02, inset 0 2px 0 rgba(255,200,100,0.12), inset 0 -2px 0 rgba(0,0,0,0.5), 0 12px 40px rgba(0,0,0,0.6)',
+};
+
+const WOOD_OVERLAY_STYLE: CSSProperties = {
+  position: 'absolute',
+  inset: 0,
+  backgroundImage: 'url("/wood-texture.webp")',
+  backgroundSize: 'cover',
+  opacity: 0.08,
+  pointerEvents: 'none',
+  mixBlendMode: 'multiply',
+};
 
 export interface CalcBoardProps {
   /** Exercise start FEN (position before the first entered ply). */
@@ -16,6 +40,9 @@ export interface CalcBoardProps {
   /** Called with the UCI of each legal drop (either color: the user enters
    * both their own moves and the defender replies they expect). */
   onMove: (uci: string) => void;
+  /** Hint stage 1: square of the piece to move (pulsing ring, puzzles-style).
+   * Null when no hint is armed. Purely visual; interaction is unchanged. */
+  hintFrom?: string | null;
 }
 
 type PendingPromotion = { from: string; to: string } | null;
@@ -25,7 +52,7 @@ type PendingPromotion = { from: string; to: string } | null;
  * correctness feedback of any kind. Illegal drops snap back; everything
  * else is recorded verbatim for the eventual submit.
  */
-export default function CalcBoard({ fen, moves, interactive, onMove }: CalcBoardProps) {
+export default function CalcBoard({ fen, moves, interactive, onMove, hintFrom = null }: CalcBoardProps) {
   const [pendingPromotion, setPendingPromotion] = useState<PendingPromotion>(null);
   const [selectedSquare, setSelectedSquare] = useState<string | null>(null);
 
@@ -144,11 +171,14 @@ export default function CalcBoard({ fen, moves, interactive, onMove }: CalcBoard
           {hint === 'ring' && (
             <div className="pointer-events-none absolute left-1/2 top-1/2 h-[88%] w-[88%] -translate-x-1/2 -translate-y-1/2 rounded-full border-[6px] border-black/25" />
           )}
+          {square === hintFrom && (
+            <div className="pointer-events-none absolute left-1/2 top-1/2 h-[88%] w-[88%] -translate-x-1/2 -translate-y-1/2 animate-pulse rounded-full border-[6px] border-amber-300/90" />
+          )}
           {children}
         </div>
       );
     },
-    [hintSquares, selectedSquare]
+    [hintSquares, selectedSquare, hintFrom]
   );
   const onDrop = useCallback(
     (sourceSquare: string, targetSquare: string) => {
@@ -169,8 +199,10 @@ export default function CalcBoard({ fen, moves, interactive, onMove }: CalcBoard
   );
 
   return (
-    <div className="relative h-full w-full">
-      <Chessboard
+    <div className="relative h-full w-full" style={FRAME_STYLE}>
+      <div className="relative h-full w-full">
+        <div style={WOOD_OVERLAY_STYLE} aria-hidden="true" />
+        <Chessboard
         options={{
           position: positionFen,
           boardOrientation: orientation,
@@ -213,6 +245,7 @@ export default function CalcBoard({ fen, moves, interactive, onMove }: CalcBoard
           onCancel={() => setPendingPromotion(null)}
         />
       )}
+      </div>
     </div>
   );
 }
