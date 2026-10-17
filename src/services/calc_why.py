@@ -4,6 +4,12 @@ Only the first divergence being a SOLVER move triggers a search; a
 defender-reply divergence returns defender_misjudged with no engine call
 (the stored reply is the verified best defense).
 
+Concrete punishments (mate against, material drop, collapse to a draw,
+a slower mate) replay W plus the engine refutation. Everything else is a
+"miss": the move is not refuted, so the explanation is the stored
+solution replayed from the position before W, headlined with what the
+solution held (mate, material, the best defense, keeping the win).
+
 Score convention: every eval is from the USER's side POV (the solver, i.e.
 the side to move before W). Engine output after W is natively the
 opponent's POV and is flipped on the way in.
@@ -26,11 +32,17 @@ WHY_MATERIAL_WINDOW = 8      # earliest-drop search horizon (plies)
 WHY_RECOVER_PLIES = 2        # no recovery by t+2 confirms the loss
 WHY_HIGH_WINPROB = 0.8       # "winning" baseline for stalemate tricks
 WHY_ALSO_FINE_DROP = 0.05    # win-prob drop below this keeps the win
-WHY_FALLBACK_PLIES = 6       # win_slips truncation
 WHY_PV_WALK_CAP = 16         # safety cap when walking long PVs
+WHY_SOLUTION_WALK_PLIES = 16  # cap when walking the stored continuation
+WHY_MISS_GAIN = 1            # smallest sustained material gain that is a miss
+WHY_WIN_CP = 250             # cp fallback for "was winning" when no WDL
 
 PIECE_VALUES = {chess.PAWN: 1, chess.KNIGHT: 3, chess.BISHOP: 3,
                 chess.ROOK: 5, chess.QUEEN: 9}
+
+PIECE_NAMES = {chess.PAWN: "a pawn", chess.KNIGHT: "a knight",
+               chess.BISHOP: "a bishop", chess.ROOK: "a rook",
+               chess.QUEEN: "a queen"}
 
 
 def material_balance(board: chess.Board, side: chess.Color) -> int:
@@ -44,6 +56,67 @@ def material_balance(board: chess.Board, side: chess.Color) -> int:
 
 def _eval(cp, mate, win_prob) -> dict:
     return {"cp": cp, "mate": mate, "win_prob": win_prob}
+
+
+def walk_uci(fen: str, uci_moves: list[str],
+             cap: int) -> list[chess.Board]:
+    """Boards after each ply of a stored line (stops at the first illegal
+    move, capped for safety)."""
+    board = chess.Board(fen)
+    out: list[chess.Board] = []
+    for uci in uci_moves[:cap]:
+        try:
+            board.push(chess.Move.from_uci(uci))
+        except ValueError:
+            break
+        out.append(board.copy())
+    return out
+
+
+def solution_mate_in(positions: list[chess.Board]) -> int | None:
+    """Solver-move distance to mate along a walked solution, or None."""
+    for t, pos in enumerate(positions, 1):
+        if pos.is_checkmate():
+            if (t - 1) % 2 != 0:
+                return None
+            return (t - 1) // 2 + 1
+    return None
+
+
+def _piece_word(board_start: chess.Board, board_gain: chess.Board,
+                user_side: chess.Color, gain: int) -> str:
+    missing = [pt for pt in PIECE_NAMES
+               if len(board_gain.pieces(pt, not user_side))
+               < len(board_start.pieces(pt, not user_side))]
+    if len(missing) == 1 and PIECE_VALUES[missing[0]] == gain:
+        return PIECE_NAMES[missing[0]]
+    return "a pawn" if gain == 1 else "material"
+
+
+def solution_material_gain(
+        positions: list[chess.Board], board_start: chess.Board,
+        user_side: chess.Color) -> tuple[str, int] | None:
+    """Earliest sustained side-material gain along the solution walk."""
+    base = material_balance(board_start, user_side)
+    for t in range(1, len(positions) + 1):
+        board = positions[t - 1]
+        gain = material_balance(board, user_side) - base
+        if gain < WHY_MISS_GAIN:
+            continue
+        tail = positions[t:t + WHY_RECOVER_PLIES]
+        if all(material_balance(p, user_side) - base >= WHY_MISS_GAIN
+               for p in tail):
+            return _piece_word(board_start, board, user_side, gain), gain
+    return None
+
+
+def _miss(reason: str, headline: str, solution: list[str],
+          ev_before: dict, ev_after: dict, params: dict) -> dict:
+    return {"type": "miss", "headline": headline,
+            "line_uci": list(solution),
+            "eval_before": ev_before, "eval_after": ev_after,
+            "truncated_at_ply": len(solution) - 1 if solution else None,
+            "params": {**params, "reason": reason}}
 
 
 def derive_inputs(segment_fen: str, line_uci: str, offset: int, n: int,
@@ -86,11 +159,16 @@ def derive_inputs(segment_fen: str, line_uci: str, offset: int, n: int,
 
 
 def classify(fen_before: str, fen_after: str, w_uci: str,
-             baseline: dict, reply: dict, nodes: int) -> dict:
+             baseline: dict, reply: dict, nodes: int,
+             solution: list[str] | None = None) -> dict:
     """Classify the consequence. baseline/reply are single-PV analyses
-    (side-to-move POV each); reply is flipped to user POV inside."""
+    (side-to-move POV each); reply is flipped to user POV inside.
+    `solution` is the stored continuation from the divergence ply: the
+    concrete-punishment branches ignore it, everything else becomes a
+    "miss" that replays it from the position before W."""
     user_board = chess.Board(fen_before)
     user_side = user_board.turn
+    solution = solution or []
     ev_before = _eval(baseline["cp"], baseline["mate"],
                        baseline["win_prob"])
     # Flip opponent-POV reply scores to the user's side.
@@ -194,6 +272,27 @@ def classify(fen_before: str, fen_after: str, w_uci: str,
                 "truncated_at_ply": len(line) - 1,
                 "params": {**params, "mate_before": ev_before["mate"],
                            "mate_after": r_mate}}
+    # miss: nothing concrete punishes W, so the explanation is what the
+    # stored solution had and W did not. Missed mate first (score distance
+    # when the baseline saw it, else the walk), then missed material.
+    solution_positions = walk_uci(fen_before, solution,
+                                  WHY_SOLUTION_WALK_PLIES)
+    mate_in = baseline["mate"] if (baseline["mate"] or 0) > 0 else None
+    if mate_in is None and solution:
+        mate_in = solution_mate_in(solution_positions)
+    if mate_in is not None and not (r_mate is not None and r_mate > 0):
+        return _miss("mate", f"You missed mate in {mate_in}.",
+                     solution, ev_before, ev_after,
+                     {**params, "mate_in": mate_in})
+    if solution:
+        hit = solution_material_gain(solution_positions,
+                                     chess.Board(fen_before), user_side)
+        if hit is not None:
+            word, gain = hit
+            return _miss("material",
+                         f"You missed the chance to win {word}.",
+                         solution, ev_before, ev_after,
+                         {**params, "material_gain": gain})
     # also_fine: win probability barely moves.
     if (ev_before["win_prob"] is not None and r_wp is not None
             and ev_before["win_prob"] - r_wp < WHY_ALSO_FINE_DROP):
@@ -202,19 +301,18 @@ def classify(fen_before: str, fen_after: str, w_uci: str,
         return {"type": "also_fine",
                 "headline": f"The win is kept (win probability"
                             f" {ev_before['win_prob']:.2f} → {r_wp:.2f}).",
-                "line_uci": [], "eval_before": ev_before,
-                "eval_after": ev_after, "truncated_at_ply": None,
+                "line_uci": list(solution),
+                "eval_before": ev_before, "eval_after": ev_after,
+                "truncated_at_ply": len(solution) - 1 if solution else None,
                 "params": {**params,
                            "winprob_before": ev_before["win_prob"],
                            "winprob_after": r_wp}}
-    # win_slips fallback.
-    line = [w_uci] + pv[:WHY_FALLBACK_PLIES]
-    before_s = (f"{ev_before['win_prob']:.2f}"
-                if ev_before["win_prob"] is not None else "unknown")
-    after_s = f"{r_wp:.2f}" if r_wp is not None else "unknown"
-    return {"type": "win_slips",
-            "headline": f"Winning chances fall from {before_s} to {after_s}.",
-            "line_uci": line, "eval_before": ev_before,
-            "eval_after": ev_after, "truncated_at_ply": len(line) - 1,
-            "params": {**params, "winprob_before": ev_before["win_prob"],
-                       "winprob_after": r_wp}}
+    winning = ((ev_before["win_prob"] is not None
+                and ev_before["win_prob"] >= WHY_HIGH_WINPROB)
+               or (ev_before["cp"] is not None
+                   and ev_before["cp"] >= WHY_WIN_CP))
+    if winning:
+        return _miss("keep", "You missed the chance to keep the win.",
+                     solution, ev_before, ev_after, params)
+    return _miss("defense", "You missed the best defense.",
+                 solution, ev_before, ev_after, params)
