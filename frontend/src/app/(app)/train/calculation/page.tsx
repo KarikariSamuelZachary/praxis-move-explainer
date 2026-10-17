@@ -16,24 +16,13 @@ import {
 } from '@/lib/calc';
 import { type CalcBoardProps } from '@/components/board/CalcBoard';
 import WoodpeckerPromoCard from '@/components/puzzles/WoodpeckerPromoCard';
+import WhyResult from '@/components/calc/WhyResult';
 import { getPuzzleDifficultyLabel } from '@/lib/lichess';
 import { WOOD_PANEL_CLASS, WOOD_PANEL_STYLE } from '@/lib/woodPanel';
 import type { CalcExercise, CalcSubmitResult, CalcWhyResult } from '@/types';
 
 // Same dynamic-import contract as the other trainer boards
 // (react-chessboard is client-only).
-const ReplayBoard = dynamic(
-  () => import('@/components/board/WhyReplayBoard'),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex aspect-square w-full animate-pulse items-center justify-center rounded-lg border border-white/10 bg-black/40">
-        <span className="text-xs text-white/50">Loading replay…</span>
-      </div>
-    ),
-  }
-);
-
 const Board = dynamic<CalcBoardProps>(() => import('@/components/board/CalcBoard'), {
   ssr: false,
   loading: () => (
@@ -62,57 +51,6 @@ function BreakIcon() {
       <path d="M12 9v5" />
       <path d="M12 17.5h.01" />
     </svg>
-  );
-}
-
-/**
- * Backend-driven explanation rendering: the templated headline and the
- * engine line on a replay board. No LLM text anywhere.
- */
-function WhyResult({
-  result,
-  fenBefore,
-}: {
-  result: CalcWhyResult;
-  fenBefore: string;
-}) {
-  const mateBefore = result.params['mate_before'];
-  const mateAfter = result.params['mate_after'];
-  // Defender divergences need no engine and carry no evals: the headline
-  // names the refutation and the stored replies play on the main board
-  // (started by requestWhy), so there is nothing to render here.
-  if (result.type === 'defender_misjudged') {
-    return (
-      <div className="mt-2">
-        <h3 className="font-display text-[22px] font-semibold leading-[1.25] text-[#f7e5c6]">
-          {result.headline}
-        </h3>
-      </div>
-    );
-  }
-  return (
-    <div className="mt-2">
-      <h3 className="font-display text-[22px] font-semibold leading-[1.25] text-[#f7e5c6]">
-        {result.headline}
-      </h3>
-      {result.type === 'slower_win' &&
-        typeof mateBefore === 'number' &&
-        typeof mateAfter === 'number' && (
-          <p className="mt-1 text-xs text-white/60">
-            Mate in {mateBefore} → mate in {mateAfter}.
-          </p>
-        )}
-      {result.type === 'also_fine' && (
-        <p className="mt-1 text-xs text-white/60">
-          The trainer asked for the main line, but your move keeps the advantage.
-        </p>
-      )}
-      {result.line_uci.length > 0 && (
-        <div className="mt-3">
-          <ReplayBoard fenBefore={fenBefore} lineUci={result.line_uci} />
-        </div>
-      )}
-    </div>
   );
 }
 
@@ -311,7 +249,10 @@ export default function CalculationPage() {
     if (moves.length >= totalPlies) return;
     setIsHintLoading(true);
     try {
-      const hint = await fetchCalcHint(exercise.exercise_token, moves.length);
+      const hint = await fetchCalcHint({
+        exerciseToken: exercise.exercise_token,
+        pliesEntered: moves.length,
+      });
       setHintUci(hint.uci);
       setHintsUsed((n) => n + 1);
     } catch (error) {
