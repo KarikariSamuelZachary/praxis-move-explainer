@@ -6,6 +6,7 @@ import dynamic from 'next/dynamic';
 import type { PieceDropHandlerArgs, SquareRenderer } from 'react-chessboard';
 
 import ReviewShell from '@/components/review/ReviewShell';
+import { ClassificationIcon } from '@/components/review/icons/ClassificationIcon';
 
 const Chessboard = dynamic(
   () => import('react-chessboard').then((module) => module.Chessboard),
@@ -2405,9 +2406,10 @@ function ModalShell({
 
 // --- Modal explore (shared by both replay viewers) -------------------------
 // Opt-in engine layer transplanted from the review sandbox: when armed, the
-// studied position gets a live label plus the side-to-move's best reply as
-// a board arrow; dragging a different move analyzes the deviation the same
-// way. One in-flight request max (new work aborts the previous), stepped
+// studied position gets a live classification badge on the moved piece plus
+// the side-to-move's best reply as a board arrow; dragging a different move
+// analyzes the deviation the same way. One in-flight request max (new work
+// aborts the previous), stepped
 // positions debounce ~500ms so fast click-through never queues the shared
 // live engine. Browsing with explore off costs zero engine calls.
 
@@ -2941,8 +2943,9 @@ function useModalExplore({
 
 // --- Shared modal viewer chrome -------------------------------------------
 // One visual language for both replay viewers: the trap viewer pairs a move
-// readout + label chips with copy + explore controls and a wooden
-// five-button navigator under the board, while the weak-opening viewer keeps
+// readout with the explore control (its classification renders as a badge on
+// the moved piece) and a wooden five-button navigator under the board, while
+// the weak-opening viewer keeps
 // explore always on with a single slim status line (no toggle row, no
 // heading) so the card fits short viewports without scrolling. Status rows
 // keep a minimum height so badges arriving late never shove the board around.
@@ -3020,25 +3023,6 @@ function ModalMoveReadout({
         {ply} / {total}
       </span>
     </span>
-  );
-}
-
-function ModalCopyFenButton({
-  onCopy,
-  copied,
-}: {
-  onCopy: () => void;
-  copied: boolean;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onCopy}
-      title="Copy the displayed FEN"
-      className="shrink-0 cursor-pointer rounded-full border border-[#f7e5c6]/25 bg-black/45 px-2.5 py-1.5 text-[10px] font-semibold text-[#f7e5c6]/80 transition-colors duration-200 hover:bg-black/65 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#efd9a7]"
-    >
-      {copied ? 'Copied' : 'FEN'}
-    </button>
   );
 }
 
@@ -3142,6 +3126,19 @@ function ModalWoodNav({
   );
 }
 
+const MODAL_BADGE_SIZE_PERCENT = 5.5;
+const MODAL_BADGE_MARGIN_PERCENT = 0.5;
+const MODAL_SQUARE_PERCENT = 100 / 8;
+
+function modalSquareToPercent(square: string, orientation: 'white' | 'black') {
+  const file = square.charCodeAt(0) - 97;
+  const rank = parseInt(square[1], 10) - 1;
+  return {
+    col: orientation === 'white' ? file : 7 - file,
+    row: orientation === 'white' ? 7 - rank : rank,
+  };
+}
+
 function TrapPositionModal({
   trap,
   onClose,
@@ -3162,7 +3159,6 @@ function TrapPositionModal({
   const [moveSans, setMoveSans] = useState<string[]>([]);
   const [moveDetails, setMoveDetails] = useState<VerboseHistoryMove[]>([]);
   const [blunders, setBlunders] = useState<OpeningGameBlunder[]>([]);
-  const [copied, setCopied] = useState(false);
 
   // Fetch the example game (most recent game with this recurring error) so
   // the user can step back and forward around the position. The static trap
@@ -3345,26 +3341,37 @@ function TrapPositionModal({
     return () => window.removeEventListener('keydown', onKeyDown);
   });
 
-  async function copyFen() {
-    try {
-      await navigator.clipboard.writeText(displayedFen);
-      setCopied(true);
-      window.setTimeout(() => setCopied(false), 1500);
-    } catch {
-      // Clipboard can be unavailable (permissions / insecure context).
+  // Explore labels render as a physical badge on the moved piece instead of
+  // written chips: live engine labels win, and the stored blunder covers the
+  // studied move until the stream settles. Deviations only use live labels.
+  const badge = useMemo(() => {
+    if (!explore.armed || !lastMoveSquares) {
+      return null;
     }
-  }
+    const classification =
+      (showLive ? explore.live.classification : null) ??
+      (explore.deviation ? null : (storedBlunder?.classification ?? null));
+    if (!classification) {
+      return null;
+    }
+    return {
+      classification,
+      ...modalSquareToPercent(lastMoveSquares.to, erringSide),
+    };
+  }, [
+    explore.armed,
+    explore.live.classification,
+    explore.deviation,
+    showLive,
+    storedBlunder,
+    lastMoveSquares,
+    erringSide,
+  ]);
 
-  const moveLabel =
-    trap.example_move_san || (trap.moves.length > 0 ? trap.moves[0] : '?');
   const moveRange =
     trap.move_number_min === trap.move_number_max
       ? `move ${trap.move_number_min}`
       : `moves ${trap.move_number_min}-${trap.move_number_max}`;
-  const classificationTone =
-    trap.example_classification === 'blunder'
-      ? 'border-rose-400/30 bg-rose-500/10 text-rose-200'
-      : 'border-amber-400/30 bg-amber-500/10 text-amber-200';
 
   return (
     <ModalShell title="Recurring blunder" onClose={onClose}>
@@ -3372,29 +3379,13 @@ function TrapPositionModal({
         {moveRange} · {trap.game_count} game{trap.game_count === 1 ? '' : 's'} ·{' '}
         {sideToMove === 'white' ? 'White' : 'Black'} to move
       </p>
-      <p
-        className={`mt-1 text-[11px] ${trap.exploitable ? 'text-emerald-200/80' : 'text-[#f7e5c6]/40'}`}
-      >
-        {trap.exploitable
-          ? 'The sparring bot plays toward this position.'
-          : 'Observed pattern - the bot won’t steer here.'}
-      </p>
+      {phase === 'error' && (
+        <p className="mt-1 text-[11px] text-[#f7e5c6]/40">Game unavailable</p>
+      )}
 
       <div className="mt-2 flex min-h-10 items-center justify-between gap-2">
         <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-2 gap-y-1">
           <ModalMoveReadout ply={displayPly} total={lastMoveIndex} san={displaySan} />
-          {storedBlunder && !showLive && (
-            <ModalLabelChip
-              classification={storedBlunder.classification}
-              title="From stored analysis - no engine call"
-            />
-          )}
-          {showLive && explore.live.classification && (
-            <ModalLabelChip
-              classification={explore.live.classification}
-              title="Live engine label for the position on screen"
-            />
-          )}
           {explore.armed && explore.live.pending && !showLive && (
             <span className="inline-flex items-center gap-1.5 text-[11px] text-[#f7e5c6]/60">
               <span className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-white/20 border-t-white" />
@@ -3405,10 +3396,7 @@ function TrapPositionModal({
             <ModalEvalChip cp={explore.live.evalCp} mate={explore.live.evalMate} />
           )}
         </div>
-        <div className="flex shrink-0 items-center gap-1.5">
-          <ModalCopyFenButton onCopy={copyFen} copied={copied} />
-          <ModalExploreToggle armed={explore.armed} onToggle={explore.toggleArmed} />
-        </div>
+        <ModalExploreToggle armed={explore.armed} onToggle={explore.toggleArmed} />
       </div>
       {explore.armed && explore.live.error && (
         <p className="mt-1 text-[11px] leading-5 text-amber-300/90">
@@ -3446,6 +3434,19 @@ function TrapPositionModal({
               arrows: explore.arrows,
             }}
           />
+          {badge && (
+            <div
+              className="pointer-events-none absolute z-[5]"
+              style={{
+                left: `${badge.col * MODAL_SQUARE_PERCENT + MODAL_SQUARE_PERCENT - MODAL_BADGE_SIZE_PERCENT - MODAL_BADGE_MARGIN_PERCENT}%`,
+                top: `${badge.row * MODAL_SQUARE_PERCENT + MODAL_BADGE_MARGIN_PERCENT}%`,
+                width: `${MODAL_BADGE_SIZE_PERCENT}%`,
+                aspectRatio: '1 / 1',
+              }}
+            >
+              <ClassificationIcon classification={badge.classification} size="100%" />
+            </div>
+          )}
         </div>
       </div>
 
@@ -3474,24 +3475,6 @@ function TrapPositionModal({
           onLast={() => goToPly(lastMoveIndex)}
           playing={playing}
         />
-      </div>
-
-      <div className="mt-2 flex items-center justify-between gap-3">
-        <div className="flex min-w-0 items-center gap-2">
-          <span className="truncate text-sm font-semibold text-[#f7e5c6]">
-            Played {moveLabel}
-          </span>
-          <span
-            className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] ${classificationTone}`}
-          >
-            {trap.example_classification}
-          </span>
-        </div>
-        {phase === 'error' && (
-          <span className="shrink-0 text-[10px] text-[#f7e5c6]/40">
-            Game unavailable
-          </span>
-        )}
       </div>
     </ModalShell>
   );
