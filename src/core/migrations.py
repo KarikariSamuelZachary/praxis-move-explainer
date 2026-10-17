@@ -1752,8 +1752,9 @@ def run_migrations():
             # --- calc "show why" -------------------------------------------------
             # Engine-derived consequence of a user's first wrong SOLVER move:
             # one stored result per attempt of either kind (idempotent
-            # replays), plus a cross-user cache keyed by (position_key, W)
-            # so identical mistakes share one search. Exactly one of
+            # replays), plus a cross-user cache keyed by (position_key, W,
+            # solution continuation) so identical mistakes share one
+            # search. Exactly one of
             # attempt_id / review_attempt_id is set (CHECK), each cascading
             # to its own attempt table; a partial unique index on each is
             # the one-row-per-attempt backstop.
@@ -1789,11 +1790,12 @@ def run_migrations():
                 CREATE TABLE IF NOT EXISTS calc_why_cache (
                     position_key   TEXT NOT NULL,
                     w_uci          TEXT NOT NULL,
+                    solution_uci   TEXT NOT NULL DEFAULT '',
                     result         JSONB NOT NULL,
                     engine_version TEXT,
                     nodes          INTEGER NOT NULL,
                     created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    PRIMARY KEY (position_key, w_uci)
+                    PRIMARY KEY (position_key, w_uci, solution_uci)
                 )
                 """
             )
@@ -1840,6 +1842,36 @@ def run_migrations():
                         ALTER TABLE calc_why_cache ADD CONSTRAINT
                             calc_why_cache_pkey
                             PRIMARY KEY (position_key, w_uci);
+                    END IF;
+                END $$;
+                """
+            )
+            # Miss results depend on the stored solution continuation, so it
+            # joins the cache key. Existing rows default to '' and therefore
+            # never match a real lookup (every miss then re-searches once and
+            # refreshes its row).
+            cur.execute(
+                """
+                ALTER TABLE calc_why_cache
+                    ADD COLUMN IF NOT EXISTS solution_uci TEXT NOT NULL
+                    DEFAULT ''
+                """
+            )
+            cur.execute(
+                """
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint
+                        WHERE conname = 'calc_why_cache_pkey'
+                          AND conrelid = 'calc_why_cache'::regclass
+                          AND pg_get_constraintdef(oid)
+                              LIKE '%solution_uci%') THEN
+                        ALTER TABLE calc_why_cache
+                            DROP CONSTRAINT IF EXISTS calc_why_cache_pkey;
+                        ALTER TABLE calc_why_cache
+                            ADD CONSTRAINT calc_why_cache_pkey
+                            PRIMARY KEY (position_key, w_uci, solution_uci);
                     END IF;
                 END $$;
                 """
