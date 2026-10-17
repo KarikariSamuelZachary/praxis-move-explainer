@@ -60,6 +60,7 @@ from services.calc_tokens import (
     ExpiredTokenError,
     ForeignTokenError,
     issue_token,
+    verify_review_token,
     verify_token,
 )
 
@@ -368,15 +369,55 @@ def hint_next_ply(
     nothing — the client reports hints_used at submit, and any hinted
     attempt stores unrated (endgame neutralization). Calling hint never
     consumes the token: grading still happens exactly once at /submit.
+
+    Review flow: pass review_token (a woodpecker review token) instead of
+    exercise_token; it resolves to the entry's segment/offset/n the same
+    way and is equally read-only.
     """
     clerk_id = _require_clerk_id(request)
-    try:
-        token = verify_token(body.exercise_token, clerk_id)
-    except ForeignTokenError:
-        raise HTTPException(status_code=403, detail="Invalid exercise token")
-    except (BadTokenError, ExpiredTokenError):
-        raise HTTPException(status_code=400, detail="Invalid exercise token")
-    n, offset = token["n"], token["offset"]
+    use_review = body.review_token is not None
+    if use_review == (body.exercise_token is not None):
+        raise HTTPException(status_code=400,
+                            detail="exactly one of exercise_token,"
+                                   " review_token is required")
+    n = offset = segment_id = None
+    if use_review:
+        try:
+            rtoken = verify_review_token(body.review_token, clerk_id)
+        except ForeignTokenError:
+            raise HTTPException(status_code=403,
+                                detail="Invalid review token")
+        except (BadTokenError, ExpiredTokenError):
+            raise HTTPException(status_code=400,
+                                detail="Invalid review token")
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        try:
+            cur.execute(
+                "SELECT e.n, e.offset_solver_moves, s.id,"
+                " s.segment_fen, s.line_uci, s.solver_move_count,"
+                " s.status FROM calc_woodpecker_entries e"
+                " JOIN calc_segments s ON s.id = e.segment_id"
+                " WHERE e.id = %s::uuid AND e.user_id = %s",
+                (rtoken["entry_id"], clerk_id),
+            )
+            row = cur.fetchone()
+            if row is None:
+                raise HTTPException(status_code=404,
+                                    detail="Review entry not found")
+            n, offset = row["n"], row["offset_solver_moves"]
+            seg = row
+        finally:
+            cur.close()
+    else:
+        try:
+            token = verify_token(body.exercise_token, clerk_id)
+        except ForeignTokenError:
+            raise HTTPException(status_code=403, detail="Invalid exercise token")
+        except (BadTokenError, ExpiredTokenError):
+            raise HTTPException(status_code=400, detail="Invalid exercise token")
+        n, offset = token["n"], token["offset"]
+        segment_id = token["segment_id"]
+        seg = None
     if not 3 <= n <= 12:
         raise HTTPException(status_code=400, detail="Invalid exercise token")
     if not 0 <= body.plies_entered < 2 * n - 1:
@@ -385,12 +426,13 @@ def hint_next_ply(
                                    f" [0, {2 * n - 2}] for n={n}")
     cur = conn.cursor(cursor_factory=RealDictCursor)
     try:
-        cur.execute(
-            "SELECT segment_fen, line_uci, solver_move_count, status"
-            " FROM calc_segments WHERE id = %s",
-            (token["segment_id"],),
-        )
-        seg = cur.fetchone()
+        if seg is None:
+            cur.execute(
+                "SELECT segment_fen, line_uci, solver_move_count, status"
+                " FROM calc_segments WHERE id = %s",
+                (segment_id,),
+            )
+            seg = cur.fetchone()
         if seg is None or seg["status"] != "active":
             raise HTTPException(status_code=404,
                                 detail="Unknown or retired segment")
