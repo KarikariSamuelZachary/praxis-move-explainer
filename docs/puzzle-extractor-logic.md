@@ -77,8 +77,11 @@ theme, and game link (source account + provider joined from
 rows. The frontend groups due cards into per-source deck cards
 (repertoire-style, heading + due count only) and solves one deck at a
 time against the stored line (server-side grading, one wrong move fails
-the card, FSRS scheduling, bad-puzzle feedback excludes). A Clear button
-wipes all extractor artefacts for the user; imported games are kept.
+the card, FSRS scheduling, bad-puzzle feedback excludes). Removing a
+source deck deletes that source's imported games along with its puzzles,
+so extracting the account again re-mines it instead of silently skipping
+every game as already-seen; an unscoped clear wipes all extractor
+artefacts but keeps the game corpus.
 
 ## 6. Where good puzzles currently die (levers for more yield)
 
