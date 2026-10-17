@@ -23,6 +23,7 @@ from psycopg2.extras import RealDictCursor
 
 from core.database import get_db
 from core.fsrs import (
+    Rating,
     card_from_row,
     is_lapse,
     is_mastered,
@@ -187,10 +188,13 @@ def review_attempt(
         result = grade(expected, body.moves)
         score = solver_score(n, result["first_divergence_ply"],
                              result["diverged_on"], result["solved"])
+        hints_used = body.hints_used or 0
         review_at = now_utc()
         card = card_from_row(entry)
         prior_state = card.state
-        rating = rating_for(result["solved"])
+        # A hinted pass is scheduled as not-clean (FSRS Again), mirroring
+        # the endgame review route; the board verdict still stands.
+        rating = Rating.Again if hints_used else rating_for(result["solved"])
         reviewed_card, _ = scheduler.review_card(
             card=card, rating=rating, review_datetime=review_at)
         lapse = is_lapse(prior_state, rating)
@@ -214,13 +218,13 @@ def review_attempt(
             cur.execute(
                 "INSERT INTO calc_woodpecker_attempts (entry_id, user_id,"
                 " solved, first_divergence_ply, diverged_on, score,"
-                " elapsed_ms, review_nonce, submitted_line, mode)"
-                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+                " elapsed_ms, review_nonce, submitted_line, mode, hints_used)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"
                 " RETURNING id",
                 (token["entry_id"], clerk_id, result["solved"],
                  result["first_divergence_ply"], result["diverged_on"],
                  score, elapsed_ms, token["nonce"], " ".join(body.moves),
-                 "lines"),
+                 "lines", hints_used),
             )
             review_attempt_id = cur.fetchone()["id"]
             conn.commit()
