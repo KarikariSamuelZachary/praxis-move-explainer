@@ -39,7 +39,10 @@ class CalcSubmitResponse(BaseModel):
 
 
 class CalcHintRequest(BaseModel):
-    exercise_token: str = Field(min_length=1)
+    exercise_token: str | None = Field(default=None, min_length=1)
+    # Review flow: a woodpecker review token instead of an exercise token.
+    # Exactly one of the two must be set; both resolve to (segment, n).
+    review_token: str | None = Field(default=None, min_length=1)
     # Plies already entered (0 .. 2n-2): the server reveals the single next
     # expected ply. The client is blind by design and never holds the line.
     plies_entered: int = Field(ge=0)
@@ -82,6 +85,9 @@ class CalcWoodpeckerCountResponse(BaseModel):
 class CalcWoodpeckerAttemptRequest(BaseModel):
     review_token: str = Field(min_length=1)
     moves: list[str] = Field(min_length=1)
+    # Client-owned hint count (mirrors the solve flow): a hinted pass is
+    # scheduled as not-clean (FSRS Again) on resolution.
+    hints_used: int = Field(default=0, ge=0)
 
 
 class CalcWhyRequest(BaseModel):
