@@ -449,6 +449,7 @@ export type CalcWhyType =
   | 'material_loss'
   | 'slower_win'
   | 'also_fine'
+  | 'miss'
   | 'win_slips'
   | 'defender_misjudged';
 
