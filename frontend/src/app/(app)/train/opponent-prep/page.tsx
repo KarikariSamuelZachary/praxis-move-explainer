@@ -7,6 +7,7 @@ import type { PieceDropHandlerArgs, SquareRenderer } from 'react-chessboard';
 
 import ReviewShell from '@/components/review/ReviewShell';
 import { ClassificationIcon } from '@/components/review/icons/ClassificationIcon';
+import BackToTrainButton from '@/components/train/BackToTrainButton';
 
 const Chessboard = dynamic(
   () => import('react-chessboard').then((module) => module.Chessboard),
@@ -1178,7 +1179,8 @@ export default function OpponentPrepPage() {
   );
 
   return (
-    <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-1 pt-6 text-white lg:overflow-hidden lg:px-10 xl:pt-5 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
+    <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-y-auto px-6 pb-1 pt-14 text-white lg:overflow-hidden lg:px-10 lg:pt-6 xl:pt-5 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
+      <BackToTrainButton />
       <ReviewShell
         leftCollapsed={leftCollapsed}
         onLeftCollapsedChange={setLeftCollapsed}

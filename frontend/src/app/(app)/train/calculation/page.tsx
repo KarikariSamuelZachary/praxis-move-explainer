@@ -15,6 +15,7 @@ import {
   submitCalcLine,
 } from '@/lib/calc';
 import { type CalcBoardProps } from '@/components/board/CalcBoard';
+import BackToTrainButton from '@/components/train/BackToTrainButton';
 import WoodpeckerPromoCard from '@/components/puzzles/WoodpeckerPromoCard';
 import WhyResult from '@/components/calc/WhyResult';
 import { getPuzzleDifficultyLabel } from '@/lib/lichess';
@@ -386,7 +387,8 @@ export default function CalculationPage() {
   );
 
   return (
-    <div className="min-h-[calc(100vh-2.5rem)] -mt-2 text-white [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center] xl:h-[calc(100vh-2.5rem)] xl:overflow-hidden">
+    <div className="relative min-h-[calc(100vh-2.5rem)] -mt-2 text-white [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center] xl:h-[calc(100vh-2.5rem)] xl:overflow-hidden">
+      <BackToTrainButton />
       <div className="mx-auto flex flex-col px-6 pb-1 lg:px-10 xl:h-full">
         {loadState.kind === 'loading' ? (
           <div className="flex h-[70vh] items-center justify-center">
@@ -414,7 +416,7 @@ export default function CalculationPage() {
             </div>
           </div>
         ) : (
-          <div className="grid gap-6 xl:min-h-0 xl:flex-1 xl:grid-cols-[20rem_minmax(0,1fr)_22rem] xl:pt-5">
+          <div className="grid gap-6 pt-8 lg:pt-0 xl:min-h-0 xl:flex-1 xl:grid-cols-[20rem_minmax(0,1fr)_22rem] xl:pt-5">
             {/* ============ LEFT: RATING ============ */}
             <section className="order-2 mt-6 flex min-h-0 flex-col gap-5 xl:order-none xl:mt-0 xl:h-[min(calc(100vw-800px),calc(100vh-70px))]">
               <div

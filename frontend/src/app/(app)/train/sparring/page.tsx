@@ -4,6 +4,8 @@ import Image from 'next/image';
 import { useEffect, useState } from 'react';
 import { useRouter } from 'next/navigation';
 
+import BackToTrainButton from '@/components/train/BackToTrainButton';
+
 import {
   PERSONAS,
   UPCOMING_PERSONAS,
@@ -261,6 +263,7 @@ export default function EngineSparringPage() {
 
   return (
     <div className="relative h-[calc(100vh-3rem)] w-full overflow-y-auto overflow-x-hidden px-6 py-6 text-white lg:px-12 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
+      <BackToTrainButton />
       <div className="mx-auto flex h-full max-w-[1600px] flex-col">
         {/* ROW 1 -- the eight personas: five live + three planned slots.
             On lg+ the row is an EXACT 8-equal-column grid, so the row is
