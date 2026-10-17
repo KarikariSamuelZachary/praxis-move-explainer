@@ -277,6 +277,46 @@ def main():
               and _q("SELECT COUNT(*) FROM calc_attempts WHERE user_id = %s",
                      (TEST_CLERK_ID,)) == snap_attempts_b)
 
+        # --- W7: hint via review token; hinted pass schedules Again ----
+        seg7 = _fresh_segment()
+        exp7 = _expected(seg7, 0, 3)
+        tok7, _ = _mint(TEST_CLERK_ID, seg7["id"], 0, 3)
+        client.post("/api/calc/submit", headers=headers, json={
+            "exercise_token": tok7,
+            "moves": [_other_uci(exp7[0])] + exp7[1:]})
+        items7 = client.get("/api/calc/woodpecker/queue?limit=50",
+                            headers=headers).json()
+        eid7 = _q("SELECT id FROM calc_woodpecker_entries WHERE user_id = %s"
+                  " AND segment_id = %s", (TEST_CLERK_ID, seg7["id"]))[0][0]
+        mine7 = [i for i in items7 if i["entry_id"] == eid7]
+        check("W7 card queued", len(mine7) == 1, len(items7))
+        h7 = client.post("/api/calc/hint", headers=headers, json={
+            "review_token": mine7[0]["review_token"],
+            "plies_entered": 1}).json()
+        check("W7 hint via review token resolves the entry line",
+              h7.get("uci") == exp7[1] and h7.get("ply") == 1, h7)
+        both7 = client.post("/api/calc/hint", headers=headers, json={
+            "exercise_token": tok7,
+            "review_token": mine7[0]["review_token"],
+            "plies_entered": 0})
+        check("W7 both tokens -> 400", both7.status_code == 400,
+              both7.text[:200])
+        neither7 = client.post("/api/calc/hint", headers=headers, json={
+            "plies_entered": 0})
+        check("W7 neither token -> 400", neither7.status_code == 400,
+              neither7.text[:200])
+        r7 = client.post("/api/calc/woodpecker/attempt", headers=headers,
+                         json={"review_token": mine7[0]["review_token"],
+                               "moves": exp7, "hints_used": 2})
+        b7 = r7.json()
+        att7 = _q("SELECT solved, hints_used FROM calc_woodpecker_attempts"
+                  " WHERE entry_id = %s", (eid7,))[0]
+        due7 = _q("SELECT due <= NOW() + make_interval(hours => 1), reps"
+                  " FROM calc_woodpecker_entries WHERE id = %s", (eid7,))[0]
+        check("W7 hinted pass solves, stores hints, schedules Again",
+              r7.status_code == 200 and b7["solved"] is True
+              and att7 == (True, 2) and due7 == (True, 1), (b7, att7, due7))
+
         # --- W6: user delete cascades -------------------------------------------------------
         _exec("DELETE FROM users WHERE clerk_id = %s", (TEST_CLERK_ID,))
         check("W6 cascade on user delete",
