@@ -6,9 +6,10 @@ from the woodpecker review attempt's entry (same exercise shape) and its
 source attempt's submitted line. The client supplies only ids — never a FEN
 or a move. Defender-reply divergences return defender_misjudged with no
 engine call. Results are stored per attempt id (idempotent) and cached by
-(position_key, W) across users; the cache is bypassed when the stored
-engine version or node budget differs from the current ones. At most one
-search runs per process; the endpoint 429s when busy.
+(position_key, W, solution continuation) across users; the cache is
+bypassed when the stored engine version or node budget differs from the
+current ones. At most one search runs per process; the endpoint 429s when
+busy.
 """
 
 from __future__ import annotations
@@ -165,17 +166,24 @@ def explain_attempt(
                 row["submitted_line"], ply, mode=row["mode"])
         except ValueError as exc:
             raise HTTPException(status_code=422, detail=str(exc))
+        expected = exercise_line_tokens(row["line_uci"], row["offset"],
+                                        row["n"])
+        solution = expected[ply:]
+        solution_uci = " ".join(solution)
         key = engine.position_key(derived["fen_before"])
         # Cross-user cache, bypassed when the stored engine version or node
-        # budget differs from the current ones.
+        # budget differs from the current ones. The solution continuation is
+        # part of the key: miss results replay it, and transposing segments
+        # can share a position without sharing a line.
         try:
             current_version = engine.current_engine_version()
         except (RuntimeError, TimeoutError) as exc:
             raise HTTPException(status_code=503,
                                 detail="Explanation engine unavailable")
         cur.execute("SELECT result, engine_version, nodes FROM calc_why_cache"
-                    " WHERE position_key = %s AND w_uci = %s",
-                    (key, derived["w_uci"]))
+                    " WHERE position_key = %s AND w_uci = %s"
+                    " AND solution_uci = %s",
+                    (key, derived["w_uci"], solution_uci))
         cached = cur.fetchone()
         if (cached is not None
                 and cached["engine_version"] == current_version
@@ -208,18 +216,18 @@ def explain_attempt(
             version = engine.current_engine_version()
             result = classify(derived["fen_before"], derived["fen_after"],
                               derived["w_uci"], baseline, reply,
-                              engine.WHY_NODES)
+                              engine.WHY_NODES, solution)
             result["params"] = {**result.get("params", {}),
                                 "fen_before": derived["fen_before"]}
             cur.execute("INSERT INTO calc_why_cache (position_key, w_uci,"
-                        " result, engine_version, nodes)"
-                        " VALUES (%s,%s,%s,%s,%s)"
-                        " ON CONFLICT (position_key, w_uci) DO UPDATE SET"
-                        " result = EXCLUDED.result,"
+                        " solution_uci, result, engine_version, nodes)"
+                        " VALUES (%s,%s,%s,%s,%s,%s)"
+                        " ON CONFLICT (position_key, w_uci, solution_uci)"
+                        " DO UPDATE SET result = EXCLUDED.result,"
                         " engine_version = EXCLUDED.engine_version,"
                         " nodes = EXCLUDED.nodes",
-                        (key, derived["w_uci"], json.dumps(result),
-                         version, engine.WHY_NODES))
+                        (key, derived["w_uci"], solution_uci,
+                         json.dumps(result), version, engine.WHY_NODES))
             if kind == "solve":
                 cur.execute("INSERT INTO calc_why (attempt_id, result,"
                             " engine_version, nodes) VALUES (%s,%s,%s,%s)"
