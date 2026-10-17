@@ -5,8 +5,10 @@ Each engine type has one hand-verified fixture (SF19, 500k nodes):
   mate_against    g4?? allows Qh4# (mate in 1)
   stalemate_or_draw  Qb8+?? Kxb8 leaves bare kings (insufficient, t=1)
   slower_win      Qe8+ keeps mate but 1 -> 2
-  also_fine       Nc3 keeps the win (drop < 0.05, no line)
-  win_slips       h4?? loosening drops win prob without material loss
+  also_fine       Nc3 keeps the win (drop < 0.05, replays the solution)
+  miss/defense    h4?? unpunished and not winning, solution replayed
+Pure classify() checks cover miss mate/material/keep/defense/also_fine
+and punishment-over-miss ordering.
 plus: defender_misjudged with zero engine calls, foreign attempt 404,
 solved attempt 409, repeat returns stored output without a new search,
 cache reuse across users, rate limit, determinism.
@@ -187,16 +189,18 @@ def main():
                                json={"attempt_id": attempt_id})
 
         # --- one fixture per engine type --------------------------------
+        # (want_type, want_truncated, want_line, want_reason)
         expectations = {
-            "material": ("material_loss", 1, ["c4f7", "e8f7"]),
-            "mate": ("mate_against", 1, ["g2g4", "d8h4"]),
-            "stale": ("stalemate_or_draw", 1, ["d6b8", "a8b8"]),
+            "material": ("material_loss", 1, ["c4f7", "e8f7"], None),
+            "mate": ("mate_against", 1, ["g2g4", "d8h4"], None),
+            "stale": ("stalemate_or_draw", 1, ["d6b8", "a8b8"], None),
             "slower": ("slower_win", 4, ["g6e8", "h8h7", "e8d7", "h7g8",
-                                         "d7g7"]),
-            "fine": ("also_fine", None, []),
-            "slips": ("win_slips", 6, None),  # PV varies; type is the claim
+                                         "d7g7"], None),
+            "fine": ("also_fine", 0, ["b1c3"], None),
+            "slips": ("miss", 0, ["c2c3"], "defense"),
         }
-        for key, (want_type, want_trunk, want_line) in expectations.items():
+        for key, (want_type, want_trunk, want_line,
+                  want_reason) in expectations.items():
             before_calls = engine.search_calls
             r = post(attempts[key])
             body = r.json()
@@ -206,8 +210,8 @@ def main():
                   and engine.search_calls == before_calls + 2)
             if want_line is not None:
                 ok = ok and body["line_uci"] == want_line
-            else:
-                ok = ok and body["line_uci"][0].endswith("h4")
+            if want_reason is not None:
+                ok = ok and body["params"].get("reason") == want_reason
             check(f"why {key} -> {want_type}", ok,
                   (r.status_code, body, engine.search_calls - before_calls))
 
@@ -352,8 +356,9 @@ def main():
         # --- C1b: review W comes from the review's own line ------------------
         # Original fails at ply 4; the review fails at ply 0 with a
         # different move: why must analyze the review's W at the exercise
-        # start. (Same segment/W as the 'mate' solve fixture, so this is a
-        # cache hit: zero new searches.)
+        # start. Same segment/W as the 'mate' solve fixture, but a wider
+        # exercise window (n=2): the solution continuation differs, so the
+        # cache key differs and this is a fresh search.
         segx = segs["mate"]
         srcx = str(uuid.uuid4())
         _exec("INSERT INTO calc_attempts (id, user_id, segment_id,"
@@ -382,7 +387,8 @@ def main():
         check("C1b review analyzes its own W at its own ply",
               rx.status_code == 200 and bx["type"] == "mate_against"
               and bx["line_uci"][0] == "g2g4"
-              and engine.search_calls == calls, (rx.status_code, bx))
+              and bx["params"].get("reason") is None
+              and engine.search_calls == calls + 2, (rx.status_code, bx))
         # Legacy review row with no stored line -> 409.
         rev_legacy = str(uuid.uuid4())
         _exec("INSERT INTO calc_woodpecker_attempts (id, entry_id, user_id,"
@@ -515,6 +521,58 @@ def main():
                      " WHERE position_key = %s",
                      (pkey(mat_fen),))[0][0] != "ancient",
               (rb.status_code, engine.search_calls - calls))
+
+        # --- D: miss classification (pure, synthetic evals) -----------------
+        from services.calc_why import classify as classify_pure
+
+        def _ev(cp=None, mate=None, wp=None):
+            return {"cp": cp, "mate": mate, "win_prob": wp}
+
+        kq = "7k/8/5KQ1/8/8/8/8/8 w - - 0 1"
+        rook_fen = "r7/2N1k3/8/8/8/8/8/4KB2 w - - 0 1"
+
+        got = classify_pure(kq, kq, "g6g5", _ev(mate=1, wp=1.0),
+                            _ev(cp=-900, wp=0.0), 1, ["g6g7"])
+        check("D miss mate via baseline score",
+              got["type"] == "miss" and got["params"]["reason"] == "mate"
+              and got["headline"] == "You missed mate in 1."
+              and got["line_uci"] == ["g6g7"]
+              and got["truncated_at_ply"] == 0, got)
+
+        got = classify_pure(rook_fen, rook_fen, "f1e2", _ev(cp=600, wp=0.95),
+                            _ev(cp=-80, wp=0.45), 1, ["c7a8"])
+        check("D miss material names the rook",
+              got["type"] == "miss"
+              and got["params"]["reason"] == "material"
+              and "win a rook" in got["headline"]
+              and got["params"]["material_gain"] == 5
+              and got["line_uci"] == ["c7a8"], got)
+
+        got = classify_pure(rook_fen, rook_fen, "f1e2", _ev(cp=600, wp=0.95),
+                            _ev(cp=80, wp=0.6), 1, ["e1e2"])
+        check("D miss keep-the-win from the eval",
+              got["type"] == "miss" and got["params"]["reason"] == "keep"
+              and got["line_uci"] == ["e1e2"], got)
+
+        got = classify_pure(rook_fen, rook_fen, "f1e2", _ev(cp=-100, wp=0.4),
+                            _ev(cp=-500, wp=0.9), 1, ["e1e2"])
+        check("D miss best-defense from the eval",
+              got["type"] == "miss" and got["params"]["reason"] == "defense",
+              got)
+
+        got = classify_pure(rook_fen, rook_fen, "f1e2", _ev(cp=40, wp=0.6),
+                            _ev(cp=-30, wp=0.42), 1, ["e1e2"])
+        check("D also_fine still replays the solution",
+              got["type"] == "also_fine" and got["line_uci"] == ["e1e2"]
+              and got["truncated_at_ply"] == 0, got)
+
+        mate_fen = _seq_fen(["f2f3", "e7e5"])
+        mate_after = _seq_fen(["f2f3", "e7e5", "g2g4"])
+        got = classify_pure(mate_fen, mate_after, "g2g4", _ev(cp=0, wp=0.5),
+                            {"cp": None, "mate": 1, "win_prob": 1.0,
+                             "pv": ["d8h4"]}, 1, ["g2g3"])
+        check("D punishment beats miss",
+              got["type"] == "mate_against", got)
 
         # --- rate limit (LAST: it consumes the per-minute budget) -----------
         # 65 rapid requests trips the 60/min budget regardless of how many
