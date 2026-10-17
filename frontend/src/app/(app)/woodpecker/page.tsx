@@ -1,13 +1,22 @@
 'use client';
 
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import dynamic from 'next/dynamic';
 import Image from 'next/image';
 import Link from 'next/link';
+import { Chess } from 'chess.js';
 import type { BoardApi } from '@/components/board/ChessBoard';
+import type { CalcBoardProps } from '@/components/board/CalcBoard';
 import type { EndgameBoardProps } from '@/components/board/EndgameBoard';
+import WhyResult from '@/components/calc/WhyResult';
 import DrillStatusPanel from '@/components/endgames/DrillStatusPanel';
 import PuzzleStatusPanel from '@/components/puzzles/PuzzleStatusPanel';
+import {
+  fetchCalcHint,
+  fetchCalcReviewQueue,
+  fetchWhy,
+  submitCalcReviewAttempt,
+} from '@/lib/calc';
 import {
   EndgamePlayoutStatus,
   fetchEndgameWoodpeckerQueue,
@@ -16,6 +25,9 @@ import {
   type EndgameSubmitMove,
 } from '@/lib/endgames';
 import type {
+  CalcSubmitResult,
+  CalcWhyResult,
+  CalcWoodpeckerQueueItem,
   EndgameWoodpeckerAttemptResponse,
   EndgameWoodpeckerQueueEntry,
   Puzzle,
@@ -44,13 +56,24 @@ const EndgameBoard = dynamic<
   ),
 });
 
+// The same transcription board the Calculation Trainer uses: the review
+// replay is entered blind, exactly like the rated exercise.
+const CalcBoard = dynamic<CalcBoardProps>(() => import('@/components/board/CalcBoard'), {
+  ssr: false,
+  loading: () => (
+    <div className="flex aspect-square w-full max-w-[700px] animate-pulse items-center justify-center rounded-lg border border-white/10 bg-black/40 backdrop-blur-sm">
+      <span className="text-white/60">Loading board...</span>
+    </div>
+  ),
+});
+
 const CARD_CLASS =
   'rounded-2xl border border-black/50 backdrop-blur-sm [background-image:linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)),url(/walnut-dark.webp)] [background-size:cover] [background-position:center] [box-shadow:0_10px_30px_rgba(0,0,0,0.55),inset_0_1px_0_rgba(255,255,255,0.06),inset_0_-1px_0_rgba(0,0,0,0.5)]';
 
-// The Puzzle tab and the Endgame tab are two genuinely separate queues, so
-// they keep separate page state; only the review chrome (tabs, bird,
+// The Puzzle, Endgame and Calculation tabs are genuinely separate queues,
+// so they keep separate page state; only the review chrome (tabs, bird,
 // auto-advance setting, exit affordance) is shared.
-type ReviewTab = 'puzzles' | 'endgames';
+type ReviewTab = 'puzzles' | 'endgames' | 'calculation';
 
 type WoodpeckerEntry = {
   id: string;
@@ -117,7 +140,9 @@ function readStoredQueueTab(): ReviewTab | null {
   if (typeof window === 'undefined') return null;
   try {
     const stored = window.localStorage.getItem(QUEUE_TAB_STORAGE_KEY);
-    return stored === 'puzzles' || stored === 'endgames' ? stored : null;
+    return stored === 'puzzles' || stored === 'endgames' || stored === 'calculation'
+      ? stored
+      : null;
   } catch {
     // Storage can be unavailable (private mode): start on Puzzles as before.
     return null;
@@ -210,6 +235,30 @@ function CheckIcon() {
   );
 }
 
+/** Failure mark matching the calculation trainer's failed card. */
+function BreakIcon() {
+  return (
+    <svg
+      className="h-5 w-5"
+      fill="none"
+      stroke="currentColor"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      strokeWidth="2"
+      viewBox="0 0 24 24"
+      aria-hidden="true"
+    >
+      <path d="M12 3 2.5 20h19L12 3Z" />
+      <path d="M12 9v5" />
+      <path d="M12 17.5h.01" />
+    </svg>
+  );
+}
+
+function calcPlyLabel(i: number): string {
+  return i % 2 === 0 ? `Your move ${i / 2 + 1}` : `Reply ${(i + 1) / 2}`;
+}
+
 /** One queue row inside the dropped menu (role=tab, like the old pills). */
 function QueueOption({
   label,
@@ -247,11 +296,13 @@ function QueueSwitcher({
   active,
   puzzleDue,
   endgameDue,
+  calculationDue,
   onSelect,
 }: {
   active: ReviewTab;
   puzzleDue: number | null;
   endgameDue: number | null;
+  calculationDue: number | null;
   onSelect: (tab: ReviewTab) => void;
 }) {
   // The peek starts dropped open (state initialized true), so the first
@@ -496,8 +547,18 @@ function QueueSwitcher({
     [onSelect]
   );
 
-  const activeLabel = active === 'puzzles' ? 'Puzzles' : 'Endgames';
-  const activeDue = active === 'puzzles' ? puzzleDue : endgameDue;
+  const activeLabel =
+    active === 'puzzles'
+      ? 'Puzzles'
+      : active === 'endgames'
+        ? 'Endgames'
+        : 'Calculation';
+  const activeDue =
+    active === 'puzzles'
+      ? puzzleDue
+      : active === 'endgames'
+        ? endgameDue
+        : calculationDue;
   // Flip the menu to the handle's right edge before it would run off the
   // page: a handle parked near the right corner must still open fully.
   const menuRight =
@@ -611,6 +672,12 @@ function QueueSwitcher({
             active={active === 'endgames'}
             onSelect={() => handleSelect('endgames')}
           />
+          <QueueOption
+            label="Calculation"
+            count={calculationDue}
+            active={active === 'calculation'}
+            onSelect={() => handleSelect('calculation')}
+          />
         </div>
       )}
     </div>
@@ -678,6 +745,42 @@ export default function WoodpeckerPage() {
     null
   );
 
+  // --- Calculation review queue (own table, own endpoints) ---------------
+  const [calcQueue, setCalcQueue] = useState<CalcWoodpeckerQueueItem[] | null>(
+    null
+  );
+  const [calcLoading, setCalcLoading] = useState(true);
+  const [calcError, setCalcError] = useState<string | null>(null);
+  const [calcIndex, setCalcIndex] = useState(0);
+  const [calcCompletedCount, setCalcCompletedCount] = useState(0);
+  // The blinded transcription: every entered ply (solver moves AND expected
+  // replies) until submit, exactly like the rated trainer.
+  const [calcMoves, setCalcMoves] = useState<string[]>([]);
+  const [calcResult, setCalcResult] = useState<CalcSubmitResult | null>(null);
+  const [calcIsSubmitting, setCalcIsSubmitting] = useState(false);
+  // Two-stage hint (stage 1 arms `calcHintUci`, stage 2 plays it); every
+  // revealed ply counts and the backend schedules a hinted pass as Again.
+  const [calcHintsUsed, setCalcHintsUsed] = useState(0);
+  const [calcHintUci, setCalcHintUci] = useState<string | null>(null);
+  const [calcIsHintLoading, setCalcIsHintLoading] = useState(false);
+  // "Watch line": the full correct line replayed on the main board.
+  const [calcPlayoutPlies, setCalcPlayoutPlies] = useState<string[] | null>(
+    null
+  );
+  const [calcPlayoutAt, setCalcPlayoutAt] = useState(0);
+  const [calcActionError, setCalcActionError] = useState<string | null>(null);
+  // "Show why" explanation state; one request per attempt, never refetched.
+  const [calcWhyState, setCalcWhyState] = useState<
+    | { status: 'idle' }
+    | { status: 'loading' }
+    | { status: 'done'; result: CalcWhyResult }
+    | { status: 'error'; message: string }
+  >({ status: 'idle' });
+  const calcWhyRetriedRef = useRef(false);
+  const calcAdvanceTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(
+    null
+  );
+
   const currentEntry = queue?.[currentIndex] ?? null;
   const currentPuzzle = currentEntry ? puzzles[currentEntry.puzzle_id] : null;
   const sideToMove = getSideToMove(currentPuzzle ?? null);
@@ -692,10 +795,70 @@ export default function WoodpeckerPage() {
   const endgameRemaining = Math.max(endgameTotal - endgameCompletedCount, 0);
   const endgameCellTotal = Math.max(endgameTotal, 1);
 
+  const currentCalcEntry = calcQueue?.[calcIndex] ?? null;
+  const calcTotal = calcQueue?.length ?? 0;
+  const calcRemaining = Math.max(calcTotal - calcCompletedCount, 0);
+  const calcCellTotal = Math.max(calcTotal, 1);
+  const calcTotalPlies = currentCalcEntry ? 2 * currentCalcEntry.n - 1 : 0;
+  const calcResolved = calcResult !== null;
+  const calcPlayoutPlaying =
+    calcPlayoutPlies !== null && calcPlayoutAt < calcPlayoutPlies.length;
+  // What the main board shows: the playout sequence while watching,
+  // otherwise the entered line.
+  const shownCalcMoves = calcPlayoutPlies
+    ? calcPlayoutPlies.slice(0, calcPlayoutAt)
+    : calcMoves;
+
+  /** Live prompt: whose turn it is at the entry frontier, plus the role of
+   * the next ply (even plies are yours, odd plies the expected reply). */
+  const calcFrontier = useMemo(() => {
+    let turn: 'w' | 'b' = 'w';
+    if (currentCalcEntry) {
+      try {
+        const game = new Chess(currentCalcEntry.fen);
+        for (const uci of calcMoves) {
+          game.move({
+            from: uci.slice(0, 2),
+            to: uci.slice(2, 4),
+            promotion: uci[4] ?? undefined,
+          });
+        }
+        turn = game.turn();
+      } catch {
+        turn = 'w';
+      }
+    }
+    return {
+      sideLabel: turn === 'b' ? 'Black' : 'White',
+      isSolverPly: calcMoves.length % 2 === 0,
+    };
+  }, [currentCalcEntry, calcMoves]);
+
+  /** FEN at the divergence ply: replay the correct prefix (the entered
+   * moves before the divergence matched, so they replay cleanly). */
+  const calcDivergenceFen = useMemo(() => {
+    if (!currentCalcEntry || !calcResult || calcResult.first_divergence_ply == null)
+      return currentCalcEntry?.fen ?? '';
+    const game = new Chess(currentCalcEntry.fen);
+    for (const uci of calcMoves.slice(0, calcResult.first_divergence_ply)) {
+      try {
+        game.move({
+          from: uci.slice(0, 2),
+          to: uci.slice(2, 4),
+          promotion: uci[4] ?? undefined,
+        });
+      } catch {
+        break;
+      }
+    }
+    return game.fen();
+  }, [currentCalcEntry, calcResult, calcMoves]);
+
   // Tab badges: what is still left in each due queue, derived from the same
   // loaded queue the tab renders -- never a separate count of its own.
   const puzzleDue = queue ? remaining : null;
   const endgameDue = endgameQueue ? endgameRemaining : null;
+  const calculationDue = calcQueue ? calcRemaining : null;
 
   const clearAdvanceTimeout = useCallback(() => {
     if (advanceTimeoutRef.current) {
@@ -708,6 +871,13 @@ export default function WoodpeckerPage() {
     if (endgameAdvanceTimeoutRef.current) {
       clearTimeout(endgameAdvanceTimeoutRef.current);
       endgameAdvanceTimeoutRef.current = null;
+    }
+  }, []);
+
+  const clearCalcAdvanceTimeout = useCallback(() => {
+    if (calcAdvanceTimeoutRef.current) {
+      clearTimeout(calcAdvanceTimeoutRef.current);
+      calcAdvanceTimeoutRef.current = null;
     }
   }, []);
 
@@ -833,6 +1003,38 @@ export default function WoodpeckerPage() {
     }
   }, []);
 
+  // The calculation queue is loaded alongside the other two so all tab
+  // badges are exact from the first paint; each entry carries its start FEN
+  // and a single-use review token, so there is no per-entry detail fanout.
+  const loadCalcQueue = useCallback(async () => {
+    setCalcLoading(true);
+    setCalcError(null);
+    try {
+      const entries = await fetchCalcReviewQueue();
+      setCalcQueue(entries);
+      setCalcIndex(0);
+      setCalcCompletedCount(0);
+      setCalcMoves([]);
+      setCalcResult(null);
+      setCalcIsSubmitting(false);
+      setCalcHintsUsed(0);
+      setCalcHintUci(null);
+      setCalcIsHintLoading(false);
+      setCalcPlayoutPlies(null);
+      setCalcPlayoutAt(0);
+      setCalcActionError(null);
+      setCalcWhyState({ status: 'idle' });
+      calcWhyRetriedRef.current = false;
+    } catch (e) {
+      console.error('Calculation review queue load failed:', e);
+      setCalcError(
+        e instanceof Error ? e.message : 'Failed to load calculation reviews'
+      );
+    } finally {
+      setCalcLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     loadQueue();
   }, [loadQueue]);
@@ -840,6 +1042,10 @@ export default function WoodpeckerPage() {
   useEffect(() => {
     loadEndgameQueue();
   }, [loadEndgameQueue]);
+
+  useEffect(() => {
+    loadCalcQueue();
+  }, [loadCalcQueue]);
 
   // Restore the queue the user was last on. Deliberately an effect rather
   // than a lazy initializer: localStorage does not exist during SSR, and
@@ -1047,7 +1253,231 @@ export default function WoodpeckerPage() {
     setEndgameIsThinking(thinking);
   }, []);
 
-  // Leaving the endgames tab abandons whatever the board was showing. The
+  // --- Calculation review handlers ----------------------------------------
+
+  const advanceCalc = useCallback(() => {
+    clearCalcAdvanceTimeout();
+    if (!calcQueue) return;
+    setCalcResult(null);
+    setCalcMoves([]);
+    setCalcIsSubmitting(false);
+    setCalcHintsUsed(0);
+    setCalcHintUci(null);
+    setCalcIsHintLoading(false);
+    setCalcPlayoutPlies(null);
+    setCalcPlayoutAt(0);
+    setCalcActionError(null);
+    setCalcWhyState({ status: 'idle' });
+    calcWhyRetriedRef.current = false;
+    if (calcIndex + 1 >= calcQueue.length) {
+      setCalcCompletedCount(calcQueue.length);
+      setCalcIndex(calcQueue.length);
+      return;
+    }
+    setCalcCompletedCount((c) => c + 1);
+    setCalcIndex((i) => i + 1);
+  }, [calcIndex, calcQueue, clearCalcAdvanceTimeout]);
+
+  const handleCalcResolved = useCallback(
+    (resolved: CalcSubmitResult) => {
+      setCalcResult(resolved);
+      // Same cadence as the other tabs: a SOLVED review continues on its
+      // own; a failed one holds so "Watch line" / "Show why" / "Next"
+      // cannot be yanked away before the reviewer acts.
+      if (autoAdvance && resolved.solved) {
+        clearCalcAdvanceTimeout();
+        calcAdvanceTimeoutRef.current = setTimeout(advanceCalc, 1500);
+      }
+    },
+    [advanceCalc, autoAdvance, clearCalcAdvanceTimeout]
+  );
+
+  const handleCalcMove = useCallback(
+    (uci: string) => {
+      if (calcResolved || calcIsSubmitting) return;
+      // Going your own way disarms an armed hint (the count stays: the
+      // move was already revealed).
+      setCalcHintUci(null);
+      setCalcMoves((prev) =>
+        prev.length < calcTotalPlies ? [...prev, uci] : prev
+      );
+    },
+    [calcResolved, calcIsSubmitting, calcTotalPlies]
+  );
+
+  const handleCalcTakeback = useCallback(() => {
+    if (calcResolved || calcIsSubmitting) return;
+    // An armed hint is the newest UI change: the first press clears the
+    // highlight, the next ones walk back entered moves.
+    if (calcHintUci) {
+      setCalcHintUci(null);
+      return;
+    }
+    setCalcMoves((prev) => prev.slice(0, -1));
+  }, [calcResolved, calcIsSubmitting, calcHintUci]);
+
+  const handleCalcSubmit = useCallback(async () => {
+    if (
+      !currentCalcEntry ||
+      calcMoves.length !== calcTotalPlies ||
+      calcIsSubmitting
+    ) {
+      return;
+    }
+    setCalcIsSubmitting(true);
+    setCalcActionError(null);
+    try {
+      const graded = await submitCalcReviewAttempt(
+        currentCalcEntry.review_token,
+        calcMoves,
+        calcHintsUsed
+      );
+      handleCalcResolved(graded);
+    } catch (error) {
+      const fetchError = error as { message?: string };
+      setCalcActionError(
+        fetchError.message ?? 'Review submission failed.'
+      );
+    } finally {
+      setCalcIsSubmitting(false);
+    }
+  }, [
+    currentCalcEntry,
+    calcMoves,
+    calcTotalPlies,
+    calcIsSubmitting,
+    calcHintsUsed,
+    handleCalcResolved,
+  ]);
+
+  /** Two-stage hint, same as the trainer: stage 1 highlights the single
+   *  next correct ply, stage 2 plays it. Every revealed ply counts and the
+   *  backend schedules a hinted pass as not-clean (FSRS Again). */
+  const requestCalcHint = useCallback(async () => {
+    if (
+      !currentCalcEntry ||
+      calcResolved ||
+      calcIsSubmitting ||
+      calcIsHintLoading
+    ) {
+      return;
+    }
+    if (calcHintUci) {
+      const u = calcHintUci;
+      setCalcHintUci(null);
+      handleCalcMove(u);
+      return;
+    }
+    if (calcMoves.length >= calcTotalPlies) return;
+    setCalcIsHintLoading(true);
+    try {
+      const hint = await fetchCalcHint({
+        reviewToken: currentCalcEntry.review_token,
+        pliesEntered: calcMoves.length,
+      });
+      setCalcHintUci(hint.uci);
+      setCalcHintsUsed((n) => n + 1);
+    } catch (error) {
+      const fetchError = error as { message?: string };
+      setCalcActionError(fetchError.message ?? 'Could not get a hint.');
+    } finally {
+      setCalcIsHintLoading(false);
+    }
+  }, [
+    currentCalcEntry,
+    calcResolved,
+    calcIsSubmitting,
+    calcIsHintLoading,
+    calcHintUci,
+    calcMoves.length,
+    calcTotalPlies,
+    handleCalcMove,
+  ]);
+
+  /** Play the full correct line on the main board: your correct prefix
+   *  plus the revealed continuation, from move one. Pressing again
+   *  restarts; the final position stays on the board. */
+  const startCalcPlayout = useCallback(() => {
+    if (!currentCalcEntry || !calcResult || calcResult.first_divergence_ply == null)
+      return;
+    setCalcPlayoutPlies([
+      ...calcMoves.slice(0, calcResult.first_divergence_ply),
+      ...calcResult.continuation,
+    ]);
+    setCalcPlayoutAt(0);
+  }, [currentCalcEntry, calcResult, calcMoves]);
+
+  useEffect(() => {
+    if (!calcPlayoutPlies || calcPlayoutAt >= calcPlayoutPlies.length) return;
+    const timer = setTimeout(
+      () => setCalcPlayoutAt((a) => Math.min(a + 1, calcPlayoutPlies.length)),
+      900
+    );
+    return () => clearTimeout(timer);
+  }, [calcPlayoutPlies, calcPlayoutAt]);
+
+  /** Friendly, non-JSON error copy for every why failure mode. */
+  const friendlyCalcWhyError = (status: number): string => {
+    if (status === 429) return 'Engine busy, try again.';
+    if (status === 503 || status === 504)
+      return 'The explanation engine is unavailable right now. Try again in a bit.';
+    if (status === 409) return 'This attempt can no longer be explained.';
+    if (status === 404) return 'Could not find this attempt.';
+    if (status === 422) return 'This attempt cannot be explained.';
+    return 'Could not explain this attempt.';
+  };
+
+  const requestCalcWhy = useCallback(
+    async (attemptId: string) => {
+      setCalcWhyState({ status: 'loading' });
+      const deliver = (res: CalcWhyResult) => {
+        setCalcWhyState({ status: 'done', result: res });
+        // Defender divergences have no engine line: play the stored
+        // replies on the main board through the standard playout.
+        if (
+          res.type === 'defender_misjudged' &&
+          calcResult &&
+          calcResult.first_divergence_ply != null
+        ) {
+          setCalcPlayoutPlies([
+            ...calcMoves.slice(0, calcResult.first_divergence_ply),
+            ...res.line_uci,
+          ]);
+          setCalcPlayoutAt(0);
+        }
+      };
+      try {
+        deliver(await fetchWhy(attemptId, 'review'));
+      } catch (error) {
+        const fetchError = error as { status?: number };
+        const status = fetchError.status ?? 0;
+        if (status === 429 && !calcWhyRetriedRef.current) {
+          // One auto-retry after 3 s; afterwards the manual button owns it.
+          calcWhyRetriedRef.current = true;
+          setTimeout(() => {
+            void (async () => {
+              try {
+                deliver(await fetchWhy(attemptId, 'review'));
+              } catch (retryError) {
+                const retryFetchError = retryError as { status?: number };
+                setCalcWhyState({
+                  status: 'error',
+                  message: friendlyCalcWhyError(retryFetchError.status ?? 0),
+                });
+              }
+            })();
+          }, 3000);
+          return;
+        }
+        setCalcWhyState({ status: 'error', message: friendlyCalcWhyError(status) });
+      }
+    },
+    [calcMoves, calcResult]
+  );
+
+  useEffect(() => () => clearCalcAdvanceTimeout(), [clearCalcAdvanceTimeout]);
+
+  // Leaving a review tab abandons whatever its board was showing. The
   // board remounts on return, so keeping a resolved result (or an active
   // playout) would leave the panel describing a position the board no longer
   // holds -- and a settled replay could be graded a second time. Advancing
@@ -1059,11 +1489,14 @@ export default function WoodpeckerPage() {
       // queue the user actually uses.
       storeQueueTab(tab);
       setIsSettingsOpen(false);
-      if (tab === 'puzzles' && endgameResult) {
+      if (tab !== 'endgames' && endgameResult) {
         advanceEndgame();
       }
+      if (tab !== 'calculation' && calcResult) {
+        advanceCalc();
+      }
     },
-    [advanceEndgame, endgameResult]
+    [advanceCalc, advanceEndgame, calcResult, endgameResult]
   );
 
   // The board is route-agnostic: the review tab injects the per-entry
@@ -1096,6 +1529,11 @@ export default function WoodpeckerPage() {
     !endgameLoading && endgameQueue !== null && endgameQueue.length === 0;
   const endgameQueueFinished =
     !endgameLoading && endgameQueue !== null && endgameIndex >= endgameQueue.length;
+
+  const calcQueueIsEmpty =
+    !calcLoading && calcQueue !== null && calcQueue.length === 0;
+  const calcQueueFinished =
+    !calcLoading && calcQueue !== null && calcIndex >= calcQueue.length;
 
   const renderPuzzleReview = () => {
     if (isLoading) {
@@ -1561,28 +1999,434 @@ export default function WoodpeckerPage() {
     );
   };
 
+  const renderCalcReview = () => {
+    if (calcLoading) {
+      return (
+        <div className="flex h-[70vh] items-center justify-center">
+          <div className={`${CARD_CLASS} px-10 py-8 text-center shadow-2xl shadow-black/30`}>
+            <div className="mx-auto mb-4 h-9 w-9 animate-spin rounded-full border-2 border-[#10b981] border-t-transparent" />
+            <p className="text-white/60">Loading calculation reviews...</p>
+          </div>
+        </div>
+      );
+    }
+    if (calcError) {
+      return (
+        <div className="flex h-[70vh] items-center justify-center">
+          <div className={`${CARD_CLASS} px-8 py-6 text-center text-white/80 shadow-2xl shadow-black/30`}>
+            <p className="mb-4">{calcError}</p>
+            <button
+              onClick={loadCalcQueue}
+              className="rounded-lg border border-white/20 bg-white/5 px-4 py-2 text-sm font-semibold transition hover:bg-white/10"
+            >
+              Retry
+            </button>
+          </div>
+        </div>
+      );
+    }
+    if (calcQueueIsEmpty || calcQueueFinished) {
+      return (
+        <div className="flex h-[70vh] items-center justify-center">
+          <div className={`${CARD_CLASS} w-full max-w-md p-8 text-center shadow-2xl shadow-black/30`}>
+            <Image
+              src="/woodpecker-bird-v2.webp"
+              alt=""
+              width={80}
+              height={80}
+              className="mx-auto mb-4 h-20 w-20 object-contain"
+            />
+            <h2 className="mb-2 text-2xl font-bold text-[#f7e5c6]">
+              {calcQueueFinished ? 'Session complete!' : 'No calculation reviews due'}
+            </h2>
+            <p className="mb-6 text-white/60">
+              {calcQueueFinished
+                ? 'You cleared every calculation due today. Come back later for the next batch.'
+                : 'You\'re all caught up. Fail a rated calculation exercise to send it here for review.'}
+            </p>
+            <div className="grid grid-cols-2 gap-3">
+              <Link
+                href="/train/calculation"
+                className="rounded-xl border border-white/20 bg-white/5 px-4 py-3 text-sm font-semibold transition hover:bg-white/10"
+              >
+                Calculation Trainer
+              </Link>
+              <button
+                onClick={loadCalcQueue}
+                className="rounded-xl bg-[#10b981] px-4 py-3 text-sm font-semibold text-white shadow-lg shadow-emerald-950/40 transition-colors hover:bg-emerald-400"
+              >
+                Refresh
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+    if (!currentCalcEntry) return null;
+
+    return (
+      <div className="grid h-full grid-cols-1 gap-6 lg:grid-cols-[18rem_minmax(0,1fr)_22rem] xl:grid-cols-[20rem_minmax(0,1fr)_22rem]">
+        {/* ============== LEFT CARD ============== */}
+        <section className="hidden min-h-0 min-w-0 lg:block xl:self-start">
+          <div className={`${CARD_CLASS} flex w-full flex-col p-6 shadow-2xl shadow-black/25`}>
+            {/* Top: identity & progress */}
+            <div className="flex flex-col items-center">
+              <Image
+                src="/woodpecker-bird-v2.webp"
+                alt=""
+                width={112}
+                height={112}
+                className="mb-5 h-[112px] w-[112px] object-contain"
+              />
+              <div className="text-[12px] font-bold uppercase tracking-[0.3em] text-[#f7e5c6]/60">
+                Woodpecker
+              </div>
+              <div className="mt-2 text-[11px] uppercase tracking-wider text-white/40">Calculation</div>
+              <div className="mt-2 text-5xl font-bold leading-none text-[#f7e5c6]">
+                {Math.min(calcIndex + 1, calcCellTotal)} <span className="text-white/40">/ {calcCellTotal}</span>
+              </div>
+              <div className="mt-6 w-full">
+                <ProgressCells completed={calcIndex} total={calcCellTotal} />
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* ============== CENTER: TRANSCRIPTION BOARD ============== */}
+        <section className="min-h-0 min-w-0">
+          <div className="relative mx-auto aspect-square w-full max-w-[calc(100vh-70px)]">
+            <div className="w-full">
+              <CalcBoard
+                key={currentCalcEntry.entry_id}
+                fen={currentCalcEntry.fen}
+                moves={shownCalcMoves}
+                interactive={!calcResolved && !calcIsSubmitting}
+                onMove={handleCalcMove}
+                hintFrom={calcHintUci ? calcHintUci.slice(0, 2) : null}
+              />
+            </div>
+
+            <div ref={settingsRef} className="absolute right-2 top-2 z-30 xl:left-full xl:right-auto xl:top-0 xl:ml-[2px]">
+              <button
+                type="button"
+                onClick={() => setIsSettingsOpen((open) => !open)}
+                className={`relative flex h-7 w-7 items-center justify-center rounded-md border text-[#f0e0c0] transition hover:scale-105 active:scale-95 ${
+                  isSettingsOpen
+                    ? 'border-[#d9b87c]/70 text-[#f7e5c6]'
+                    : 'border-black/60 hover:border-[#d9b87c]/45'
+                }`}
+                style={{
+                  borderRadius: '4px',
+                  background:
+                    'linear-gradient(rgba(0,0,0,0.5),rgba(0,0,0,0.5)), url(/walnut-dark.webp)',
+                  backgroundSize: 'cover',
+                  backgroundPosition: 'center',
+                  boxShadow:
+                    '0 0 0 2px #1a0a02, inset 0 2px 0 rgba(255,200,100,0.12), inset 0 -2px 0 rgba(0,0,0,0.5), 0 4px 12px rgba(0,0,0,0.5)',
+                }}
+                aria-label="Woodpecker settings"
+                aria-haspopup="dialog"
+                aria-expanded={isSettingsOpen}
+                title="Woodpecker settings"
+              >
+                <SettingsIcon />
+              </button>
+
+              {isSettingsOpen && (
+                <div
+                  role="dialog"
+                  aria-label="Woodpecker settings"
+                  className="absolute right-0 top-full mt-2 w-60 rounded-xl border border-[#d9b87c]/30 bg-[#1b120d]/95 p-3 text-white shadow-[0_18px_42px_rgba(0,0,0,0.52),inset_0_1px_0_rgba(255,255,255,0.08)] backdrop-blur-xl"
+                >
+                  <div className="flex items-center justify-between border-b border-white/10 pb-2">
+                    <span className="text-[10px] font-bold uppercase tracking-[0.24em] text-[#f7e5c6]/65">
+                      Review settings
+                    </span>
+                    <span className="text-[9px] font-bold uppercase tracking-[0.2em] text-[#37be7e]">
+                      {autoAdvance ? 'Auto' : 'Manual'}
+                    </span>
+                  </div>
+
+                  <div className="mt-3 flex items-center justify-between gap-4">
+                    <div>
+                      <div className="text-sm font-semibold text-[#f7e5c6]">Auto-advance</div>
+                      <div className="mt-1 text-[11px] leading-4 text-white/45">
+                        Continue after a solved review
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setAutoAdvance((enabled) => !enabled)}
+                      className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${
+                        autoAdvance ? 'bg-[#10b981]' : 'bg-white/15'
+                      }`}
+                      aria-pressed={autoAdvance}
+                      aria-label="Toggle auto-advance"
+                    >
+                      <span
+                        className={`inline-block h-5 w-5 rounded-full bg-white shadow transition-transform ${
+                          autoAdvance ? 'translate-x-5' : 'translate-x-0.5'
+                        }`}
+                      />
+                    </button>
+                  </div>
+
+                  {calcResult !== null && (!autoAdvance || !calcResult.solved) && (
+                    <button
+                      type="button"
+                      onClick={advanceCalc}
+                      className="mt-3 w-full rounded-lg bg-emerald-500 py-2.5 text-sm font-semibold text-white shadow-lg shadow-emerald-950/40 transition hover:bg-emerald-400"
+                    >
+                      Next Review
+                    </button>
+                  )}
+
+                  <div className="mt-3 border-t border-white/10 pt-2 text-[10px] text-white/40">
+                    {autoAdvance
+                      ? 'Solved reviews advance; failed ones wait for you.'
+                      : 'Use Next Review when you are ready.'}
+                  </div>
+                </div>
+              )}
+            </div>
+          </div>
+          <p className="mt-3 text-center text-sm text-white/60">
+            Calculate <span className="font-semibold text-white">{currentCalcEntry.n} moves deep</span>
+            {' '}· ply {Math.min(shownCalcMoves.length + 1, calcTotalPlies)} of {calcTotalPlies}
+            {currentCalcEntry.side_to_move === 'black' ? ' · Black to move' : ' · White to move'}
+          </p>
+        </section>
+
+        {/* ============== RIGHT CARD: CALCULATION REVIEW ============== */}
+        <section className="hidden min-h-0 min-w-0 xl:block">
+          <div className="wood-scrollbar flex h-full flex-col gap-4 overflow-y-auto overscroll-contain pr-1">
+            <div className={`${CARD_CLASS} p-5`}>
+              {!calcResolved ? (
+                <>
+                  <div className="flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-2.5">
+                      <span className="inline-block h-2.5 w-2.5 animate-pulse rounded-full bg-amber-300" />
+                      <span className="text-[11px] font-bold uppercase tracking-[0.3em] text-amber-200/80">
+                        Calculate {currentCalcEntry.n} deep
+                      </span>
+                    </div>
+                  </div>
+                  <h2 className="mt-3 font-display text-[26px] font-semibold leading-[1.15] text-[#f7e5c6]">
+                    {calcFrontier.sideLabel} to play
+                  </h2>
+                  <div className="mt-2 flex items-center gap-2">
+                    <span className="rounded-full bg-white/10 px-2 py-0.5 text-xs font-bold text-white/60">
+                      {calcFrontier.isSolverPly ? 'your move' : 'expected reply'}
+                    </span>
+                    {calcHintsUsed > 0 && (
+                      <span className="text-[11px] text-white/40">
+                        {calcHintsUsed} hint{calcHintsUsed === 1 ? '' : 's'}
+                      </span>
+                    )}
+                  </div>
+                  <div className="mt-5 grid grid-cols-3 gap-3 border-t border-white/10 pt-4">
+                    <button
+                      type="button"
+                      onClick={handleCalcTakeback}
+                      disabled={(calcMoves.length === 0 && !calcHintUci) || calcIsSubmitting}
+                      className="relative flex items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/5 px-2 py-3 text-sm font-bold text-white/80 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <span>Takeback</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void requestCalcHint()}
+                      disabled={
+                        calcIsHintLoading ||
+                        calcIsSubmitting ||
+                        calcMoves.length >= calcTotalPlies
+                      }
+                      className="relative flex items-center justify-center gap-2 rounded-xl bg-gradient-to-b from-[#eacb90] to-[#c1954f] px-2 py-3 text-sm font-bold text-[#2a1a06] shadow-[0_10px_22px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.55)] transition hover:from-[#f2d8a4] hover:to-[#cda261] disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <span>{calcHintUci ? 'Solution' : 'Hint'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleCalcSubmit()}
+                      disabled={calcMoves.length !== calcTotalPlies || calcIsSubmitting}
+                      title="Submit line"
+                      className="relative flex items-center justify-center gap-2 rounded-xl bg-[#10b981]/80 px-2 py-3 text-sm font-bold text-black transition hover:bg-[#10b981] disabled:cursor-not-allowed disabled:opacity-40"
+                    >
+                      <span>{calcIsSubmitting ? 'Grading…' : 'Submit'}</span>
+                    </button>
+                  </div>
+                </>
+              ) : calcResult.solved ? (
+                <div className="flex flex-col items-center justify-center gap-2.5 py-6 text-center">
+                  <span className="text-[#10b981]">
+                    <svg
+                      className="h-10 w-10"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      strokeWidth="2"
+                      viewBox="0 0 24 24"
+                      aria-hidden="true"
+                    >
+                      <circle cx="12" cy="12" r="9" />
+                      <path d="m8.5 12 2.5 2.5 4.5-5" />
+                    </svg>
+                  </span>
+                  <h2 className="font-display text-[30px] font-semibold leading-[1.15] text-[#f7e5c6]">
+                    Solved.
+                  </h2>
+                  <button
+                    type="button"
+                    onClick={advanceCalc}
+                    className="mt-4 w-full rounded-lg bg-emerald-500 py-2.5 text-sm font-semibold text-white shadow-lg shadow-emerald-950/40 transition hover:bg-emerald-400"
+                  >
+                    Next Review
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <div className="flex items-center gap-2">
+                    <span className="text-[#d9b87c]">
+                      <BreakIcon />
+                    </span>
+                    <h2 className="font-display text-[26px] font-semibold leading-[1.15] text-[#f7e5c6]">
+                      Not quite.
+                    </h2>
+                  </div>
+                  {calcResult.first_divergence_ply != null && (
+                    <div className="mt-2 text-sm text-white/70">
+                      <p>
+                        Diverged at {calcPlyLabel(calcResult.first_divergence_ply).toLowerCase()}
+                        {' '}({calcResult.diverged_on === 'solver' ? 'your move' : 'the reply'}).
+                      </p>
+                      <div
+                        className={`mt-4 grid gap-3 ${
+                          calcResult.attempt_id ? 'grid-cols-3' : 'grid-cols-2'
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={startCalcPlayout}
+                          className="relative flex items-center justify-center gap-2 rounded-xl bg-gradient-to-b from-[#eacb90] to-[#c1954f] px-2 py-3 text-sm font-bold text-[#2a1a06] shadow-[0_10px_22px_rgba(0,0,0,0.45),inset_0_1px_0_rgba(255,255,255,0.55)] transition hover:from-[#f2d8a4] hover:to-[#cda261]"
+                        >
+                          <span>
+                            {calcPlayoutPlies
+                              ? calcPlayoutPlaying
+                                ? 'Playing…'
+                                : 'Replay'
+                              : 'Watch line'}
+                          </span>
+                        </button>
+                        {calcResult.attempt_id && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              void requestCalcWhy(calcResult.attempt_id as string)
+                            }
+                            disabled={
+                              calcWhyState.status === 'loading' ||
+                              calcWhyState.status === 'done'
+                            }
+                            className="relative flex items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/5 px-2 py-3 text-sm font-bold text-white/80 transition hover:bg-white/10 disabled:cursor-not-allowed disabled:opacity-50"
+                          >
+                            <span>
+                              {calcWhyState.status === 'loading'
+                                ? 'Analyzing…'
+                                : calcWhyState.status === 'done'
+                                  ? 'Explained'
+                                  : calcWhyState.status === 'error'
+                                    ? 'Try again'
+                                    : 'Show why'}
+                            </span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={advanceCalc}
+                          className="relative flex items-center justify-center gap-2 rounded-xl border border-white/15 bg-white/5 px-2 py-3 text-sm font-bold text-white/80 transition hover:bg-white/10"
+                        >
+                          <span>Next</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+
+            {/* The explanation sits directly under the verdict card; the
+                column scrolls with the walnut scrollbar when it is tight. */}
+            {calcWhyState.status !== 'idle' && (
+              <div className="min-h-0 shrink-0">
+                {calcWhyState.status === 'loading' && (
+                  <div className="flex items-center gap-2 text-sm text-white/60">
+                    <span className="h-4 w-4 animate-spin rounded-full border-2 border-[#d9b87c] border-t-transparent" />
+                    Analyzing your move…
+                  </div>
+                )}
+                {calcWhyState.status === 'error' && (
+                  <p role="alert" className="text-xs text-amber-100/90">
+                    {calcWhyState.message}
+                  </p>
+                )}
+                {calcWhyState.status === 'done' && (
+                  <WhyResult
+                    result={calcWhyState.result}
+                    fenBefore={calcDivergenceFen}
+                    compact
+                  />
+                )}
+              </div>
+            )}
+
+            {calcActionError && (
+              <div
+                role="alert"
+                className="shrink-0 rounded-xl border border-amber-300/30 bg-amber-400/10 px-4 py-3 text-sm text-amber-100"
+              >
+                {calcActionError}
+              </div>
+            )}
+          </div>
+        </section>
+      </div>
+    );
+  };
+
   return (
     <div className="relative -mt-2 h-[calc(100vh-2.5rem)] w-full overflow-hidden px-6 pb-1 pt-6 text-white lg:px-10 xl:pt-5 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
       <div className="mx-auto flex h-full w-full flex-col">
-        {/* Two queues, one page: the seeds are separate on the backend, so
-            the switcher only ever swaps which queue is being reviewed. Its
-            handle floats in the top-left corner -- no layout row, so the
-            board gets the ~56px the old segmented control held permanently
-            -- and drops the menu on hover / focus / tap, peeking open once
-            per load. */}
+        {/* Three queues, one page: the seeds are separate on the backend,
+            so the switcher only ever swaps which queue is being reviewed.
+            Its handle floats in the top-left corner -- no layout row, so
+            the board gets the ~56px the old segmented control held
+            permanently -- and drops the menu on hover / focus / tap,
+            peeking open once per load. */}
         <QueueSwitcher
           active={activeTab}
           puzzleDue={puzzleDue}
           endgameDue={endgameDue}
+          calculationDue={calculationDue}
           onSelect={handleTabChange}
         />
 
         <div
           role="tabpanel"
-          aria-label={activeTab === 'puzzles' ? 'Puzzle reviews' : 'Endgame reviews'}
+          aria-label={
+            activeTab === 'puzzles'
+              ? 'Puzzle reviews'
+              : activeTab === 'endgames'
+                ? 'Endgame reviews'
+                : 'Calculation reviews'
+          }
           className="min-h-0 flex-1"
         >
-          {activeTab === 'puzzles' ? renderPuzzleReview() : renderEndgameReview()}
+          {activeTab === 'puzzles'
+            ? renderPuzzleReview()
+            : activeTab === 'endgames'
+              ? renderEndgameReview()
+              : renderCalcReview()}
         </div>
       </div>
     </div>
