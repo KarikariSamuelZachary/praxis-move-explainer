@@ -536,10 +536,12 @@ def clear_puzzles(
     """Clear button: delete extractor artefacts for the user.
 
     Without source params this removes everything (queue entries,
-    attempts, feedback, puzzles, jobs). With both source params only the
-    matching source deck is removed (entries, attempts, feedback, and
-    puzzles for it; jobs stay as extraction history). Imported games are
-    always kept, so a re-extract does not lose its corpus.
+    attempts, feedback, puzzles, jobs) but keeps the game corpus. With
+    both source params only the matching source deck is removed
+    (entries, attempts, feedback, and puzzles for it; jobs stay as
+    extraction history) and that source's imported games are dropped
+    too, so extracting the same account again re-mines it from scratch
+    instead of silently skipping everything as already-seen.
     """
     clerk_id = _clerk_id(request)
     scoped = source_provider is not None and source_username is not None
@@ -593,6 +595,21 @@ def clear_puzzles(
                 (clerk_id, source_provider, source_username),
             )
             puzzles = cur.rowcount
+            # Forget this source's imported games too: keeping them would
+            # leave every URL marked as seen, so a re-extract of the same
+            # account would be a silent 0-kept no-op. Dropping them lets
+            # the next extract re-mine the account (engine time, but the
+            # deck can be rebuilt).
+            cur.execute(
+                """
+                DELETE FROM user_games
+                WHERE user_id = %s
+                  AND COALESCE(provider, '') = %s
+                  AND COALESCE(source_username, '') = %s
+                """,
+                (clerk_id, source_provider, source_username),
+            )
+            games = cur.rowcount
             jobs = 0
         else:
             cur.execute(
@@ -619,15 +636,18 @@ def clear_puzzles(
                 (clerk_id,),
             )
             jobs = cur.rowcount
+            games = 0
     conn.commit()
     log.info(
-        "cleared puzzles for user %s: %s puzzles, %s entries, %s attempts, %s jobs (source=%s/%s)",
-        clerk_id, puzzles, entries, attempts, jobs,
+        "cleared puzzles for user %s: %s puzzles, %s entries, %s attempts, "
+        "%s games, %s jobs (source=%s/%s)",
+        clerk_id, puzzles, entries, attempts, games, jobs,
         source_provider, source_username,
     )
     return UserPuzzleClearResponse(
         cleared_puzzles=puzzles,
         cleared_entries=entries,
         cleared_attempts=attempts,
+        cleared_games=games,
         cleared_jobs=jobs,
     )
