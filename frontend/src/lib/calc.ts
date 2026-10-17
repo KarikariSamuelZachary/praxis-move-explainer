@@ -3,6 +3,7 @@ import {
   CalcRatingEntry,
   CalcSubmitResult,
   CalcWhyResult,
+  CalcWoodpeckerQueueItem,
 } from '@/types';
 
 /**
@@ -97,18 +98,20 @@ export interface CalcHint {
   uci: string;
   ply: number;
 }
-
-export async function fetchCalcHint(
-  exerciseToken: string,
-  pliesEntered: number
-): Promise<CalcHint> {  let response: Response;
+export async function fetchCalcHint(args: {
+  exerciseToken?: string;
+  reviewToken?: string;
+  pliesEntered: number;
+}): Promise<CalcHint> {
+  let response: Response;
   try {
     response = await fetch('/api/calc/hint', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        exercise_token: exerciseToken,
-        plies_entered: pliesEntered,
+        exercise_token: args.exerciseToken ?? null,
+        review_token: args.reviewToken ?? null,
+        plies_entered: args.pliesEntered,
       }),
     });
   } catch {
@@ -146,6 +149,52 @@ export async function fetchRetryToken(
   }
   return (await response.json()) as { exercise_token: string };
 }
+
+export async function fetchCalcReviewQueue(): Promise<CalcWoodpeckerQueueItem[]> {
+  let response: Response;
+  try {
+    response = await fetch('/api/calc/woodpecker/queue', { cache: 'no-store' });
+  } catch {
+    throw new CalcFetchError('Could not reach the server.', 0, true);
+  }
+  if (!response.ok) {
+    throw new CalcFetchError(
+      await readError(response, 'Could not load calculation reviews.'),
+      response.status,
+      response.status === 429 || response.status >= 500
+    );
+  }
+  return (await response.json()) as CalcWoodpeckerQueueItem[];
+}
+
+export async function submitCalcReviewAttempt(
+  reviewToken: string,
+  moves: string[],
+  hintsUsed = 0
+): Promise<CalcSubmitResult> {
+  let response: Response;
+  try {
+    response = await fetch('/api/calc/woodpecker/attempt', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        review_token: reviewToken,
+        moves,
+        hints_used: hintsUsed,
+      }),
+    });
+  } catch {
+    throw new CalcFetchError('Could not reach the server.', 0, true);
+  }
+  if (!response.ok) {
+    throw new CalcFetchError(
+      await readError(response, 'Review submission failed.'),
+      response.status,
+      response.status >= 500
+    );
+  }
+  return (await response.json()) as CalcSubmitResult;
+}
 export async function fetchCalcRatings(): Promise<CalcRatingEntry[]> {
   let response: Response;
   try {
@@ -164,13 +213,16 @@ export async function fetchCalcRatings(): Promise<CalcRatingEntry[]> {
   return (data?.ratings ?? []) as CalcRatingEntry[];
 }
 
-export async function fetchWhy(attemptId: string): Promise<CalcWhyResult> {
+export async function fetchWhy(
+  attemptId: string,
+  kind: 'solve' | 'review' = 'solve'
+): Promise<CalcWhyResult> {
   let response: Response;
   try {
     response = await fetch('/api/calc/why', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ attempt_id: attemptId }),
+      body: JSON.stringify({ attempt_id: attemptId, kind }),
     });
   } catch {
     throw new CalcFetchError('Could not reach the server.', 0, true);
