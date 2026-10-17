@@ -26,7 +26,9 @@ type ExtractJob = {
   summary?: {
     exclusions?: Record<string, number>;
     rejects?: Record<string, number>;
+    up_to_date?: boolean;
   } | null;
+  up_to_date?: boolean;
 };
 
 type QueueEntry = {
@@ -268,7 +270,9 @@ function ConfirmDeleteDeckDialog({
           Remove &ldquo;{deck.username}&rdquo;?
         </h2>
         <p className="mt-2 text-sm text-[#f7e5c6]/60">
-          This permanently removes every puzzle in this deck.
+          This permanently removes every puzzle in this deck and forgets
+          the games it was mined from, so extracting this account again
+          rebuilds it from scratch.
         </p>
         <div className="mt-4 flex justify-end gap-2">
           <button
@@ -306,7 +310,8 @@ function ExtractDialog({
   const [lichess, setLichess] = useState('');
   const [chesscom, setChesscom] = useState('');
   const [limitText, setLimitText] = useState('20');
-  const [phase, setPhase] = useState<'idle' | 'working' | 'error'>('idle');
+  const [phase, setPhase] = useState<'idle' | 'working' | 'error' | 'done'>('idle');
+  const [doneNote, setDoneNote] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [statusLine, setStatusLine] = useState('');
   const cancelledRef = useRef(false);
@@ -366,7 +371,24 @@ function ExtractDialog({
         );
         if (status.status === 'completed') {
           await onDone(status);
-          onClose();
+          // Puzzles kept: the deck is (re)built, so get out of the way.
+          // Nothing kept: say why instead of vanishing silently -- on an
+          // all-seen account the job "completes" in seconds with 0 kept,
+          // which used to look like the dialog closing on its own.
+          if (status.puzzles_kept > 0) {
+            onClose();
+            return;
+          }
+          const noNewGames =
+            status.up_to_date === true || status.fetched_games === 0;
+          setDoneNote(
+            noNewGames
+              ? 'No new games since your last import — this account is already fully mined. Play more games, then extract again.'
+              : `Mined ${status.fetched_games} new ${
+                  status.fetched_games === 1 ? 'game' : 'games'
+                }, but none qualified as a puzzle.`
+          );
+          setPhase('done');
           return;
         }
         if (status.status === 'failed') {
@@ -467,22 +489,37 @@ function ExtractDialog({
           />
         </label>
 
-        <button
-          type="button"
-          onClick={handleSubmit}
-          disabled={!username || working}
-          className="mt-4 inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-emerald-500 font-semibold text-emerald-950 transition hover:bg-emerald-400 disabled:pointer-events-none disabled:opacity-40"
-        >
-          {working ? (
-            <span className="h-4 w-4 rounded-full border-2 border-emerald-950/40 border-t-emerald-950 animate-spin" />
-          ) : null}
-          {working ? 'Extracting…' : 'Get puzzles'}
-        </button>
+        {phase === 'done' ? (
+          <>
+            <p className="mt-4 text-sm text-[#f7e5c6]/70">{doneNote}</p>
+            <button
+              type="button"
+              onClick={onClose}
+              className="mt-3 inline-flex h-10 w-full items-center justify-center rounded-xl border border-white/20 bg-white/5 font-semibold text-white transition hover:bg-white/10"
+            >
+              Done
+            </button>
+          </>
+        ) : (
+          <>
+            <button
+              type="button"
+              onClick={handleSubmit}
+              disabled={!username || working}
+              className="mt-4 inline-flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-emerald-500 font-semibold text-emerald-950 transition hover:bg-emerald-400 disabled:pointer-events-none disabled:opacity-40"
+            >
+              {working ? (
+                <span className="h-4 w-4 rounded-full border-2 border-emerald-950/40 border-t-emerald-950 animate-spin" />
+              ) : null}
+              {working ? 'Extracting…' : 'Get puzzles'}
+            </button>
 
-        {working && (
-          <p className="mt-2 text-sm text-[#f7e5c6]/60">{statusLine}</p>
+            {working && (
+              <p className="mt-2 text-sm text-[#f7e5c6]/60">{statusLine}</p>
+            )}
+            {error && <p className="mt-2 text-sm text-red-400">{error}</p>}
+          </>
         )}
-        {error && <p className="mt-2 text-sm text-red-400">{error}</p>}
       </div>
     </div>
   );
@@ -803,7 +840,10 @@ export default function PuzzleExtractorPage() {
             }}
           />
         )}
-        {activeJob && !dialogOpen && (
+        {/* Decks view only: once a deck is open the training board gets
+            the full page and the background-job banner would just trail
+            along where it has no context. */}
+        {activeJob && !dialogOpen && deckKey === null && (
           <div className="mx-auto mt-4 flex w-full max-w-3xl items-center gap-3 rounded-xl border border-white/10 bg-black/50 px-4 py-2.5 text-sm text-white/70">
             {activeJob.status === 'failed' ? (
               <>
