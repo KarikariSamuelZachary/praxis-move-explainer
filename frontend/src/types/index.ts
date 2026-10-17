@@ -416,6 +416,14 @@ export interface CalcExercise {
   exercise_token: string;
 }
 
+export interface CalcWoodpeckerQueueItem {
+  entry_id: string;
+  fen: string;
+  side_to_move: string;
+  n: number;
+  review_token: string;
+}
+
 export interface CalcSubmitResult {
   solved: boolean;
   first_divergence_ply: number | null;
