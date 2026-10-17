@@ -1745,7 +1745,8 @@ def run_migrations():
                 """
                 ALTER TABLE calc_woodpecker_attempts
                     ADD COLUMN IF NOT EXISTS submitted_line TEXT,
-                    ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'lines'
+                    ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'lines',
+                    ADD COLUMN IF NOT EXISTS hints_used INTEGER NOT NULL DEFAULT 0
                 """
             )
             # --- calc "show why" -------------------------------------------------
