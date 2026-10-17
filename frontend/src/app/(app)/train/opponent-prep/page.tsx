@@ -2524,43 +2524,6 @@ function formatModalEval(cp: number, mate: number | null): string {
   return `${pawns >= 0 ? '+' : ''}${pawns.toFixed(2)}`;
 }
 
-function exploreLabel(classification: ModalExploreClassification): string {
-  switch (classification) {
-    case 'book':
-      return 'Book';
-    case 'brilliant':
-      return 'Brilliant';
-    case 'great':
-      return 'Great';
-    case 'best':
-      return 'Best';
-    case 'excellent':
-      return 'Excellent';
-    case 'good':
-      return 'Good';
-    case 'inaccuracy':
-      return 'Inaccuracy';
-    case 'mistake':
-      return 'Mistake';
-    case 'miss':
-      return 'Miss';
-    case 'blunder':
-      return 'Blunder';
-    default:
-      return classification;
-  }
-}
-
-function exploreTone(classification: ModalExploreClassification): string {
-  return classification === 'blunder'
-    ? 'border-rose-400/30 bg-rose-500/10 text-rose-200'
-    : classification === 'mistake' || classification === 'miss'
-      ? 'border-amber-400/30 bg-amber-500/10 text-amber-200'
-      : classification === 'book'
-        ? 'border-white/15 bg-white/5 text-white/70'
-        : 'border-emerald-400/30 bg-emerald-500/10 text-emerald-200';
-}
-
 function useModalExplore({
   active,
   gameSans,
@@ -2982,23 +2945,6 @@ function ModalEvalChip({ cp, mate }: { cp: number; mate: number | null }) {
   return (
     <span className="shrink-0 rounded-md bg-[#eacb90]/15 px-2 py-0.5 font-mono text-[11px] font-bold text-[#eacb90] ring-1 ring-[#eacb90]/30">
       {formatModalEval(cp, mate)}
-    </span>
-  );
-}
-
-function ModalLabelChip({
-  classification,
-  title,
-}: {
-  classification: ModalExploreClassification;
-  title?: string;
-}) {
-  return (
-    <span
-      title={title}
-      className={`shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] ${exploreTone(classification)}`}
-    >
-      {exploreLabel(classification)}
     </span>
   );
 }
@@ -3742,6 +3688,33 @@ function OpeningReplayModal({
     return () => window.removeEventListener('keydown', onKeyDown);
   });
 
+  // Explore labels render as a physical badge on the moved piece instead of
+  // written chips: live engine labels win, and the stored blunder covers the
+  // studied move until the stream settles. Deviations only use live labels.
+  const badge = useMemo(() => {
+    if (!explore.armed || !lastMoveSquares) {
+      return null;
+    }
+    const classification =
+      (showLive ? explore.live.classification : null) ??
+      (explore.deviation ? null : (storedBlunder?.classification ?? null));
+    if (!classification) {
+      return null;
+    }
+    return {
+      classification,
+      ...modalSquareToPercent(lastMoveSquares.to, color),
+    };
+  }, [
+    explore.armed,
+    explore.live.classification,
+    explore.deviation,
+    showLive,
+    storedBlunder,
+    lastMoveSquares,
+    color,
+  ]);
+
   const goToGame = (nextIndex: number) => {
     if (nextIndex < 0 || nextIndex >= games.length || nextIndex === gameIndex) {
       return;
@@ -3816,11 +3789,24 @@ function OpeningReplayModal({
                   )}
                 </div>
               )}
+              {badge && (
+                <div
+                  className="pointer-events-none absolute z-[5]"
+                  style={{
+                    left: `${badge.col * MODAL_SQUARE_PERCENT + MODAL_SQUARE_PERCENT - MODAL_BADGE_SIZE_PERCENT - MODAL_BADGE_MARGIN_PERCENT}%`,
+                    top: `${badge.row * MODAL_SQUARE_PERCENT + MODAL_BADGE_MARGIN_PERCENT}%`,
+                    width: `${MODAL_BADGE_SIZE_PERCENT}%`,
+                    aspectRatio: '1 / 1',
+                  }}
+                >
+                  <ClassificationIcon classification={badge.classification} size="100%" />
+                </div>
+              )}
             </div>
           </div>
 
           {/* Slim status bar: game stepper + move counter on the left,
-              live explore label on the right. Explore is always on here, so
+              live engine feedback on the right. Explore is always on here, so
               there is no toggle row - one line covers context plus engine
               feedback and the card fits short viewports without scrolling. */}
           <div className="mt-2 flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5">
@@ -3860,18 +3846,6 @@ function OpeningReplayModal({
             </div>
             {gamePhase === 'ready' && game && (
               <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                {storedBlunder && !showLive && (
-                  <ModalLabelChip
-                    classification={storedBlunder.classification}
-                    title="From stored analysis - no engine call"
-                  />
-                )}
-                {showLive && explore.live.classification && (
-                  <ModalLabelChip
-                    classification={explore.live.classification}
-                    title="Live engine label for the position on screen"
-                  />
-                )}
                 {explore.live.pending && !showLive && (
                   <span className="inline-flex items-center gap-1.5 text-[11px] text-[#f7e5c6]/60">
                     <span className="h-2.5 w-2.5 animate-spin rounded-full border-2 border-white/20 border-t-white" />
