@@ -1,6 +1,11 @@
 import { NextRequest, NextResponse } from 'next/server';
 import { auth, currentUser } from '@clerk/nextjs/server';
 import { getBackendConfig } from '@/lib/backend';
+import {
+  SKILL_CACHE_COOKIE,
+  SKILL_CACHE_MAX_AGE_SECONDS,
+  serializeSkillCache,
+} from '@/lib/skill-cache';
 
 export async function GET(request: NextRequest) {
   try {
@@ -63,13 +68,31 @@ export async function POST(request: NextRequest) {
       body: JSON.stringify(body),
     });
 
-    return new NextResponse(response.body, {
+    const payload = await response.json().catch(() => null);
+    const nextResponse = NextResponse.json(payload, {
       status: response.status,
       statusText: response.statusText,
-      headers: {
-        'content-type': response.headers.get('content-type') ?? 'application/json',
-      },
     });
+
+    // Prime the middleware's skill cache with what was just saved so the
+    // immediate /puzzles navigation is not gated on another backend fetch.
+    const skillLevel =
+      typeof body?.skill_level === 'string' && body.skill_level ? body.skill_level : null;
+    if (response.ok && skillLevel) {
+      nextResponse.cookies.set(
+        SKILL_CACHE_COOKIE,
+        serializeSkillCache(userId, skillLevel),
+        {
+          httpOnly: true,
+          sameSite: 'lax',
+          secure: process.env.NODE_ENV === 'production',
+          path: '/',
+          maxAge: SKILL_CACHE_MAX_AGE_SECONDS,
+        },
+      );
+    }
+
+    return nextResponse;
   } catch (error) {
     console.error('Onboarding POST proxy error:', error);
     return NextResponse.json(

@@ -3,6 +3,8 @@
 import { useEffect, useRef } from 'react';
 import { AuthenticateWithRedirectCallback, useAuth } from '@clerk/nextjs';
 
+import { KnightMark } from '@/components/layout/KnightMark';
+
 export default function SSOCallbackPage() {
   const { isLoaded, isSignedIn } = useAuth();
   const startedAtRef = useRef<number | null>(null);
@@ -51,7 +53,26 @@ export default function SSOCallbackPage() {
   }, [isLoaded, isSignedIn]);
 
   return (
-    <div className="flex min-h-screen items-center justify-center [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
+    <div className="flex min-h-screen flex-col items-center justify-center gap-8 [background-image:url(/walnut-dark.webp)] [background-size:cover] [background-position:center]">
+      <div className="flex items-center gap-3">
+        <KnightMark className="h-10 w-8" />
+        <span className="font-display text-2xl font-bold tracking-[0.16em] text-gold">
+          PRAXIS
+        </span>
+      </div>
+
+      <div
+        role="status"
+        aria-live="polite"
+        className="flex items-center gap-3 text-sm text-[#f7e5c6]/80"
+      >
+        <span
+          aria-hidden="true"
+          className="h-4 w-4 animate-spin rounded-full border-2 border-[#efd9a7]/30 border-t-[#efd9a7]"
+        />
+        Signing you in…
+      </div>
+
       {/* Allow Google login attempts from new users to become sign-ups. */}
       <AuthenticateWithRedirectCallback
         transferable

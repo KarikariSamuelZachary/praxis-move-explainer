@@ -86,6 +86,15 @@ export default clerkMiddleware(async (auth, req) => {
     return gate(req, cached, onboardingRoute);
   }
 
+  // No cached skill level. /onboarding must not block on the backend: it is
+  // the landing spot right after sign-up, where a backend round trip (or a
+  // timeout) shows up as a stalled SSO callback page. The page itself
+  // re-checks skill level in the background and bounces already-onboarded
+  // users to /puzzles, so rendering it immediately is safe.
+  if (onboardingRoute) {
+    return NextResponse.next();
+  }
+
   const result = await getSkillLevel(userId);
   if (!result.ok) {
     // Backend unreachable or slow: fail open rather than bouncing a
